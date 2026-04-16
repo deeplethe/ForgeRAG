@@ -167,36 +167,40 @@ class KGPath:
 
         Also collects entity descriptions and relation descriptions
         into ``self.kg_context`` for synthesized context injection.
+
+        Optimized to minimize graph round-trips: collects all neighbor
+        IDs first, then resolves names in a single batch query.
         """
         from graph.base import entity_id_from_name
 
         chunk_scores: dict[str, float] = {}
         _seen_entities: set[str] = set()
         _seen_relations: set[str] = set()
-        # Cache entity_id → name to avoid repeated get_entity calls
-        # (important for Neo4j where each call is a DB round-trip)
-        _name_cache: dict[str, str] = {}
+        # Entities resolved during traversal (avoids N+1 on name lookups)
+        _entity_cache: dict[str, "Entity"] = {}
 
-        def _resolve_name(eid_: str) -> str:
-            if eid_ in _name_cache:
-                return _name_cache[eid_]
-            ent_ = self.graph.get_entity(eid_)
-            name_ = ent_.name if ent_ else eid_
-            _name_cache[eid_] = name_
-            return name_
-
+        # Phase 1: Resolve seed entities
+        seed_entities = []
         for name in entity_names:
             eid = entity_id_from_name(name)
             entity = self.graph.get_entity(eid)
             if entity is None:
-                # Try fuzzy search
                 candidates = self.graph.search_entities(name, top_k=3)
                 if not candidates:
                     continue
                 entity = candidates[0]
                 eid = entity.entity_id
+            _entity_cache[eid] = entity
+            seed_entities.append(entity)
 
-            _name_cache[eid] = entity.name
+        # Phase 2: For each seed, get relations + neighbors (these are
+        # already batch-friendly per entity in both Neo4j and NetworkX)
+        all_neighbor_ids: set[str] = set()
+        # Collect relations per seed and defer name resolution
+        _deferred_relations: list[tuple] = []  # (rel, source_eid, target_eid)
+
+        for entity in seed_entities:
+            eid = entity.entity_id
 
             # Collect entity description for KG context
             if eid not in _seen_entities and entity.description:
@@ -217,32 +221,22 @@ class KGPath:
             # Relations of this entity
             relations = self.graph.get_relations(eid)
             for rel in relations:
-                score = 0.8 * rel.weight  # relation weight matters
+                score = 0.8 * rel.weight
                 for cid in rel.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), score)
 
-                # Collect relation description for KG context
                 rid = rel.relation_id
                 if rid not in _seen_relations and rel.description:
                     _seen_relations.add(rid)
-                    self.kg_context.relations.append(
-                        {
-                            "source": _resolve_name(rel.source_entity),
-                            "target": _resolve_name(rel.target_entity),
-                            "keywords": rel.keywords,
-                            "description": rel.description,
-                            "_rid": rid,
-                        }
-                    )
+                    _deferred_relations.append((rel, rel.source_entity, rel.target_entity))
+                    all_neighbor_ids.add(rel.source_entity)
+                    all_neighbor_ids.add(rel.target_entity)
 
             # Neighbor entities (hop 1+)
-            # get_neighbors returns a flat list without per-item hop info,
-            # so we use a uniform decay based on the configured max_hops.
             neighbors = self.graph.get_neighbors(eid, max_hops=self.cfg.max_hops)
-            neighbor_score = 1.0 / (1 + self.cfg.max_hops)  # average decay
+            neighbor_score = 1.0 / (1 + self.cfg.max_hops)
             for neighbor in neighbors:
-                _name_cache[neighbor.entity_id] = neighbor.name
-                # Collect neighbor entity descriptions too
+                _entity_cache[neighbor.entity_id] = neighbor
                 if neighbor.entity_id not in _seen_entities and neighbor.description:
                     _seen_entities.add(neighbor.entity_id)
                     self.kg_context.entities.append(
@@ -255,6 +249,27 @@ class KGPath:
                     )
                 for cid in neighbor.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), neighbor_score)
+
+        # Phase 3: Batch-resolve entity names for deferred relations
+        # Only fetch IDs we don't already have in cache
+        missing_ids = [eid for eid in all_neighbor_ids if eid not in _entity_cache]
+        if missing_ids and hasattr(self.graph, "get_entities_batch"):
+            batch = self.graph.get_entities_batch(missing_ids)
+            _entity_cache.update(batch)
+
+        # Now resolve relation names from cache
+        for rel, src_eid, tgt_eid in _deferred_relations:
+            src_name = _entity_cache[src_eid].name if src_eid in _entity_cache else src_eid
+            tgt_name = _entity_cache[tgt_eid].name if tgt_eid in _entity_cache else tgt_eid
+            self.kg_context.relations.append(
+                {
+                    "source": src_name,
+                    "target": tgt_name,
+                    "keywords": rel.keywords,
+                    "description": rel.description,
+                    "_rid": rel.relation_id,
+                }
+            )
 
         return chunk_scores
 
@@ -341,28 +356,38 @@ class KGPath:
             return {}
 
         chunk_scores: dict[str, float] = {}
+        # Collect all member entity IDs across communities first
+        all_member_ids: list[str] = []
+        valid_communities = []
         for community, sim_score in matches:
-            if sim_score < 0.3:  # skip very low similarity
+            if sim_score < 0.3:
                 continue
-
-            # Collect community summary for KG context
             if community.summary and community.summary != community.title:
                 self.kg_context.community_summaries.append(
-                    {
-                        "title": community.title,
-                        "summary": community.summary,
-                    }
+                    {"title": community.title, "summary": community.summary}
                 )
+            valid_communities.append((community, sim_score))
+            all_member_ids.extend(community.entity_ids)
 
+        # Batch-fetch all member entities in one query
+        if hasattr(self.graph, "get_entities_batch"):
+            entity_map = self.graph.get_entities_batch(list(set(all_member_ids)))
+        else:
+            entity_map = {}
+            for eid in set(all_member_ids):
+                e = self.graph.get_entity(eid)
+                if e:
+                    entity_map[eid] = e
+
+        for community, sim_score in valid_communities:
             member_set = set(community.entity_ids)
-            # Collect chunks from all community members
             for eid in community.entity_ids:
-                entity = self.graph.get_entity(eid)
+                entity = entity_map.get(eid)
                 if entity is None:
                     continue
                 for cid in entity.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), sim_score)
-                # Also include relation chunks within the community
+                # Relations within the community
                 for rel in self.graph.get_relations(eid):
                     if rel.target_entity in member_set or rel.source_entity in member_set:
                         for cid in rel.source_chunk_ids:
