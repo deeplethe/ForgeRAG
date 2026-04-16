@@ -228,6 +228,6 @@ def _parse_order(resp) -> list[int]:
     import json
 
     try:
-        return [int(x) for x in json.loads(m.group(0)) if isinstance(x, (int, float))]
+        return [int(x) for x in json.loads(m.group(0)) if isinstance(x, int | float)]
     except Exception:
         return []

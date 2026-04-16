@@ -198,7 +198,7 @@ def _materialize_source(source: FileSource) -> tuple[Path, bool]:
     Return (local_path, needs_cleanup). If source is bytes we spill
     to a tempfile and cleanup=True; if it's a path we use it as-is.
     """
-    if isinstance(source, (bytes, bytearray)):
+    if isinstance(source, bytes | bytearray):
         tmp_dir = Path("./storage/tmp")
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp = tempfile.NamedTemporaryFile(
@@ -213,7 +213,7 @@ def _materialize_source(source: FileSource) -> tuple[Path, bool]:
         finally:
             tmp.close()
         return Path(tmp.name), True
-    if isinstance(source, (str, Path)):
+    if isinstance(source, str | Path):
         p = Path(source)
         if not p.exists():
             raise FileNotFoundError(p)
