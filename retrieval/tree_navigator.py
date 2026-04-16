@@ -294,7 +294,9 @@ def _walk(
     if hot_nodes and depth > 0 and nid not in hot_nodes:
         desc_count = _count_descendants(nodes, nid)
         if desc_count > 0:
-            lines.append(f"{indent}[{node_id}] {title} (p{page_start}-{page_end})  [... {desc_count} sub-sections, no keyword/vector hits]")
+            lines.append(
+                f"{indent}[{node_id}] {title} (p{page_start}-{page_end})  [... {desc_count} sub-sections, no keyword/vector hits]"
+            )
         else:
             lines.append(f"{indent}[{node_id}] {title} (p{page_start}-{page_end})")
         return  # Don't recurse into cold subtrees
