@@ -218,6 +218,24 @@ class Neo4jGraphStore(GraphStore):
                 return None
             return _entity_from_record(dict(rec))
 
+    def get_entities_batch(self, entity_ids: list[str]) -> dict[str, Entity]:
+        """Fetch multiple entities in a single Cypher query."""
+        if not entity_ids:
+            return {}
+        cypher = """
+        MATCH (e:KGEntity) WHERE e.entity_id IN $ids
+        RETURN e.entity_id AS entity_id, e.name AS name,
+               e.entity_type AS entity_type, e.description AS description,
+               e.source_doc_ids AS source_doc_ids,
+               e.source_chunk_ids AS source_chunk_ids
+        """
+        with self._driver.session(database=self._database) as s:
+            result = s.run(cypher, ids=entity_ids)
+            return {
+                r["entity_id"]: _entity_from_record(dict(r))
+                for r in result
+            }
+
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         cypher = """
         MATCH (start:KGEntity {entity_id: $entity_id})
