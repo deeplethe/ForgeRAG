@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import Community, Entity, GraphStore, Relation
+from .base import Entity, GraphStore, Relation
 
 logger = logging.getLogger(__name__)
 
@@ -218,20 +218,23 @@ class Neo4jGraphStore(GraphStore):
                 return None
             return _entity_from_record(dict(rec))
 
-    def get_entities_batch(self, entity_ids: list[str]) -> dict[str, Entity]:
-        """Fetch multiple entities in a single Cypher query."""
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
         if not entity_ids:
             return {}
         cypher = """
-        MATCH (e:KGEntity) WHERE e.entity_id IN $ids
+        MATCH (e:KGEntity) WHERE e.entity_id IN $entity_ids
         RETURN e.entity_id AS entity_id, e.name AS name,
                e.entity_type AS entity_type, e.description AS description,
                e.source_doc_ids AS source_doc_ids,
                e.source_chunk_ids AS source_chunk_ids
         """
+        out: dict[str, Entity] = {}
         with self._driver.session(database=self._database) as s:
-            result = s.run(cypher, ids=entity_ids)
-            return {r["entity_id"]: _entity_from_record(dict(r)) for r in result}
+            result = s.run(cypher, entity_ids=list(entity_ids))
+            for rec in result:
+                ent = _entity_from_record(dict(rec))
+                out[ent.entity_id] = ent
+        return out
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         cypher = """
@@ -458,199 +461,6 @@ class Neo4jGraphStore(GraphStore):
             "removed_relations": removed_rels,
         }
 
-    # -- community detection ------------------------------------------------
-
-    def detect_communities(self, resolution: float = 1.0) -> list[Community]:
-        """Run Leiden clustering on the Neo4j graph.
-
-        Reads the full entity-relation graph from Neo4j, runs Leiden
-        in-process via igraph/leidenalg, and returns Community objects.
-        """
-
-        try:
-            import igraph as ig
-            import leidenalg
-        except ImportError:
-            logger.warning(
-                "Community detection requires python-igraph and leidenalg: pip install python-igraph leidenalg"
-            )
-            return []
-
-        # Read all entities and relations from Neo4j
-        with self._driver.session(database=self._database) as s:
-            ent_result = s.run("MATCH (e:KGEntity) RETURN e.entity_id AS eid, e.name AS name")
-            entities = {r["eid"]: r["name"] for r in ent_result}
-
-            rel_result = s.run(
-                "MATCH (s:KGEntity)-[r:RELATES_TO]->(t:KGEntity) "
-                "RETURN s.entity_id AS src, t.entity_id AS tgt, "
-                "coalesce(r.weight, 1.0) AS weight"
-            )
-            edges = [(r["src"], r["tgt"], r["weight"]) for r in rel_result]
-
-        if len(entities) < 2:
-            return []
-
-        # Build igraph
-        node_list = list(entities.keys())
-        node_index = {n: i for i, n in enumerate(node_list)}
-
-        ig_graph = ig.Graph(n=len(node_list), directed=False)
-        ig_graph.vs["name"] = node_list
-        ig_edges = []
-        ig_weights = []
-        seen: set[tuple[str, str]] = set()
-        for src, tgt, w in edges:
-            if src not in node_index or tgt not in node_index:
-                continue
-            pair = (min(src, tgt), max(src, tgt))
-            if pair in seen:
-                continue
-            seen.add(pair)
-            ig_edges.append((node_index[src], node_index[tgt]))
-            ig_weights.append(max(w, 0.1))
-
-        if not ig_edges:
-            return []
-        ig_graph.add_edges(ig_edges)
-
-        # Run Leiden
-        partition = leidenalg.find_partition(
-            ig_graph,
-            leidenalg.RBConfigurationVertexPartition,
-            weights=ig_weights,
-            resolution_parameter=resolution,
-        )
-
-        communities: list[Community] = []
-        for idx, members in enumerate(partition):
-            entity_ids = [node_list[m] for m in members]
-            names = [entities.get(eid, eid)[:30] for eid in entity_ids[:5]]
-            title = ", ".join(names)
-            if len(entity_ids) > 5:
-                title += f" (+{len(entity_ids) - 5})"
-            communities.append(
-                Community(
-                    community_id=f"c_{idx}",
-                    level=0,
-                    entity_ids=entity_ids,
-                    title=title,
-                )
-            )
-
-        logger.info(
-            "Leiden detected %d communities (resolution=%.2f, entities=%d)",
-            len(communities),
-            resolution,
-            len(entities),
-        )
-        return communities
-
-    def get_communities(self) -> list[Community]:
-
-        cypher = """
-        MATCH (c:KGCommunity)
-        RETURN c.community_id AS community_id, c.level AS level,
-               c.entity_ids AS entity_ids, c.title AS title,
-               c.summary AS summary
-        """
-        with self._driver.session(database=self._database) as s:
-            result = s.run(cypher)
-            return [
-                Community(
-                    community_id=r["community_id"],
-                    level=r["level"] or 0,
-                    entity_ids=list(r["entity_ids"] or []),
-                    title=r["title"] or "",
-                    summary=r["summary"] or "",
-                )
-                for r in result
-            ]
-
-    def upsert_community(self, community: Community) -> None:
-        cypher = """
-        MERGE (c:KGCommunity {community_id: $community_id})
-        SET c.level             = $level,
-            c.entity_ids        = $entity_ids,
-            c.title             = $title,
-            c.summary           = $summary,
-            c.summary_embedding = $summary_embedding
-        """
-        with self._driver.session(database=self._database) as s:
-            s.run(
-                cypher,
-                community_id=community.community_id,
-                level=community.level,
-                entity_ids=community.entity_ids,
-                title=community.title,
-                summary=community.summary,
-                summary_embedding=community.summary_embedding or [],
-            ).consume()
-
-    def search_communities(
-        self,
-        query_embedding: list[float],
-        top_k: int = 5,
-    ) -> list[tuple[Community, float]]:
-        """Cosine-similarity search over community summary embeddings.
-
-        Since Neo4j Community Edition lacks native vector search, we
-        load all communities and compute cosine similarity in Python.
-        For small community counts (<500) this is fast enough.
-        """
-
-        # Load all communities with their summary embeddings
-        cypher = """
-        MATCH (c:KGCommunity)
-        RETURN c.community_id AS community_id, c.level AS level,
-               c.entity_ids AS entity_ids, c.title AS title,
-               c.summary AS summary, c.summary_embedding AS embedding
-        """
-        with self._driver.session(database=self._database) as s:
-            records = list(s.run(cypher))
-
-        if not records or not query_embedding:
-            return []
-
-        # Compute cosine similarity in Python
-        import math
-
-        def _cosine(a: list[float], b: list[float]) -> float:
-            if not a or not b or len(a) != len(b):
-                return 0.0
-            dot = sum(x * y for x, y in zip(a, b, strict=False))
-            na = math.sqrt(sum(x * x for x in a))
-            nb = math.sqrt(sum(x * x for x in b))
-            if na < 1e-9 or nb < 1e-9:
-                return 0.0
-            return dot / (na * nb)
-
-        scored: list[tuple[Community, float]] = []
-        for r in records:
-            emb = r["embedding"]
-            if not emb:
-                # No embedding — use a low default score so community
-                # still appears (summary text is still useful)
-                score = 0.1
-            else:
-                score = _cosine(query_embedding, list(emb))
-
-            scored.append(
-                (
-                    Community(
-                        community_id=r["community_id"],
-                        level=r["level"] or 0,
-                        entity_ids=list(r["entity_ids"] or []),
-                        title=r["title"] or "",
-                        summary=r["summary"] or "",
-                    ),
-                    score,
-                )
-            )
-
-        scored.sort(key=lambda x: -x[1])
-        return scored[:top_k]
-
     # -- introspection ------------------------------------------------------
 
     def stats(self) -> dict:
@@ -658,19 +468,13 @@ class Neo4jGraphStore(GraphStore):
         OPTIONAL MATCH (e:KGEntity)
         WITH count(e) AS entities
         OPTIONAL MATCH ()-[r:RELATES_TO]->()
-        WITH entities, count(r) AS relations
-        OPTIONAL MATCH (c:KGCommunity)
-        RETURN entities, relations, count(c) AS communities
+        RETURN entities, count(r) AS relations
         """
         with self._driver.session(database=self._database) as s:
             rec = s.run(cypher).single()
             if rec is None:
-                return {"entities": 0, "relations": 0, "communities": 0}
-            return {
-                "entities": rec["entities"],
-                "relations": rec["relations"],
-                "communities": rec["communities"],
-            }
+                return {"entities": 0, "relations": 0}
+            return {"entities": rec["entities"], "relations": rec["relations"]}
 
     # -- lifecycle ----------------------------------------------------------
 
