@@ -63,7 +63,10 @@ class SettingsGrouped(BaseModel):
 @router.get("", response_model=SettingsGrouped)
 def list_all_settings(state: AppState = Depends(get_state)) -> SettingsGrouped:
     """All settings, organized by group for frontend tabs."""
-    from config.settings_manager import PROMPT_DEFAULTS
+    from config.settings_manager import EDITABLE_SETTINGS, PROMPT_DEFAULTS
+
+    # Build a key→order index from the canonical definition order
+    key_order = {key: i for i, (key, *_) in enumerate(EDITABLE_SETTINGS)}
 
     rows = state.store.get_all_settings()
     groups: dict[str, list[SettingOut]] = {}
@@ -75,6 +78,9 @@ def list_all_settings(state: AppState = Depends(get_state)) -> SettingsGrouped:
         if out.key in PROMPT_DEFAULTS:
             out.default_value = PROMPT_DEFAULTS[out.key]
         groups[g].append(out)
+    # Sort each group by canonical definition order
+    for g in groups:
+        groups[g].sort(key=lambda s: key_order.get(s.key, 9999))
     return SettingsGrouped(groups=groups)
 
 

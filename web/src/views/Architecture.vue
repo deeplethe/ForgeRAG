@@ -1,18 +1,19 @@
 <script setup>
-import { ref, reactive, computed, onMounted, markRaw } from 'vue'
-import { VueFlow, Position, Handle } from '@vue-flow/core'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
+import { VueFlow, Position, Handle, useVueFlow } from '@vue-flow/core'
 import { Controls } from '@vue-flow/controls'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
-import { getStats, getRetrievalStatus, getAllSettings, updateSetting, uploadAndIngest, getInfrastructure, listLLMProviders, createLLMProvider, updateLLMProvider, deleteLLMProvider } from '@/api'
+import { getStats, getRetrievalStatus, getAllSettings, updateSetting, uploadAndIngest, getInfrastructure, listLLMProviders, createLLMProvider, updateLLMProvider, deleteLLMProvider, getGraphStats } from '@/api'
 import { request } from '@/api/client'
-import { TrashIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { TrashIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon, ArrowPathIcon, EyeIcon, EyeSlashIcon } from '@heroicons/vue/24/outline'
 import Spinner from '@/components/Spinner.vue'
 
 /* ── State ── */
 const stats = ref({ documents: 0, chunks: 0, files: 0, bm25_indexed: 0 })
+const graphStats = ref({ entities: 0, relations: 0 })
 const status = ref({})
 const settings = ref({})
 const infra = ref({ storage_mode: '', storage_root: '', relational_backend: '', relational_path: '', vector_backend: '', vector_detail: '', graph_backend: '', graph_detail: '' })
@@ -113,21 +114,21 @@ const moduleDesc = {
   generator: { title: 'LLM Generation', desc: 'Produces grounded answers by feeding top-ranked context to an LLM. Supports SSE streaming for real-time token delivery and multi-turn conversations.' },
   citation_builder: { title: 'Citation Builder', desc: 'Maps inline [c_N] citation tags to original PDF bounding-box coordinates, section paths, and file references.' },
   answer: { title: 'Answer', desc: 'The pipeline output: a natural-language answer with pixel-precise bbox citations. Each citation enables highlight-on-click in the built-in PDF viewer.' },
-  filestore: { title: 'Storage & Cache', desc: 'Content-addressed blob storage for uploaded documents. Manages on-disk caches for BM25 index and embedding vectors.' },
+  filestore: { title: 'Storage & Cache', desc: 'Content-addressed blob storage for uploaded documents and figures. Supports local filesystem, Amazon S3, and Alibaba OSS. Also manages on-disk caches for BM25 index and embedding vectors.' },
 }
 
 /* ── Data loading ── */
-onMounted(async () => { await load(); loading.value = false })
-async function load() {
-  const [s, st, se, inf] = await Promise.allSettled([
-    getStats(), getRetrievalStatus(), getAllSettings(), getInfrastructure(),
-  ])
-  if (s.status === 'fulfilled') stats.value = s.value
-  if (st.status === 'fulfilled') status.value = st.value
+onMounted(async () => {
+  // Settings + providers first (needed for panel), then show graph
+  const [se] = await Promise.allSettled([getAllSettings(), loadProviders()])
   if (se.status === 'fulfilled') settings.value = se.value.groups || {}
-  if (inf.status === 'fulfilled') infra.value = inf.value
-  await loadProviders()
-}
+  loading.value = false
+  // Stats are non-blocking — fill in as they arrive
+  getStats().then(v => { stats.value = v }).catch(() => {})
+  getRetrievalStatus().then(v => { status.value = v }).catch(() => {})
+  getInfrastructure().then(v => { infra.value = v }).catch(() => {})
+  getGraphStats().then(v => { graphStats.value = v }).catch(() => {})
+})
 
 function gv(key) {
   for (const items of Object.values(settings.value)) {
@@ -161,10 +162,12 @@ function isOn(key) {
 
 /* ── Settings panel ── */
 const groupMap = {
-  filestore: ['cache'], file_upload: [],
+  filestore: ['blob_storage', 'cache'], file_upload: [],
   parser: ['parser', 'images'], tree_builder: ['tree_builder'], chunker: ['chunker'],
   embedding: ['embedding'], kg_extraction: ['kg_extraction'],
-  database: [], vector_store: [], graph_store: [],
+  database: ['persistence_relational'],
+  vector_store: ['persistence_vector'],
+  graph_store: ['persistence_graph'],
   user_query: [], qu: ['query_understanding', 'prompts_qu'],
   vector: ['retrieval_vector'], bm25: ['retrieval_bm25'],
   tree: ['retrieval_tree', 'prompts_tree'], kg: ['kg'],
@@ -188,6 +191,21 @@ const PARENT_CHILD = [
   { parent: 'retrieval.tree_path.llm_nav_enabled', prefix: 'retrieval.tree_path.nav.' },
   { parent: 'retrieval.kg_extraction.embed_relations', prefix: 'retrieval.kg_path.relation_weight' },
   { parent: 'graph.community_detection.enabled', prefix: 'retrieval.kg_path.community_weight' },
+  // Persistence: show sub-config only for selected backend
+  // Storage: show sub-config only for selected mode
+  { parent: '_backend_mismatch:storage.mode:local', prefix: 'storage.local.' },
+  { parent: '_backend_mismatch:storage.mode:s3', prefix: 'storage.s3.' },
+  { parent: '_backend_mismatch:storage.mode:oss', prefix: 'storage.oss.' },
+  // Persistence: show sub-config only for selected backend
+  { parent: '_backend_mismatch:persistence.relational.backend:sqlite', prefix: 'persistence.relational.sqlite.' },
+  { parent: '_backend_mismatch:persistence.relational.backend:postgres', prefix: 'persistence.relational.postgres.' },
+  { parent: '_backend_mismatch:persistence.relational.backend:mysql', prefix: 'persistence.relational.mysql.' },
+  { parent: '_backend_mismatch:persistence.vector.backend:chromadb', prefix: 'persistence.vector.chromadb.' },
+  { parent: '_backend_mismatch:persistence.vector.backend:qdrant', prefix: 'persistence.vector.qdrant.' },
+  { parent: '_backend_mismatch:persistence.vector.backend:milvus', prefix: 'persistence.vector.milvus.' },
+  { parent: '_backend_mismatch:persistence.vector.backend:weaviate', prefix: 'persistence.vector.weaviate.' },
+  { parent: '_backend_mismatch:graph.backend:networkx', prefix: 'graph.networkx.' },
+  { parent: '_backend_mismatch:graph.backend:neo4j', prefix: 'graph.neo4j.' },
 ]
 
 const panelItems = computed(() => {
@@ -207,11 +225,16 @@ const panelItems = computed(() => {
   return [...config, ...prompts]
 })
 
-function isParentDisabled(item) {
+// Returns 'hidden' (remove from list), 'disabled' (grey out), or false (normal)
+function itemState(item) {
   for (const rule of PARENT_CHILD) {
     if (item.key === rule.prefix || item.key.startsWith(rule.prefix)) {
-      const parentVal = gv(rule.parent)
-      if (!parentVal) return true
+      if (rule.parent.startsWith('_backend_mismatch:')) {
+        const [, backendKey, expectedVal] = rule.parent.split(':')
+        if (gv(backendKey) !== expectedVal) return 'hidden'
+      } else {
+        if (!gv(rule.parent)) return 'disabled'
+      }
     }
   }
   return false
@@ -233,6 +256,7 @@ function saveSetting(key, val) {
     .finally(() => { if (--saveCount <= 0) { saveCount = 0; saving.value = false } })
 }
 
+const secretVisible = reactive({})  // key → bool
 const copiedKey = ref(null)
 function copyPrompt(it) {
   const text = it.value_json || it.default_value || ''
@@ -241,8 +265,7 @@ function copyPrompt(it) {
   setTimeout(() => { if (copiedKey.value === it.key) copiedKey.value = null }, 1500)
 }
 
-const isInfraNode = (id) => ['database', 'vector_store', 'graph_store'].includes(id)
-const hasConfig = (id) => (groupMap[id] || []).length > 0 || isInfraNode(id)
+const hasConfig = (id) => (groupMap[id] || []).length > 0
 
 /* ── Vue Flow graph definition ── */
 const TOGGLEABLE = new Set(['vector', 'bm25', 'tree', 'rerank', 'qu', 'kg', 'kg_extraction'])
@@ -265,13 +288,14 @@ const nodesDef = [
   { id: 'kg_extraction', label: 'KG Extraction', desc: 'Entity + relation extraction', layer: 'a', pos: [C[3], R.a + 110] },
 
   // (b) Persistence — one row
-  { id: 'database', label: 'Relational DB', desc: 'SQLite \u00b7 PostgreSQL \u00b7 MySQL', layer: 'b', pos: [C[1], R.b] },
-  { id: 'vector_store', label: 'Vector Store', desc: 'ChromaDB \u00b7 pgvector \u00b7 Qdrant', layer: 'b', pos: [C[2], R.b] },
-  { id: 'graph_store', label: 'Graph Store', desc: 'NetworkX \u00b7 Neo4j', layer: 'b', pos: [C[3], R.b] },
+  { id: 'filestore', label: 'Blob Storage', desc: 'Local \u00b7 S3 \u00b7 OSS', layer: 'b', pos: [C[1], R.b] },
+  { id: 'database', label: 'Relational DB', desc: 'SQLite \u00b7 PostgreSQL \u00b7 MySQL', layer: 'b', pos: [C[2], R.b] },
+  { id: 'vector_store', label: 'Vector Store', desc: 'ChromaDB \u00b7 pgvector \u00b7 Qdrant', layer: 'b', pos: [C[3], R.b] },
+  { id: 'graph_store', label: 'Graph Store', desc: 'NetworkX \u00b7 Neo4j', layer: 'b', pos: [C[4], R.b] },
 
   // (c) Retrieval — 4 search paths with 90px gaps
-  { id: 'user_query', label: 'User Query', desc: 'Natural language question', layer: 'c', pos: [C[0], R.c + 95] },
-  { id: 'qu', label: 'Query Understanding', desc: 'Expand & classify intent', layer: 'c', pos: [C[1], R.c + 95] },
+  { id: 'user_query', label: 'User Query', desc: 'Natural language question', layer: 'c', pos: [C[0], R.c + 90] },
+  { id: 'qu', label: 'Query Understanding', desc: 'Expand & classify intent', layer: 'c', pos: [C[1], R.c + 90] },
   { id: 'bm25', label: 'BM25', desc: 'Keyword matching', layer: 'c', pos: [C[2], R.c] },
   { id: 'vector', label: 'Vector Search', desc: 'Semantic similarity', layer: 'c', pos: [C[2], R.c + 90] },
   { id: 'tree', label: 'Tree Navigation', desc: 'LLM structure reasoning', layer: 'c', pos: [C[2], R.c + 180] },
@@ -330,6 +354,11 @@ const edgesDef = [
   ['chunker', 'embedding', 'b', 'l'],
   ['chunker', 'kg_extraction', 'b', 'l'],
 
+  // (b) Persistence — horizontal association (no arrows)
+  ['filestore', 'database', null, null, 'noarrow'],
+  ['database', 'vector_store', null, null, 'noarrow'],
+  ['vector_store', 'graph_store', null, null, 'noarrow'],
+
   // (c) Retrieval — within layer only
   // QU fans out to all 4 paths
   ['user_query', 'qu'],
@@ -354,10 +383,11 @@ const edgesDef = [
 
 const flowEdges = computed(() =>
   edgesDef.map((def, i) => {
-    const [s, t, sh, th] = def
+    const [s, t, sh, th, flags] = def
     const srcOff = TOGGLEABLE.has(s) && !isOn(s)
     const tgtOff = TOGGLEABLE.has(t) && !isOn(t)
     const dim = srcOff || tgtOff
+    const noArrow = flags === 'noarrow'
     const handleMap = { t: Position.Top, b: Position.Bottom, l: Position.Left, r: Position.Right }
     return {
       id: `e${i}`,
@@ -368,15 +398,33 @@ const flowEdges = computed(() =>
       ...(th ? { targetHandle: handleMap[th] } : {}),
       style: dim
         ? { stroke: '#d1d5db', strokeDasharray: '5 5', opacity: 0.35, strokeWidth: 1 }
-        : { stroke: '#c0c8d4', strokeWidth: 1.2 },
-      markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : '#b0b8c4', width: 12, height: 12 },
+        : { stroke: noArrow ? '#d4d0e8' : '#c0c8d4', strokeWidth: 1.2 },
+      ...(noArrow ? {} : { markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : '#b0b8c4', width: 12, height: 12 } }),
     }
   })
 )
 
+const { fitView } = useVueFlow()
+let resizeTimer = null
+function onResize() {
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 150)
+}
+onMounted(() => window.addEventListener('resize', onResize))
+onUnmounted(() => window.removeEventListener('resize', onResize))
+
+const panelRef = ref(null)
 function onNodeClick({ node }) {
   if (node.type === 'label') return
+  const wasOpen = !!activeNode.value
   activeNode.value = activeNode.value === node.id ? null : node.id
+  const isOpen = !!activeNode.value
+  // Scroll panel to top on node switch
+  nextTick(() => {
+    if (panelRef.value) panelRef.value.scrollTop = 0
+    // Refit when panel opens/closes (container width changes)
+    if (wasOpen !== isOpen) setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 250)
+  })
 }
 </script>
 
@@ -407,6 +455,7 @@ function onNodeClick({ node }) {
         :min-zoom="0.3"
         :max-zoom="2"
         @node-click="onNodeClick"
+        @pane-click="activeNode = null"
       >
         <!-- Custom pipeline node -->
         <template #node-pipeline="{ data, id }">
@@ -422,7 +471,6 @@ function onNodeClick({ node }) {
             <Handle type="source" :position="Position.Bottom" />
             <div class="pipeline-node__title">{{ data.label }}</div>
             <div class="pipeline-node__desc">{{ data.desc }}</div>
-            <div v-if="data.hasConfig" class="pipeline-node__indicator"></div>
           </div>
         </template>
 
@@ -471,7 +519,7 @@ function onNodeClick({ node }) {
 
     <!-- Right: Config side panel -->
     <transition name="slide">
-      <div v-if="activeNode" class="side-panel" @click.stop>
+      <div v-if="activeNode" ref="panelRef" class="side-panel" @click.stop>
         <!-- Header -->
         <div class="side-panel__header">
           <div>
@@ -491,31 +539,31 @@ function onNodeClick({ node }) {
           </button>
         </div>
 
-        <!-- Infra info for persistence nodes -->
-        <div v-if="isInfraNode(activeNode)" class="px-4 py-3 space-y-3">
-          <template v-if="activeNode === 'database'">
-            <div><div class="text-[10px] text-t3 mb-0.5">Backend</div><div class="text-xs text-t1">{{ infra.relational_backend }}</div><div class="text-[10px] text-t3">{{ infra.relational_path }}</div></div>
-          </template>
-          <template v-else-if="activeNode === 'vector_store'">
-            <div><div class="text-[10px] text-t3 mb-0.5">Backend</div><div class="text-xs text-t1">{{ infra.vector_backend }}</div><div class="text-[10px] text-t3">{{ infra.vector_detail }}</div></div>
-          </template>
-          <template v-else-if="activeNode === 'graph_store'">
-            <div><div class="text-[10px] text-t3 mb-0.5">Backend</div><div class="text-xs text-t1">{{ infra.graph_backend || 'networkx' }}</div><div class="text-[10px] text-t3">{{ infra.graph_detail }}</div></div>
-          </template>
-          <div class="text-[9px] text-t3 pt-2 border-t border-line">Configured in forgerag.yaml (restart required)</div>
+        <!-- Stats for persistence nodes -->
+        <div v-if="activeNode === 'database'" class="px-4 py-2 border-b border-line">
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Documents</span><span class="text-t1">{{ stats.documents }}</span></div>
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Chunks</span><span class="text-t1">{{ stats.chunks }}</span></div>
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Files</span><span class="text-t1">{{ stats.files }}</span></div>
+        </div>
+        <div v-if="activeNode === 'vector_store'" class="px-4 py-2 border-b border-line">
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Chunks indexed</span><span class="text-t1">{{ stats.chunks }}</span></div>
+        </div>
+        <div v-if="activeNode === 'graph_store'" class="px-4 py-2 border-b border-line">
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Entities</span><span class="text-t1">{{ graphStats.entities }}</span></div>
+          <div class="flex items-center justify-between text-[10px]"><span class="text-t3">Relations</span><span class="text-t1">{{ graphStats.relations }}</span></div>
         </div>
 
         <!-- Settings form -->
         <div v-if="panelItems.length" class="px-4 py-3 space-y-3 overflow-y-auto flex-1">
           <template v-for="it in panelItems" :key="it.key">
-            <div :class="{ 'setting-disabled': isParentDisabled(it) }">
+            <div v-if="itemState(it) !== 'hidden'" :class="{ 'setting-disabled': itemState(it) === 'disabled' }">
               <div class="text-[11px] mb-1 text-t2">{{ it.label }}</div>
 
               <!-- Bool toggle -->
               <div v-if="it.value_type==='bool'" class="flex items-center gap-2">
-                <button @click="!isParentDisabled(it) && saveSetting(it.key, !it.value_json)"
-                  class="toggle" :class="[it.value_json ? 'bg-brand' : 'bg-gray-300', isParentDisabled(it) && 'cursor-not-allowed']"
-                  :disabled="isParentDisabled(it)">
+                <button @click="!itemState(it) && saveSetting(it.key, !it.value_json)"
+                  class="toggle" :class="[it.value_json ? 'bg-brand' : 'bg-gray-300', itemState(it) && 'cursor-not-allowed']"
+                  :disabled="!!itemState(it)">
                   <div class="toggle-dot" :style="{ transform: it.value_json ? 'translateX(13px)' : 'translateX(2px)' }"></div>
                 </button>
                 <span class="text-[10px] text-t3">{{ it.value_json ? 'on' : 'off' }}</span>
@@ -523,17 +571,29 @@ function onNodeClick({ node }) {
 
               <!-- Number input -->
               <input v-else-if="it.value_type==='int'||it.value_type==='float'" :value="it.value_json" type="number" :step="it.value_type==='float'?0.1:1"
-                class="setting-input" :disabled="isParentDisabled(it)"
+                class="setting-input" :disabled="!!itemState(it)"
                 @change="{ const v = it.value_type==='int' ? parseInt($event.target.value) : parseFloat($event.target.value); if (!isNaN(v)) saveSetting(it.key, v) }" />
 
               <!-- Enum select -->
-              <select v-else-if="it.value_type==='enum'" :value="it.value_json" class="setting-input" :disabled="isParentDisabled(it)" @change="saveSetting(it.key, $event.target.value)">
+              <select v-else-if="it.value_type==='enum'" :value="it.value_json" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value)">
                 <option v-for="o in (it.enum_options||[])" :key="o" :value="o">{{ o }}</option>
               </select>
 
+              <!-- Secret input (password with eye toggle) -->
+              <div v-else-if="it.value_type==='secret'" class="relative">
+                <input :value="it.value_json" :type="secretVisible[it.key] ? 'text' : 'password'"
+                  class="setting-input pr-8" :disabled="!!itemState(it)" placeholder="••••••••"
+                  @change="saveSetting(it.key, $event.target.value)" />
+                <button @click="secretVisible[it.key] = !secretVisible[it.key]"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-t3 hover:text-t1 transition-colors" type="button">
+                  <EyeIcon v-if="!secretVisible[it.key]" class="w-3.5 h-3.5" />
+                  <EyeSlashIcon v-else class="w-3.5 h-3.5" />
+                </button>
+              </div>
+
               <!-- Provider select -->
               <template v-else-if="it.key.endsWith('.provider_id')">
-                <select :value="it.value_json || ''" class="setting-input" :disabled="isParentDisabled(it)" @change="saveSetting(it.key, $event.target.value || null)">
+                <select :value="it.value_json || ''" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value || null)">
                   <option value="">-- none --</option>
                   <option v-for="p in providersForKey(it.key)" :key="p.id" :value="p.id">{{ p.name }} ({{ p.model_name }})</option>
                 </select>
@@ -541,7 +601,7 @@ function onNodeClick({ node }) {
 
               <!-- Textarea -->
               <div v-else-if="it.value_type==='textarea'" class="relative">
-                <textarea :value="it.value_json||''" rows="6" :disabled="isParentDisabled(it)"
+                <textarea :value="it.value_json||''" rows="6" :disabled="!!itemState(it)"
                   class="setting-input font-mono leading-relaxed resize-y placeholder:text-t3/60 placeholder:font-sans"
                   :placeholder="it.default_value || ''"
                   @change="saveSetting(it.key, $event.target.value)" />
@@ -554,7 +614,7 @@ function onNodeClick({ node }) {
               </div>
 
               <!-- String input -->
-              <input v-else :value="it.value_json" type="text" class="setting-input" :disabled="isParentDisabled(it)" @change="saveSetting(it.key, $event.target.value)" />
+              <input v-else :value="it.value_json" type="text" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value)" />
 
               <div v-if="it.description" class="text-[9px] mt-0.5 text-t3">{{ it.description }}</div>
             </div>
@@ -562,14 +622,14 @@ function onNodeClick({ node }) {
         </div>
 
         <!-- No config message -->
-        <div v-else-if="!isInfraNode(activeNode)" class="px-4 py-6 text-center text-[11px] text-t3">
+        <div v-else class="px-4 py-6 text-center text-[11px] text-t3">
           No configurable settings for this node.
         </div>
       </div>
     </transition>
 
     <!-- LLM Providers floating panel (top-left) -->
-    <div class="absolute top-3 left-12 z-10">
+    <div class="absolute top-3 left-3 z-10">
       <details class="provider-panel">
         <summary class="text-[10px] text-t2 cursor-pointer select-none px-3 py-1.5 rounded-md bg-white/90 border border-line shadow-sm hover:bg-white">
           LLM Providers ({{ providers.length }})
@@ -639,15 +699,20 @@ function onNodeClick({ node }) {
   max-width: 170px;
   position: relative;
 }
-.pipeline-node:hover {
+.pipeline-node:hover:not(.pipeline-node--active) {
   background: var(--color-bg2);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
 .pipeline-node--active {
-  border-color: var(--color-brand);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-brand) 25%, transparent);
+  box-shadow: 0 0 0 1.5px var(--color-brand);
 }
 .pipeline-node--disabled {
   opacity: 0.3;
+}
+.pipeline-node--disabled:hover {
+  transform: none;
+  box-shadow: none;
 }
 
 .pipeline-node__title {
@@ -661,16 +726,6 @@ function onNodeClick({ node }) {
   color: var(--color-t3);
   margin-top: 2px;
   line-height: 1.3;
-}
-.pipeline-node__indicator {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--color-brand);
-  opacity: 0.4;
 }
 
 /* ── Layer labels ── */

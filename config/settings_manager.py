@@ -79,19 +79,19 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.query_understanding.max_expansions",
-        "query_understanding",
-        "Max query expansions",
-        "Number of search query variants to generate for broader recall",
-        "int",
-        None,
-    ),
-    (
         "retrieval.query_understanding.provider_id",
         "query_understanding",
         "Understanding LLM",
         "Chat model for intent classification and query expansion",
         "string",
+        None,
+    ),
+    (
+        "retrieval.query_understanding.max_expansions",
+        "query_understanding",
+        "Max query expansions",
+        "Number of search query variants to generate for broader recall",
+        "int",
         None,
     ),
     # --- Retrieval: Path A — Vector ---
@@ -154,6 +154,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
+    ("retrieval.tree_path.top_k", "retrieval_tree", "Top-k", "Max chunks returned from tree navigation", "int", None),
     (
         "retrieval.tree_path.llm_nav_enabled",
         "retrieval_tree",
@@ -162,7 +163,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
-    ("retrieval.tree_path.top_k", "retrieval_tree", "Top-k", "Max chunks returned from tree navigation", "int", None),
     (
         "retrieval.tree_path.nav.provider_id",
         "retrieval_tree",
@@ -304,7 +304,283 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "int",
         None,
     ),
+    # --- Persistence: Relational DB ---
+    (
+        "persistence.relational.backend",
+        "persistence_relational",
+        "Relational backend",
+        "Database engine for documents, chunks, settings (restart required)",
+        "enum",
+        ["sqlite", "postgres", "mysql"],
+    ),
+    (
+        "persistence.relational.sqlite.path",
+        "persistence_relational",
+        "SQLite path",
+        "File path for SQLite database",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.host",
+        "persistence_relational",
+        "PostgreSQL host",
+        "PostgreSQL server hostname",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.port",
+        "persistence_relational",
+        "PostgreSQL port",
+        "PostgreSQL server port",
+        "int",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.database",
+        "persistence_relational",
+        "PostgreSQL database",
+        "Database name",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.user",
+        "persistence_relational",
+        "PostgreSQL user",
+        "Database user",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.password",
+        "persistence_relational",
+        "PostgreSQL password",
+        "Database password (leave empty to use password_env)",
+        "secret",
+        None,
+    ),
+    (
+        "persistence.relational.mysql.host",
+        "persistence_relational",
+        "MySQL host",
+        "MySQL server hostname",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.mysql.port",
+        "persistence_relational",
+        "MySQL port",
+        "MySQL server port",
+        "int",
+        None,
+    ),
+    (
+        "persistence.relational.mysql.database",
+        "persistence_relational",
+        "MySQL database",
+        "Database name",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.mysql.user",
+        "persistence_relational",
+        "MySQL user",
+        "Database user",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.mysql.password",
+        "persistence_relational",
+        "MySQL password",
+        "Database password (leave empty to use password_env)",
+        "secret",
+        None,
+    ),
+    # --- Persistence: Vector Store ---
+    (
+        "persistence.vector.backend",
+        "persistence_vector",
+        "Vector backend",
+        "Vector database for embeddings (restart required)",
+        "enum",
+        ["chromadb", "pgvector", "qdrant", "milvus", "weaviate"],
+    ),
+    (
+        "persistence.vector.chromadb.persist_directory",
+        "persistence_vector",
+        "ChromaDB directory",
+        "Local directory for ChromaDB persistent storage",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.qdrant.url",
+        "persistence_vector",
+        "Qdrant URL",
+        "Qdrant server URL",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.qdrant.api_key",
+        "persistence_vector",
+        "Qdrant API key",
+        "API key for Qdrant Cloud (optional for local)",
+        "secret",
+        None,
+    ),
+    (
+        "persistence.vector.milvus.uri",
+        "persistence_vector",
+        "Milvus URI",
+        "Milvus server URI",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.milvus.token",
+        "persistence_vector",
+        "Milvus token",
+        "Authentication token for Milvus (optional for local)",
+        "secret",
+        None,
+    ),
+    (
+        "persistence.vector.weaviate.url",
+        "persistence_vector",
+        "Weaviate URL",
+        "Weaviate server URL",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.weaviate.api_key",
+        "persistence_vector",
+        "Weaviate API key",
+        "API key for Weaviate Cloud (optional for local)",
+        "secret",
+        None,
+    ),
+    # --- Persistence: Graph Store ---
+    (
+        "graph.backend",
+        "persistence_graph",
+        "Graph backend",
+        "Knowledge graph storage engine (restart required)",
+        "enum",
+        ["networkx", "neo4j"],
+    ),
+    (
+        "graph.networkx.path",
+        "persistence_graph",
+        "NetworkX path",
+        "File path for NetworkX JSON persistence",
+        "string",
+        None,
+    ),
+    (
+        "graph.neo4j.uri",
+        "persistence_graph",
+        "Neo4j URI",
+        "Neo4j Bolt connection URI",
+        "string",
+        None,
+    ),
+    (
+        "graph.neo4j.user",
+        "persistence_graph",
+        "Neo4j user",
+        "Neo4j database user",
+        "string",
+        None,
+    ),
+    (
+        "graph.neo4j.password",
+        "persistence_graph",
+        "Neo4j password",
+        "Neo4j password (leave empty to use password_env)",
+        "secret",
+        None,
+    ),
+    (
+        "graph.neo4j.database",
+        "persistence_graph",
+        "Neo4j database",
+        "Neo4j database name",
+        "string",
+        None,
+    ),
     # --- Storage & Cache ---
+    # --- Blob Storage ---
+    (
+        "storage.mode",
+        "blob_storage",
+        "Storage mode",
+        "Blob storage backend for files and figures (restart required)",
+        "enum",
+        ["local", "s3", "oss"],
+    ),
+    (
+        "storage.local.root",
+        "blob_storage",
+        "Local root path",
+        "Directory for local blob storage",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.endpoint",
+        "blob_storage",
+        "S3 endpoint",
+        "S3-compatible endpoint URL",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.bucket",
+        "blob_storage",
+        "S3 bucket",
+        "S3 bucket name",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.region",
+        "blob_storage",
+        "S3 region",
+        "AWS region",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.prefix",
+        "blob_storage",
+        "S3 prefix",
+        "Key prefix within the bucket",
+        "string",
+        None,
+    ),
+    (
+        "storage.oss.endpoint",
+        "blob_storage",
+        "OSS endpoint",
+        "Alibaba OSS endpoint URL",
+        "string",
+        None,
+    ),
+    (
+        "storage.oss.bucket",
+        "blob_storage",
+        "OSS bucket",
+        "OSS bucket name",
+        "string",
+        None,
+    ),
     (
         "cache.bm25_persistence",
         "cache",
@@ -348,6 +624,14 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     ),
     # --- Document Parser ---
     (
+        "parser.ingest_max_workers",
+        "parser",
+        "Ingest concurrency",
+        "Max documents processed in parallel (restart required)",
+        "int",
+        None,
+    ),
+    (
         "parser.backends.mineru.enabled",
         "parser",
         "Enable MinerU",
@@ -373,6 +657,22 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     ),
     # --- Tree Builder ---
     (
+        "parser.tree_builder.min_coverage",
+        "tree_builder",
+        "Min page coverage",
+        "Minimum fraction of pages that must be covered by tree leaves",
+        "float",
+        None,
+    ),
+    (
+        "parser.tree_builder.max_reasonable_depth",
+        "tree_builder",
+        "Max tree depth",
+        "Maximum tree depth before quality penalty applies",
+        "int",
+        None,
+    ),
+    (
         "parser.tree_builder.llm_enabled",
         "tree_builder",
         "LLM tree building",
@@ -387,22 +687,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "Tree builder LLM",
         "Chat model for tree building and summary generation",
         "string",
-        None,
-    ),
-    (
-        "parser.tree_builder.min_coverage",
-        "tree_builder",
-        "Min page coverage",
-        "Minimum fraction of pages that must be covered by tree leaves",
-        "float",
-        None,
-    ),
-    (
-        "parser.tree_builder.max_reasonable_depth",
-        "tree_builder",
-        "Max tree depth",
-        "Maximum tree depth before quality penalty applies",
-        "int",
         None,
     ),
     (
@@ -453,15 +737,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "chunker",
         "Overlap blocks",
         "Blocks overlapping between consecutive chunks (0 = none)",
-        "int",
-        None,
-    ),
-    # --- Ingestion ---
-    (
-        "parser.ingest_max_workers",
-        "parser",
-        "Ingest concurrency",
-        "Max documents processed in parallel (restart required)",
         "int",
         None,
     ),
@@ -688,24 +963,34 @@ def seed_defaults(cfg, store: Store) -> int:
     if removed:
         log.info("removed %d stale settings", removed)
 
-    # --- seed missing keys ---
+    # --- seed missing keys + refresh metadata on existing keys ---
     count = 0
     for key, group, label, desc, vtype, enums in EDITABLE_SETTINGS:
         existing = store.get_setting(key)
-        if existing is not None:
-            continue
-        value = _resolve_dotted(cfg, key)
-        record = {
-            "key": key,
-            "value_json": value,
-            "group_name": group,
-            "label": label,
-            "description": desc,
-            "value_type": vtype,
-            "enum_options": enums,
-        }
-        store.upsert_setting(record)
-        count += 1
+        if existing is None:
+            # New key — seed with current config value
+            value = _resolve_dotted(cfg, key)
+            store.upsert_setting({
+                "key": key, "value_json": value, "group_name": group,
+                "label": label, "description": desc,
+                "value_type": vtype, "enum_options": enums,
+            })
+            count += 1
+        else:
+            # Existing key — refresh metadata but keep user's value_json
+            needs_update = (
+                existing.get("group_name") != group
+                or existing.get("label") != label
+                or existing.get("description") != desc
+                or existing.get("value_type") != vtype
+                or existing.get("enum_options") != enums
+            )
+            if needs_update:
+                store.upsert_setting({
+                    "key": key, "value_json": existing["value_json"],
+                    "group_name": group, "label": label, "description": desc,
+                    "value_type": vtype, "enum_options": enums,
+                })
     if count:
         log.info("seeded %d default settings", count)
     return count
