@@ -46,6 +46,7 @@ class TreeNavConfig(BaseModel):
     max_tokens: int = 1024
     timeout: float = 30.0
     max_nodes: int = 8  # LLM returns up to this many node_ids
+    max_docs: int = 8  # max documents to navigate (top by cross-validation score)
     max_workers: int = 5  # parallel LLM calls for tree navigation
     target_chunks: int = 30  # early-stop once this many chunks accumulated
     system_prompt: str | None = None

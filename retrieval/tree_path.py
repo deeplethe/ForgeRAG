@@ -159,10 +159,16 @@ class TreePath:
                 -d[1],  # then by BM25 score desc
             ),
         )
+        # Limit candidate docs to avoid excessive LLM calls
+        max_docs = getattr(nav_cfg, "max_docs", 5)
+        if len(prioritized) > max_docs:
+            prioritized = prioritized[:max_docs]
+
         dual = sum(1 for d, _ in prioritized if d in vector_doc_ids)
         log.info(
-            "tree_path: %d BM25 docs, %d dual-hit (prioritized)",
+            "tree_path: %d candidate docs (capped from %d), %d dual-hit",
             len(prioritized),
+            len(doc_hits),
             dual,
         )
 
