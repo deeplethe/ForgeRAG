@@ -155,14 +155,24 @@ class RetrievalTrace:
         # LLM call count (simple sum — each call is counted once)
         total_llm_calls = sum(len(p.get("llm_calls", [])) for p in self.phases)
 
-        # LLM time: merge overlapping phase intervals to avoid
-        # double-counting parallel phases (e.g. vector + kg).
+        # LLM time per phase = sum of each llm_call's own latency_ms, capped
+        # by the phase's wall-clock duration (the cap accounts for LLM calls
+        # running in parallel within a phase — e.g. tree_path fires multiple
+        # tree_nav LLM calls concurrently, so their wall time is bounded by
+        # the phase, not the sum).
+        #
+        # Then merge phase intervals across phases to avoid double-counting
+        # when the phases themselves run in parallel (bm25 + vector + kg +
+        # tree in our pipeline).
         intervals: list[tuple[int, int]] = []
         for p in self.phases:
-            if p.get("llm_calls"):
-                s = p.get("started_at_ms", 0)
-                e = s + p.get("duration_ms", 0)
-                intervals.append((s, e))
+            llm_sum = sum(lc.get("latency_ms", 0) for lc in p.get("llm_calls", []))
+            if llm_sum <= 0:
+                continue
+            phase_dur = p.get("duration_ms", 0)
+            phase_llm = min(llm_sum, phase_dur) if phase_dur else llm_sum
+            s = p.get("started_at_ms", 0)
+            intervals.append((s, s + phase_llm))
         if intervals:
             intervals.sort()
             merged = [intervals[0]]
