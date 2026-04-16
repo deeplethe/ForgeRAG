@@ -177,7 +177,7 @@ class KGPath:
         _seen_entities: set[str] = set()
         _seen_relations: set[str] = set()
         # Entities resolved during traversal (avoids N+1 on name lookups)
-        _entity_cache: dict[str, "Entity"] = {}
+        _entity_cache: dict = {}
 
         # Phase 1: Resolve seed entities
         seed_entities = []
