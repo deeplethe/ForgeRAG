@@ -111,7 +111,15 @@ class RetrievalTrace:
         input_preview: str | None = None,
         output_preview: str | None = None,
         error: str | None = None,
+        **extra: Any,
     ) -> RetrievalTrace:
+        """Record a single LLM call into the current phase.
+
+        Extra keyword arguments are passed through verbatim (after
+        dropping None values), letting callers attach diagnostic fields
+        like ``outline_chars`` or ``response_chars`` without having to
+        extend this signature every time.
+        """
         call = {
             "model": model,
             "purpose": purpose,
@@ -127,6 +135,9 @@ class RetrievalTrace:
             call["output_preview"] = output_preview[:200]
         if error:
             call["error"] = error
+        for k, v in extra.items():
+            if v is not None:
+                call[k] = v
         if self._current is not None:
             self._current["llm_calls"].append(call)
         return self

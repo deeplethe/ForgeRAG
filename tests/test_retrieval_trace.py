@@ -121,3 +121,70 @@ class TestTotalLlmMs:
         trace.phases[-1]["started_at_ms"] = 0
 
         assert trace.to_dict()["total_llm_ms"] == 0
+
+
+class TestRecordLlmCallExtraKwargs:
+    """record_llm_call must accept arbitrary extra kwargs for diagnostics.
+
+    Before the **extra passthrough, pipeline.py's `trace.record_llm_call(**lc)`
+    would raise TypeError whenever a worker (e.g. tree_path) attached new
+    diagnostic fields to its llm_call dict. This test locks down the
+    passthrough contract so future diagnostic additions don't break it.
+    """
+
+    def test_extra_kwargs_passthrough(self):
+        trace = RetrievalTrace("q")
+        trace.begin_phase("tree_path")
+        trace.record_llm_call(
+            model="m",
+            purpose="tree_nav:abc",
+            latency_ms=1234,
+            outline_chars=5000,
+            tree_node_count=42,
+            returned_nodes=5,
+        )
+        trace.end_phase()
+
+        lc = trace.phases[-1]["llm_calls"][0]
+        assert lc["outline_chars"] == 5000
+        assert lc["tree_node_count"] == 42
+        assert lc["returned_nodes"] == 5
+
+    def test_none_extras_dropped(self):
+        """None-valued extras should NOT clutter the record."""
+        trace = RetrievalTrace("q")
+        trace.begin_phase("tree_path")
+        trace.record_llm_call(
+            model="m",
+            purpose="tree_nav:abc",
+            latency_ms=100,
+            outline_chars=None,
+            response_chars=200,
+        )
+        trace.end_phase()
+
+        lc = trace.phases[-1]["llm_calls"][0]
+        assert "outline_chars" not in lc
+        assert lc["response_chars"] == 200
+
+    def test_pipeline_style_splat_does_not_raise(self):
+        """The pipeline code path does `trace.record_llm_call(**dict)` — regression for
+        the TypeError that would occur if extra fields weren't accepted."""
+        trace = RetrievalTrace("q")
+        trace.begin_phase("tree_path")
+        lc_dict = {
+            "model": "m",
+            "purpose": "tree_nav:x",
+            "latency_ms": 500,
+            "output_preview": "['n_1']",
+            "tree_node_count": 10,
+            "outline_chars": 800,
+            "prompt_chars": 1200,
+            "response_chars": 250,
+        }
+        trace.record_llm_call(**lc_dict)  # must not raise
+        trace.end_phase()
+
+        recorded = trace.phases[-1]["llm_calls"][0]
+        assert recorded["tree_node_count"] == 10
+        assert recorded["outline_chars"] == 800

@@ -83,6 +83,13 @@ class LLMTreeNavigator:
             context="tree_navigator",
         )
         self._litellm = None
+        # Thread-local storage for the last call's diagnostic info so
+        # callers (e.g. tree_path) can read per-call metrics without
+        # changing the Protocol signature. Each worker thread sees only
+        # its own navigate() output.
+        import threading as _t
+
+        self._tls = _t.local()
 
     def _ensure(self):
         if self._litellm is not None:
@@ -162,6 +169,12 @@ class LLMTreeNavigator:
         if self.api_base:
             kwargs["api_base"] = self.api_base
 
+        # Record diagnostic info into TLS before the call so even
+        # exception paths surface the prompt size.
+        self._tls.last_outline_chars = len(outline)
+        self._tls.last_prompt_chars = len(prompt)
+        self._tls.last_response_chars = 0
+
         try:
             resp = litellm.completion(**kwargs)
             text = resp.choices[0].message.content or ""
@@ -169,6 +182,7 @@ class LLMTreeNavigator:
             log.warning("tree navigator LLM call failed: %s", e)
             return []
 
+        self._tls.last_response_chars = len(text)
         results = _parse_scored_response(text, tree_json)
         log.debug(
             "tree navigator: query=%r -> %d nodes",
