@@ -970,11 +970,17 @@ def seed_defaults(cfg, store: Store) -> int:
         if existing is None:
             # New key — seed with current config value
             value = _resolve_dotted(cfg, key)
-            store.upsert_setting({
-                "key": key, "value_json": value, "group_name": group,
-                "label": label, "description": desc,
-                "value_type": vtype, "enum_options": enums,
-            })
+            store.upsert_setting(
+                {
+                    "key": key,
+                    "value_json": value,
+                    "group_name": group,
+                    "label": label,
+                    "description": desc,
+                    "value_type": vtype,
+                    "enum_options": enums,
+                }
+            )
             count += 1
         else:
             # Existing key — refresh metadata but keep user's value_json
@@ -986,11 +992,17 @@ def seed_defaults(cfg, store: Store) -> int:
                 or existing.get("enum_options") != enums
             )
             if needs_update:
-                store.upsert_setting({
-                    "key": key, "value_json": existing["value_json"],
-                    "group_name": group, "label": label, "description": desc,
-                    "value_type": vtype, "enum_options": enums,
-                })
+                store.upsert_setting(
+                    {
+                        "key": key,
+                        "value_json": existing["value_json"],
+                        "group_name": group,
+                        "label": label,
+                        "description": desc,
+                        "value_type": vtype,
+                        "enum_options": enums,
+                    }
+                )
     if count:
         log.info("seeded %d default settings", count)
     return count
