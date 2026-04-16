@@ -231,10 +231,7 @@ class Neo4jGraphStore(GraphStore):
         """
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, ids=entity_ids)
-            return {
-                r["entity_id"]: _entity_from_record(dict(r))
-                for r in result
-            }
+            return {r["entity_id"]: _entity_from_record(dict(r)) for r in result}
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         cypher = """

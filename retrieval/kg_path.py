@@ -363,9 +363,7 @@ class KGPath:
             if sim_score < 0.3:
                 continue
             if community.summary and community.summary != community.title:
-                self.kg_context.community_summaries.append(
-                    {"title": community.title, "summary": community.summary}
-                )
+                self.kg_context.community_summaries.append({"title": community.title, "summary": community.summary})
             valid_communities.append((community, sim_score))
             all_member_ids.extend(community.entity_ids)
 
