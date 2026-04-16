@@ -19,6 +19,7 @@ Profiles:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import subprocess
 import sys
@@ -31,6 +32,53 @@ _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+
+# ---------------------------------------------------------------------------
+# Optional backend → required package (import_name, pip_name)
+# ---------------------------------------------------------------------------
+
+_RELATIONAL_PACKAGES: dict[str, tuple[str, str]] = {
+    "postgres": ("psycopg", "psycopg[binary]"),
+    "mysql": ("pymysql", "pymysql"),
+}
+
+_VECTOR_PACKAGES: dict[str, tuple[str, str]] = {
+    "chromadb": ("chromadb", "chromadb"),
+    "qdrant": ("qdrant_client", "qdrant-client"),
+    "milvus": ("pymilvus", "pymilvus"),
+    "weaviate": ("weaviate", "weaviate-client"),
+    "pgvector": ("psycopg", "psycopg[binary]"),
+}
+
+_BLOB_PACKAGES: dict[str, tuple[str, str]] = {
+    "s3": ("boto3", "boto3"),
+    "oss": ("oss2", "oss2"),
+}
+
+
+def _ensure_package(import_name: str, pip_name: str) -> None:
+    """Install *pip_name* if *import_name* cannot be imported."""
+    if importlib.util.find_spec(import_name) is not None:
+        return
+    print(_c(f"  '{pip_name}' is not installed — installing now…", "yellow"))
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", pip_name],
+            check=True,
+        )
+        print(_c(f"  '{pip_name}' installed successfully.", "green"))
+    except subprocess.CalledProcessError as exc:
+        print(_c(f"  failed to install '{pip_name}': {exc}", "magenta"))
+        print(_c(f"  install it manually and re-run: pip install {pip_name}", "dim"))
+
+
+def _ensure_backend_package(mapping: dict[str, tuple[str, str]], backend: str) -> None:
+    """Look up *backend* in *mapping* and install its package if missing."""
+    if backend not in mapping:
+        return
+    import_name, pip_name = mapping[backend]
+    _ensure_package(import_name, pip_name)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +307,8 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
         answers["my_user"] = ask("MySQL user", default="forgerag")
         answers["my_password_env"] = ask("Env var containing the password", default="MYSQL_PASSWORD")
 
+    _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
+
     # ----- Vector store -----
     section("2/6  Vector database")
     standalone_vectors = [
@@ -300,6 +350,8 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
             default=defaults.get("weaviate_url", "http://localhost:8080"),
         )
 
+    _ensure_backend_package(_VECTOR_PACKAGES, answers["vector"])
+
     # ----- Blob storage -----
     section("3/6  Blob storage (figures + uploaded files)")
     answers["blob"] = ask_choice(
@@ -340,6 +392,8 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
             default="",
             allow_empty=True,
         )
+
+    _ensure_backend_package(_BLOB_PACKAGES, answers["blob"])
 
     # ----- Embedding dimension -----
     section("4/4  Embedding dimension")
