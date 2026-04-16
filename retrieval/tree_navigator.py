@@ -244,14 +244,29 @@ def render_tree_outline(
     Render the tree into a compact text outline the LLM can reason
     over. Includes title, node_id, page range, summary, and optional
     BM25/vector heat-map annotations.
+
+    When a heat_map is present, cold subtrees (no hits in themselves
+    or any descendant) are collapsed into a single "[... N sections]"
+    line to keep the outline short and focused.
     """
     nodes = tree_json.get("nodes", {})
     root_id = tree_json.get("root_id")
     if not root_id or root_id not in nodes:
         return ""
 
+    # Pre-compute which nodes are "hot" (have heat or have a hot descendant)
+    hot_nodes: set[str] = set()
+    if heat_map:
+        for nid in heat_map:
+            if nid in nodes:
+                # Mark this node and all ancestors as hot
+                cur = nid
+                while cur and cur not in hot_nodes:
+                    hot_nodes.add(cur)
+                    cur = nodes.get(cur, {}).get("parent_id")
+
     lines: list[str] = []
-    _walk(nodes, root_id, depth=0, lines=lines, heat_map=heat_map)
+    _walk(nodes, root_id, depth=0, lines=lines, heat_map=heat_map, hot_nodes=hot_nodes)
     return "\n".join(lines)
 
 
@@ -261,16 +276,28 @@ def _walk(
     depth: int,
     lines: list[str],
     heat_map: HeatMap | None = None,
+    hot_nodes: set[str] | None = None,
 ) -> None:
     node = nodes.get(nid)
     if node is None:
         return
+    children = node.get("children", [])
     indent = "  " * depth
     title = node.get("title", "(untitled)")
     page_start = node.get("page_start", "?")
     page_end = node.get("page_end", "?")
     summary = node.get("summary") or ""
     node_id = node.get("node_id", nid)
+
+    # If heat_map exists and this non-root node + all descendants are cold,
+    # collapse into a placeholder (but still show it so LLM knows it exists)
+    if hot_nodes and depth > 0 and nid not in hot_nodes:
+        desc_count = _count_descendants(nodes, nid)
+        if desc_count > 0:
+            lines.append(f"{indent}[{node_id}] {title} (p{page_start}-{page_end})  [... {desc_count} sub-sections, no keyword/vector hits]")
+        else:
+            lines.append(f"{indent}[{node_id}] {title} (p{page_start}-{page_end})")
+        return  # Don't recurse into cold subtrees
 
     header = f"{indent}[{node_id}] {title} (p{page_start}-{page_end})"
     if summary:
@@ -283,8 +310,16 @@ def _walk(
             snip = snippet[:80].replace("\n", " ")
             lines.append(f'{indent}  ★ [{source} {score:.2f}] "{snip}"')
 
-    for cid in node.get("children", []):
-        _walk(nodes, cid, depth + 1, lines, heat_map)
+    for cid in children:
+        _walk(nodes, cid, depth + 1, lines, heat_map, hot_nodes)
+
+
+def _count_descendants(nodes: dict, nid: str) -> int:
+    """Count total descendant nodes (not including self)."""
+    count = 0
+    for cid in nodes.get(nid, {}).get("children", []):
+        count += 1 + _count_descendants(nodes, cid)
+    return count
 
 
 # ---------------------------------------------------------------------------

@@ -267,6 +267,50 @@ function copyPrompt(it) {
 
 const hasConfig = (id) => (groupMap[id] || []).length > 0
 
+/* ── Validation ── */
+// Rules: when condition is true, check that the field has a value
+// { node, condition: () => bool, key: setting key that must be non-empty, message }
+const VALIDATION_RULES = [
+  // Generator must have a model
+  { node: 'generator', condition: () => true, key: 'answering.generator.provider_id', message: 'Answer LLM is required' },
+  // Embedder must have a model
+  { node: 'embedding', condition: () => true, key: 'embedder.provider_id', message: 'Embedding model is required' },
+  // Query Understanding: when enabled, needs LLM
+  { node: 'qu', condition: () => isOn('qu'), key: 'retrieval.query_understanding.provider_id', message: 'Understanding LLM is required when enabled' },
+  // Tree Builder: when LLM enabled, needs provider
+  { node: 'tree_builder', condition: () => gv('parser.tree_builder.llm_enabled'), key: 'parser.tree_builder.provider_id', message: 'Tree builder LLM is required when LLM tree building is on' },
+  // Tree Navigation: when LLM nav enabled, needs provider
+  { node: 'tree', condition: () => isOn('tree') && gv('retrieval.tree_path.llm_nav_enabled'), key: 'retrieval.tree_path.nav.provider_id', message: 'Navigation LLM is required when LLM navigation is on' },
+  // KG Extraction: when enabled, needs LLM
+  { node: 'kg_extraction', condition: () => isOn('kg_extraction'), key: 'retrieval.kg_extraction.provider_id', message: 'Extraction LLM is required when enabled' },
+  // KG Path: when enabled, needs LLM
+  { node: 'kg', condition: () => isOn('kg'), key: 'retrieval.kg_path.provider_id', message: 'KG query LLM is required when enabled' },
+  // Rerank: when enabled + litellm backend, needs provider
+  { node: 'rerank', condition: () => isOn('rerank') && gv('retrieval.rerank.backend') === 'litellm', key: 'retrieval.rerank.provider_id', message: 'Rerank model is required when using litellm backend' },
+  // VLM: when enabled, needs provider (shown under parser)
+  { node: 'parser', condition: () => gv('image_enrichment.enabled'), key: 'image_enrichment.provider_id', message: 'VLM model is required when image enrichment is on' },
+]
+
+// Returns { hasError: bool, errors: { [key]: message } } for a given node
+function nodeValidation(nodeId) {
+  const errors = {}
+  for (const rule of VALIDATION_RULES) {
+    if (rule.node !== nodeId) continue
+    if (rule.condition() && !gv(rule.key)) {
+      errors[rule.key] = rule.message
+    }
+  }
+  return { hasError: Object.keys(errors).length > 0, errors }
+}
+
+// Quick check: does this node have any validation error?
+function nodeHasError(nodeId) {
+  for (const rule of VALIDATION_RULES) {
+    if (rule.node === nodeId && rule.condition() && !gv(rule.key)) return true
+  }
+  return false
+}
+
 /* ── Vue Flow graph definition ── */
 const TOGGLEABLE = new Set(['vector', 'bm25', 'tree', 'rerank', 'qu', 'kg', 'kg_extraction'])
 
@@ -329,6 +373,7 @@ const flowNodes = computed(() => {
       label: n.label, desc: n.desc, layer: n.layer,
       disabled: TOGGLEABLE.has(n.id) && !isOn(n.id),
       hasConfig: hasConfig(n.id),
+      hasError: nodeHasError(n.id),
     },
   }))
   const labels = layerLabels.map(l => ({
@@ -398,8 +443,8 @@ const flowEdges = computed(() =>
       ...(th ? { targetHandle: handleMap[th] } : {}),
       style: dim
         ? { stroke: '#d1d5db', strokeDasharray: '5 5', opacity: 0.35, strokeWidth: 1 }
-        : { stroke: noArrow ? '#d4d0e8' : '#c0c8d4', strokeWidth: 1.2 },
-      ...(noArrow ? {} : { markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : '#b0b8c4', width: 12, height: 12 } }),
+        : { stroke: '#909090', strokeWidth: 1.2 },
+      ...(noArrow ? {} : { markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : '#909090', width: 12, height: 12 } }),
     }
   })
 )
@@ -452,6 +497,7 @@ function onNodeClick({ node }) {
         :zoom-on-scroll="true"
         :pan-on-scroll="false"
         :pan-on-drag="true"
+        :zoom-on-double-click="false"
         :min-zoom="0.3"
         :max-zoom="2"
         @node-click="onNodeClick"
@@ -464,6 +510,7 @@ function onNodeClick({ node }) {
               'pipeline-node--active': activeNode === id,
               'pipeline-node--disabled': data.disabled,
               'pipeline-node--configurable': data.hasConfig,
+              'pipeline-node--error': data.hasError && !data.disabled,
             }">
             <Handle type="target" :position="Position.Left" />
             <Handle type="target" :position="Position.Top" />
@@ -557,7 +604,7 @@ function onNodeClick({ node }) {
         <div v-if="panelItems.length" class="px-4 py-3 space-y-3 overflow-y-auto flex-1">
           <template v-for="it in panelItems" :key="it.key">
             <div v-if="itemState(it) !== 'hidden'" :class="{ 'setting-disabled': itemState(it) === 'disabled' }">
-              <div class="text-[11px] mb-1 text-t2">{{ it.label }}</div>
+              <div class="text-[11px] mb-1" :class="nodeValidation(activeNode).errors[it.key] ? 'text-red-500' : 'text-t2'">{{ it.label }}</div>
 
               <!-- Bool toggle -->
               <div v-if="it.value_type==='bool'" class="flex items-center gap-2">
@@ -571,18 +618,20 @@ function onNodeClick({ node }) {
 
               <!-- Number input -->
               <input v-else-if="it.value_type==='int'||it.value_type==='float'" :value="it.value_json" type="number" :step="it.value_type==='float'?0.1:1"
-                class="setting-input" :disabled="!!itemState(it)"
+                class="setting-input" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }" :disabled="!!itemState(it)"
                 @change="{ const v = it.value_type==='int' ? parseInt($event.target.value) : parseFloat($event.target.value); if (!isNaN(v)) saveSetting(it.key, v) }" />
 
               <!-- Enum select -->
-              <select v-else-if="it.value_type==='enum'" :value="it.value_json" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value)">
+              <select v-else-if="it.value_type==='enum'" :value="it.value_json"
+                class="setting-input" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }" :disabled="!!itemState(it)"
+                @change="saveSetting(it.key, $event.target.value)">
                 <option v-for="o in (it.enum_options||[])" :key="o" :value="o">{{ o }}</option>
               </select>
 
               <!-- Secret input (password with eye toggle) -->
               <div v-else-if="it.value_type==='secret'" class="relative">
                 <input :value="it.value_json" :type="secretVisible[it.key] ? 'text' : 'password'"
-                  class="setting-input pr-8" :disabled="!!itemState(it)" placeholder="••••••••"
+                  class="setting-input pr-8" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }" :disabled="!!itemState(it)" placeholder="••••••••"
                   @change="saveSetting(it.key, $event.target.value)" />
                 <button @click="secretVisible[it.key] = !secretVisible[it.key]"
                   class="absolute right-2 top-1/2 -translate-y-1/2 text-t3 hover:text-t1 transition-colors" type="button">
@@ -593,7 +642,9 @@ function onNodeClick({ node }) {
 
               <!-- Provider select -->
               <template v-else-if="it.key.endsWith('.provider_id')">
-                <select :value="it.value_json || ''" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value || null)">
+                <select :value="it.value_json || ''"
+                  class="setting-input" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }" :disabled="!!itemState(it)"
+                  @change="saveSetting(it.key, $event.target.value || null)">
                   <option value="">-- none --</option>
                   <option v-for="p in providersForKey(it.key)" :key="p.id" :value="p.id">{{ p.name }} ({{ p.model_name }})</option>
                 </select>
@@ -602,7 +653,7 @@ function onNodeClick({ node }) {
               <!-- Textarea -->
               <div v-else-if="it.value_type==='textarea'" class="relative">
                 <textarea :value="it.value_json||''" rows="6" :disabled="!!itemState(it)"
-                  class="setting-input font-mono leading-relaxed resize-y placeholder:text-t3/60 placeholder:font-sans"
+                  class="setting-input font-mono leading-relaxed resize-y placeholder:text-t3/60 placeholder:font-sans" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }"
                   :placeholder="it.default_value || ''"
                   @change="saveSetting(it.key, $event.target.value)" />
                 <button @click="copyPrompt(it)"
@@ -614,9 +665,12 @@ function onNodeClick({ node }) {
               </div>
 
               <!-- String input -->
-              <input v-else :value="it.value_json" type="text" class="setting-input" :disabled="!!itemState(it)" @change="saveSetting(it.key, $event.target.value)" />
+              <input v-else :value="it.value_json" type="text"
+                class="setting-input" :class="{ 'setting-input--error': nodeValidation(activeNode).errors[it.key] }" :disabled="!!itemState(it)"
+                @change="saveSetting(it.key, $event.target.value)" />
 
-              <div v-if="it.description" class="text-[9px] mt-0.5 text-t3">{{ it.description }}</div>
+              <div v-if="nodeValidation(activeNode).errors[it.key]" class="text-[9px] mt-0.5 text-red-500">{{ nodeValidation(activeNode).errors[it.key] }}</div>
+              <div v-else-if="it.description" class="text-[9px] mt-0.5 text-t3">{{ it.description }}</div>
             </div>
           </template>
         </div>
@@ -706,6 +760,12 @@ function onNodeClick({ node }) {
 }
 .pipeline-node--active {
   box-shadow: 0 0 0 1.5px var(--color-brand);
+}
+.pipeline-node--error {
+  box-shadow: 0 0 0 1.5px #ef4444;
+}
+.pipeline-node--error.pipeline-node--active {
+  box-shadow: 0 0 0 1.5px #ef4444;
 }
 .pipeline-node--disabled {
   opacity: 0.3;
@@ -804,6 +864,12 @@ function onNodeClick({ node }) {
 .setting-input:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.setting-input--error {
+  border-color: #ef4444 !important;
+}
+.setting-input--error:focus {
+  border-color: #ef4444 !important;
 }
 
 /* ── Disabled setting row ── */

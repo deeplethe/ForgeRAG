@@ -400,7 +400,7 @@ function stopGeneration() {
 }
 
 function scroll() { nextTick(() => chatEl.value && (chatEl.value.scrollTop = chatEl.value.scrollHeight)) }
-function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
+function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!streaming.value) send() } }
 function fmtSec(ms) { return ms == null ? '' : ms < 1000 ? '<1s' : Math.round(ms / 1000) + 's' }
 
 /* ── PDF ── */
@@ -813,7 +813,7 @@ function buildPhaseGroups(phases) {
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
-              <textarea v-model="input" :disabled="streaming" @keydown="onKey" placeholder="Ask a follow-up..." rows="1"
+              <textarea v-model="input" @keydown="onKey" placeholder="Ask a follow-up..." rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
                 @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />

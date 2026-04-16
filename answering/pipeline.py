@@ -287,6 +287,17 @@ class AnsweringPipeline:
             qp_early = self.retrieval.analyze_query(query, chat_history=chat_history)
             _early_qu_done = qp_early is not None
 
+            if qp_early and qp_early.needs_retrieval:
+                # Normal path: QU done, proceed to retrieval
+                yield {
+                    "event": "progress",
+                    "data": {
+                        "phase": "query_understanding",
+                        "status": "done",
+                        "detail": f"{qp_early.intent}, {len(qp_early.expanded_queries)} queries",
+                    },
+                }
+
             if qp_early and not qp_early.needs_retrieval and not qp_early.direct_answer and conversation_id:
                 # Reformulation / no-retrieval intent without direct answer
                 cached = self._retrieval_cache.get(conversation_id)
