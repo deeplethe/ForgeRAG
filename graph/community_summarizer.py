@@ -90,7 +90,7 @@ class CommunitySummarizer:
         if to_embed:
             try:
                 embeddings = self.embedder.embed_texts([c.summary for c in to_embed])
-                for c, emb in zip(to_embed, embeddings, strict=False):
+                for c, emb in zip(to_embed, embeddings, strict=True):
                     c.summary_embedding = emb
             except Exception as e:
                 log.warning("Community summary embedding failed: %s", e)
@@ -99,18 +99,29 @@ class CommunitySummarizer:
         return results
 
     def _build_context(self, community: Community, graph: GraphStore) -> str:
-        """Build a text context from community members for the LLM."""
+        """Build a text context from community members for the LLM.
+
+        Uses ``get_entities_by_ids`` for a single batch fetch instead of
+        one ``get_entity`` per member (N→1 round-trips). Relation
+        endpoints are resolved from the same batch, eliminating the
+        per-relation ``get_entity(src)`` + ``get_entity(tgt)`` pairs.
+        """
+        capped_ids = community.entity_ids[:30]
+        entity_map = graph.get_entities_by_ids(capped_ids) if capped_ids else {}
+
         lines: list[str] = []
 
         # Entities
-        for eid in community.entity_ids[:30]:  # cap to avoid token overflow
-            ent = graph.get_entity(eid)
+        for eid in capped_ids:
+            ent = entity_map.get(eid)
             if ent is None:
                 continue
             desc = ent.description[:200] if ent.description else ""
             lines.append(f"- Entity: {ent.name} ({ent.entity_type})" + (f": {desc}" if desc else ""))
 
-        # Relations between community members
+        # Relations between community members (get_relations is still
+        # per-entity — batching it requires a new GraphStore method).
+        # But name resolution now uses the pre-fetched entity_map.
         member_set = set(community.entity_ids)
         rel_count = 0
         for eid in community.entity_ids[:20]:
@@ -119,8 +130,8 @@ class CommunitySummarizer:
                     break
                 other = rel.target_entity if rel.source_entity == eid else rel.source_entity
                 if other in member_set:
-                    src_ent = graph.get_entity(rel.source_entity)
-                    tgt_ent = graph.get_entity(rel.target_entity)
+                    src_ent = entity_map.get(rel.source_entity)
+                    tgt_ent = entity_map.get(rel.target_entity)
                     src_name = src_ent.name if src_ent else rel.source_entity
                     tgt_name = tgt_ent.name if tgt_ent else rel.target_entity
                     lines.append(f"- Relation: {src_name} --[{rel.keywords}]--> {tgt_name}")

@@ -156,6 +156,13 @@ class RetrievalPipeline:
                 expanded_count=len(queries),
                 fallback=False,
             )
+            # The QU LLM call already happened upstream, before this pipeline
+            # was invoked. The begin_phase/end_phase sandwich above ran in
+            # ~0ms because it's just metadata bookkeeping. Override the
+            # recorded duration so the trace reflects the real upstream work
+            # (matches how the parallel paths post-fix their timings).
+            if precomputed_plan.latency_ms:
+                trace.phases[-1]["duration_ms"] = precomputed_plan.latency_ms
 
         qu_cfg = self.cfg.query_understanding
         if qu_cfg.enabled and precomputed_plan is None:

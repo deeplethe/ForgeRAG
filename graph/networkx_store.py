@@ -284,9 +284,11 @@ class NetworkXGraphStore(GraphStore):
             return self._graph.nodes[entity_id]["entity"]
         return None
 
-    def get_entities_batch(self, entity_ids: list[str]) -> dict[str, Entity]:
-        """Fetch multiple entities at once (in-memory, instant)."""
-        return {eid: self._graph.nodes[eid]["entity"] for eid in entity_ids if eid in self._graph}
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
+        if not entity_ids:
+            return {}
+        with self._lock:
+            return {eid: self._graph.nodes[eid]["entity"] for eid in entity_ids if eid in self._graph}
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         with self._lock:

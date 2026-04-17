@@ -12,12 +12,17 @@ Multi-level retrieval inspired by LightRAG:
   4. **Relation semantic**: Embed query -> cosine search over relation
      description embeddings -> collect chunk_ids
 
-All levels produce scored chunks that are fed into the 4-way RRF merge.
+The four levels run **in parallel** via a ThreadPoolExecutor. Each worker
+writes to its own private ``KGContext`` accumulator (no shared state
+during retrieval); contexts are deduplicated and merged into
+``self.kg_context`` once all workers finish. All levels produce scored
+chunks that are fed into the 4-way RRF merge.
 """
 
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +34,9 @@ if TYPE_CHECKING:
 from .types import KGContext, ScoredChunk
 
 log = logging.getLogger(__name__)
+
+# Hard cap per worker so a stuck graph call can't hang the request forever.
+_WORKER_TIMEOUT_S = 30
 
 
 class KGPath:
@@ -71,19 +79,62 @@ class KGPath:
             log.debug("KG path: no entities/keywords extracted from query")
             return []
 
-        # Step 2: Local retrieval -- entity neighborhood traversal
-        local_chunks = self._local_retrieval(entity_names)
+        # Compute query embedding once; community & relation retrieval reuse it.
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            try:
+                query_vec = self.embedder.embed_texts([query])[0]
+            except Exception as e:
+                log.warning("KG path: query embedding failed: %s", e)
 
-        # Step 3: Global retrieval -- keyword-based entity search
-        global_chunks = self._global_retrieval(keywords or entity_names)
+        # Steps 2–5: run the four retrieval levels in parallel. Each worker
+        # writes to its own KGContext — no shared mutable state during the
+        # retrieval phase — and we merge-dedup at the end.
+        local_ctx = KGContext()
+        global_ctx = KGContext()
+        community_ctx = KGContext()
+        relation_ctx = KGContext()
 
-        # Step 4: Community retrieval -- semantic search over community summaries
-        community_chunks = self._community_retrieval(query)
+        # Explicit pool + finally so a stuck worker cannot block search() on
+        # the executor's shutdown (the `with` context manager's __exit__ does
+        # shutdown(wait=True), which would defeat the collective timeout).
+        pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="kg_path")
+        try:
+            f_local = pool.submit(self._local_retrieval, entity_names, local_ctx)
+            f_global = pool.submit(self._global_retrieval, keywords or entity_names, global_ctx)
+            f_community = pool.submit(self._community_retrieval, query_vec, community_ctx)
+            f_relation = pool.submit(self._relation_retrieval, query_vec, relation_ctx)
 
-        # Step 5: Relation semantic search
-        relation_chunks = self._relation_retrieval(query)
+            # Collective timeout: wait once for all four futures, with ONE
+            # shared budget. Previously each _result_or_empty had its own
+            # 30s, so the worst case was 4×30=120s — pathological for a
+            # "parallel" path.
+            wait(
+                [f_local, f_global, f_community, f_relation],
+                timeout=_WORKER_TIMEOUT_S,
+                return_when=ALL_COMPLETED,
+            )
+            # Snapshot each worker's scores AND its ctx together. If a
+            # worker is still running, its ctx is being mutated concurrently
+            # — we drop it to avoid iterating a list that's being appended
+            # to from another thread.
+            local_chunks, local_ctx = _collect(f_local, local_ctx, "local")
+            global_chunks, global_ctx = _collect(f_global, global_ctx, "global")
+            community_chunks, community_ctx = _collect(f_community, community_ctx, "community")
+            relation_chunks, relation_ctx = _collect(f_relation, relation_ctx, "relation")
+        finally:
+            # wait=False + cancel_futures so we don't block on stragglers.
+            # Still-running threads are orphaned; Neo4j's driver has its own
+            # socket timeout, so they eventually die and the pool's threads
+            # return naturally.
+            pool.shutdown(wait=False, cancel_futures=True)
 
-        # Step 6: Weighted merge
+        # Merge the four (possibly-emptied) private contexts into
+        # self.kg_context, deduped by _eid / _rid. Local wins on ties
+        # because it's merged first.
+        self.kg_context = _merge_contexts([local_ctx, global_ctx, community_ctx, relation_ctx])
+
+        # Step 6: Weighted merge of chunk scores
         merged = self._merge_scores(
             local_chunks,
             global_chunks,
@@ -160,52 +211,43 @@ class KGPath:
     def _local_retrieval(
         self,
         entity_names: list[str],
+        ctx: KGContext,
     ) -> dict[str, float]:
         """
         Local retrieval: find entities by name -> traverse neighbors
         -> collect chunk_ids with scores based on hop distance.
 
-        Also collects entity descriptions and relation descriptions
-        into ``self.kg_context`` for synthesized context injection.
-
-        Optimized to minimize graph round-trips: collects all neighbor
-        IDs first, then resolves names in a single batch query.
+        Writes entity/relation descriptions into the caller-provided
+        ``ctx`` (private to this worker). Name resolution for relation
+        endpoints is batched in a single ``get_entities_by_ids`` call.
         """
         from graph.base import entity_id_from_name
 
         chunk_scores: dict[str, float] = {}
         _seen_entities: set[str] = set()
         _seen_relations: set[str] = set()
-        # Entities resolved during traversal (avoids N+1 on name lookups)
-        _entity_cache: dict = {}
+        # entity_id → name, populated from entities we already fetched.
+        _name_cache: dict[str, str] = {}
+        # Relations whose endpoint names we still need to resolve in batch.
+        _pending_rels: list[tuple[object, str]] = []  # (rel, rid)
 
-        # Phase 1: Resolve seed entities
-        seed_entities = []
         for name in entity_names:
             eid = entity_id_from_name(name)
             entity = self.graph.get_entity(eid)
             if entity is None:
+                # Try fuzzy search
                 candidates = self.graph.search_entities(name, top_k=3)
                 if not candidates:
                     continue
                 entity = candidates[0]
                 eid = entity.entity_id
-            _entity_cache[eid] = entity
-            seed_entities.append(entity)
 
-        # Phase 2: For each seed, get relations + neighbors (these are
-        # already batch-friendly per entity in both Neo4j and NetworkX)
-        all_neighbor_ids: set[str] = set()
-        # Collect relations per seed and defer name resolution
-        _deferred_relations: list[tuple] = []  # (rel, source_eid, target_eid)
-
-        for entity in seed_entities:
-            eid = entity.entity_id
+            _name_cache[eid] = entity.name
 
             # Collect entity description for KG context
             if eid not in _seen_entities and entity.description:
                 _seen_entities.add(eid)
-                self.kg_context.entities.append(
+                ctx.entities.append(
                     {
                         "name": entity.name,
                         "type": entity.entity_type,
@@ -221,25 +263,28 @@ class KGPath:
             # Relations of this entity
             relations = self.graph.get_relations(eid)
             for rel in relations:
-                score = 0.8 * rel.weight
+                score = 0.8 * rel.weight  # relation weight matters
                 for cid in rel.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), score)
 
+                # Defer relation-description collection: we need source/target
+                # names, and resolving them one-by-one costs a round-trip each.
                 rid = rel.relation_id
                 if rid not in _seen_relations and rel.description:
                     _seen_relations.add(rid)
-                    _deferred_relations.append((rel, rel.source_entity, rel.target_entity))
-                    all_neighbor_ids.add(rel.source_entity)
-                    all_neighbor_ids.add(rel.target_entity)
+                    _pending_rels.append((rel, rid))
 
             # Neighbor entities (hop 1+)
+            # get_neighbors returns a flat list without per-item hop info,
+            # so we use a uniform decay based on the configured max_hops.
             neighbors = self.graph.get_neighbors(eid, max_hops=self.cfg.max_hops)
-            neighbor_score = 1.0 / (1 + self.cfg.max_hops)
+            neighbor_score = 1.0 / (1 + self.cfg.max_hops)  # average decay
             for neighbor in neighbors:
-                _entity_cache[neighbor.entity_id] = neighbor
+                _name_cache[neighbor.entity_id] = neighbor.name
+                # Collect neighbor entity descriptions too
                 if neighbor.entity_id not in _seen_entities and neighbor.description:
                     _seen_entities.add(neighbor.entity_id)
-                    self.kg_context.entities.append(
+                    ctx.entities.append(
                         {
                             "name": neighbor.name,
                             "type": neighbor.entity_type,
@@ -250,44 +295,27 @@ class KGPath:
                 for cid in neighbor.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), neighbor_score)
 
-        # Phase 3: Batch-resolve entity names for deferred relations
-        # Only fetch IDs we don't already have in cache
-        missing_ids = [eid for eid in all_neighbor_ids if eid not in _entity_cache]
-        if missing_ids and hasattr(self.graph, "get_entities_batch"):
-            batch = self.graph.get_entities_batch(missing_ids)
-            _entity_cache.update(batch)
-
-        # Now resolve relation names from cache
-        for rel, src_eid, tgt_eid in _deferred_relations:
-            src_name = _entity_cache[src_eid].name if src_eid in _entity_cache else src_eid
-            tgt_name = _entity_cache[tgt_eid].name if tgt_eid in _entity_cache else tgt_eid
-            self.kg_context.relations.append(
-                {
-                    "source": src_name,
-                    "target": tgt_name,
-                    "keywords": rel.keywords,
-                    "description": rel.description,
-                    "_rid": rel.relation_id,
-                }
-            )
-
+        _resolve_and_emit_relations(self.graph, _pending_rels, _name_cache, ctx)
         return chunk_scores
 
     def _global_retrieval(
         self,
         keywords: list[str],
+        ctx: KGContext,
     ) -> dict[str, float]:
         """
         Global retrieval: search entities by keywords -> collect
         chunk_ids from matched entities and their relations.
 
-        Also collects entity descriptions into ``self.kg_context``
-        (deduped against those already captured by local retrieval).
+        Writes entity/relation descriptions into the caller-provided
+        ``ctx``. Cross-function deduplication (against local's output)
+        happens later in the merge step, not here.
         """
         chunk_scores: dict[str, float] = {}
-        # Build sets of already-seen IDs from local retrieval for dedup
-        _seen_eids = {e.get("_eid") for e in self.kg_context.entities if e.get("_eid")}
-        _seen_rids = {r.get("_rid") for r in self.kg_context.relations if r.get("_rid")}
+        _seen_eids: set[str] = set()
+        _seen_rids: set[str] = set()
+        _name_cache: dict[str, str] = {}
+        _pending_rels: list[tuple[object, str]] = []
 
         for kw in keywords:
             entities = self.graph.search_entities(kw, top_k=5)
@@ -297,10 +325,10 @@ class KGPath:
                 for cid in entity.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), score)
 
-                # Collect entity description (dedup against local)
+                _name_cache[entity.entity_id] = entity.name
                 if entity.entity_id not in _seen_eids and entity.description:
                     _seen_eids.add(entity.entity_id)
-                    self.kg_context.entities.append(
+                    ctx.entities.append(
                         {
                             "name": entity.name,
                             "type": entity.entity_type,
@@ -316,38 +344,26 @@ class KGPath:
                     for cid in rel.source_chunk_ids:
                         chunk_scores[cid] = max(chunk_scores.get(cid, 0), rel_score)
 
-                    # Collect relation description (dedup against local + earlier global)
                     if rel.relation_id not in _seen_rids and rel.description:
                         _seen_rids.add(rel.relation_id)
-                        src_ent = self.graph.get_entity(rel.source_entity)
-                        tgt_ent = self.graph.get_entity(rel.target_entity)
-                        self.kg_context.relations.append(
-                            {
-                                "source": src_ent.name if src_ent else rel.source_entity,
-                                "target": tgt_ent.name if tgt_ent else rel.target_entity,
-                                "keywords": rel.keywords,
-                                "description": rel.description,
-                                "_rid": rel.relation_id,
-                            }
-                        )
+                        _pending_rels.append((rel, rel.relation_id))
 
+        _resolve_and_emit_relations(self.graph, _pending_rels, _name_cache, ctx)
         return chunk_scores
 
-    def _community_retrieval(self, query: str) -> dict[str, float]:
+    def _community_retrieval(
+        self,
+        query_vec: list[float] | None,
+        ctx: KGContext,
+    ) -> dict[str, float]:
         """
-        Community retrieval: embed query -> cosine search over
-        community summary embeddings -> collect member chunk_ids.
+        Community retrieval: cosine search over community summary embeddings
+        using the pre-computed query vector.
 
-        Also collects community summaries into ``self.kg_context``
-        for synthesized context injection.
+        Writes matched community summaries into the caller-provided ``ctx``.
         """
         cw = getattr(self.cfg, "community_weight", 0.0)
-        if cw <= 0 or self.embedder is None:
-            return {}
-
-        try:
-            query_vec = self.embedder.embed_texts([query])[0]
-        except Exception:
+        if cw <= 0 or query_vec is None:
             return {}
 
         top_k = getattr(self.cfg, "community_top_k", 5)
@@ -355,29 +371,31 @@ class KGPath:
         if not matches:
             return {}
 
-        chunk_scores: dict[str, float] = {}
-        # Collect all member entity IDs across communities first
-        all_member_ids: list[str] = []
-        valid_communities = []
+        # First pass: filter matches, emit summaries, collect all member IDs.
+        kept: list[tuple[object, float]] = []  # (community, sim_score)
+        all_member_ids: set[str] = set()
         for community, sim_score in matches:
-            if sim_score < 0.3:
+            if sim_score < 0.3:  # skip very low similarity
                 continue
+
+            # Collect community summary for KG context
             if community.summary and community.summary != community.title:
-                self.kg_context.community_summaries.append({"title": community.title, "summary": community.summary})
-            valid_communities.append((community, sim_score))
-            all_member_ids.extend(community.entity_ids)
+                ctx.community_summaries.append(
+                    {
+                        "title": community.title,
+                        "summary": community.summary,
+                    }
+                )
 
-        # Batch-fetch all member entities in one query
-        if hasattr(self.graph, "get_entities_batch"):
-            entity_map = self.graph.get_entities_batch(list(set(all_member_ids)))
-        else:
-            entity_map = {}
-            for eid in set(all_member_ids):
-                e = self.graph.get_entity(eid)
-                if e:
-                    entity_map[eid] = e
+            kept.append((community, sim_score))
+            all_member_ids.update(community.entity_ids)
 
-        for community, sim_score in valid_communities:
+        # Batch-fetch every member entity across all kept communities in ONE
+        # graph call, avoiding per-member round-trips on dense communities.
+        entity_map = self.graph.get_entities_by_ids(list(all_member_ids)) if all_member_ids else {}
+
+        chunk_scores: dict[str, float] = {}
+        for community, sim_score in kept:
             member_set = set(community.entity_ids)
             for eid in community.entity_ids:
                 entity = entity_map.get(eid)
@@ -385,7 +403,8 @@ class KGPath:
                     continue
                 for cid in entity.source_chunk_ids:
                     chunk_scores[cid] = max(chunk_scores.get(cid, 0), sim_score)
-                # Relations within the community
+                # Relation chunks within the community. get_relations is still
+                # per-entity; batching it would require a new graph method.
                 for rel in self.graph.get_relations(eid):
                     if rel.target_entity in member_set or rel.source_entity in member_set:
                         for cid in rel.source_chunk_ids:
@@ -393,21 +412,19 @@ class KGPath:
 
         return chunk_scores
 
-    def _relation_retrieval(self, query: str) -> dict[str, float]:
+    def _relation_retrieval(
+        self,
+        query_vec: list[float] | None,
+        ctx: KGContext,
+    ) -> dict[str, float]:
         """
-        Relation semantic search: embed query -> cosine search over
-        relation description embeddings -> collect chunk_ids.
+        Relation semantic search: cosine search over relation description
+        embeddings using the pre-computed query vector.
 
-        Also collects relation descriptions into ``self.kg_context``
-        (deduped against those already captured by local retrieval).
+        Writes relation descriptions into the caller-provided ``ctx``.
         """
         rw = getattr(self.cfg, "relation_weight", 0.0)
-        if rw <= 0 or self.embedder is None:
-            return {}
-
-        try:
-            query_vec = self.embedder.embed_texts([query])[0]
-        except Exception:
+        if rw <= 0 or query_vec is None:
             return {}
 
         top_k = getattr(self.cfg, "relation_top_k", 10)
@@ -415,8 +432,9 @@ class KGPath:
         if not matches:
             return {}
 
-        # Build set of already-collected relation IDs (from local retrieval)
-        _existing_rids = {r.get("_rid") for r in self.kg_context.relations if r.get("_rid")}
+        _seen_rids: set[str] = set()
+        _name_cache: dict[str, str] = {}
+        _pending_rels: list[tuple[object, str]] = []
 
         chunk_scores: dict[str, float] = {}
         for rel, sim_score in matches:
@@ -425,21 +443,11 @@ class KGPath:
             for cid in rel.source_chunk_ids:
                 chunk_scores[cid] = max(chunk_scores.get(cid, 0), sim_score)
 
-            # Collect relation description (dedup by relation_id)
-            if rel.relation_id not in _existing_rids and rel.description:
-                src_ent = self.graph.get_entity(rel.source_entity)
-                tgt_ent = self.graph.get_entity(rel.target_entity)
-                self.kg_context.relations.append(
-                    {
-                        "source": src_ent.name if src_ent else rel.source_entity,
-                        "target": tgt_ent.name if tgt_ent else rel.target_entity,
-                        "keywords": rel.keywords,
-                        "description": rel.description,
-                        "_rid": rel.relation_id,
-                    }
-                )
-                _existing_rids.add(rel.relation_id)
+            if rel.relation_id not in _seen_rids and rel.description:
+                _seen_rids.add(rel.relation_id)
+                _pending_rels.append((rel, rel.relation_id))
 
+        _resolve_and_emit_relations(self.graph, _pending_rels, _name_cache, ctx)
         return chunk_scores
 
     def _merge_scores(
@@ -472,21 +480,113 @@ class KGPath:
         self,
         chunk_scores: dict[str, float],
     ) -> list[ScoredChunk]:
-        """Verify chunk_ids exist in the relational store."""
+        """Verify chunk_ids exist in the relational store.
+
+        Uses a single ``get_chunks_by_ids`` call (batched) instead of N
+        per-chunk ``get_chunk`` round-trips.
+        """
         if not chunk_scores:
             return []
 
-        verified = []
-        # Batch check: get chunks by ID
-        for cid, score in chunk_scores.items():
-            chunk = self.rel.get_chunk(cid)
-            if chunk is not None:
-                verified.append(
-                    ScoredChunk(
-                        chunk_id=cid,
-                        score=score,
-                        source="kg",
-                    )
-                )
+        rows = self.rel.get_chunks_by_ids(list(chunk_scores.keys()))
+        return [
+            ScoredChunk(chunk_id=r["chunk_id"], score=chunk_scores[r["chunk_id"]], source="kg")
+            for r in rows
+            if r.get("chunk_id") in chunk_scores
+        ]
 
-        return verified
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (stateless — safe to call from worker threads).
+# ---------------------------------------------------------------------------
+
+
+def _collect(future, ctx: KGContext, label: str) -> tuple[dict[str, float], KGContext]:
+    """Atomically harvest a worker's chunk scores and its KGContext.
+
+    Expects ``future`` to already be done (the caller uses
+    :func:`concurrent.futures.wait` with a collective timeout). If it's
+    still running, the worker thread is still appending to ``ctx`` — we
+    must NOT return it, or the main thread would race the worker during
+    the merge. Returns an empty ctx in that case (and on exception).
+    """
+    if not future.done():
+        log.warning("KG path: %s retrieval timed out — skipping", label)
+        return {}, KGContext()
+    try:
+        return future.result(), ctx
+    except Exception as e:
+        log.warning("KG path: %s retrieval failed: %s", label, e)
+        return {}, KGContext()
+
+
+def _resolve_and_emit_relations(
+    graph: GraphStore,
+    pending: list[tuple[object, str]],
+    name_cache: dict[str, str],
+    ctx: KGContext,
+) -> None:
+    """Batch-resolve relation endpoint names and emit them into ``ctx``.
+
+    Collects all unresolved endpoint entity IDs across ``pending``, issues
+    a single ``get_entities_by_ids`` call, then appends the relation
+    descriptions into ``ctx.relations``.
+    """
+    if not pending:
+        return
+
+    missing_ids: set[str] = set()
+    for rel, _ in pending:
+        if rel.source_entity not in name_cache:
+            missing_ids.add(rel.source_entity)
+        if rel.target_entity not in name_cache:
+            missing_ids.add(rel.target_entity)
+    if missing_ids:
+        fetched = graph.get_entities_by_ids(list(missing_ids))
+        for eid_, ent_ in fetched.items():
+            name_cache[eid_] = ent_.name
+
+    for rel, rid in pending:
+        ctx.relations.append(
+            {
+                "source": name_cache.get(rel.source_entity, rel.source_entity),
+                "target": name_cache.get(rel.target_entity, rel.target_entity),
+                "keywords": rel.keywords,
+                "description": rel.description,
+                "_rid": rid,
+            }
+        )
+
+
+def _merge_contexts(parts: list[KGContext]) -> KGContext:
+    """Deduplicate-merge a list of KGContexts into one.
+
+    Entities are deduped by ``_eid``, relations by ``_rid``. Community
+    summaries are simply concatenated (not deduped) to preserve the
+    original pre-parallelization behavior; only the community worker
+    writes them, so cross-worker dedup wouldn't do anything anyway. The
+    order of ``parts`` determines precedence on ties — earlier contexts
+    win.
+    """
+    out = KGContext()
+    seen_eids: set[str] = set()
+    seen_rids: set[str] = set()
+
+    for part in parts:
+        for e in part.entities:
+            eid = e.get("_eid")
+            if eid and eid in seen_eids:
+                continue
+            if eid:
+                seen_eids.add(eid)
+            out.entities.append(e)
+        for r in part.relations:
+            rid = r.get("_rid")
+            if rid and rid in seen_rids:
+                continue
+            if rid:
+                seen_rids.add(rid)
+            out.relations.append(r)
+        out.community_summaries.extend(part.community_summaries)
+
+    return out

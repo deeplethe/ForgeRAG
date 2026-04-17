@@ -208,7 +208,7 @@ class TreeOut(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str
+    query: str = Field(..., min_length=1, max_length=8192)
     filter: dict[str, Any] | None = None
     conversation_id: str | None = Field(
         None,

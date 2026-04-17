@@ -115,6 +115,19 @@ class GraphStore(ABC):
     def get_entity(self, entity_id: str) -> Entity | None:
         """Return a single entity by ID, or ``None``."""
 
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
+        """Batch lookup. Returns ``{entity_id: Entity}`` — missing IDs are omitted.
+
+        Default implementation loops ``get_entity`` per ID. Backends with
+        network round-trips (Neo4j) MUST override with a single query.
+        """
+        out: dict[str, Entity] = {}
+        for eid in entity_ids:
+            ent = self.get_entity(eid)
+            if ent is not None:
+                out[eid] = ent
+        return out
+
     @abstractmethod
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         """BFS traversal: return all entities reachable within *max_hops*."""
