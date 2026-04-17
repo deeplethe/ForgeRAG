@@ -208,6 +208,26 @@ class AnsweringPipeline:
             conversation_id or "none",
         )
 
+        # Stash the synthesized KG context (entities + relations injected
+        # into the prompt) into stats so downstream consumers — notably
+        # the benchmark — can see the full set of material the LLM had
+        # available, not just chunk citations. Without this, LLM-judge
+        # evaluations mis-score answers grounded in KG synthesis as
+        # "hallucinated" because they're not in any citation snippet.
+        if retrieval_result.kg_context and not retrieval_result.kg_context.is_empty:
+            kg = retrieval_result.kg_context
+            stats["kg_context"] = {
+                "entities": [{"name": e.get("name", ""), "description": e.get("description", "")} for e in kg.entities],
+                "relations": [
+                    {
+                        "source": r.get("source", ""),
+                        "target": r.get("target", ""),
+                        "description": r.get("description", ""),
+                    }
+                    for r in kg.relations
+                ],
+            }
+
         answer = Answer(
             query=query,
             text=gen_result.get("text") or "",

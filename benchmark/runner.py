@@ -194,7 +194,22 @@ class BenchmarkRunner:
                     answer = answering.ask(item.question)
                     item.latency_ms = int((time.time() - t0) * 1000)
                     item.answer = answer.text
+                    # Capture both raw chunk snippets AND the synthesized KG
+                    # context (entities + relations injected into the prompt).
+                    # The LLM judge needs to see the full prompt input;
+                    # otherwise answers grounded in KG synthesis look like
+                    # hallucinations and faithfulness / context_precision
+                    # are under-reported.
                     item.contexts = [c.snippet or "" for c in answer.citations_all if c.snippet]
+                    kg_ctx = (answer.stats or {}).get("kg_context") or {}
+                    for e in kg_ctx.get("entities", []):
+                        desc = (e.get("description") or "").strip()
+                        if desc:
+                            item.contexts.append(f"[KG entity] {e.get('name', '')}: {desc}")
+                    for r in kg_ctx.get("relations", []):
+                        desc = (r.get("description") or "").strip()
+                        if desc:
+                            item.contexts.append(f"[KG relation] {r.get('source', '')} → {r.get('target', '')}: {desc}")
                     item.citations = [
                         {"citation_id": c.citation_id, "doc_id": c.doc_id, "page_no": c.page_no, "snippet": c.snippet}
                         for c in answer.citations_used
