@@ -114,7 +114,26 @@ def score_items(
                 progress_cb(i + 1, total)
             continue
 
-        context_str = "\n---\n".join(item.contexts[:10]) if item.contexts else "(no context retrieved)"
+        # Pack context lines into an 8k-char budget. Under the old
+        # `contexts[:10]` + `context[:5000]` combo, the first 10 slots
+        # were all raw chunk snippets and the appended KG synthesized
+        # context (entities / relations) never reached the judge —
+        # faithfulness / context_precision were under-reported for
+        # answers that cited KG material.
+        #
+        # item.contexts is structured as [chunks..., KG lines...], so
+        # a char-budget scan preserves that priority: chunks come
+        # first, KG lines fill whatever budget remains.
+        _JUDGE_CTX_BUDGET = 8000
+        _parts: list[str] = []
+        _used = 0
+        for _line in item.contexts or []:
+            ln = len(_line)
+            if _used + ln + 4 > _JUDGE_CTX_BUDGET:  # +4 accounts for the "\n---\n" separator
+                break
+            _parts.append(_line)
+            _used += ln + 4
+        context_str = "\n---\n".join(_parts) if _parts else "(no context retrieved)"
 
         # Run three scoring prompts
         try:
@@ -125,7 +144,7 @@ def score_items(
                 api_base,
                 _FAITHFULNESS_PROMPT.format(
                     question=item.question,
-                    context=context_str[:5000],
+                    context=context_str,
                     answer=item.answer[:2000],
                 ),
             )
@@ -157,7 +176,7 @@ def score_items(
                 _CONTEXT_PRECISION_PROMPT.format(
                     question=item.question,
                     ground_truth=item.ground_truth[:1000],
-                    context=context_str[:5000],
+                    context=context_str,
                 ),
             )
         except Exception as e:
