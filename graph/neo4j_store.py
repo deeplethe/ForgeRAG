@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import Community, Entity, GraphStore, Relation
+from .base import Entity, GraphStore, Relation
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ def _entity_from_record(rec: dict[str, Any]) -> Entity:
         description=rec.get("description", ""),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        name_embedding=list(rec.get("name_embedding") or []),
     )
 
 
@@ -57,6 +58,7 @@ def _relation_from_record(rec: dict[str, Any]) -> Relation:
         weight=rec.get("weight", 1.0),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        description_embedding=list(rec.get("description_embedding") or []),
     )
 
 
@@ -84,21 +86,122 @@ class Neo4jGraphStore(GraphStore):
 
         warnings.filterwarnings("ignore", category=DeprecationWarning, module="neo4j")
         logging.getLogger("neo4j").setLevel(logging.ERROR)
+
+        # Set once the first time we see an embedding and successfully
+        # create the vector index. Prevents per-upsert overhead.
+        self._vector_indexes_created: bool = False
+
         self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
-        """Create constraints and indexes if they don't exist yet."""
+        """Create constraints and indexes if they don't exist yet.
+
+        Vector indexes require a known embedding dimension at CREATE
+        time. We probe a sample entity for that. If the graph has no
+        embedded entities yet (fresh install), index creation is
+        deferred to the first ``upsert_entity`` with an embedding.
+        """
         with self._driver.session(database=self._database) as s:
             s.run("CREATE CONSTRAINT kg_entity_id IF NOT EXISTS FOR (e:KGEntity) REQUIRE e.entity_id IS UNIQUE")
-            # Best-effort full-text index for search_entities
+            # Best-effort full-text index for search_entities fallback
             try:
                 s.run("CREATE FULLTEXT INDEX kg_entity_name IF NOT EXISTS FOR (e:KGEntity) ON EACH [e.name]")
             except Exception:
                 logger.debug("Full-text index creation skipped (may already exist)")
 
+        dim = self._probe_embedding_dimension()
+        if dim:
+            self._create_vector_indexes(dim)
+        else:
+            logger.info(
+                "Neo4j vector indexes deferred — no embedded entities yet; "
+                "will be created on first upsert_entity with an embedding"
+            )
+
+    def _probe_embedding_dimension(self) -> int | None:
+        """Return the dimension of any existing ``name_embedding``, or None.
+
+        Runs a single fast Cypher — just looks at one entity with an
+        embedding to learn the dimension for CREATE VECTOR INDEX.
+        """
+        cypher = """
+        MATCH (e:KGEntity)
+        WHERE e.name_embedding IS NOT NULL AND size(e.name_embedding) > 0
+        RETURN size(e.name_embedding) AS dim
+        LIMIT 1
+        """
+        try:
+            with self._driver.session(database=self._database) as s:
+                rec = s.run(cypher).single()
+                if rec:
+                    return int(rec["dim"])
+        except Exception as e:
+            logger.debug("Embedding dimension probe failed: %s", e)
+        return None
+
+    def _create_vector_indexes(self, dim: int) -> None:
+        """Create (or no-op) HNSW vector indexes on entity + relation embeddings.
+
+        Requires Neo4j 5.11+ for the entity index and 5.15+ for the
+        relationship index. Failures are logged and swallowed — the
+        store still works, embedding search just returns [] via the
+        Cypher fallback in the query methods.
+        """
+        entity_cypher = """
+        CREATE VECTOR INDEX kg_entity_embedding IF NOT EXISTS
+        FOR (e:KGEntity) ON e.name_embedding
+        OPTIONS {
+          indexConfig: {
+            `vector.dimensions`: $dim,
+            `vector.similarity_function`: 'cosine'
+          }
+        }
+        """
+        relation_cypher = """
+        CREATE VECTOR INDEX kg_relation_embedding IF NOT EXISTS
+        FOR ()-[r:RELATES_TO]-() ON r.description_embedding
+        OPTIONS {
+          indexConfig: {
+            `vector.dimensions`: $dim,
+            `vector.similarity_function`: 'cosine'
+          }
+        }
+        """
+        with self._driver.session(database=self._database) as s:
+            try:
+                s.run(entity_cypher, dim=dim).consume()
+                logger.info("Neo4j vector index kg_entity_embedding ensured (dim=%d)", dim)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create entity vector index (Neo4j 5.11+ required): %s",
+                    e,
+                )
+            try:
+                s.run(relation_cypher, dim=dim).consume()
+                logger.info("Neo4j vector index kg_relation_embedding ensured (dim=%d)", dim)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create relation vector index (Neo4j 5.15+ required): %s",
+                    e,
+                )
+        self._vector_indexes_created = True
+
+    def _ensure_vector_indexes_for_dim(self, dim: int) -> None:
+        """Idempotent: create vector indexes the first time we see an embedding.
+
+        Called from upsert_entity / upsert_relation so a fresh graph
+        gets indexes as soon as the first embedded entity arrives.
+        """
+        if self._vector_indexes_created:
+            return
+        self._create_vector_indexes(dim)
+
     # -- mutations ----------------------------------------------------------
 
     def upsert_entity(self, entity: Entity) -> None:
+        # Only write name_embedding if the entity actually has one.
+        # Using COALESCE keeps existing values when an upsert that
+        # lacks the embedding comes in (e.g. a metadata-only update).
         cypher = """
         MERGE (e:KGEntity {entity_id: $entity_id})
         ON CREATE SET
@@ -107,7 +210,8 @@ class Neo4jGraphStore(GraphStore):
             e.description     = $description,
             e.source_doc_ids  = $source_doc_ids,
             e.source_chunk_ids = $source_chunk_ids,
-            e._type_counts    = $entity_type + ':1'
+            e._type_counts    = $entity_type + ':1',
+            e.name_embedding  = $name_embedding
         ON MATCH SET
             e.description = CASE
                 WHEN e.description CONTAINS $description THEN e.description
@@ -115,7 +219,8 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids  = apoc.coll.toSet(e.source_doc_ids + $source_doc_ids),
             e.source_chunk_ids = apoc.coll.toSet(e.source_chunk_ids + $source_chunk_ids),
-            e._type_counts    = e._type_counts + ',' + $entity_type + ':1'
+            e._type_counts    = e._type_counts + ',' + $entity_type + ':1',
+            e.name_embedding  = coalesce($name_embedding, e.name_embedding)
         """
         # Fallback without APOC: use plain list concatenation and dedupe in
         # application code on read.
@@ -126,7 +231,8 @@ class Neo4jGraphStore(GraphStore):
             e.entity_type      = $entity_type,
             e.description      = $description,
             e.source_doc_ids   = $source_doc_ids,
-            e.source_chunk_ids = $source_chunk_ids
+            e.source_chunk_ids = $source_chunk_ids,
+            e.name_embedding   = $name_embedding
         ON MATCH SET
             e.description = CASE
                 WHEN e.description CONTAINS $description THEN e.description
@@ -134,7 +240,8 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids   = e.source_doc_ids + [x IN $source_doc_ids WHERE NOT x IN e.source_doc_ids],
             e.source_chunk_ids = e.source_chunk_ids + [x IN $source_chunk_ids WHERE NOT x IN e.source_chunk_ids],
-            e.entity_type      = $entity_type
+            e.entity_type      = $entity_type,
+            e.name_embedding   = coalesce($name_embedding, e.name_embedding)
         """
         params = {
             "entity_id": entity.entity_id,
@@ -143,16 +250,20 @@ class Neo4jGraphStore(GraphStore):
             "description": entity.description,
             "source_doc_ids": sorted(entity.source_doc_ids),
             "source_chunk_ids": sorted(entity.source_chunk_ids),
+            # None tells Neo4j to leave the existing value alone (via coalesce).
+            "name_embedding": list(entity.name_embedding) if entity.name_embedding else None,
         }
         with self._driver.session(database=self._database) as s:
             try:
                 s.run(cypher, **params).consume()
-                return
             except Exception:
-                pass
-        # Fallback in a fresh session
-        with self._driver.session(database=self._database) as s:
-            s.run(cypher_no_apoc, **params).consume()
+                # Fallback in a fresh session if APOC isn't available.
+                with self._driver.session(database=self._database) as s2:
+                    s2.run(cypher_no_apoc, **params).consume()
+        # First time we see an embedding on a fresh graph, stand up the
+        # vector index now (rather than waiting for next server start).
+        if entity.name_embedding and not self._vector_indexes_created:
+            self._ensure_vector_indexes_for_dim(len(entity.name_embedding))
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
         """Directly replace an entity's description (no append)."""
@@ -174,7 +285,8 @@ class Neo4jGraphStore(GraphStore):
             r.description       = $description,
             r.weight            = $weight,
             r.source_doc_ids    = $source_doc_ids,
-            r.source_chunk_ids  = $source_chunk_ids
+            r.source_chunk_ids  = $source_chunk_ids,
+            r.description_embedding = $description_embedding
         ON MATCH SET
             r.description = CASE
                 WHEN r.description CONTAINS $description THEN r.description
@@ -186,7 +298,8 @@ class Neo4jGraphStore(GraphStore):
             r.keywords          = CASE
                 WHEN r.keywords CONTAINS $keywords THEN r.keywords
                 ELSE r.keywords + ', ' + $keywords
-            END
+            END,
+            r.description_embedding = coalesce($description_embedding, r.description_embedding)
         """
         params = {
             "source_entity": relation.source_entity,
@@ -197,9 +310,12 @@ class Neo4jGraphStore(GraphStore):
             "weight": relation.weight,
             "source_doc_ids": sorted(relation.source_doc_ids),
             "source_chunk_ids": sorted(relation.source_chunk_ids),
+            "description_embedding": list(relation.description_embedding) if relation.description_embedding else None,
         }
         with self._driver.session(database=self._database) as s:
             s.run(cypher, **params).consume()
+        if relation.description_embedding and not self._vector_indexes_created:
+            self._ensure_vector_indexes_for_dim(len(relation.description_embedding))
 
     # -- lookups ------------------------------------------------------------
 
@@ -218,20 +334,23 @@ class Neo4jGraphStore(GraphStore):
                 return None
             return _entity_from_record(dict(rec))
 
-    def get_entities_batch(self, entity_ids: list[str]) -> dict[str, Entity]:
-        """Fetch multiple entities in a single Cypher query."""
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
         if not entity_ids:
             return {}
         cypher = """
-        MATCH (e:KGEntity) WHERE e.entity_id IN $ids
+        MATCH (e:KGEntity) WHERE e.entity_id IN $entity_ids
         RETURN e.entity_id AS entity_id, e.name AS name,
                e.entity_type AS entity_type, e.description AS description,
                e.source_doc_ids AS source_doc_ids,
                e.source_chunk_ids AS source_chunk_ids
         """
+        out: dict[str, Entity] = {}
         with self._driver.session(database=self._database) as s:
-            result = s.run(cypher, ids=entity_ids)
-            return {r["entity_id"]: _entity_from_record(dict(r)) for r in result}
+            result = s.run(cypher, entity_ids=list(entity_ids))
+            for rec in result:
+                ent = _entity_from_record(dict(rec))
+                out[ent.entity_id] = ent
+        return out
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         cypher = """
@@ -283,6 +402,80 @@ class Neo4jGraphStore(GraphStore):
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, entity_id=entity_id)
             return [_relation_from_record(dict(r)) for r in result]
+
+    def search_entities_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine search over entity name embeddings using Neo4j's
+        native HNSW vector index (``kg_entity_embedding``).
+
+        Cross-lingual by virtue of a multilingual embedder: a Chinese
+        query vector lands near the English name vector it encodes.
+
+        Returns ``[]`` if the index doesn't exist (Neo4j < 5.11, or
+        no embedded entities yet) or if the query dimension doesn't
+        match — failures are logged but don't raise.
+        """
+        if not query_embedding:
+            return []
+        cypher = """
+        CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
+        YIELD node, score
+        RETURN node.entity_id AS entity_id, node.name AS name,
+               node.entity_type AS entity_type, node.description AS description,
+               node.source_doc_ids AS source_doc_ids,
+               node.source_chunk_ids AS source_chunk_ids,
+               score
+        """
+        results: list[tuple[Entity, float]] = []
+        try:
+            with self._driver.session(database=self._database) as s:
+                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                    ent = _entity_from_record(dict(rec))
+                    results.append((ent, float(rec["score"])))
+        except Exception as e:
+            logger.warning("Neo4j entity vector search failed: %s", e)
+            return []
+        return results
+
+    def search_relations_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Relation, float]]:
+        """Cosine search over relation description embeddings using
+        Neo4j's native relationship vector index (``kg_relation_embedding``).
+
+        Requires Neo4j 5.15+ (relationship vector indexes landed in
+        that release). Returns ``[]`` if unavailable.
+        """
+        if not query_embedding:
+            return []
+        cypher = """
+        CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
+        YIELD relationship, score
+        RETURN relationship.relation_id AS relation_id,
+               startNode(relationship).entity_id AS source_entity,
+               endNode(relationship).entity_id AS target_entity,
+               relationship.keywords AS keywords,
+               relationship.description AS description,
+               relationship.weight AS weight,
+               relationship.source_doc_ids AS source_doc_ids,
+               relationship.source_chunk_ids AS source_chunk_ids,
+               score
+        """
+        results: list[tuple[Relation, float]] = []
+        try:
+            with self._driver.session(database=self._database) as s:
+                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                    rel = _relation_from_record(dict(rec))
+                    results.append((rel, float(rec["score"])))
+        except Exception as e:
+            logger.warning("Neo4j relation vector search failed: %s", e)
+            return []
+        return results
 
     def search_entities(self, query: str, top_k: int = 10) -> list[Entity]:
         q = query.strip()
@@ -389,267 +582,90 @@ class Neo4jGraphStore(GraphStore):
     def delete_by_doc(self, doc_id: str) -> int:
         # Remove doc_id from source lists and clean chunk_ids by prefix;
         # delete entity/relation if source_doc_ids becomes empty.
+        #
+        # Cypher captures the relation_id / entity_id as a scalar BEFORE
+        # the DELETE so we can RETURN the list of truly-deleted keys —
+        # then we punch them out of the local FAISS mirrors without
+        # rescanning all of Neo4j.
         cypher_rels = """
         MATCH ()-[r:RELATES_TO]-()
         WHERE $doc_id IN r.source_doc_ids
         SET r.source_doc_ids = [x IN r.source_doc_ids WHERE x <> $doc_id],
             r.source_chunk_ids = [x IN r.source_chunk_ids WHERE NOT x STARTS WITH $doc_prefix]
-        WITH r
+        WITH r, r.relation_id AS rid
         WHERE size(r.source_doc_ids) = 0
         DELETE r
-        RETURN count(r) AS deleted_rels
+        RETURN collect(rid) AS deleted_rids
         """
         cypher_nodes = """
         MATCH (e:KGEntity)
         WHERE $doc_id IN e.source_doc_ids
         SET e.source_doc_ids = [x IN e.source_doc_ids WHERE x <> $doc_id],
             e.source_chunk_ids = [x IN e.source_chunk_ids WHERE NOT x STARTS WITH $doc_prefix]
-        WITH e
+        WITH e, e.entity_id AS eid
         WHERE size(e.source_doc_ids) = 0
         DETACH DELETE e
-        RETURN count(e) AS deleted_nodes
+        RETURN collect(eid) AS deleted_eids
         """
         params = {"doc_id": doc_id, "doc_prefix": doc_id + ":"}
-        total = 0
+        # Neo4j's native vector index auto-maintains entries as nodes /
+        # relationships are deleted — no client-side index bookkeeping
+        # needed. We still collect the deleted ID lists for callers
+        # that want to know how many were removed.
+        deleted_rids: list[str] = []
+        deleted_eids: list[str] = []
         with self._driver.session(database=self._database) as s:
             res = s.run(cypher_rels, **params).single()
-            total += res["deleted_rels"] if res else 0
+            if res and res["deleted_rids"]:
+                deleted_rids = list(res["deleted_rids"])
             res = s.run(cypher_nodes, **params).single()
-            total += res["deleted_nodes"] if res else 0
-        return total
+            if res and res["deleted_eids"]:
+                deleted_eids = list(res["deleted_eids"])
+        return len(deleted_rids) + len(deleted_eids)
 
     def cleanup_orphans(self, valid_doc_ids: set[str]) -> dict:
         """Remove entities/relations whose source docs no longer exist."""
         valid = sorted(valid_doc_ids)
 
-        # Clean relations: remove dead doc refs + chunk refs, delete if empty
+        # Clean relations: remove dead doc refs + chunk refs, delete if empty.
+        # Capture deleted relation_ids so we can punch them out of the
+        # local FAISS mirror precisely.
         cypher_rels = """
         MATCH ()-[r:RELATES_TO]-()
         WHERE any(d IN r.source_doc_ids WHERE NOT d IN $valid)
         SET r.source_doc_ids = [x IN r.source_doc_ids WHERE x IN $valid],
             r.source_chunk_ids = [c IN r.source_chunk_ids
                 WHERE any(v IN $valid WHERE c STARTS WITH v + ':')]
-        WITH r
+        WITH r, r.relation_id AS rid
         WHERE size(r.source_doc_ids) = 0
         DELETE r
-        RETURN count(r) AS removed
+        RETURN collect(rid) AS deleted_rids
         """
-        # Clean entities
         cypher_nodes = """
         MATCH (e:KGEntity)
         WHERE any(d IN e.source_doc_ids WHERE NOT d IN $valid)
         SET e.source_doc_ids = [x IN e.source_doc_ids WHERE x IN $valid],
             e.source_chunk_ids = [c IN e.source_chunk_ids
                 WHERE any(v IN $valid WHERE c STARTS WITH v + ':')]
-        WITH e
+        WITH e, e.entity_id AS eid
         WHERE size(e.source_doc_ids) = 0
         DETACH DELETE e
-        RETURN count(e) AS removed
+        RETURN collect(eid) AS deleted_eids
         """
-        removed_rels = 0
-        removed_nodes = 0
+        deleted_rids: list[str] = []
+        deleted_eids: list[str] = []
         with self._driver.session(database=self._database) as s:
             res = s.run(cypher_rels, valid=valid).single()
-            removed_rels = res["removed"] if res else 0
+            if res and res["deleted_rids"]:
+                deleted_rids = list(res["deleted_rids"])
             res = s.run(cypher_nodes, valid=valid).single()
-            removed_nodes = res["removed"] if res else 0
+            if res and res["deleted_eids"]:
+                deleted_eids = list(res["deleted_eids"])
+        # Neo4j native vector index auto-syncs on delete — no client work.
         return {
-            "removed_entities": removed_nodes,
-            "removed_relations": removed_rels,
+            "removed_entities": len(deleted_eids),
+            "removed_relations": len(deleted_rids),
         }
-
-    # -- community detection ------------------------------------------------
-
-    def detect_communities(self, resolution: float = 1.0) -> list[Community]:
-        """Run Leiden clustering on the Neo4j graph.
-
-        Reads the full entity-relation graph from Neo4j, runs Leiden
-        in-process via igraph/leidenalg, and returns Community objects.
-        """
-
-        try:
-            import igraph as ig
-            import leidenalg
-        except ImportError:
-            logger.warning(
-                "Community detection requires python-igraph and leidenalg: pip install python-igraph leidenalg"
-            )
-            return []
-
-        # Read all entities and relations from Neo4j
-        with self._driver.session(database=self._database) as s:
-            ent_result = s.run("MATCH (e:KGEntity) RETURN e.entity_id AS eid, e.name AS name")
-            entities = {r["eid"]: r["name"] for r in ent_result}
-
-            rel_result = s.run(
-                "MATCH (s:KGEntity)-[r:RELATES_TO]->(t:KGEntity) "
-                "RETURN s.entity_id AS src, t.entity_id AS tgt, "
-                "coalesce(r.weight, 1.0) AS weight"
-            )
-            edges = [(r["src"], r["tgt"], r["weight"]) for r in rel_result]
-
-        if len(entities) < 2:
-            return []
-
-        # Build igraph
-        node_list = list(entities.keys())
-        node_index = {n: i for i, n in enumerate(node_list)}
-
-        ig_graph = ig.Graph(n=len(node_list), directed=False)
-        ig_graph.vs["name"] = node_list
-        ig_edges = []
-        ig_weights = []
-        seen: set[tuple[str, str]] = set()
-        for src, tgt, w in edges:
-            if src not in node_index or tgt not in node_index:
-                continue
-            pair = (min(src, tgt), max(src, tgt))
-            if pair in seen:
-                continue
-            seen.add(pair)
-            ig_edges.append((node_index[src], node_index[tgt]))
-            ig_weights.append(max(w, 0.1))
-
-        if not ig_edges:
-            return []
-        ig_graph.add_edges(ig_edges)
-
-        # Run Leiden
-        partition = leidenalg.find_partition(
-            ig_graph,
-            leidenalg.RBConfigurationVertexPartition,
-            weights=ig_weights,
-            resolution_parameter=resolution,
-        )
-
-        communities: list[Community] = []
-        for idx, members in enumerate(partition):
-            entity_ids = [node_list[m] for m in members]
-            names = [entities.get(eid, eid)[:30] for eid in entity_ids[:5]]
-            title = ", ".join(names)
-            if len(entity_ids) > 5:
-                title += f" (+{len(entity_ids) - 5})"
-            communities.append(
-                Community(
-                    community_id=f"c_{idx}",
-                    level=0,
-                    entity_ids=entity_ids,
-                    title=title,
-                )
-            )
-
-        logger.info(
-            "Leiden detected %d communities (resolution=%.2f, entities=%d)",
-            len(communities),
-            resolution,
-            len(entities),
-        )
-        return communities
-
-    def get_communities(self) -> list[Community]:
-
-        cypher = """
-        MATCH (c:KGCommunity)
-        RETURN c.community_id AS community_id, c.level AS level,
-               c.entity_ids AS entity_ids, c.title AS title,
-               c.summary AS summary
-        """
-        with self._driver.session(database=self._database) as s:
-            result = s.run(cypher)
-            return [
-                Community(
-                    community_id=r["community_id"],
-                    level=r["level"] or 0,
-                    entity_ids=list(r["entity_ids"] or []),
-                    title=r["title"] or "",
-                    summary=r["summary"] or "",
-                )
-                for r in result
-            ]
-
-    def upsert_community(self, community: Community) -> None:
-        cypher = """
-        MERGE (c:KGCommunity {community_id: $community_id})
-        SET c.level             = $level,
-            c.entity_ids        = $entity_ids,
-            c.title             = $title,
-            c.summary           = $summary,
-            c.summary_embedding = $summary_embedding
-        """
-        with self._driver.session(database=self._database) as s:
-            s.run(
-                cypher,
-                community_id=community.community_id,
-                level=community.level,
-                entity_ids=community.entity_ids,
-                title=community.title,
-                summary=community.summary,
-                summary_embedding=community.summary_embedding or [],
-            ).consume()
-
-    def search_communities(
-        self,
-        query_embedding: list[float],
-        top_k: int = 5,
-    ) -> list[tuple[Community, float]]:
-        """Cosine-similarity search over community summary embeddings.
-
-        Since Neo4j Community Edition lacks native vector search, we
-        load all communities and compute cosine similarity in Python.
-        For small community counts (<500) this is fast enough.
-        """
-
-        # Load all communities with their summary embeddings
-        cypher = """
-        MATCH (c:KGCommunity)
-        RETURN c.community_id AS community_id, c.level AS level,
-               c.entity_ids AS entity_ids, c.title AS title,
-               c.summary AS summary, c.summary_embedding AS embedding
-        """
-        with self._driver.session(database=self._database) as s:
-            records = list(s.run(cypher))
-
-        if not records or not query_embedding:
-            return []
-
-        # Compute cosine similarity in Python
-        import math
-
-        def _cosine(a: list[float], b: list[float]) -> float:
-            if not a or not b or len(a) != len(b):
-                return 0.0
-            dot = sum(x * y for x, y in zip(a, b, strict=False))
-            na = math.sqrt(sum(x * x for x in a))
-            nb = math.sqrt(sum(x * x for x in b))
-            if na < 1e-9 or nb < 1e-9:
-                return 0.0
-            return dot / (na * nb)
-
-        scored: list[tuple[Community, float]] = []
-        for r in records:
-            emb = r["embedding"]
-            if not emb:
-                # No embedding — use a low default score so community
-                # still appears (summary text is still useful)
-                score = 0.1
-            else:
-                score = _cosine(query_embedding, list(emb))
-
-            scored.append(
-                (
-                    Community(
-                        community_id=r["community_id"],
-                        level=r["level"] or 0,
-                        entity_ids=list(r["entity_ids"] or []),
-                        title=r["title"] or "",
-                        summary=r["summary"] or "",
-                    ),
-                    score,
-                )
-            )
-
-        scored.sort(key=lambda x: -x[1])
-        return scored[:top_k]
 
     # -- introspection ------------------------------------------------------
 
@@ -658,19 +674,13 @@ class Neo4jGraphStore(GraphStore):
         OPTIONAL MATCH (e:KGEntity)
         WITH count(e) AS entities
         OPTIONAL MATCH ()-[r:RELATES_TO]->()
-        WITH entities, count(r) AS relations
-        OPTIONAL MATCH (c:KGCommunity)
-        RETURN entities, relations, count(c) AS communities
+        RETURN entities, count(r) AS relations
         """
         with self._driver.session(database=self._database) as s:
             rec = s.run(cypher).single()
             if rec is None:
-                return {"entities": 0, "relations": 0, "communities": 0}
-            return {
-                "entities": rec["entities"],
-                "relations": rec["relations"],
-                "communities": rec["communities"],
-            }
+                return {"entities": 0, "relations": 0}
+            return {"entities": rec["entities"], "relations": rec["relations"]}
 
     # -- lifecycle ----------------------------------------------------------
 

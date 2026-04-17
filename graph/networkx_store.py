@@ -124,6 +124,7 @@ class NetworkXGraphStore(GraphStore):
         # FAISS-backed vector indexes for semantic search
         self._community_idx = VectorIndex()
         self._relation_idx = VectorIndex()
+        self._entity_idx = VectorIndex()
         # relation_id → Relation quick-lookup cache (avoids O(n) scan per search)
         self._rel_cache: dict[str, Relation] = {}
         self._load()
@@ -149,6 +150,7 @@ class NetworkXGraphStore(GraphStore):
             # Rebuild FAISS indexes from loaded data
             self._rebuild_community_index()
             self._rebuild_relation_index()
+            self._rebuild_entity_index()
             logger.info(
                 "Loaded KG from %s: %d entities, %d relations, %d communities",
                 self._path,
@@ -202,6 +204,25 @@ class NetworkXGraphStore(GraphStore):
         if keys:
             self._relation_idx.add_batch(keys, vecs)
 
+    def _rebuild_entity_index(self) -> None:
+        """Rebuild the entity name FAISS index from scratch.
+
+        Enables cross-lingual entity lookup: a Chinese query like
+        "蜜蜂" can find an entity named "bee" as long as the embedder
+        is multilingual. Only entities that have a populated
+        ``name_embedding`` are indexed (set at ingest by the
+        embedding pipeline when disambiguation is enabled).
+        """
+        self._entity_idx.clear()
+        keys, vecs = [], []
+        for nid in self._graph.nodes:
+            ent: Entity = self._graph.nodes[nid]["entity"]
+            if ent.name_embedding:
+                keys.append(ent.entity_id)
+                vecs.append(ent.name_embedding)
+        if keys:
+            self._entity_idx.add_batch(keys, vecs)
+
     # -- mutations ----------------------------------------------------------
 
     def upsert_entity(self, entity: Entity) -> None:
@@ -228,6 +249,11 @@ class NetworkXGraphStore(GraphStore):
                     entity=entity,
                     _type_counts=Counter({entity.entity_type: 1}),
                 )
+            # Keep the entity-name FAISS index in sync so query-time
+            # embedding search can find this entity without a rebuild.
+            final_ent: Entity = self._graph.nodes[eid]["entity"]
+            if final_ent.name_embedding:
+                self._entity_idx.add(eid, final_ent.name_embedding)
             self._save()
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
@@ -284,9 +310,11 @@ class NetworkXGraphStore(GraphStore):
             return self._graph.nodes[entity_id]["entity"]
         return None
 
-    def get_entities_batch(self, entity_ids: list[str]) -> dict[str, Entity]:
-        """Fetch multiple entities at once (in-memory, instant)."""
-        return {eid: self._graph.nodes[eid]["entity"] for eid in entity_ids if eid in self._graph}
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
+        if not entity_ids:
+            return {}
+        with self._lock:
+            return {eid: self._graph.nodes[eid]["entity"] for eid in entity_ids if eid in self._graph}
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         with self._lock:
@@ -517,6 +545,30 @@ class NetworkXGraphStore(GraphStore):
                     results.append((comm, score))
             return results
 
+    # -- entity semantic search ---------------------------------------------
+
+    def search_entities_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine-similarity search over entity name embeddings.
+
+        Powers cross-lingual entity lookup when the embedder is
+        multilingual: a query vector derived from "蜜蜂" will land
+        close to the stored "bee" name vector.
+        """
+        with self._lock:
+            if not query_embedding:
+                return []
+            hits = self._entity_idx.search(query_embedding, top_k)
+            results: list[tuple[Entity, float]] = []
+            for eid, score in hits:
+                if eid in self._graph:
+                    ent: Entity = self._graph.nodes[eid]["entity"]
+                    results.append((ent, score))
+            return results
+
     # -- relation semantic search -------------------------------------------
 
     def search_relations_by_embedding(
@@ -571,8 +623,14 @@ class NetworkXGraphStore(GraphStore):
                 self._graph.remove_node(nid)
 
             if deleted:
-                # Rebuild FAISS indexes to remove stale entries
+                # Rebuild FAISS indexes to remove stale entries. The
+                # entity index matters for cross-lingual search: without
+                # this rebuild, search_entities_by_embedding could
+                # return FAISS hits whose underlying entity no longer
+                # exists in the graph (silently dropped by the caller,
+                # but wastes top-k slots).
                 self._rebuild_relation_index()
+                self._rebuild_entity_index()
                 self._save()
             return deleted
 
@@ -626,6 +684,7 @@ class NetworkXGraphStore(GraphStore):
 
             if removed_edges or removed_nodes:
                 self._rebuild_relation_index()
+                self._rebuild_entity_index()
                 self._save()
 
             return {

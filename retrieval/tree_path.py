@@ -159,10 +159,16 @@ class TreePath:
                 -d[1],  # then by BM25 score desc
             ),
         )
+        # Limit candidate docs to avoid excessive LLM calls
+        max_docs = getattr(nav_cfg, "max_docs", 5)
+        if len(prioritized) > max_docs:
+            prioritized = prioritized[:max_docs]
+
         dual = sum(1 for d, _ in prioritized if d in vector_doc_ids)
         log.info(
-            "tree_path: %d BM25 docs, %d dual-hit (prioritized)",
+            "tree_path: %d candidate docs (capped from %d), %d dual-hit",
             len(prioritized),
+            len(doc_hits),
             dual,
         )
 
@@ -247,6 +253,9 @@ class TreePath:
         if not tree_json:
             return []
 
+        # Cheap tree-size proxy for the diagnostic log (no extra IO).
+        tree_node_count = len(tree_json.get("nodes", {}))
+
         t0 = time.time()
 
         # Use scored navigation if available
@@ -263,16 +272,36 @@ class TreePath:
             nav_results = [NavResult(nid, 0.5) for nid in node_ids]
 
         nav_ms = int((time.time() - t0) * 1000)
+
+        # Pull navigator's per-call diagnostics from its TLS. These are
+        # populated by LLMTreeNavigator; other implementations may not
+        # set them, so default to None and skip those fields.
+        tls = getattr(self.navigator, "_tls", None)
+        outline_chars = getattr(tls, "last_outline_chars", None) if tls is not None else None
+        prompt_chars = getattr(tls, "last_prompt_chars", None) if tls is not None else None
+        response_chars = getattr(tls, "last_response_chars", None) if tls is not None else None
+
+        # Record LLM call for trace (thread-safe). Extra fields help us
+        # diagnose tree_nav latency outliers — is the prompt big, is the
+        # response big, or is it neither (pointing at rate-limit/retry/
+        # network)?
         model_name = getattr(self.navigator, "model", "unknown")
+        call_record: dict = dict(
+            model=model_name,
+            purpose=f"tree_nav:{doc_id[:20]}",
+            latency_ms=nav_ms,
+            output_preview=str([(r.node_id, r.relevance) for r in nav_results[:5]]),
+            tree_node_count=tree_node_count,
+            returned_nodes=len(nav_results),
+        )
+        if outline_chars is not None:
+            call_record["outline_chars"] = outline_chars
+        if prompt_chars is not None:
+            call_record["prompt_chars"] = prompt_chars
+        if response_chars is not None:
+            call_record["response_chars"] = response_chars
         with self._llm_calls_lock:
-            self._llm_calls.append(
-                dict(
-                    model=model_name,
-                    purpose=f"tree_nav:{doc_id[:20]}",
-                    latency_ms=nav_ms,
-                    output_preview=str([(r.node_id, r.relevance) for r in nav_results[:5]]),
-                )
-            )
+            self._llm_calls.append(call_record)
         log.debug(
             "tree nav doc=%s nodes=%d nav_ms=%d",
             doc_id[:20],
