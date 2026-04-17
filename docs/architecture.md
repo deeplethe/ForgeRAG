@@ -22,7 +22,7 @@ flowchart LR
         TreeBuild["Tree Building<br/>(LLM page-group + summaries)"]
         Chunk["Chunking<br/>(tree-aware, 600 tok target)"]
         Embed["Batch Embedding<br/>(LiteLLM)"]
-        KGE["KG Extraction<br/>(LLM entity/relation<br/>→ Leiden community + LLM summary)"]
+        KGE["KG Extraction<br/>(LLM entity/relation<br/>+ name/description embeddings)"]
 
         Upload -->|"raw bytes"| Convert
         Convert -->|"PDF file"| Parse
@@ -44,7 +44,7 @@ flowchart LR
         QU["Query Understanding<br/>(intent + routing + expansion)"]
         BM25["BM25 Path<br/>(term frequency)"]
         Vec["Vector Path<br/>(cosine similarity)"]
-        KG["KG Path<br/>(entity · community · relation<br/>+ synthesized KG context)"]
+        KG["KG Path<br/>(entity · relation<br/>+ synthesized KG context)"]
         TreeNav["Tree Navigation<br/>(LLM verify + expand<br/>with heat-map hints)"]
         Merge["RRF Merge + Expansion<br/>(sibling / descendant / xref)"]
         Rerank["LLM Rerank<br/>(relevance scoring)"]
@@ -325,7 +325,7 @@ flowchart TB
         direction TB
         BM25["BM25 Path<br/>InMemoryBM25Index.search_chunks()<br/>regex tokenizer: a-z0-9 + CJK chars<br/>BM25 score: IDF × tf×(k1+1)/(tf+norm)"]
         Vec["Vector Path<br/>embedder.embed_texts(queries)<br/>→ vector_store.search(embedding, top_k)<br/>cosine similarity, dedup by chunk_id"]
-        KG["KG Path (independent)<br/>_extract_query_entities() via LLM<br/>→ local: entity→multi-hop BFS (max 2)<br/>→ global: keyword→entity→chunks<br/>→ community: embedding→summary match<br/>→ relation: embedding→description match<br/>→ weighted merge: lw×local + gw×global + cw×comm + rw×rel<br/>→ collect KGContext: entity desc + relation desc + community summaries"]
+        KG["KG Path (independent)<br/>_extract_query_entities() via LLM<br/>→ local: entity→multi-hop BFS (max 2)<br/>→ global: keyword→entity (embedding + fuzzy name)<br/>→ relation: embedding→description match<br/>→ weighted merge: lw×local + gw×global + rw×rel<br/>→ collect KGContext: entity desc + relation desc"]
     end
 
     BM25 -->|"list&lt;ScoredChunk&gt;<br/>+ doc_ids (top-10 docs)"| Phase2
@@ -392,23 +392,21 @@ flowchart TB
 
 Key design: runs after BM25 + Vector to scope documents; single LLM call per document; parallel across documents with early stopping.
 
-**KG Path (LightRAG-inspired)** — Four-level knowledge graph retrieval:
-- **Local:** Extract entities from query → multi-hop traversal (max 2 hops, decaying score)
-- **Global:** Keyword search over entity names → score by rank
-- **Community:** Embed query → cosine match over community summaries (auto-generated via Leiden clustering + LLM summarization after ingestion)
-- **Relation:** Embed query → cosine match over relation descriptions
-- **Fusion:** `final = lw × local + gw × global + cw × community + rw × relation`
+**KG Path (LightRAG-inspired)** — Three-level knowledge graph retrieval:
+- **Local:** Extract entities from query → resolve to graph nodes (SHA256 exact → name-embedding cosine → fuzzy name, first hit wins) → multi-hop traversal (max 2 hops, decaying score)
+- **Global:** Keyword search over entity names (embedding-first, fuzzy name fallback) → score by rank
+- **Relation:** Embed query → cosine match over relation description embeddings
+- **Fusion:** `final = lw × local + gw × global + rw × relation`
+
+The embedding-first resolution in Local / Global makes KG retrieval **cross-lingual**: a Chinese query "蜜蜂" lands near an English-named entity "bee" as long as the embedder is multilingual (see `search_entities_by_embedding`).
 
 **Synthesized KG Context** — Beyond chunk discovery, the KG path also collects a `KGContext` object containing:
 - **Entity descriptions** — consolidated profiles for each matched entity (LLM-synthesized when fragments accumulate beyond threshold)
 - **Relation descriptions** — semantic summaries of how entities relate
-- **Community summaries** — high-level thematic overviews from Leiden clustering
 
-This "distilled knowledge layer" is injected directly into the LLM generation prompt (before raw text chunks), giving the model high-level thematic understanding alongside detailed source passages — inspired by LightRAG's three-layer context assembly (entities + relations + text units). The KG context section is budget-capped at 20% of `max_context_chars` to preserve room for cited text chunks.
+This "distilled knowledge layer" is injected directly into the LLM generation prompt (before raw text chunks), giving the model thematic understanding alongside detailed source passages — inspired by LightRAG's dual-level context assembly (entities + relations + text units). The KG context section is budget-capped at 40% of `max_context_chars` to preserve room for cited text chunks.
 
 **Description Consolidation** — When an entity is mentioned across many chunks (or documents), its description accumulates fragments. When fragment count or character length exceeds a configurable threshold (`merge_description_threshold=6`, `merge_description_max_chars=2000`), an LLM call synthesizes all fragments into a single concise description — both within-document (after extraction) and cross-document (after graph store upsert). This keeps entity descriptions high-quality for KG context injection.
-
-Community detection runs automatically when the ingestion queue drains (not per-document — one batch run after all uploads finish). Each community gets an LLM-generated summary and an embedding for semantic search, enabling high-level thematic queries like *"What are the key themes in sustainable agriculture?"* to match entire topic clusters rather than individual entity mentions.
 
 ### Tree + KG: Complementary Reasoning
 
@@ -481,7 +479,7 @@ sequenceDiagram
         VecDB-->>Retrieval: scored chunk_ids
         Retrieval-->>User: SSE progress: "vector_search"
     and KG
-        Retrieval->>GraphDB: entity lookup + BFS traversal + community search
+        Retrieval->>GraphDB: entity lookup + BFS traversal + relation embedding search
         GraphDB-->>Retrieval: entity chunks + relation chunks + KGContext
         Retrieval-->>User: SSE progress: "kg_search"
     end

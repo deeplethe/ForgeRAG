@@ -47,8 +47,8 @@ class KGContext:
     """Synthesized knowledge from the knowledge graph.
 
     Inspired by LightRAG's context assembly: the LLM sees not just raw
-    text chunks but also *distilled* entity descriptions, relation
-    descriptions, and community summaries produced during KG extraction.
+    text chunks but also *distilled* entity descriptions and relation
+    descriptions produced during KG extraction.
 
     This "synthesized knowledge layer" provides high-level thematic
     understanding that raw chunks alone cannot convey — e.g. an entity
@@ -61,12 +61,9 @@ class KGContext:
     relations: list[dict] = field(default_factory=list)
     """[{source, target, keywords, description}, ...]  — relation descriptions."""
 
-    community_summaries: list[dict] = field(default_factory=list)
-    """[{title, summary}, ...]  — high-level thematic summaries."""
-
     @property
     def is_empty(self) -> bool:
-        return not self.entities and not self.relations and not self.community_summaries
+        return not self.entities and not self.relations
 
 
 @dataclass

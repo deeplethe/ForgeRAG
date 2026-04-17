@@ -67,18 +67,6 @@ class Relation:
             self.relation_id = f"{self.source_entity}->{self.target_entity}"
 
 
-@dataclass
-class Community:
-    """A cluster of related entities discovered via community detection."""
-
-    community_id: str = ""
-    level: int = 0
-    entity_ids: list[str] = field(default_factory=list)
-    title: str = ""
-    summary: str = ""
-    summary_embedding: list[float] = field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Abstract store
 # ---------------------------------------------------------------------------
@@ -177,30 +165,6 @@ class GraphStore(ABC):
 
     def get_all_entities(self) -> list[Entity]:
         """Return every entity in the store. Override for efficiency."""
-        return []
-
-    # -- community detection ------------------------------------------------
-
-    def detect_communities(self, resolution: float = 1.0) -> list[Community]:
-        """Run Leiden clustering on the graph. Override in backends."""
-        return []
-
-    def get_communities(self) -> list[Community]:
-        """Return all stored communities."""
-        return []
-
-    def upsert_community(self, community: Community) -> None:
-        """Store or update a community."""
-
-    def search_communities(
-        self,
-        query_embedding: list[float],
-        top_k: int = 5,
-    ) -> list[tuple[Community, float]]:
-        """Cosine-similarity search over community summary embeddings.
-
-        Returns list of (community, score) tuples sorted by score desc.
-        """
         return []
 
     # -- entity semantic search ---------------------------------------------

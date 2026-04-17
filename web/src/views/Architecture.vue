@@ -190,7 +190,6 @@ const PARENT_CHILD = [
   { parent: 'image_enrichment.enabled', prefix: 'image_enrichment.max_workers' },
   { parent: 'retrieval.tree_path.llm_nav_enabled', prefix: 'retrieval.tree_path.nav.' },
   { parent: 'retrieval.kg_extraction.embed_relations', prefix: 'retrieval.kg_path.relation_weight' },
-  { parent: 'graph.community_detection.enabled', prefix: 'retrieval.kg_path.community_weight' },
   // Persistence: show sub-config only for selected backend
   // Storage: show sub-config only for selected mode
   { parent: '_backend_mismatch:storage.mode:local', prefix: 'storage.local.' },

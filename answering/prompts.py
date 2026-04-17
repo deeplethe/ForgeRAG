@@ -126,7 +126,7 @@ def _render_user_message(
 ) -> str:
     lines: list[str] = []
 
-    # ── KG synthesized context (entity/relation descriptions + community summaries) ──
+    # ── KG synthesized context (entity + relation descriptions) ──
     # Injected before raw text chunks so the LLM sees high-level
     # synthesized knowledge first, then drills into source passages.
     # Budget: cap at ~40% of max_context_chars to leave room for chunks.
@@ -134,16 +134,6 @@ def _render_user_message(
         kg_budget = int(cfg.max_context_chars * 0.4)
         kg_lines: list[str] = ["## Knowledge Graph Context", ""]
         kg_used = 0
-
-        if kg_context.community_summaries:
-            kg_lines.append("### Thematic Summaries")
-            for cs in kg_context.community_summaries:
-                line = f"- **{cs['title']}**: {cs['summary']}"
-                if kg_used + len(line) > kg_budget:
-                    break
-                kg_lines.append(line)
-                kg_used += len(line)
-            kg_lines.append("")
 
         if kg_context.entities and kg_used < kg_budget:
             kg_lines.append("### Key Entities")
@@ -244,11 +234,6 @@ def _estimate_kg_chars(kg_context: KGContext, cfg: GeneratorConfig) -> int:
     """
     kg_budget = int(cfg.max_context_chars * 0.4)
     used = 0
-    for cs in kg_context.community_summaries:
-        line = f"- **{cs['title']}**: {cs['summary']}"
-        if used + len(line) > kg_budget:
-            break
-        used += len(line)
     for ent in kg_context.entities:
         type_tag = f" ({ent['type']})" if ent.get("type") and ent["type"] != "unknown" else ""
         desc = _truncate(ent["description"], 300)

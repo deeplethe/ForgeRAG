@@ -175,9 +175,6 @@ class KGPathConfig(BaseModel):
     max_hops: int = 2
     local_weight: float = 0.5
     global_weight: float = 0.2
-    # Community-based retrieval
-    community_weight: float = 0.2
-    community_top_k: int = 5
     # Relation semantic search
     relation_weight: float = 0.1
     relation_top_k: int = 10

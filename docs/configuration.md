@@ -346,19 +346,6 @@ Controls all retrieval paths and merge strategy.
 | `merge_description_threshold` | int | `6` | Fragment count that triggers LLM description consolidation (0 = disable) |
 | `merge_description_max_chars` | int | `2000` | Char length that triggers LLM description consolidation |
 
-#### `graph.community_detection`
-
-Auto-runs **Leiden community clustering** after the ingestion queue drains, then generates LLM summaries per community and embeds them for semantic search. If LLM credentials are not set, inherits from `retrieval.kg_extraction`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable auto community detection after ingestion |
-| `resolution` | float | `1.0` | Leiden resolution (higher = more, smaller communities) |
-| `min_community_size` | int | `3` | Ignore communities with fewer entities |
-| `model` | string | `"openai/gpt-4o-mini"` | LLM for community summary generation |
-| `max_workers` | int | `5` | Parallel LLM summarization calls |
-| `timeout` | float | `60.0` | LLM timeout per community |
-
 #### `retrieval.kg_path`
 
 | Key | Type | Default | Description |
@@ -369,9 +356,7 @@ Auto-runs **Leiden community clustering** after the ingestion queue drains, then
 | `max_hops` | int | `2` | BFS depth in graph traversal |
 | `local_weight` | float | `0.5` | Weight for local (entity-direct) chunks |
 | `global_weight` | float | `0.2` | Weight for global (keyword-search) chunks |
-| `community_weight` | float | `0.2` | Weight for community-based semantic retrieval (requires community detection) |
 | `relation_weight` | float | `0.1` | Weight for relation description semantic search (requires embed_relations) |
-| `community_top_k` | int | `5` | Max communities matched per query |
 | `relation_top_k` | int | `10` | Max relations matched per query |
 
 #### `retrieval.merge`
