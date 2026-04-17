@@ -39,6 +39,20 @@ log = logging.getLogger(__name__)
 
 # (key, group, label, description, value_type, enum_options)
 EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
+    # --- Benchmark ---
+    (
+        "benchmark.judge_provider_id",
+        "benchmark",
+        "Judge LLM",
+        (
+            "LLM used to score benchmark answers (Faithfulness / Relevancy / "
+            "Context Precision). Pick a DIFFERENT provider than the Answer "
+            "LLM to avoid self-preference bias. If left empty, falls back to "
+            "the Answer LLM with a warning."
+        ),
+        "string",
+        None,
+    ),
     # --- Generation ---
     ("answering.generator.provider_id", "llm", "Answer LLM", "Chat model for answer generation", "string", None),
     ("answering.generator.temperature", "llm", "Temperature", "0.0 = deterministic, 1.0 = creative", "float", None),
@@ -290,7 +304,12 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "retrieval.rerank.enabled",
         "rerank",
         "Enable rerank",
-        "LLM-powered re-scoring of candidates after fusion",
+        (
+            "Recommended. Cross-encoder re-scoring of RRF candidates. In our "
+            "benchmark this raised Context Precision by 78% (0.15 → 0.267). "
+            "Requires a reranker provider — use the 'SiliconFlow · BGE Reranker' "
+            "preset for a quick start."
+        ),
         "bool",
         None,
     ),
@@ -315,6 +334,21 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         ),
         "enum",
         ["passthrough", "rerank_api", "llm_as_reranker"],
+    ),
+    (
+        "retrieval.rerank.on_failure",
+        "rerank",
+        "On failure",
+        (
+            "What to do if the rerank call fails. "
+            "• strict (recommended): surface the error to the architecture "
+            "UI (red dot) so misconfigurations are caught immediately. Query "
+            "still returns with RRF-order chunks as fallback. "
+            "• passthrough: silently return RRF-order chunks. Legacy behaviour "
+            "that hides bugs — avoid."
+        ),
+        "enum",
+        ["strict", "passthrough"],
     ),
     ("retrieval.rerank.provider_id", "rerank", "Rerank model", "Select a reranker from LLM Providers", "string", None),
     (
@@ -1096,6 +1130,7 @@ _PROVIDER_FIELDS = [
     ("parser.tree_builder", "llm_model", "llm_api_key", "llm_api_base"),
     ("retrieval.kg_extraction", "model", "api_key", "api_base"),
     ("retrieval.kg_path", "model", "api_key", "api_base"),
+    ("benchmark", "model", "api_key", "api_base"),
 ]
 
 # For embedder, provider_id lives on EmbedderConfig but credentials go to litellm sub-config
@@ -1117,7 +1152,9 @@ def resolve_providers(cfg, store: Store) -> int:
         pid_obj = _resolve_dotted(cfg, pid_path)
         if pid_obj is None:
             continue
-        provider_id = getattr(pid_obj, "provider_id", None)
+        # Most components use `provider_id`; benchmark uses `judge_provider_id`
+        # to make the intent explicit in settings. Probe both field names.
+        provider_id = getattr(pid_obj, "provider_id", None) or getattr(pid_obj, "judge_provider_id", None)
         if not provider_id:
             continue
 

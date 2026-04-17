@@ -93,15 +93,41 @@ def score_items(
     cancel: threading.Event | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
 ):
-    """Score each BenchmarkItem in-place with three metrics."""
+    """Score each BenchmarkItem in-place with three metrics.
+
+    Prefer the dedicated benchmark judge LLM (cfg.benchmark) if a
+    separate judge provider was configured — this avoids the model
+    scoring its own answers (self-preference bias). Falls back to the
+    answer generator with a log warning so users know the scores may
+    be biased.
+    """
+    bench_cfg = getattr(cfg, "benchmark", None)
     gen_cfg = cfg.answering.generator
-    model = gen_cfg.model
-    api_key = resolve_api_key(
-        api_key=gen_cfg.api_key,
-        api_key_env=gen_cfg.api_key_env,
-        context="benchmark_scoring",
-    )
-    api_base = gen_cfg.api_base
+    use_independent_judge = bool(bench_cfg and bench_cfg.judge_provider_id)
+
+    if use_independent_judge:
+        model = bench_cfg.model
+        api_key = resolve_api_key(
+            api_key=bench_cfg.api_key,
+            api_key_env=bench_cfg.api_key_env,
+            context="benchmark_scoring",
+            required=False,
+        )
+        api_base = bench_cfg.api_base
+        log.info("benchmark: using independent judge model=%s", model)
+    else:
+        model = gen_cfg.model
+        api_key = resolve_api_key(
+            api_key=gen_cfg.api_key,
+            api_key_env=gen_cfg.api_key_env,
+            context="benchmark_scoring",
+        )
+        api_base = gen_cfg.api_base
+        log.warning(
+            "benchmark: no independent judge configured — reusing the Answer LLM "
+            "for scoring, which introduces self-preference bias. Set benchmark."
+            "judge_provider_id to a different provider for rigorous A/B scoring."
+        )
 
     import litellm
 

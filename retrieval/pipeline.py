@@ -527,6 +527,8 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((bt["end"] - bt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((bt["start"] - _trace_started) * 1000)
         stats["bm25_hits"] = len(bm25_hits)
+        # Per-path top-5 chunk_ids (for benchmark per-path attribution analysis)
+        stats["bm25_top_ids"] = [s.chunk_id for s in bm25_hits[:5]]
 
         # Vector
         trace.begin_phase("vector_path")
@@ -550,6 +552,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((vt["end"] - vt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((vt["start"] - _trace_started) * 1000)
         stats["vector_hits"] = len(vector_hits)
+        stats["vector_top_ids"] = [s.chunk_id for s in vector_hits[:5]]
 
         # KG
         trace.begin_phase("kg_path")
@@ -564,6 +567,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((kt["end"] - kt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((kt["start"] - _trace_started) * 1000)
         stats["kg_hits"] = len(kg_hits)
+        stats["kg_top_ids"] = [s.chunk_id for s in kg_hits[:5]]
 
         # Tree (runs after BM25 + Vector, so recorded last)
         trace.begin_phase("tree_path")
@@ -584,6 +588,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((tt["end"] - tt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((tt["start"] - _trace_started) * 1000)
         stats["tree_hits"] = len(tree_hits)
+        stats["tree_top_ids"] = [s.chunk_id for s in tree_hits[:5]]
         stats["vector_doc_ids"] = len(vector_doc_ids)
 
         # ============================================================
@@ -676,13 +681,31 @@ class RetrievalPipeline:
             top_k=self.cfg.rerank.top_k,
             candidates=len(finalized),
         )
+        rerank_error: str | None = None
         if self.cfg.rerank.enabled:
-            picked = self.reranker.rerank(query, finalized, top_k=self.cfg.rerank.top_k)
+            try:
+                picked = self.reranker.rerank(query, finalized, top_k=self.cfg.rerank.top_k)
+            except Exception as e:  # including RerankerError in strict mode
+                # Log + record in trace but keep the query alive with RRF order
+                # so the user still gets an answer. The UI will show the error
+                # via the health-components endpoint + architecture red dot.
+                rerank_error = f"{type(e).__name__}: {e}"
+                log.warning("rerank phase failed — falling back to RRF order: %s", rerank_error)
+                picked = finalized[: self.cfg.rerank.top_k]
         else:
             picked = finalized[: self.cfg.rerank.top_k]
-        trace.end_phase(output_count=len(picked))
-        _pcb(phase="rerank", status="done", detail=f"{len(picked)} selected")
+        if rerank_error:
+            trace.end_phase(output_count=len(picked), error=rerank_error)
+        else:
+            trace.end_phase(output_count=len(picked))
+        _pcb(
+            phase="rerank",
+            status="error" if rerank_error else "done",
+            detail=rerank_error or f"{len(picked)} selected",
+        )
         stats["reranked_count"] = len(picked)
+        if rerank_error:
+            stats["rerank_error"] = rerank_error
 
         # ============================================================
         # Phase 6: Citations

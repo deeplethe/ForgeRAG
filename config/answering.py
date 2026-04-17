@@ -57,8 +57,11 @@ class CORSConfig(BaseModel):
 class AnsweringSection(BaseModel):
     generator: GeneratorConfig = Field(default_factory=GeneratorConfig)
 
-    # Cap on how many merged-retrieval chunks are forwarded to the LLM
-    max_chunks: int = 10
+    # Cap on how many merged-retrieval chunks are forwarded to the LLM.
+    # Default 8 pairs well with rerank top_k=10: the generator sees only
+    # the highest-ranked chunks so faithfulness stays high without padding
+    # the context with marginal matches.
+    max_chunks: int = 8
 
     # Whether to keep expansion (sibling/crossref) chunks in the prompt.
     # Disabling makes the context tighter and cheaper; enabling helps

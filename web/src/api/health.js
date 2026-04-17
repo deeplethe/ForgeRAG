@@ -78,3 +78,15 @@ export const testConnection = (target) =>
  * }>}
  */
 export const getInfrastructure = () => get('/api/v1/system/infrastructure')
+
+/**
+ * 组件健康快照（各 pipeline 组件最近一次调用状态）
+ * @returns {Promise<{ components: Object.<string, {
+ *   status: 'healthy'|'degraded'|'error'|'disabled'|'unknown',
+ *   last_ok_ts?: number, last_error_ts?: number,
+ *   last_error_type?: string, last_error_msg?: string,
+ *   last_latency_ms?: number, total_ok?: number, total_err?: number,
+ *   extra?: object
+ * }> }>}
+ */
+export const getComponentHealth = () => get('/api/v1/health/components')

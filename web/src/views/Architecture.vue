@@ -6,7 +6,17 @@ import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
-import { getStats, getRetrievalStatus, getAllSettings, updateSetting, uploadAndIngest, getInfrastructure, listLLMProviders, createLLMProvider, updateLLMProvider, deleteLLMProvider, getGraphStats } from '@/api'
+import { getStats, getRetrievalStatus, getAllSettings, updateSetting, uploadAndIngest, getInfrastructure, listLLMProviders, createLLMProvider, updateLLMProvider, deleteLLMProvider, getGraphStats, getComponentHealth, listProviderPresets, testLLMProvider } from '@/api'
+import {
+  NODES as _DEF_NODES,
+  EDGES as _DEF_EDGES,
+  TOGGLEABLE as _DEF_TOGGLEABLE,
+  GROUP_MAP as _DEF_GROUP_MAP,
+  NODE_TO_HEALTH as _DEF_NODE_TO_HEALTH,
+  LAYER_LABELS as _DEF_LAYER_LABELS,
+  COLS as _DEF_COLS,
+  ROWS as _DEF_ROWS,
+} from '@/composables/architectureNodes'
 import { request } from '@/api/client'
 import { TrashIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon, ArrowPathIcon, EyeIcon, EyeSlashIcon } from '@heroicons/vue/24/outline'
 import Spinner from '@/components/Spinner.vue'
@@ -20,12 +30,34 @@ const infra = ref({ storage_mode: '', storage_root: '', relational_backend: '', 
 const activeNode = ref(null)
 const restarting = ref(false)
 const loading = ref(true)
+// Health registry snapshot: { reranker: {status, last_error_msg, ...}, ... }
+const componentHealth = ref({})
+
+async function reloadState() {
+  try {
+    const se = await getAllSettings()
+    settings.value = se.groups || {}
+  } catch {}
+  try { stats.value = await getStats() } catch {}
+  try { status.value = await getRetrievalStatus() } catch {}
+  try { infra.value = await getInfrastructure() } catch {}
+  try { graphStats.value = await getGraphStats() } catch {}
+  try { await loadProviders() } catch {}
+}
 
 async function restartServer() {
   restarting.value = true
   try { await request('/api/v1/system/restart', { method: 'POST' }) } catch {}
   const poll = setInterval(async () => {
-    try { const r = await fetch('/api/v1/health'); if (r.ok) { clearInterval(poll); restarting.value = false; await load() } } catch {}
+    try {
+      const r = await fetch('/api/v1/health')
+      if (r.ok) {
+        clearInterval(poll)
+        restarting.value = false
+        hasPendingChanges.value = false  // cleared on successful restart
+        await reloadState()
+      }
+    } catch {}
   }, 2000)
   setTimeout(() => { clearInterval(poll); restarting.value = false }, 30000)
 }
@@ -48,7 +80,18 @@ async function onDrop(e) {
 /* ── LLM Providers ── */
 const providers = ref([])
 const showNewProvider = ref(false)
-const newProv = reactive({ name: '', provider_type: 'chat', api_base: '', model_name: '', api_key: '' })
+const newProv = reactive({ name: '', provider_type: 'chat', api_base: '', model_name: '', api_key: '', preset_id: '' })
+const presets = ref([])                     // full preset catalogue (loaded once)
+async function loadPresets() { try { const r = await listProviderPresets(); presets.value = r?.presets || [] } catch {} }
+function presetsForType(type) { return presets.value.filter(p => p.provider_type === type) }
+function applyPreset(presetId) {
+  const p = presets.value.find(x => x.id === presetId)
+  if (!p) return
+  newProv.provider_type = p.provider_type
+  newProv.model_name    = p.model_name
+  newProv.api_base      = p.api_base || ''
+  if (!newProv.name) newProv.name = p.label.split(' · ').pop().toLowerCase().replace(/\s+/g, '-')
+}
 
 async function loadProviders() { try { providers.value = await listLLMProviders() } catch {} }
 function providersByType(type) { return providers.value.filter(p => p.provider_type === type) }
@@ -64,9 +107,35 @@ async function doCreateProvider() {
   if (!newProv.name || !newProv.model_name) return
   try {
     await createLLMProvider({ name: newProv.name, providerType: newProv.provider_type, apiBase: newProv.api_base || null, modelName: newProv.model_name, apiKey: newProv.api_key || null })
-    newProv.name = ''; newProv.provider_type = 'chat'; newProv.api_base = ''; newProv.model_name = ''; newProv.api_key = ''
+    newProv.name = ''; newProv.provider_type = 'chat'; newProv.api_base = ''; newProv.model_name = ''; newProv.api_key = ''; newProv.preset_id = ''
     showNewProvider.value = false; await loadProviders()
   } catch (e) { console.error('doCreateProvider failed:', e) }
+}
+
+/* ── Test connection (provider edit popover) ── */
+const testResult = reactive({ show: false, ok: false, latency_ms: 0, message: '', suggested_fix: '' })
+const testing = ref(false)
+async function doTestProvider(id) {
+  if (!id) return
+  testing.value = true
+  testResult.show = false
+  try {
+    const r = await testLLMProvider(id)
+    testResult.ok = !!r.ok
+    testResult.latency_ms = r.latency_ms || 0
+    testResult.message = r.ok ? (r.response_preview || 'OK') : (r.message || 'failed')
+    testResult.suggested_fix = r.suggested_fix || ''
+    testResult.show = true
+    // Refresh health (rerank probe state may have changed)
+    loadComponentHealth()
+  } catch (e) {
+    testResult.ok = false
+    testResult.message = String(e)
+    testResult.suggested_fix = ''
+    testResult.show = true
+  } finally {
+    testing.value = false
+  }
 }
 const editProv = reactive({ show: false, id: null, name: '', provider_type: 'chat', api_base: '', model_name: '', api_key: '', x: 0, y: 0 })
 function openEditProvider(p, e) {
@@ -118,16 +187,34 @@ const moduleDesc = {
 }
 
 /* ── Data loading ── */
+// Settings + providers are blocking (panel can't render without them).
+// Stats / graph-stats / infra load independently so the metrics bar can
+// show a per-item spinner for each field that hasn't arrived yet.
+const statsReady = ref(false)
+const graphReady = ref(false)
+let healthPollTimer = null
+async function loadComponentHealth() {
+  try {
+    const r = await getComponentHealth()
+    componentHealth.value = r?.components || {}
+  } catch {}
+}
 onMounted(async () => {
-  // Settings + providers first (needed for panel), then show graph
-  const [se] = await Promise.allSettled([getAllSettings(), loadProviders()])
+  const [se] = await Promise.allSettled([getAllSettings(), loadProviders(), loadPresets()])
   if (se.status === 'fulfilled') settings.value = se.value.groups || {}
   loading.value = false
-  // Stats are non-blocking — fill in as they arrive
-  getStats().then(v => { stats.value = v }).catch(() => {})
+  // Fire-and-forget — each metric cell shows a Spinner until its promise lands.
+  getStats().then(v => { stats.value = v }).catch(() => {}).finally(() => { statsReady.value = true })
   getRetrievalStatus().then(v => { status.value = v }).catch(() => {})
   getInfrastructure().then(v => { infra.value = v }).catch(() => {})
-  getGraphStats().then(v => { graphStats.value = v }).catch(() => {})
+  getGraphStats().then(v => { graphStats.value = v }).catch(() => {}).finally(() => { graphReady.value = true })
+  // Initial health + poll every 30s so the UI reflects reranker / embedder
+  // failures without waiting for a user query.
+  loadComponentHealth()
+  healthPollTimer = setInterval(loadComponentHealth, 30000)
+})
+onUnmounted(() => {
+  if (healthPollTimer) clearInterval(healthPollTimer)
 })
 
 function gv(key) {
@@ -151,6 +238,7 @@ function toggle(key) {
   // Fire-and-forget PUT
   saveCount++
   saving.value = true
+  markPending()
   updateSetting(map[key], newVal)
     .catch(e => console.error('toggle failed:', e))
     .finally(() => { if (--saveCount <= 0) { saveCount = 0; saving.value = false } })
@@ -161,21 +249,7 @@ function isOn(key) {
 }
 
 /* ── Settings panel ── */
-const groupMap = {
-  filestore: ['blob_storage', 'cache'], file_upload: [],
-  parser: ['parser', 'images'], tree_builder: ['tree_builder'], chunker: ['chunker'],
-  embedding: ['embedding'], kg_extraction: ['kg_extraction'],
-  database: ['persistence_relational'],
-  vector_store: ['persistence_vector'],
-  graph_store: ['persistence_graph'],
-  user_query: [], qu: ['query_understanding', 'prompts_qu'],
-  vector: ['retrieval_vector'], bm25: ['retrieval_bm25'],
-  tree: ['retrieval_tree', 'prompts_tree'], kg: ['kg'],
-  fusion: ['retrieval_fusion'], expansion: ['context_expansion'],
-  rerank: ['rerank', 'prompts_rerank'],
-  prompt_builder: [], generator: ['llm', 'prompts_gen'],
-  citation_builder: [], answer: [],
-}
+const groupMap = _DEF_GROUP_MAP
 
 // Keys already shown as the header toggle — exclude from settings list
 const TOGGLE_KEYS = new Set(Object.values({ vector: 'retrieval.vector.enabled', bm25: 'retrieval.bm25.enabled', tree: 'retrieval.tree_path.enabled', rerank: 'retrieval.rerank.enabled', qu: 'retrieval.query_understanding.enabled', kg: 'retrieval.kg_path.enabled', kg_extraction: 'retrieval.kg_extraction.enabled' }))
@@ -250,6 +324,7 @@ function saveSetting(key, val) {
   // Fire-and-forget PUT — never blocks UI
   saveCount++
   saving.value = true
+  markPending()
   updateSetting(key, val)
     .catch(e => console.error('saveSetting failed:', e))
     .finally(() => { if (--saveCount <= 0) { saveCount = 0; saving.value = false } })
@@ -310,58 +385,165 @@ function nodeHasError(nodeId) {
   return false
 }
 
+/* ── Pending-changes tracking (for Apply & Restart dirty indicator) ── */
+const hasPendingChanges = ref(false)
+function markPending() { hasPendingChanges.value = true }
+
 /* ── Vue Flow graph definition ── */
-const TOGGLEABLE = new Set(['vector', 'bm25', 'tree', 'rerank', 'qu', 'kg', 'kg_extraction'])
+const TOGGLEABLE = _DEF_TOGGLEABLE
 
-/*
- * Grid layout — nodes snapped to columns (x) and rows (y).
- * Columns: 0=0, 1=200, 2=420, 3=640, 4=860
- * Vertical gaps between layers: a=0, b=200, c=380, d=700
- */
-const C = [0, 200, 420, 640, 860] // column x
-const R = { a: 0, b: 230, c: 370, d: 750 } // layer y base
+/* ── Dynamic node description ── */
+// Strip provider prefix like "openai/" or "huggingface/" for compact display
+function shortModel(name) {
+  if (!name) return ''
+  const parts = name.split('/')
+  return parts[parts.length - 1]
+}
+function providerModelFor(key) {
+  const pid = gv(key)
+  if (!pid) return ''
+  const p = providers.value.find(x => x.id === pid)
+  return p ? shortModel(p.model_name) : ''
+}
 
-const nodesDef = [
-  // (a) Document Ingestion — two rows with 110px gap
-  { id: 'file_upload', label: 'File Upload', desc: 'PDF, DOCX, PPTX, HTML...', layer: 'a', pos: [C[0], R.a] },
-  { id: 'parser', label: 'Document Parser', desc: 'PyMuPDF \u00b7 MinerU \u00b7 VLM', layer: 'a', pos: [C[1], R.a] },
-  { id: 'chunker', label: 'Chunker', desc: 'Token-based \u00b7 tree-aware', layer: 'a', pos: [C[2], R.a] },
-  { id: 'tree_builder', label: 'Tree Builder', desc: 'LLM page-group inference', layer: 'a', pos: [C[3], R.a] },
-  { id: 'embedding', label: 'Embedder', desc: 'Dense vector encoding', layer: 'a', pos: [C[2], R.a + 110] },
-  { id: 'kg_extraction', label: 'KG Extraction', desc: 'Entity + relation extraction', layer: 'a', pos: [C[3], R.a + 110] },
+// Returns the dynamic subtitle for a node, or falls back to the default static desc.
+function nodeDesc(id, defaultDesc) {
+  // Toggleable nodes show "(disabled)" when off
+  if (TOGGLEABLE.has(id) && !isOn(id)) return '(disabled)'
+  switch (id) {
+    case 'rerank': {
+      const backend = gv('retrieval.rerank.backend') || 'passthrough'
+      const topK = gv('retrieval.rerank.top_k')
+      if (backend === 'passthrough') return `Passthrough · top_k=${topK ?? '?'}`
+      const model = providerModelFor('retrieval.rerank.provider_id') || '(no model)'
+      const bLabel = backend === 'rerank_api' ? 'API' : 'LLM-as-judge'
+      return `${bLabel} · ${model} · top_k=${topK ?? '?'}`
+    }
+    case 'tree': {
+      if (gv('retrieval.tree_path.llm_nav_enabled')) {
+        const model = providerModelFor('retrieval.tree_path.nav.provider_id') || '(no model)'
+        return `LLM nav · ${model}`
+      }
+      return 'BM25 heuristic'
+    }
+    case 'kg': {
+      const model = providerModelFor('retrieval.kg_path.provider_id') || '(no model)'
+      const hops = gv('retrieval.kg_path.max_hops')
+      return `max_hops=${hops ?? '?'} · ${model}`
+    }
+    case 'kg_extraction': {
+      const model = providerModelFor('retrieval.kg_extraction.provider_id') || '(no model)'
+      return model
+    }
+    case 'qu': {
+      const model = providerModelFor('retrieval.query_understanding.provider_id') || '(no model)'
+      return model
+    }
+    case 'vector': {
+      const k = gv('retrieval.vector.top_k')
+      return `top_k=${k ?? '?'}`
+    }
+    case 'bm25': {
+      const k = gv('retrieval.bm25.top_k')
+      return `top_k=${k ?? '?'}`
+    }
+    case 'embedding': {
+      const model = providerModelFor('embedder.provider_id') || '(no model)'
+      const dim = gv('embedder.dimension')
+      return dim ? `${model} · dim=${dim}` : model
+    }
+    case 'generator': {
+      const model = providerModelFor('answering.generator.provider_id') || '(no model)'
+      return model
+    }
+    case 'database': {
+      return gv('persistence.relational.backend') || 'sqlite'
+    }
+    case 'vector_store': {
+      return gv('persistence.vector.backend') || 'chromadb'
+    }
+    case 'graph_store': {
+      return gv('graph.backend') || 'networkx'
+    }
+    case 'filestore': {
+      return gv('storage.mode') || 'local'
+    }
+    case 'parser': {
+      const b = []
+      if (gv('parser.backends.pymupdf.enabled') !== false) b.push('PyMuPDF')
+      if (gv('parser.backends.mineru.enabled')) b.push('MinerU')
+      if (gv('image_enrichment.enabled')) b.push('VLM')
+      return b.join(' · ') || 'PyMuPDF'
+    }
+    case 'tree_builder': {
+      if (gv('parser.tree_builder.llm_enabled')) {
+        const model = providerModelFor('parser.tree_builder.provider_id') || '(no model)'
+        return `LLM · ${model}`
+      }
+      return 'Heuristic'
+    }
+    default:
+      return defaultDesc
+  }
+}
 
-  // (b) Persistence — one row
-  { id: 'filestore', label: 'Blob Storage', desc: 'Local \u00b7 S3 \u00b7 OSS', layer: 'b', pos: [C[1], R.b] },
-  { id: 'database', label: 'Relational DB', desc: 'SQLite \u00b7 PostgreSQL \u00b7 MySQL', layer: 'b', pos: [C[2], R.b] },
-  { id: 'vector_store', label: 'Vector Store', desc: 'ChromaDB \u00b7 pgvector \u00b7 Qdrant', layer: 'b', pos: [C[3], R.b] },
-  { id: 'graph_store', label: 'Graph Store', desc: 'NetworkX \u00b7 Neo4j', layer: 'b', pos: [C[4], R.b] },
+// Map each architecture node id → the health registry component key
+const NODE_TO_HEALTH = _DEF_NODE_TO_HEALTH
 
-  // (c) Retrieval — 4 search paths with 90px gaps
-  { id: 'user_query', label: 'User Query', desc: 'Natural language question', layer: 'c', pos: [C[0], R.c + 90] },
-  { id: 'qu', label: 'Query Understanding', desc: 'Expand & classify intent', layer: 'c', pos: [C[1], R.c + 90] },
-  { id: 'bm25', label: 'BM25', desc: 'Keyword matching', layer: 'c', pos: [C[2], R.c] },
-  { id: 'vector', label: 'Vector Search', desc: 'Semantic similarity', layer: 'c', pos: [C[2], R.c + 90] },
-  { id: 'tree', label: 'Tree Navigation', desc: 'LLM structure reasoning', layer: 'c', pos: [C[2], R.c + 180] },
-  { id: 'kg', label: 'KG Path', desc: 'Multi-hop traversal', layer: 'c', pos: [C[2], R.c + 270] },
-  { id: 'fusion', label: 'RRF Merge', desc: 'Reciprocal rank fusion', layer: 'c', pos: [C[3], R.c + 45] },
-  { id: 'expansion', label: 'Context Expansion', desc: 'Descendant \u00b7 sibling \u00b7 xref', layer: 'c', pos: [C[3], R.c + 180] },
-  { id: 'rerank', label: 'Rerank', desc: 'LLM relevance scoring', layer: 'c', pos: [C[4], R.c + 110] },
+function healthFor(id) {
+  const key = NODE_TO_HEALTH[id]
+  if (!key) return null
+  return componentHealth.value?.[key] || null
+}
 
-  // (d) Answer Generation — one row
-  { id: 'prompt_builder', label: 'Prompt Builder', desc: 'Context + chunks + KG', layer: 'd', pos: [C[1], R.d] },
-  { id: 'generator', label: 'LLM Generation', desc: 'Streaming response', layer: 'd', pos: [C[2], R.d] },
-  { id: 'citation_builder', label: 'Citation Builder', desc: 'Bbox + page mapping', layer: 'd', pos: [C[3], R.d] },
-  { id: 'answer', label: 'Answer', desc: 'Pixel-precise citations', layer: 'd', pos: [C[4], R.d] },
-]
+// Returns 'gray' | 'red' | 'yellow' | null — only signals ANOMALIES
+// (disabled / error / degraded). Healthy state shows no dot to avoid
+// visual noise.
+function nodeStateColor(id) {
+  // Validation errors (missing provider_id etc) take priority
+  if (nodeHasError(id)) return 'red'
+  const h = healthFor(id)
+  if (h) {
+    if (h.status === 'error')    return 'red'
+    if (h.status === 'degraded') return 'yellow'
+    if (h.status === 'disabled') return 'gray'
+  }
+  // Fall back to config-driven disabled indicator
+  if (TOGGLEABLE.has(id) && !isOn(id)) return 'gray'
+  return null
+}
 
-const LAYER_COLORS = { a: '#3b82f6', b: '#8b5cf6', c: '#f59e0b', d: '#10b981' }
+// Tooltip text for a node's state dot, hover-only.
+function nodeStateTooltip(id) {
+  if (nodeHasError(id)) {
+    const errs = nodeValidation(id).errors
+    return 'Config error: ' + Object.values(errs).join(' · ')
+  }
+  const h = healthFor(id)
+  if (!h) return ''
+  if (h.status === 'error') {
+    return `Error: ${h.last_error_type || ''}${h.last_error_msg ? ' · ' + h.last_error_msg : ''}`
+  }
+  if (h.status === 'degraded') {
+    return `Degraded: recent error ${h.last_error_type || ''} — ${h.last_error_msg || ''}`
+  }
+  if (h.status === 'disabled') return 'Disabled'
+  if (h.status === 'healthy' && h.last_latency_ms != null) {
+    return `Healthy · last ${h.last_latency_ms}ms`
+  }
+  return ''
+}
 
-const layerLabels = [
-  { id: 'label_a', label: 'Document Ingestion', pos: [C[0], R.a - 32], color: LAYER_COLORS.a },
-  { id: 'label_b', label: 'Persistence', pos: [C[0], R.b - 32], color: LAYER_COLORS.b },
-  { id: 'label_c', label: 'Multi-Modal Retrieval', pos: [C[0], R.c - 32], color: LAYER_COLORS.c },
-  { id: 'label_d', label: 'Answer Generation', pos: [C[0], R.d - 32], color: LAYER_COLORS.d },
-]
+// Graph topology + layout come from '@/composables/architectureNodes'.
+const C = _DEF_COLS
+const R = _DEF_ROWS
+const nodesDef = _DEF_NODES
+const layerLabels = _DEF_LAYER_LABELS.map(l => ({
+  id: l.id,
+  label: l.label,
+  pos: [C[0], R[l.row] - 32],
+  color: l.color,
+}))
 
 const flowNodes = computed(() => {
   const pipeline = nodesDef.map(n => ({
@@ -369,61 +551,28 @@ const flowNodes = computed(() => {
     type: 'pipeline',
     position: { x: n.pos[0], y: n.pos[1] },
     data: {
-      label: n.label, desc: n.desc, layer: n.layer,
+      label: n.label,
+      desc: nodeDesc(n.id, n.desc),
+      layer: n.layer,
       disabled: TOGGLEABLE.has(n.id) && !isOn(n.id),
       hasConfig: hasConfig(n.id),
       hasError: nodeHasError(n.id),
+      stateColor: nodeStateColor(n.id),
+      stateTooltip: nodeStateTooltip(n.id),
     },
+    zIndex: 10,
   }))
   const labels = layerLabels.map(l => ({
     id: l.id, type: 'label',
     position: { x: l.pos[0], y: l.pos[1] },
     data: { label: l.label, color: l.color },
     selectable: false, draggable: false,
+    zIndex: 5,
   }))
-  return [...pipeline, ...labels]
+  return [...labels, ...pipeline]
 })
 
-/*
- * Edge definitions: [source, target, sourceHandle?, targetHandle?]
- * Handle positions: 't'=top, 'b'=bottom, 'l'=left, 'r'=right
- * Default: source=right, target=left (horizontal flow)
- * Cross-layer vertical: source=bottom, target=top
- */
-const edgesDef = [
-  // (a) Ingestion — within layer only
-  ['file_upload', 'parser'],
-  ['parser', 'chunker'],
-  ['chunker', 'tree_builder'],
-  ['chunker', 'embedding', 'b', 'l'],
-  ['chunker', 'kg_extraction', 'b', 'l'],
-
-  // (b) Persistence — horizontal association (no arrows)
-  ['filestore', 'database', null, null, 'noarrow'],
-  ['database', 'vector_store', null, null, 'noarrow'],
-  ['vector_store', 'graph_store', null, null, 'noarrow'],
-
-  // (c) Retrieval — within layer only
-  // QU fans out to all 4 paths
-  ['user_query', 'qu'],
-  ['qu', 'bm25'],
-  ['qu', 'vector'],
-  ['qu', 'kg'],
-  // BM25 + Vector are pre-filters for Tree Navigation
-  ['bm25', 'tree', 'b', 't'],
-  ['vector', 'tree', 'b', 't'],
-  // Tree + KG merge into RRF
-  ['tree', 'fusion'],
-  ['kg', 'fusion'],
-  // RRF → Expansion → Rerank
-  ['fusion', 'expansion', 'b', 't'],
-  ['expansion', 'rerank'],
-
-  // (d) Generation — within layer only
-  ['prompt_builder', 'generator'],
-  ['generator', 'citation_builder'],
-  ['citation_builder', 'answer'],
-]
+const edgesDef = _DEF_EDGES
 
 const flowEdges = computed(() =>
   edgesDef.map((def, i) => {
@@ -432,18 +581,23 @@ const flowEdges = computed(() =>
     const tgtOff = TOGGLEABLE.has(t) && !isOn(t)
     const dim = srcOff || tgtOff
     const noArrow = flags === 'noarrow'
+    const dashed = flags === 'dashed'
     const handleMap = { t: Position.Top, b: Position.Bottom, l: Position.Left, r: Position.Right }
+    const baseStroke = dim ? '#d1d5db' : '#909090'
+    const style = dim
+      ? { stroke: baseStroke, strokeDasharray: '5 5', opacity: 0.35, strokeWidth: 1 }
+      : dashed
+        ? { stroke: '#a8a8a8', strokeDasharray: '4 4', strokeWidth: 1.2, opacity: 0.8 }
+        : { stroke: baseStroke, strokeWidth: 1.2 }
     return {
       id: `e${i}`,
       source: s,
       target: t,
-      type: 'smoothstep',
+      type: 'default',   // smooth bezier curve — no right-angle bends
       ...(sh ? { sourceHandle: handleMap[sh] } : {}),
       ...(th ? { targetHandle: handleMap[th] } : {}),
-      style: dim
-        ? { stroke: '#d1d5db', strokeDasharray: '5 5', opacity: 0.35, strokeWidth: 1 }
-        : { stroke: '#909090', strokeWidth: 1.2 },
-      ...(noArrow ? {} : { markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : '#909090', width: 12, height: 12 } }),
+      style,
+      ...(noArrow ? {} : { markerEnd: { type: 'arrowclosed', color: dim ? '#d1d5db' : (dashed ? '#a8a8a8' : '#909090'), width: 12, height: 12 } }),
     }
   })
 )
@@ -452,7 +606,15 @@ const { fitView } = useVueFlow()
 let resizeTimer = null
 function onResize() {
   clearTimeout(resizeTimer)
-  resizeTimer = setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 150)
+  resizeTimer = setTimeout(() => fitView({ padding: 0.18, duration: 200 }), 150)
+}
+// Initial fit — called once nodes have measured dimensions
+let initialFitted = false
+function onNodesInitialized() {
+  if (initialFitted) return
+  initialFitted = true
+  // Run on next tick to ensure layout is settled
+  nextTick(() => fitView({ padding: 0.18, duration: 0 }))
 }
 onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => window.removeEventListener('resize', onResize))
@@ -467,7 +629,7 @@ function onNodeClick({ node }) {
   nextTick(() => {
     if (panelRef.value) panelRef.value.scrollTop = 0
     // Refit when panel opens/closes (container width changes)
-    if (wasOpen !== isOpen) setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 250)
+    if (wasOpen !== isOpen) setTimeout(() => fitView({ padding: 0.18, duration: 200 }), 250)
   })
 }
 </script>
@@ -490,7 +652,7 @@ function onNodeClick({ node }) {
       <VueFlow
         :nodes="flowNodes"
         :edges="flowEdges"
-        :fit-view-on-init="true"
+        :fit-view-on-init="false"
         :nodes-draggable="false"
         :nodes-connectable="false"
         :zoom-on-scroll="true"
@@ -501,6 +663,7 @@ function onNodeClick({ node }) {
         :max-zoom="2"
         @node-click="onNodeClick"
         @pane-click="activeNode = null"
+        @nodes-initialized="onNodesInitialized"
       >
         <!-- Custom pipeline node -->
         <template #node-pipeline="{ data, id }">
@@ -517,6 +680,9 @@ function onNodeClick({ node }) {
             <Handle type="source" :position="Position.Bottom" />
             <div class="pipeline-node__title">{{ data.label }}</div>
             <div class="pipeline-node__desc">{{ data.desc }}</div>
+            <span v-if="data.stateColor" class="state-dot"
+              :class="'state-dot--' + data.stateColor"
+              :title="data.stateTooltip"></span>
           </div>
         </template>
 
@@ -528,9 +694,43 @@ function onNodeClick({ node }) {
           </div>
         </template>
 
-        <Controls position="bottom-left" />
+        <Controls position="bottom-left" :fit-view-params="{ padding: 0 }" />
         <Background :gap="20" :size="0.5" />
       </VueFlow>
+
+      <!-- Top-center metrics bar — absolute within flex-1 so it tracks the visible graph
+           (recenters when the side panel opens/closes, stays above graph content). -->
+      <div class="absolute top-3 left-1/2 -translate-x-1/2 z-10 metrics-bar">
+        <span class="metric">
+          <Spinner v-if="!statsReady" size="xs" />
+          <span v-else class="metric__v">{{ stats.documents?.toLocaleString?.() ?? stats.documents ?? 0 }}</span>
+          <span class="metric__l">docs</span>
+        </span>
+        <span class="metric-sep">·</span>
+        <span class="metric">
+          <Spinner v-if="!statsReady" size="xs" />
+          <span v-else class="metric__v">{{ stats.chunks?.toLocaleString?.() ?? stats.chunks ?? 0 }}</span>
+          <span class="metric__l">chunks</span>
+        </span>
+        <span class="metric-sep">·</span>
+        <span class="metric">
+          <Spinner v-if="!statsReady" size="xs" />
+          <span v-else class="metric__v">{{ stats.files?.toLocaleString?.() ?? stats.files ?? 0 }}</span>
+          <span class="metric__l">files</span>
+        </span>
+        <span class="metric-sep">·</span>
+        <span class="metric">
+          <Spinner v-if="!graphReady" size="xs" />
+          <span v-else class="metric__v">{{ graphStats.entities?.toLocaleString?.() ?? graphStats.entities ?? 0 }}</span>
+          <span class="metric__l">entities</span>
+        </span>
+        <span class="metric-sep">·</span>
+        <span class="metric">
+          <Spinner v-if="!graphReady" size="xs" />
+          <span v-else class="metric__v">{{ graphStats.relations?.toLocaleString?.() ?? graphStats.relations ?? 0 }}</span>
+          <span class="metric__l">relations</span>
+        </span>
+      </div>
 
       <!-- Apply & Restart + saving indicator -->
       <div class="absolute top-3 right-3 z-10 flex items-center gap-2">
@@ -540,10 +740,16 @@ function onNodeClick({ node }) {
           </span>
         </transition>
         <button @click="restartServer" :disabled="restarting"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors shadow-sm"
-          :class="restarting ? 'bg-amber-100 text-amber-700 cursor-wait' : 'bg-white/90 text-brand hover:bg-white border border-line'">
+          class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors shadow-sm"
+          :class="restarting
+            ? 'bg-amber-100 text-amber-700 cursor-wait'
+            : (hasPendingChanges
+                ? 'bg-brand text-white hover:opacity-90 border border-brand'
+                : 'bg-white/90 text-brand hover:bg-white border border-line')"
+          :title="hasPendingChanges ? 'Settings changed — restart to apply' : 'No pending changes'">
           <ArrowPathIcon class="w-3.5 h-3.5" :class="restarting ? 'animate-spin' : ''" />
           {{ restarting ? 'Restarting...' : 'Apply & Restart' }}
+          <span v-if="hasPendingChanges && !restarting" class="dirty-dot"></span>
         </button>
       </div>
 
@@ -697,6 +903,35 @@ function onNodeClick({ node }) {
           <div v-if="!providers.length" class="text-[9px] text-t3 px-2 py-1">No providers yet</div>
 
           <div v-if="showNewProvider" class="space-y-1 pt-1 border-t border-line" @click.stop>
+            <!-- Preset picker: fills in fields with one click -->
+            <select :value="newProv.preset_id"
+              @change="newProv.preset_id = $event.target.value; applyPreset($event.target.value)"
+              class="prov-input">
+              <option value="">Start from scratch...</option>
+              <optgroup label="Reranker">
+                <option v-for="p in presetsForType('reranker')" :key="p.id" :value="p.id">
+                  {{ p.label }}{{ p.badge ? ' · ' + p.badge : '' }}
+                </option>
+              </optgroup>
+              <optgroup label="Chat">
+                <option v-for="p in presetsForType('chat')" :key="p.id" :value="p.id">
+                  {{ p.label }}{{ p.badge ? ' · ' + p.badge : '' }}
+                </option>
+              </optgroup>
+              <optgroup label="Embedding">
+                <option v-for="p in presetsForType('embedding')" :key="p.id" :value="p.id">
+                  {{ p.label }}{{ p.badge ? ' · ' + p.badge : '' }}
+                </option>
+              </optgroup>
+              <optgroup label="VLM">
+                <option v-for="p in presetsForType('vlm')" :key="p.id" :value="p.id">
+                  {{ p.label }}{{ p.badge ? ' · ' + p.badge : '' }}
+                </option>
+              </optgroup>
+            </select>
+            <div v-if="newProv.preset_id" class="text-[9px] text-t3 leading-snug px-1 py-0.5">
+              {{ presets.find(x => x.id === newProv.preset_id)?.note }}
+            </div>
             <input v-model="newProv.name" placeholder="Name" class="prov-input" />
             <select v-model="newProv.provider_type" class="prov-input">
               <option value="chat">chat</option><option value="embedding">embedding</option><option value="reranker">reranker</option><option value="vlm">vlm</option>
@@ -730,9 +965,25 @@ function onNodeClick({ node }) {
         <div><div class="text-[11px] mb-1 text-t2">API Key</div><input v-model="editProv.api_key" type="password" placeholder="leave empty to keep unchanged" class="prov-input" /></div>
         <div class="flex gap-1.5 pt-1">
           <button @click="doSaveProvider" class="flex-1 text-[9px] py-1.5 rounded bg-brand text-white hover:opacity-80">Save</button>
+          <button @click="doTestProvider(editProv.id)" :disabled="testing"
+            class="text-[9px] py-1.5 px-2.5 rounded border border-line text-t2 hover:bg-bg2 disabled:opacity-50">
+            <span v-if="testing">Testing...</span>
+            <span v-else>Test</span>
+          </button>
           <button @click="doDeleteProvider(editProv.id)" class="w-7 h-7 flex items-center justify-center rounded border border-line text-t3 transition-colors hover:bg-red-500 hover:border-red-500 hover:text-white">
             <TrashIcon class="w-3.5 h-3.5" />
           </button>
+        </div>
+        <!-- Test result -->
+        <div v-if="testResult.show" class="mt-2 p-2 rounded text-[10px] leading-snug"
+          :class="testResult.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'">
+          <div class="font-medium mb-0.5">
+            {{ testResult.ok ? `✓ Connected · ${testResult.latency_ms}ms` : `✗ Failed · ${testResult.latency_ms}ms` }}
+          </div>
+          <div class="break-words">{{ testResult.message }}</div>
+          <div v-if="testResult.suggested_fix" class="mt-1 text-[9px] italic text-t2">
+            💡 {{ testResult.suggested_fix }}
+          </div>
         </div>
       </div>
     </div>
@@ -748,8 +999,8 @@ function onNodeClick({ node }) {
   background: var(--color-bg);
   cursor: pointer;
   transition: all 0.15s;
-  min-width: 150px;
-  max-width: 170px;
+  width: 180px;  /* fixed: all nodes align to same grid column */
+  box-sizing: border-box;
   position: relative;
 }
 .pipeline-node:hover:not(.pipeline-node--active) {
@@ -785,7 +1036,26 @@ function onNodeClick({ node }) {
   color: var(--color-t3);
   margin-top: 2px;
   line-height: 1.3;
+  /* dynamic descriptions can be longer — clamp to avoid layout jumps */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+/* ── State dot: top-right corner of pipeline node ── */
+.state-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--color-bg);  /* ring-out for contrast */
+}
+.state-dot--green { background: #10b981; }
+.state-dot--gray  { background: #d1d5db; }
+.state-dot--red   { background: #ef4444; }
+.state-dot--yellow{ background: #f59e0b; }
 
 /* ── Layer labels ── */
 .layer-label {
@@ -794,7 +1064,7 @@ function onNodeClick({ node }) {
   gap: 6px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--lc);
+  color: var(--color-t1);   /* black — no longer section-coloured */
   letter-spacing: 0.02em;
   user-select: none;
   pointer-events: none;
@@ -804,7 +1074,7 @@ function onNodeClick({ node }) {
   width: 8px;
   height: 8px;
   border-radius: 2px;
-  background: var(--lc);
+  background: var(--color-t1);   /* black square */
   opacity: 0.8;
 }
 
@@ -820,6 +1090,49 @@ function onNodeClick({ node }) {
   animation: pulse 0.8s ease-in-out infinite;
 }
 @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+/* ── Apply & Restart dirty dot ── */
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  margin-left: 2px;
+  box-shadow: 0 0 0 1.5px var(--color-bg);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Top metrics bar ── */
+.metrics-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--color-line);
+  border-radius: 9999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.metric__v {
+  color: var(--color-t1);
+  font-variant-numeric: tabular-nums;
+}
+.metric__l {
+  color: var(--color-t3);
+}
+.metric-sep {
+  color: var(--color-t3);
+  opacity: 0.6;
+  margin: 0 2px;
+}
 
 /* ── Side panel ── */
 .side-panel {

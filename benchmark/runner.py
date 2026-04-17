@@ -38,6 +38,9 @@ class BenchmarkItem:
     contexts: list[str] = field(default_factory=list)
     citations: list[dict] = field(default_factory=list)
     latency_ms: int = 0
+    # Per-retrieval-path top-5 chunk ids — lets us answer "which path found
+    # the right chunk?" when investigating CP=0 items post-hoc.
+    path_top_ids: dict[str, list[str]] = field(default_factory=dict)
     # Filled after scoring
     faithfulness: float | None = None
     relevancy: float | None = None
@@ -111,21 +114,48 @@ class BenchmarkRunner:
                 s.elapsed_ms = int((time.time() - s.started_at) * 1000)
             return s.to_dict()
 
-    def start(self, *, cfg, store, answering, num_questions: int = 30):
+    def start(
+        self,
+        *,
+        cfg,
+        store,
+        answering,
+        num_questions: int = 30,
+        replay_items: list | None = None,
+    ):
+        """
+        Start a benchmark run.
+
+        Parameters
+        ----------
+        replay_items
+            If provided, skip the question-generation phase and reuse these
+            questions verbatim (typically loaded from a prior run's report).
+            Each entry is a dict with at least {question, ground_truth,
+            doc_id, doc_title} — i.e. the BenchmarkItem dict shape. Lets
+            users perform strict A/B comparisons (same questions, changed
+            config) instead of sampling new questions each time.
+        """
         with self._lock:
             if self.running:
                 raise RuntimeError("A benchmark is already running")
             self._cancel.clear()
+            initial_total = len(replay_items) if replay_items else num_questions
             self._status = BenchmarkStatus(
                 run_id=uuid.uuid4().hex[:12],
-                status="generating",
-                phase="Generating test questions from documents…",
-                total=num_questions,
+                status="generating" if not replay_items else "running",
+                phase=(
+                    f"Replaying {initial_total} questions from prior run…"
+                    if replay_items else
+                    "Generating test questions from documents…"
+                ),
+                total=initial_total,
                 started_at=time.time(),
             )
         self._thread = threading.Thread(
             target=self._run,
             args=(cfg, store, answering, num_questions),
+            kwargs={"replay_items": replay_items},
             daemon=True,
         )
         self._thread.start()
@@ -151,27 +181,40 @@ class BenchmarkRunner:
         per_item = elapsed / completed
         return int((total - completed) * per_item * 1000)
 
-    def _run(self, cfg, store, answering, num_questions: int):
+    def _run(self, cfg, store, answering, num_questions: int, *, replay_items: list | None = None):
         from .metrics import score_items
         from .report import sanitize_config
         from .testset import generate_testset
 
         items: list[BenchmarkItem] = []
         try:
-            # ── Phase 1: generate test questions ──
-            log.info("benchmark: generating %d test questions", num_questions)
-            items = generate_testset(
-                store=store,
-                cfg=cfg,
-                num_questions=num_questions,
-                cancel=self._cancel,
-                progress_cb=lambda done, total: self._update(
-                    completed=done,
-                    total=total,
-                    phase=f"Generating questions ({done}/{total})…",
-                    estimated_remaining_ms=self._estimate_remaining(done, total),
-                ),
-            )
+            # ── Phase 1: generate test questions (skipped on replay) ──
+            if replay_items is not None:
+                log.info("benchmark: replaying %d questions from prior run", len(replay_items))
+                items = [
+                    BenchmarkItem(
+                        idx=i,
+                        question=(it.get("question") if isinstance(it, dict) else getattr(it, "question", "")),
+                        ground_truth=(it.get("ground_truth", "") if isinstance(it, dict) else getattr(it, "ground_truth", "")),
+                        doc_id=(it.get("doc_id", "") if isinstance(it, dict) else getattr(it, "doc_id", "")),
+                        doc_title=(it.get("doc_title", "") if isinstance(it, dict) else getattr(it, "doc_title", "")),
+                    )
+                    for i, it in enumerate(replay_items)
+                ]
+            else:
+                log.info("benchmark: generating %d test questions", num_questions)
+                items = generate_testset(
+                    store=store,
+                    cfg=cfg,
+                    num_questions=num_questions,
+                    cancel=self._cancel,
+                    progress_cb=lambda done, total: self._update(
+                        completed=done,
+                        total=total,
+                        phase=f"Generating questions ({done}/{total})…",
+                        estimated_remaining_ms=self._estimate_remaining(done, total),
+                    ),
+                )
             if self._cancel.is_set():
                 self._update(status="cancelled", phase="Cancelled")
                 return
@@ -214,6 +257,13 @@ class BenchmarkRunner:
                         {"citation_id": c.citation_id, "doc_id": c.doc_id, "page_no": c.page_no, "snippet": c.snippet}
                         for c in answer.citations_used
                     ]
+                    # Capture per-path top-5 chunk ids for attribution analysis
+                    # (e.g. "for CP=0 items, which path actually had the GT chunk?")
+                    stats_dict = answer.stats or {}
+                    for _k in ("bm25_top_ids", "vector_top_ids", "tree_top_ids", "kg_top_ids"):
+                        v = stats_dict.get(_k)
+                        if v:
+                            item.path_top_ids[_k.replace("_top_ids", "")] = list(v)
                 except Exception as e:
                     item.error = str(e)
                     log.warning("benchmark item %d failed: %s", i, e)

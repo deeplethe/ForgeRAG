@@ -14,6 +14,7 @@ Typical usage:
 
 from .answering import AnsweringSection, GeneratorConfig
 from .app import AppConfig
+from .benchmark import BenchmarkConfig
 from .embedder import (
     EmbedderConfig,
     LiteLLMEmbedderConfig,
@@ -69,6 +70,7 @@ from .storage import (
 __all__ = [
     "AnsweringSection",
     "AppConfig",
+    "BenchmarkConfig",
     "BM25Config",
     "BackendsConfig",
     "ChromaConfig",

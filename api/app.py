@@ -67,6 +67,28 @@ from .state import AppState
 log = logging.getLogger(__name__)
 
 
+def _run_startup_probes(state: "AppState") -> None:
+    """
+    Call probe() on each pipeline component that has one. Results are
+    recorded in the health registry; failures are logged but don't
+    abort server startup — users should still be able to fix config
+    via the UI even if one provider is down.
+    """
+    try:
+        from retrieval.rerank import make_reranker
+
+        rr = make_reranker(state.cfg.retrieval.rerank)
+        probe = getattr(rr, "probe", None)
+        if callable(probe):
+            try:
+                probe()
+                log.info("reranker probe OK (backend=%s)", state.cfg.retrieval.rerank.backend)
+            except Exception as e:
+                log.warning("reranker probe FAILED: %s", e)
+    except Exception as e:
+        log.warning("skipping reranker probe — cannot construct reranker: %s", e)
+
+
 def create_app(
     cfg: AppConfig | None = None,
     *,
@@ -96,6 +118,10 @@ def create_app(
         setup_logging(resolved.logging)
         built = AppState(resolved)
         app.state.app = built
+        # Component probes: surface configuration errors on startup instead
+        # of waiting for the first user query. Health registry records the
+        # result so the Architecture UI can light up red dots immediately.
+        _run_startup_probes(built)
         try:
             yield
         finally:
