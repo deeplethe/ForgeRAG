@@ -217,11 +217,19 @@ class KGPath:
         Local retrieval: find entities by name -> traverse neighbors
         -> collect chunk_ids with scores based on hop distance.
 
+        Entity resolution order (first hit wins):
+          1. Exact name match via ``entity_id_from_name`` (SHA256 hash).
+             Fastest path for same-language, identical-spelling hits.
+          2. Embedding cosine search via ``search_entities_by_embedding``.
+             Bridges cross-lingual queries (e.g. "蜜蜂" → "bee") as long
+             as the embedder is multilingual.
+          3. Fuzzy name search via ``search_entities`` (substring /
+             fulltext). Last-resort back-compat path.
+
         Writes entity/relation descriptions into the caller-provided
         ``ctx`` (private to this worker). Name resolution for relation
         endpoints is batched in a single ``get_entities_by_ids`` call.
         """
-        from graph.base import entity_id_from_name
 
         chunk_scores: dict[str, float] = {}
         _seen_entities: set[str] = set()
@@ -231,16 +239,10 @@ class KGPath:
         # Relations whose endpoint names we still need to resolve in batch.
         _pending_rels: list[tuple[object, str]] = []  # (rel, rid)
 
-        for name in entity_names:
-            eid = entity_id_from_name(name)
-            entity = self.graph.get_entity(eid)
-            if entity is None:
-                # Try fuzzy search
-                candidates = self.graph.search_entities(name, top_k=3)
-                if not candidates:
-                    continue
-                entity = candidates[0]
-                eid = entity.entity_id
+        resolved_entities = self._resolve_entity_names(entity_names)
+
+        for entity in resolved_entities:
+            eid = entity.entity_id
 
             _name_cache[eid] = entity.name
 
@@ -307,6 +309,9 @@ class KGPath:
         Global retrieval: search entities by keywords -> collect
         chunk_ids from matched entities and their relations.
 
+        Keyword→entity resolution tries embedding cosine first
+        (cross-lingual) then falls back to fuzzy name search.
+
         Writes entity/relation descriptions into the caller-provided
         ``ctx``. Cross-function deduplication (against local's output)
         happens later in the merge step, not here.
@@ -317,8 +322,11 @@ class KGPath:
         _name_cache: dict[str, str] = {}
         _pending_rels: list[tuple[object, str]] = []
 
-        for kw in keywords:
-            entities = self.graph.search_entities(kw, top_k=5)
+        # Batch-embed all keywords once (one API call instead of N).
+        kw_vecs = self._batch_embed(keywords)
+
+        for kw, kw_vec in zip(keywords, kw_vecs, strict=True):
+            entities = self._search_entities_hybrid(kw, kw_vec, top_k=5)
             for rank, entity in enumerate(entities):
                 # Score by search rank
                 score = 1.0 / (1.0 + rank)
@@ -449,6 +457,95 @@ class KGPath:
 
         _resolve_and_emit_relations(self.graph, _pending_rels, _name_cache, ctx)
         return chunk_scores
+
+    # ------------------------------------------------------------------
+    # Entity-name resolution helpers (cross-lingual aware)
+    # ------------------------------------------------------------------
+
+    # Minimum cosine similarity for an embedding-search hit to count.
+    # 0.5 is conservative; lower if real-world recall suffers.
+    _EMBED_SEARCH_THRESHOLD = 0.5
+
+    def _resolve_entity_names(self, entity_names: list[str]) -> list:
+        """Resolve LLM-extracted entity names to Entity objects.
+
+        Strategy (first hit wins per name):
+          1. Exact: ``entity_id_from_name`` + ``get_entity`` — fastest,
+             same-language identical-spelling path.
+          2. Embedding cosine: ``search_entities_by_embedding`` —
+             cross-lingual bridge (e.g. "蜜蜂" → "bee" if the embedder
+             is multilingual and the graph has ``name_embedding``).
+          3. Fuzzy substring: ``search_entities`` — last-resort
+             back-compat path, kept so monolingual / embedding-less
+             backends still work.
+        """
+        from graph.base import entity_id_from_name
+
+        if not entity_names:
+            return []
+
+        resolved: list = []
+        unresolved_idx: list[int] = []
+        unresolved_names: list[str] = []
+
+        for i, name in enumerate(entity_names):
+            entity = self.graph.get_entity(entity_id_from_name(name))
+            if entity is not None:
+                resolved.append(entity)
+            else:
+                resolved.append(None)
+                unresolved_idx.append(i)
+                unresolved_names.append(name)
+
+        if not unresolved_names:
+            return [e for e in resolved if e is not None]
+
+        # One batched embedding call for all unresolved names.
+        name_vecs = self._batch_embed(unresolved_names)
+        for local_i, (name, vec) in enumerate(zip(unresolved_names, name_vecs, strict=True)):
+            entity = self._search_entities_hybrid(name, vec, top_k=1)
+            if entity:
+                resolved[unresolved_idx[local_i]] = entity[0]
+
+        return [e for e in resolved if e is not None]
+
+    def _search_entities_hybrid(
+        self,
+        name: str,
+        vec: list[float] | None,
+        *,
+        top_k: int,
+    ) -> list:
+        """Embedding-first entity search with name-fuzzy fallback.
+
+        Returns up to ``top_k`` Entity objects, ordered by relevance.
+        """
+        if vec:
+            hits = self.graph.search_entities_by_embedding(vec, top_k=top_k)
+            # Filter below threshold: prevents a cold graph from returning
+            # random near-orthogonal nearest neighbors.
+            good = [e for e, score in hits if score >= self._EMBED_SEARCH_THRESHOLD]
+            if good:
+                return good
+        # Fallback: fuzzy name (substring / fulltext).
+        return self.graph.search_entities(name, top_k=top_k)
+
+    def _batch_embed(self, texts: list[str]) -> list[list[float] | None]:
+        """Embed a list of short texts in one API call.
+
+        Returns a list of same length as ``texts``. Any entry is
+        ``None`` when the embedder is unavailable or the call fails —
+        callers should treat that as "no embedding; use name fallback".
+        """
+        if not texts:
+            return []
+        if self.embedder is None:
+            return [None] * len(texts)
+        try:
+            return list(self.embedder.embed_texts(texts))
+        except Exception as e:
+            log.warning("KG path: name embedding failed: %s", e)
+            return [None] * len(texts)
 
     def _merge_scores(
         self,

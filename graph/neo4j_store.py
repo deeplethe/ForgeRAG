@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from .base import Entity, GraphStore, Relation
+from .faiss_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ def _entity_from_record(rec: dict[str, Any]) -> Entity:
         description=rec.get("description", ""),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        name_embedding=list(rec.get("name_embedding") or []),
     )
 
 
@@ -57,6 +59,7 @@ def _relation_from_record(rec: dict[str, Any]) -> Relation:
         weight=rec.get("weight", 1.0),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        description_embedding=list(rec.get("description_embedding") or []),
     )
 
 
@@ -86,6 +89,21 @@ class Neo4jGraphStore(GraphStore):
         logging.getLogger("neo4j").setLevel(logging.ERROR)
         self._ensure_indexes()
 
+        # Client-side FAISS mirrors of the embedding properties stored
+        # on Neo4j nodes/relations. Populated at startup and kept in
+        # sync by upsert_entity/upsert_relation. Query-time embedding
+        # search runs locally against these — no Neo4j roundtrip.
+        #
+        # Trade-off: doubles memory use (embeddings held both in Neo4j
+        # and here) and each Neo4j instance maintains its own copy, so
+        # multiple workers each pay the startup load cost. Fine up to
+        # ~100k entities. Beyond that, switch to Neo4j's native vector
+        # index (5.11+) — signature of these methods won't change.
+        self._entity_idx = VectorIndex()
+        self._relation_idx = VectorIndex()
+        self._rel_cache: dict[str, Relation] = {}
+        self._load_vector_indexes()
+
     def _ensure_indexes(self) -> None:
         """Create constraints and indexes if they don't exist yet."""
         with self._driver.session(database=self._database) as s:
@@ -96,9 +114,66 @@ class Neo4jGraphStore(GraphStore):
             except Exception:
                 logger.debug("Full-text index creation skipped (may already exist)")
 
+    def _load_vector_indexes(self) -> None:
+        """Pull all persisted entity/relation embeddings into local VectorIndex.
+
+        Runs once at startup. Existing graphs that were ingested before
+        this column existed will return empty embeddings — those entities
+        remain unsearchable by embedding until the next re-ingest or
+        until a backfill script populates ``name_embedding``.
+        """
+        cypher_ents = """
+        MATCH (e:KGEntity)
+        WHERE e.name_embedding IS NOT NULL AND size(e.name_embedding) > 0
+        RETURN e.entity_id AS eid, e.name_embedding AS vec
+        """
+        cypher_rels = """
+        MATCH ()-[r:RELATES_TO]-()
+        WHERE r.description_embedding IS NOT NULL AND size(r.description_embedding) > 0
+        RETURN r.relation_id AS rid,
+               startNode(r).entity_id AS source_entity,
+               endNode(r).entity_id AS target_entity,
+               r.keywords AS keywords, r.description AS description,
+               r.weight AS weight,
+               r.source_doc_ids AS source_doc_ids,
+               r.source_chunk_ids AS source_chunk_ids,
+               r.description_embedding AS vec
+        """
+        ent_keys: list[str] = []
+        ent_vecs: list[list[float]] = []
+        rel_keys: list[str] = []
+        rel_vecs: list[list[float]] = []
+        try:
+            with self._driver.session(database=self._database) as s:
+                for rec in s.run(cypher_ents):
+                    ent_keys.append(rec["eid"])
+                    ent_vecs.append(list(rec["vec"]))
+                for rec in s.run(cypher_rels):
+                    d = dict(rec)
+                    rel = _relation_from_record(d)
+                    rel.description_embedding = list(d["vec"])
+                    self._rel_cache[rel.relation_id] = rel
+                    rel_keys.append(rel.relation_id)
+                    rel_vecs.append(list(d["vec"]))
+        except Exception as e:
+            logger.warning("Neo4j vector index preload failed: %s", e)
+            return
+        if ent_keys:
+            self._entity_idx.add_batch(ent_keys, ent_vecs)
+        if rel_keys:
+            self._relation_idx.add_batch(rel_keys, rel_vecs)
+        logger.info(
+            "Neo4j vector indexes loaded: %d entities, %d relations",
+            len(ent_keys),
+            len(rel_keys),
+        )
+
     # -- mutations ----------------------------------------------------------
 
     def upsert_entity(self, entity: Entity) -> None:
+        # Only write name_embedding if the entity actually has one.
+        # Using COALESCE keeps existing values when an upsert that
+        # lacks the embedding comes in (e.g. a metadata-only update).
         cypher = """
         MERGE (e:KGEntity {entity_id: $entity_id})
         ON CREATE SET
@@ -107,7 +182,8 @@ class Neo4jGraphStore(GraphStore):
             e.description     = $description,
             e.source_doc_ids  = $source_doc_ids,
             e.source_chunk_ids = $source_chunk_ids,
-            e._type_counts    = $entity_type + ':1'
+            e._type_counts    = $entity_type + ':1',
+            e.name_embedding  = $name_embedding
         ON MATCH SET
             e.description = CASE
                 WHEN e.description CONTAINS $description THEN e.description
@@ -115,7 +191,8 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids  = apoc.coll.toSet(e.source_doc_ids + $source_doc_ids),
             e.source_chunk_ids = apoc.coll.toSet(e.source_chunk_ids + $source_chunk_ids),
-            e._type_counts    = e._type_counts + ',' + $entity_type + ':1'
+            e._type_counts    = e._type_counts + ',' + $entity_type + ':1',
+            e.name_embedding  = coalesce($name_embedding, e.name_embedding)
         """
         # Fallback without APOC: use plain list concatenation and dedupe in
         # application code on read.
@@ -126,7 +203,8 @@ class Neo4jGraphStore(GraphStore):
             e.entity_type      = $entity_type,
             e.description      = $description,
             e.source_doc_ids   = $source_doc_ids,
-            e.source_chunk_ids = $source_chunk_ids
+            e.source_chunk_ids = $source_chunk_ids,
+            e.name_embedding   = $name_embedding
         ON MATCH SET
             e.description = CASE
                 WHEN e.description CONTAINS $description THEN e.description
@@ -134,7 +212,8 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids   = e.source_doc_ids + [x IN $source_doc_ids WHERE NOT x IN e.source_doc_ids],
             e.source_chunk_ids = e.source_chunk_ids + [x IN $source_chunk_ids WHERE NOT x IN e.source_chunk_ids],
-            e.entity_type      = $entity_type
+            e.entity_type      = $entity_type,
+            e.name_embedding   = coalesce($name_embedding, e.name_embedding)
         """
         params = {
             "entity_id": entity.entity_id,
@@ -143,16 +222,20 @@ class Neo4jGraphStore(GraphStore):
             "description": entity.description,
             "source_doc_ids": sorted(entity.source_doc_ids),
             "source_chunk_ids": sorted(entity.source_chunk_ids),
+            # None tells Neo4j to leave the existing value alone (via coalesce).
+            "name_embedding": list(entity.name_embedding) if entity.name_embedding else None,
         }
         with self._driver.session(database=self._database) as s:
             try:
                 s.run(cypher, **params).consume()
-                return
             except Exception:
-                pass
-        # Fallback in a fresh session
-        with self._driver.session(database=self._database) as s:
-            s.run(cypher_no_apoc, **params).consume()
+                # Fallback in a fresh session if APOC isn't available.
+                with self._driver.session(database=self._database) as s2:
+                    s2.run(cypher_no_apoc, **params).consume()
+        # Keep the local FAISS mirror in sync so query-time search
+        # sees new entities without a full reload.
+        if entity.name_embedding:
+            self._entity_idx.add(entity.entity_id, entity.name_embedding)
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
         """Directly replace an entity's description (no append)."""
@@ -174,7 +257,8 @@ class Neo4jGraphStore(GraphStore):
             r.description       = $description,
             r.weight            = $weight,
             r.source_doc_ids    = $source_doc_ids,
-            r.source_chunk_ids  = $source_chunk_ids
+            r.source_chunk_ids  = $source_chunk_ids,
+            r.description_embedding = $description_embedding
         ON MATCH SET
             r.description = CASE
                 WHEN r.description CONTAINS $description THEN r.description
@@ -186,7 +270,8 @@ class Neo4jGraphStore(GraphStore):
             r.keywords          = CASE
                 WHEN r.keywords CONTAINS $keywords THEN r.keywords
                 ELSE r.keywords + ', ' + $keywords
-            END
+            END,
+            r.description_embedding = coalesce($description_embedding, r.description_embedding)
         """
         params = {
             "source_entity": relation.source_entity,
@@ -197,9 +282,14 @@ class Neo4jGraphStore(GraphStore):
             "weight": relation.weight,
             "source_doc_ids": sorted(relation.source_doc_ids),
             "source_chunk_ids": sorted(relation.source_chunk_ids),
+            "description_embedding": list(relation.description_embedding) if relation.description_embedding else None,
         }
         with self._driver.session(database=self._database) as s:
             s.run(cypher, **params).consume()
+        # Keep local mirrors in sync.
+        self._rel_cache[relation.relation_id] = relation
+        if relation.description_embedding:
+            self._relation_idx.add(relation.relation_id, relation.description_embedding)
 
     # -- lookups ------------------------------------------------------------
 
@@ -286,6 +376,46 @@ class Neo4jGraphStore(GraphStore):
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, entity_id=entity_id)
             return [_relation_from_record(dict(r)) for r in result]
+
+    def search_entities_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine search over entity name embeddings (cross-lingual aware).
+
+        Runs against the local FAISS mirror, then materialises matched
+        entities via a single ``get_entities_by_ids`` batch call. Neo4j
+        is hit once for the read, not once per hit.
+        """
+        if not query_embedding:
+            return []
+        hits = self._entity_idx.search(query_embedding, top_k)
+        if not hits:
+            return []
+        eids = [eid for eid, _ in hits]
+        ent_map = self.get_entities_by_ids(eids)
+        results: list[tuple[Entity, float]] = []
+        for eid, score in hits:
+            ent = ent_map.get(eid)
+            if ent is not None:
+                results.append((ent, score))
+        return results
+
+    def search_relations_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Relation, float]]:
+        if not query_embedding:
+            return []
+        hits = self._relation_idx.search(query_embedding, top_k)
+        results: list[tuple[Relation, float]] = []
+        for rid, score in hits:
+            rel = self._rel_cache.get(rid)
+            if rel is not None:
+                results.append((rel, score))
+        return results
 
     def search_entities(self, query: str, top_k: int = 10) -> list[Entity]:
         q = query.strip()
@@ -392,73 +522,95 @@ class Neo4jGraphStore(GraphStore):
     def delete_by_doc(self, doc_id: str) -> int:
         # Remove doc_id from source lists and clean chunk_ids by prefix;
         # delete entity/relation if source_doc_ids becomes empty.
+        #
+        # Cypher captures the relation_id / entity_id as a scalar BEFORE
+        # the DELETE so we can RETURN the list of truly-deleted keys —
+        # then we punch them out of the local FAISS mirrors without
+        # rescanning all of Neo4j.
         cypher_rels = """
         MATCH ()-[r:RELATES_TO]-()
         WHERE $doc_id IN r.source_doc_ids
         SET r.source_doc_ids = [x IN r.source_doc_ids WHERE x <> $doc_id],
             r.source_chunk_ids = [x IN r.source_chunk_ids WHERE NOT x STARTS WITH $doc_prefix]
-        WITH r
+        WITH r, r.relation_id AS rid
         WHERE size(r.source_doc_ids) = 0
         DELETE r
-        RETURN count(r) AS deleted_rels
+        RETURN collect(rid) AS deleted_rids
         """
         cypher_nodes = """
         MATCH (e:KGEntity)
         WHERE $doc_id IN e.source_doc_ids
         SET e.source_doc_ids = [x IN e.source_doc_ids WHERE x <> $doc_id],
             e.source_chunk_ids = [x IN e.source_chunk_ids WHERE NOT x STARTS WITH $doc_prefix]
-        WITH e
+        WITH e, e.entity_id AS eid
         WHERE size(e.source_doc_ids) = 0
         DETACH DELETE e
-        RETURN count(e) AS deleted_nodes
+        RETURN collect(eid) AS deleted_eids
         """
         params = {"doc_id": doc_id, "doc_prefix": doc_id + ":"}
-        total = 0
+        deleted_rids: list[str] = []
+        deleted_eids: list[str] = []
         with self._driver.session(database=self._database) as s:
             res = s.run(cypher_rels, **params).single()
-            total += res["deleted_rels"] if res else 0
+            if res and res["deleted_rids"]:
+                deleted_rids = list(res["deleted_rids"])
             res = s.run(cypher_nodes, **params).single()
-            total += res["deleted_nodes"] if res else 0
-        return total
+            if res and res["deleted_eids"]:
+                deleted_eids = list(res["deleted_eids"])
+        # Sync local mirrors — idempotent if a key never had an embedding.
+        for rid in deleted_rids:
+            self._relation_idx.remove(rid)
+            self._rel_cache.pop(rid, None)
+        for eid in deleted_eids:
+            self._entity_idx.remove(eid)
+        return len(deleted_rids) + len(deleted_eids)
 
     def cleanup_orphans(self, valid_doc_ids: set[str]) -> dict:
         """Remove entities/relations whose source docs no longer exist."""
         valid = sorted(valid_doc_ids)
 
-        # Clean relations: remove dead doc refs + chunk refs, delete if empty
+        # Clean relations: remove dead doc refs + chunk refs, delete if empty.
+        # Capture deleted relation_ids so we can punch them out of the
+        # local FAISS mirror precisely.
         cypher_rels = """
         MATCH ()-[r:RELATES_TO]-()
         WHERE any(d IN r.source_doc_ids WHERE NOT d IN $valid)
         SET r.source_doc_ids = [x IN r.source_doc_ids WHERE x IN $valid],
             r.source_chunk_ids = [c IN r.source_chunk_ids
                 WHERE any(v IN $valid WHERE c STARTS WITH v + ':')]
-        WITH r
+        WITH r, r.relation_id AS rid
         WHERE size(r.source_doc_ids) = 0
         DELETE r
-        RETURN count(r) AS removed
+        RETURN collect(rid) AS deleted_rids
         """
-        # Clean entities
         cypher_nodes = """
         MATCH (e:KGEntity)
         WHERE any(d IN e.source_doc_ids WHERE NOT d IN $valid)
         SET e.source_doc_ids = [x IN e.source_doc_ids WHERE x IN $valid],
             e.source_chunk_ids = [c IN e.source_chunk_ids
                 WHERE any(v IN $valid WHERE c STARTS WITH v + ':')]
-        WITH e
+        WITH e, e.entity_id AS eid
         WHERE size(e.source_doc_ids) = 0
         DETACH DELETE e
-        RETURN count(e) AS removed
+        RETURN collect(eid) AS deleted_eids
         """
-        removed_rels = 0
-        removed_nodes = 0
+        deleted_rids: list[str] = []
+        deleted_eids: list[str] = []
         with self._driver.session(database=self._database) as s:
             res = s.run(cypher_rels, valid=valid).single()
-            removed_rels = res["removed"] if res else 0
+            if res and res["deleted_rids"]:
+                deleted_rids = list(res["deleted_rids"])
             res = s.run(cypher_nodes, valid=valid).single()
-            removed_nodes = res["removed"] if res else 0
+            if res and res["deleted_eids"]:
+                deleted_eids = list(res["deleted_eids"])
+        for rid in deleted_rids:
+            self._relation_idx.remove(rid)
+            self._rel_cache.pop(rid, None)
+        for eid in deleted_eids:
+            self._entity_idx.remove(eid)
         return {
-            "removed_entities": removed_nodes,
-            "removed_relations": removed_rels,
+            "removed_entities": len(deleted_eids),
+            "removed_relations": len(deleted_rids),
         }
 
     # -- introspection ------------------------------------------------------

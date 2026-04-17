@@ -203,6 +203,24 @@ class GraphStore(ABC):
         """
         return []
 
+    # -- entity semantic search ---------------------------------------------
+
+    def search_entities_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine-similarity search over entity name embeddings.
+
+        Backends that don't maintain a name-embedding index return an
+        empty list (the retrieval path will fall back to name-based
+        lookup). NetworkX and other backends that do persist entity
+        name vectors override this with a real index.
+
+        Returns list of (entity, score) tuples sorted by score desc.
+        """
+        return []
+
     # -- relation semantic search -------------------------------------------
 
     def search_relations_by_embedding(
