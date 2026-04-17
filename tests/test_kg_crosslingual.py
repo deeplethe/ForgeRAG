@@ -87,9 +87,7 @@ class FakeCfg:
     max_hops = 1
     local_weight = 1.0
     global_weight = 1.0
-    community_weight = 0.0
     relation_weight = 0.0
-    community_top_k = 5
     relation_top_k = 10
     top_k = 30
 
