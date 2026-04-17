@@ -781,15 +781,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
-    # --- Knowledge Graph: Community detection ---
-    (
-        "graph.community_detection.enabled",
-        "kg_extraction",
-        "Enable community detection",
-        "Auto-run Leiden clustering + LLM summarization after ingestion. Inherits KG extraction LLM if not configured separately.",
-        "bool",
-        None,
-    ),
     # --- Knowledge Graph: Retrieval path ---
     (
         "retrieval.kg_path.enabled",
@@ -822,14 +813,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "kg",
         "Global weight",
         "Weight for global keyword entity search (0-1)",
-        "float",
-        None,
-    ),
-    (
-        "retrieval.kg_path.community_weight",
-        "kg",
-        "Community weight",
-        "Weight for community-based semantic retrieval (0-1). Requires community detection.",
         "float",
         None,
     ),

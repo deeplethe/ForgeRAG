@@ -44,7 +44,7 @@ Many approaches have been proposed to go beyond naive chunk-and-embed RAG, but e
 
 When a domain expert encounters a question, they don't scan every page — they instantly recall where relevant information lives, draw on their mental map of how concepts connect, then synthesize a grounded answer from multiple sources. ForgeRAG mirrors this workflow: **BM25 + vector search** surfaces candidate regions in milliseconds, a **knowledge graph** provides the conceptual connections across documents, and **LLM tree navigation** reasons over document structure to pinpoint the exact sections that matter — all fused into a single answer with traceable citations.
 
-To handle **multi-hop questions** (e.g. *"Which suppliers of Apple also supply Samsung?"*), we introduce a **knowledge graph** path that extracts entities and relations at ingestion time, then runs **Leiden community detection** with LLM-generated summaries to enable high-level thematic retrieval alongside entity-level traversal. Inspired by LightRAG's context assembly, the KG path injects **synthesized entity descriptions, relation summaries, and community overviews** directly into the generation prompt — giving the LLM a "distilled knowledge layer" on top of raw text chunks.
+To handle **multi-hop questions** (e.g. *"Which suppliers of Apple also supply Samsung?"*), we introduce a **knowledge graph** path that extracts entities and relations at ingestion time, then runs dual-level retrieval at query time: **local** (query entities → neighborhood traversal) and **global** (keywords → fuzzy / cross-lingual entity match via name embeddings), plus **relation-semantic** search over relation-description embeddings. Inspired by LightRAG's context assembly, the KG path injects **synthesized entity and relation descriptions** directly into the generation prompt — giving the LLM a "distilled knowledge layer" on top of raw text chunks.
 
 ### Benchmark: ForgeRAG vs LightRAG
 
@@ -237,8 +237,8 @@ Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a pull r
 
 ## Related Projects
 
-- [LightRAG](https://github.com/HKUDS/LightRAG) — Graph-based RAG with community summaries
-- [GraphRAG](https://github.com/microsoft/graphrag) — Microsoft's graph-powered RAG
+- [LightRAG](https://github.com/HKUDS/LightRAG) — Graph-based RAG with dual-level (local + global) retrieval
+- [GraphRAG](https://github.com/microsoft/graphrag) — Microsoft's graph-powered RAG with community summaries
 - [PageIndex](https://github.com/VectifyAI/PageIndex) — Reasoning-based vectorless retrieval
 
 ## License
