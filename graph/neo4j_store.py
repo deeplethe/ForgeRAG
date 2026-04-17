@@ -13,7 +13,6 @@ import logging
 from typing import Any
 
 from .base import Entity, GraphStore, Relation
-from .faiss_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -87,86 +86,115 @@ class Neo4jGraphStore(GraphStore):
 
         warnings.filterwarnings("ignore", category=DeprecationWarning, module="neo4j")
         logging.getLogger("neo4j").setLevel(logging.ERROR)
+
+        # Set once the first time we see an embedding and successfully
+        # create the vector index. Prevents per-upsert overhead.
+        self._vector_indexes_created: bool = False
+
         self._ensure_indexes()
 
-        # Client-side FAISS mirrors of the embedding properties stored
-        # on Neo4j nodes/relations. Populated at startup and kept in
-        # sync by upsert_entity/upsert_relation. Query-time embedding
-        # search runs locally against these — no Neo4j roundtrip.
-        #
-        # Trade-off: doubles memory use (embeddings held both in Neo4j
-        # and here) and each Neo4j instance maintains its own copy, so
-        # multiple workers each pay the startup load cost. Fine up to
-        # ~100k entities. Beyond that, switch to Neo4j's native vector
-        # index (5.11+) — signature of these methods won't change.
-        self._entity_idx = VectorIndex()
-        self._relation_idx = VectorIndex()
-        self._rel_cache: dict[str, Relation] = {}
-        self._load_vector_indexes()
-
     def _ensure_indexes(self) -> None:
-        """Create constraints and indexes if they don't exist yet."""
+        """Create constraints and indexes if they don't exist yet.
+
+        Vector indexes require a known embedding dimension at CREATE
+        time. We probe a sample entity for that. If the graph has no
+        embedded entities yet (fresh install), index creation is
+        deferred to the first ``upsert_entity`` with an embedding.
+        """
         with self._driver.session(database=self._database) as s:
             s.run("CREATE CONSTRAINT kg_entity_id IF NOT EXISTS FOR (e:KGEntity) REQUIRE e.entity_id IS UNIQUE")
-            # Best-effort full-text index for search_entities
+            # Best-effort full-text index for search_entities fallback
             try:
                 s.run("CREATE FULLTEXT INDEX kg_entity_name IF NOT EXISTS FOR (e:KGEntity) ON EACH [e.name]")
             except Exception:
                 logger.debug("Full-text index creation skipped (may already exist)")
 
-    def _load_vector_indexes(self) -> None:
-        """Pull all persisted entity/relation embeddings into local VectorIndex.
+        dim = self._probe_embedding_dimension()
+        if dim:
+            self._create_vector_indexes(dim)
+        else:
+            logger.info(
+                "Neo4j vector indexes deferred — no embedded entities yet; "
+                "will be created on first upsert_entity with an embedding"
+            )
 
-        Runs once at startup. Existing graphs that were ingested before
-        this column existed will return empty embeddings — those entities
-        remain unsearchable by embedding until the next re-ingest or
-        until a backfill script populates ``name_embedding``.
+    def _probe_embedding_dimension(self) -> int | None:
+        """Return the dimension of any existing ``name_embedding``, or None.
+
+        Runs a single fast Cypher — just looks at one entity with an
+        embedding to learn the dimension for CREATE VECTOR INDEX.
         """
-        cypher_ents = """
+        cypher = """
         MATCH (e:KGEntity)
         WHERE e.name_embedding IS NOT NULL AND size(e.name_embedding) > 0
-        RETURN e.entity_id AS eid, e.name_embedding AS vec
+        RETURN size(e.name_embedding) AS dim
+        LIMIT 1
         """
-        cypher_rels = """
-        MATCH ()-[r:RELATES_TO]-()
-        WHERE r.description_embedding IS NOT NULL AND size(r.description_embedding) > 0
-        RETURN r.relation_id AS rid,
-               startNode(r).entity_id AS source_entity,
-               endNode(r).entity_id AS target_entity,
-               r.keywords AS keywords, r.description AS description,
-               r.weight AS weight,
-               r.source_doc_ids AS source_doc_ids,
-               r.source_chunk_ids AS source_chunk_ids,
-               r.description_embedding AS vec
-        """
-        ent_keys: list[str] = []
-        ent_vecs: list[list[float]] = []
-        rel_keys: list[str] = []
-        rel_vecs: list[list[float]] = []
         try:
             with self._driver.session(database=self._database) as s:
-                for rec in s.run(cypher_ents):
-                    ent_keys.append(rec["eid"])
-                    ent_vecs.append(list(rec["vec"]))
-                for rec in s.run(cypher_rels):
-                    d = dict(rec)
-                    rel = _relation_from_record(d)
-                    rel.description_embedding = list(d["vec"])
-                    self._rel_cache[rel.relation_id] = rel
-                    rel_keys.append(rel.relation_id)
-                    rel_vecs.append(list(d["vec"]))
+                rec = s.run(cypher).single()
+                if rec:
+                    return int(rec["dim"])
         except Exception as e:
-            logger.warning("Neo4j vector index preload failed: %s", e)
+            logger.debug("Embedding dimension probe failed: %s", e)
+        return None
+
+    def _create_vector_indexes(self, dim: int) -> None:
+        """Create (or no-op) HNSW vector indexes on entity + relation embeddings.
+
+        Requires Neo4j 5.11+ for the entity index and 5.15+ for the
+        relationship index. Failures are logged and swallowed — the
+        store still works, embedding search just returns [] via the
+        Cypher fallback in the query methods.
+        """
+        entity_cypher = """
+        CREATE VECTOR INDEX kg_entity_embedding IF NOT EXISTS
+        FOR (e:KGEntity) ON e.name_embedding
+        OPTIONS {
+          indexConfig: {
+            `vector.dimensions`: $dim,
+            `vector.similarity_function`: 'cosine'
+          }
+        }
+        """
+        relation_cypher = """
+        CREATE VECTOR INDEX kg_relation_embedding IF NOT EXISTS
+        FOR ()-[r:RELATES_TO]-() ON r.description_embedding
+        OPTIONS {
+          indexConfig: {
+            `vector.dimensions`: $dim,
+            `vector.similarity_function`: 'cosine'
+          }
+        }
+        """
+        with self._driver.session(database=self._database) as s:
+            try:
+                s.run(entity_cypher, dim=dim).consume()
+                logger.info("Neo4j vector index kg_entity_embedding ensured (dim=%d)", dim)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create entity vector index (Neo4j 5.11+ required): %s",
+                    e,
+                )
+            try:
+                s.run(relation_cypher, dim=dim).consume()
+                logger.info("Neo4j vector index kg_relation_embedding ensured (dim=%d)", dim)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create relation vector index (Neo4j 5.15+ required): %s",
+                    e,
+                )
+        self._vector_indexes_created = True
+
+    def _ensure_vector_indexes_for_dim(self, dim: int) -> None:
+        """Idempotent: create vector indexes the first time we see an embedding.
+
+        Called from upsert_entity / upsert_relation so a fresh graph
+        gets indexes as soon as the first embedded entity arrives.
+        """
+        if self._vector_indexes_created:
             return
-        if ent_keys:
-            self._entity_idx.add_batch(ent_keys, ent_vecs)
-        if rel_keys:
-            self._relation_idx.add_batch(rel_keys, rel_vecs)
-        logger.info(
-            "Neo4j vector indexes loaded: %d entities, %d relations",
-            len(ent_keys),
-            len(rel_keys),
-        )
+        self._create_vector_indexes(dim)
 
     # -- mutations ----------------------------------------------------------
 
@@ -232,10 +260,10 @@ class Neo4jGraphStore(GraphStore):
                 # Fallback in a fresh session if APOC isn't available.
                 with self._driver.session(database=self._database) as s2:
                     s2.run(cypher_no_apoc, **params).consume()
-        # Keep the local FAISS mirror in sync so query-time search
-        # sees new entities without a full reload.
-        if entity.name_embedding:
-            self._entity_idx.add(entity.entity_id, entity.name_embedding)
+        # First time we see an embedding on a fresh graph, stand up the
+        # vector index now (rather than waiting for next server start).
+        if entity.name_embedding and not self._vector_indexes_created:
+            self._ensure_vector_indexes_for_dim(len(entity.name_embedding))
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
         """Directly replace an entity's description (no append)."""
@@ -286,10 +314,8 @@ class Neo4jGraphStore(GraphStore):
         }
         with self._driver.session(database=self._database) as s:
             s.run(cypher, **params).consume()
-        # Keep local mirrors in sync.
-        self._rel_cache[relation.relation_id] = relation
-        if relation.description_embedding:
-            self._relation_idx.add(relation.relation_id, relation.description_embedding)
+        if relation.description_embedding and not self._vector_indexes_created:
+            self._ensure_vector_indexes_for_dim(len(relation.description_embedding))
 
     # -- lookups ------------------------------------------------------------
 
@@ -382,24 +408,36 @@ class Neo4jGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
     ) -> list[tuple[Entity, float]]:
-        """Cosine search over entity name embeddings (cross-lingual aware).
+        """Cosine search over entity name embeddings using Neo4j's
+        native HNSW vector index (``kg_entity_embedding``).
 
-        Runs against the local FAISS mirror, then materialises matched
-        entities via a single ``get_entities_by_ids`` batch call. Neo4j
-        is hit once for the read, not once per hit.
+        Cross-lingual by virtue of a multilingual embedder: a Chinese
+        query vector lands near the English name vector it encodes.
+
+        Returns ``[]`` if the index doesn't exist (Neo4j < 5.11, or
+        no embedded entities yet) or if the query dimension doesn't
+        match — failures are logged but don't raise.
         """
         if not query_embedding:
             return []
-        hits = self._entity_idx.search(query_embedding, top_k)
-        if not hits:
-            return []
-        eids = [eid for eid, _ in hits]
-        ent_map = self.get_entities_by_ids(eids)
+        cypher = """
+        CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
+        YIELD node, score
+        RETURN node.entity_id AS entity_id, node.name AS name,
+               node.entity_type AS entity_type, node.description AS description,
+               node.source_doc_ids AS source_doc_ids,
+               node.source_chunk_ids AS source_chunk_ids,
+               score
+        """
         results: list[tuple[Entity, float]] = []
-        for eid, score in hits:
-            ent = ent_map.get(eid)
-            if ent is not None:
-                results.append((ent, score))
+        try:
+            with self._driver.session(database=self._database) as s:
+                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                    ent = _entity_from_record(dict(rec))
+                    results.append((ent, float(rec["score"])))
+        except Exception as e:
+            logger.warning("Neo4j entity vector search failed: %s", e)
+            return []
         return results
 
     def search_relations_by_embedding(
@@ -407,14 +445,36 @@ class Neo4jGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
     ) -> list[tuple[Relation, float]]:
+        """Cosine search over relation description embeddings using
+        Neo4j's native relationship vector index (``kg_relation_embedding``).
+
+        Requires Neo4j 5.15+ (relationship vector indexes landed in
+        that release). Returns ``[]`` if unavailable.
+        """
         if not query_embedding:
             return []
-        hits = self._relation_idx.search(query_embedding, top_k)
+        cypher = """
+        CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
+        YIELD relationship, score
+        RETURN relationship.relation_id AS relation_id,
+               startNode(relationship).entity_id AS source_entity,
+               endNode(relationship).entity_id AS target_entity,
+               relationship.keywords AS keywords,
+               relationship.description AS description,
+               relationship.weight AS weight,
+               relationship.source_doc_ids AS source_doc_ids,
+               relationship.source_chunk_ids AS source_chunk_ids,
+               score
+        """
         results: list[tuple[Relation, float]] = []
-        for rid, score in hits:
-            rel = self._rel_cache.get(rid)
-            if rel is not None:
-                results.append((rel, score))
+        try:
+            with self._driver.session(database=self._database) as s:
+                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                    rel = _relation_from_record(dict(rec))
+                    results.append((rel, float(rec["score"])))
+        except Exception as e:
+            logger.warning("Neo4j relation vector search failed: %s", e)
+            return []
         return results
 
     def search_entities(self, query: str, top_k: int = 10) -> list[Entity]:
@@ -548,6 +608,10 @@ class Neo4jGraphStore(GraphStore):
         RETURN collect(eid) AS deleted_eids
         """
         params = {"doc_id": doc_id, "doc_prefix": doc_id + ":"}
+        # Neo4j's native vector index auto-maintains entries as nodes /
+        # relationships are deleted — no client-side index bookkeeping
+        # needed. We still collect the deleted ID lists for callers
+        # that want to know how many were removed.
         deleted_rids: list[str] = []
         deleted_eids: list[str] = []
         with self._driver.session(database=self._database) as s:
@@ -557,12 +621,6 @@ class Neo4jGraphStore(GraphStore):
             res = s.run(cypher_nodes, **params).single()
             if res and res["deleted_eids"]:
                 deleted_eids = list(res["deleted_eids"])
-        # Sync local mirrors — idempotent if a key never had an embedding.
-        for rid in deleted_rids:
-            self._relation_idx.remove(rid)
-            self._rel_cache.pop(rid, None)
-        for eid in deleted_eids:
-            self._entity_idx.remove(eid)
         return len(deleted_rids) + len(deleted_eids)
 
     def cleanup_orphans(self, valid_doc_ids: set[str]) -> dict:
@@ -603,11 +661,7 @@ class Neo4jGraphStore(GraphStore):
             res = s.run(cypher_nodes, valid=valid).single()
             if res and res["deleted_eids"]:
                 deleted_eids = list(res["deleted_eids"])
-        for rid in deleted_rids:
-            self._relation_idx.remove(rid)
-            self._rel_cache.pop(rid, None)
-        for eid in deleted_eids:
-            self._entity_idx.remove(eid)
+        # Neo4j native vector index auto-syncs on delete — no client work.
         return {
             "removed_entities": len(deleted_eids),
             "removed_relations": len(deleted_rids),
