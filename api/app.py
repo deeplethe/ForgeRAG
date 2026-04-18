@@ -180,6 +180,45 @@ def create_app(
         allow_headers=cors_headers,
     )
 
+    # ------------------------------------------------------------------
+    # Read-only maintenance mode.
+    #
+    # During the nightly maintenance window the server may be placed in
+    # read-only mode so the pending_folder_ops queue can drain without
+    # new writes racing against a cross-store rename. Enable with:
+    #   FORGERAG_READONLY=1
+    # Queries / GETs still work; mutating HTTP methods return 503.
+    # ------------------------------------------------------------------
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    _READONLY_ALLOW_PATHS = (
+        "/api/v1/health",
+        "/api/v1/system/readonly",  # toggle endpoint, if added later
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    )
+    _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+    @app.middleware("http")
+    async def _readonly_gate(request: Request, call_next):
+        if os.environ.get("FORGERAG_READONLY") == "1":
+            if request.method in _WRITE_METHODS and not any(
+                request.url.path.startswith(p) for p in _READONLY_ALLOW_PATHS
+            ):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "read_only_mode",
+                        "message": (
+                            "Server is in read-only maintenance mode. "
+                            "Writes are temporarily disabled."
+                        ),
+                    },
+                )
+        return await call_next(request)
+
     # Register all route modules
     app.include_router(health_routes.router)
     app.include_router(file_routes.router)
