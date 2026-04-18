@@ -438,6 +438,39 @@ class AuditLogRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
+class PendingFolderOp(Base):
+    """
+    Queue of folder rename/move/delete operations that exceed the async
+    threshold (default 2000 affected chunks). The PG side is always
+    updated synchronously when the op is enqueued so `documents.path`
+    and `chunks.path` are immediately consistent. Chroma and Neo4j
+    lag — their path metadata is updated by ``scripts/nightly_maintenance.py``
+    during the maintenance window.
+
+    Between enqueue and maintenance, retrieval on affected scopes uses
+    an OR-fallback filter ("match new_path OR old_path") for Chroma and
+    Neo4j so queries remain complete.
+    """
+
+    __tablename__ = "pending_folder_ops"
+
+    op_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    op_type: Mapped[str] = mapped_column(String(16))        # rename | move | delete
+    old_path: Mapped[str] = mapped_column(String(1024), index=True)
+    new_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, index=True)
+    affected_chunks: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending"
+    )                                                         # pending | running | done | failed
+    queued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    queued_by: Mapped[str] = mapped_column(
+        String(128), default="local", server_default="local"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Chunks
 # ---------------------------------------------------------------------------
@@ -454,6 +487,15 @@ class ChunkRow(Base):
     )
     parse_version: Mapped[int] = mapped_column(Integer, index=True)
     node_id: Mapped[str] = mapped_column(String(255), index=True)
+    # Denormalized from documents.path for fast path-prefix retrieval
+    # queries (`WHERE chunks.path LIKE '/legal/%'`). Kept in sync by
+    # FolderService on rename / move — the relational update runs
+    # synchronously inside the same transaction that updates
+    # documents.path, so PG is always coherent.  Chroma / Neo4j get the
+    # same path via their own store-level denormalization.
+    path: Mapped[str] = mapped_column(
+        String(1024), default="/", server_default="/", index=True
+    )
 
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str] = mapped_column(String(32))

@@ -24,6 +24,9 @@ if str(ROOT) not in sys.path:
 # SQLite stores for fast unit tests, so flip the escape hatch globally for
 # the whole test session.
 os.environ.setdefault("TESTING_ALLOW_SQLITE", "1")
+# Same pattern for NetworkX: production requires Neo4j, tests use the
+# in-memory NetworkX graph store for speed. See config/graph.py.
+os.environ.setdefault("TESTING_ALLOW_NETWORKX", "1")
 
 
 @pytest.fixture(scope="session")

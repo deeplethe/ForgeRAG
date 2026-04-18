@@ -276,7 +276,6 @@ const PARENT_CHILD = [
   { parent: '_backend_mismatch:persistence.vector.backend:qdrant', prefix: 'persistence.vector.qdrant.' },
   { parent: '_backend_mismatch:persistence.vector.backend:milvus', prefix: 'persistence.vector.milvus.' },
   { parent: '_backend_mismatch:persistence.vector.backend:weaviate', prefix: 'persistence.vector.weaviate.' },
-  { parent: '_backend_mismatch:graph.backend:networkx', prefix: 'graph.networkx.' },
   { parent: '_backend_mismatch:graph.backend:neo4j', prefix: 'graph.neo4j.' },
 ]
 
