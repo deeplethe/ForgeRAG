@@ -478,17 +478,13 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "graph.backend",
         "persistence_graph",
         "Graph backend",
-        "Knowledge graph storage engine (restart required)",
+        (
+            "Knowledge graph storage engine. ForgeRAG production requires "
+            "Neo4j 5.11+ (multi-worker safety + native vector index + "
+            "Cypher for path-scoped KG retrieval). NetworkX is test-only."
+        ),
         "enum",
-        ["networkx", "neo4j"],
-    ),
-    (
-        "graph.networkx.path",
-        "persistence_graph",
-        "NetworkX path",
-        "File path for NetworkX JSON persistence",
-        "string",
-        None,
+        ["neo4j"],
     ),
     (
         "graph.neo4j.uri",

@@ -57,7 +57,12 @@ class KGPath:
         self._llm_calls: list[dict] = []  # collect LLM call info for trace
         self.kg_context: KGContext = KGContext()  # synthesized context for prompt injection
 
-    def search(self, query: str) -> list[ScoredChunk]:
+    def search(
+        self,
+        query: str,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list[ScoredChunk]:
         """
         Multi-level KG retrieval.
 
@@ -68,6 +73,13 @@ class KGPath:
         descriptions — synthesized knowledge that the answering layer
         injects into the LLM prompt alongside raw text chunks
         (inspired by LightRAG's dual-level context assembly).
+
+        ``allowed_doc_ids`` — when set, entities and chunks whose
+        source documents aren't in this whitelist are dropped *before*
+        the top-k truncation, and the synthesized KGContext entities/
+        relations are likewise scoped. This is a pre-filter at the
+        results-aggregation stage — graph traversal itself still scans
+        the full KG, but the final output is scope-clean.
         """
         self.kg_context = KGContext()
 
@@ -159,6 +171,17 @@ class KGPath:
             global_chunks,
             relation_chunks,
         )
+
+        # Step 5.5: Path scoping — drop chunks whose doc isn't in the
+        # caller's scope BEFORE verification / truncation, so top_k
+        # reflects post-scope ranking instead of wasting slots on
+        # chunks we'd otherwise discard.
+        if allowed_doc_ids is not None and merged:
+            merged = self._scope_chunks(merged, allowed_doc_ids)
+            # Also scope the synthesized KG context (entities / relations)
+            # so the answer-generator prompt doesn't leak descriptions
+            # from outside the user's scope.
+            self._scope_kg_context(allowed_doc_ids)
 
         # Step 6: Verify chunks exist and return top-k
         verified = self._verify_chunks(merged)
@@ -537,6 +560,38 @@ class KGPath:
             for r in rows
             if r.get("chunk_id") in chunk_scores
         ]
+
+    def _scope_chunks(
+        self,
+        chunk_scores: dict[str, float],
+        allowed_doc_ids: set[str],
+    ) -> dict[str, float]:
+        """Drop chunk_ids whose doc is outside the allowed set."""
+        if not chunk_scores:
+            return chunk_scores
+        rows = self.rel.get_chunks_by_ids(list(chunk_scores.keys()))
+        kept: dict[str, float] = {}
+        for r in rows:
+            cid = r.get("chunk_id")
+            did = r.get("doc_id")
+            if cid and did in allowed_doc_ids:
+                kept[cid] = chunk_scores[cid]
+        return kept
+
+    def _scope_kg_context(self, allowed_doc_ids: set[str]) -> None:
+        """Drop entities / relations whose source_doc_ids don't overlap
+        the allowed set. Uses the synthesized KGContext populated during
+        retrieval (it already carries source_doc_ids on each entry)."""
+        def _keep(e: dict) -> bool:
+            srcs = e.get("source_doc_ids")
+            if not srcs:
+                # Unknown provenance — err on the side of hiding
+                return False
+            if isinstance(srcs, (list, set, tuple)):
+                return any(s in allowed_doc_ids for s in srcs)
+            return srcs in allowed_doc_ids
+        self.kg_context.entities = [e for e in self.kg_context.entities if _keep(e)]
+        self.kg_context.relations = [r for r in self.kg_context.relations if _keep(r)]
 
 
 # ---------------------------------------------------------------------------

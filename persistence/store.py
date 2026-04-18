@@ -511,8 +511,34 @@ class Store:
     # =======================================================================
 
     def insert_chunks(self, rows: list[dict]) -> None:
+        """
+        Insert chunk rows. The ``path`` column is denormalized from
+        the owning ``documents.path`` at write time — callers don't need
+        to know or supply it. This keeps ingestion code path-agnostic
+        while letting retrieval queries filter natively on chunks.path.
+        """
         if not rows:
             return
+        # Auto-fill chunks.path from documents.path for any row that
+        # didn't supply one. Callers that already know the path (bulk
+        # rename, restoration, etc.) can pass it explicitly to skip
+        # the lookup.
+        need_path = [r for r in rows if not r.get("path")]
+        if need_path:
+            from sqlalchemy import select as _sel
+
+            doc_ids = list({r["doc_id"] for r in need_path if r.get("doc_id")})
+            path_by_doc: dict[str, str] = {}
+            if doc_ids:
+                with self._session() as s:
+                    for did, p in s.execute(
+                        _sel(Document.doc_id, Document.path).where(
+                            Document.doc_id.in_(doc_ids)
+                        )
+                    ):
+                        path_by_doc[did] = p or "/"
+            for r in need_path:
+                r["path"] = path_by_doc.get(r.get("doc_id", ""), "/")
         with self._session() as s:
             s.execute(insert(ChunkRow), rows)
 

@@ -88,8 +88,29 @@ class ChromaStore:
             m = dict(it.metadata)
             m.setdefault("doc_id", it.doc_id)
             m.setdefault("parse_version", it.parse_version)
+            # Denormalize path into metadata so Chroma can filter
+            # natively via {"path": {"$startswith": "/legal/"}}. FolderService
+            # rename keeps this in sync (small ops synchronously, large ops
+            # via the nightly maintenance queue + OR-fallback at query time).
+            if "path" not in m:
+                m["path"] = it.metadata.get("path", "/")
             metadatas.append(m)
         col.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
+
+    def update_paths(self, chunk_id_to_path: dict[str, str]) -> None:
+        """Bulk-update path metadata for a batch of existing chunk_ids.
+        Used by the nightly maintenance script after a deferred folder
+        rename, and by FolderService for small synchronous renames.
+        """
+        if not chunk_id_to_path:
+            return
+        col = self._ensure_collection()
+        ids = list(chunk_id_to_path.keys())
+        # Chroma's update() patches metadata in-place for these IDs.
+        col.update(
+            ids=ids,
+            metadatas=[{"path": chunk_id_to_path[cid]} for cid in ids],
+        )
 
     # -------------------------------------------------------------------
     def delete_chunks(self, chunk_ids: list[str]) -> None:
@@ -149,12 +170,47 @@ class ChromaStore:
 
 
 def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
+    """
+    Translate our generic filter dict to Chroma's JSON where-syntax.
+
+    Supported keys:
+      - doc_id, parse_version, node_id, content_type, path : exact match
+      - path_prefix : emits ``{"path": {"$startswith": pfx}}``
+      - path_prefix_or : a list of prefixes, combined with $or
+        (used by the deferred-rename OR-fallback: match new_path OR old_path
+        so queries don't lose hits while Chroma lags behind Postgres)
+
+    Unknown keys are silently dropped to stay forward-compatible with
+    the generic pipeline filter shape.
+    """
     if not filter:
         return None
-    if len(filter) == 1:
-        k, v = next(iter(filter.items()))
-        return {k: v}
-    return {"$and": [{k: v} for k, v in filter.items()]}
+
+    clauses: list[dict] = []
+    for k, v in filter.items():
+        if k == "path_prefix":
+            if isinstance(v, str) and v not in ("", "/"):
+                clauses.append({"path": {"$startswith": v.rstrip("/") + "/"}})
+            # Root / empty prefix: no constraint (match everything).
+            continue
+        if k == "path_prefix_or":
+            sub = []
+            for pfx in v or []:
+                if isinstance(pfx, str) and pfx not in ("", "/"):
+                    sub.append({"path": {"$startswith": pfx.rstrip("/") + "/"}})
+            if sub:
+                clauses.append({"$or": sub} if len(sub) > 1 else sub[0])
+            continue
+        if isinstance(v, (list, set, tuple)):
+            clauses.append({k: {"$in": list(v)}})
+        else:
+            clauses.append({k: v})
+
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
 
 
 def _distance_to_score(distance: float, metric: str) -> float:

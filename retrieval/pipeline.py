@@ -79,45 +79,47 @@ class RetrievalPipeline:
     # Path scoping
     # ------------------------------------------------------------------
 
-    def _resolve_path_scope(self, filter: dict | None) -> set[str] | None:
+    def _resolve_path_scope(self, filter: dict | None) -> tuple[str | None, set[str] | None]:
         """
-        Convert the API-level `filter` dict into a set of allowed
-        doc_ids that retrieval paths use to scope their output.
+        Resolve the API-level path_filter into:
+          1. A path prefix string for backends that support native
+             path-prefix filtering (pgvector, Chroma, Neo4j). None means
+             "no user-visible scope — match anything except trash".
+          2. A doc_id snapshot set for backends that don't store path
+             (Python BM25 index, in-memory tree nav). The snapshot is
+             resolved once per query from the documents table so all
+             retrieval paths see a consistent scope even if a concurrent
+             rename commits mid-query.
 
-        Rules:
-          1. Trashed documents (path starts with '/__trash__') are ALWAYS
-             excluded — no API caller can opt in.
-          2. If filter["_path_filter"] is set, limit to documents whose
-             path is that prefix (or a descendant). A filter of '/'
-             means "everything except trash" (same as None).
-
-        Returns:
-            None   → no whitelist (just the trash-exclusion rule)
-            set[]  → empty: retrieval should yield nothing
-            set[x] → whitelist
+        Trashed documents are ALWAYS excluded, regardless of path_filter:
+        ``_trashed_doc_ids`` is populated as a side effect and used by
+        the minimal post-filter step that follows merge.
         """
         from sqlalchemy import select
 
         from persistence.folder_service import TRASH_PATH
         from persistence.models import Document
 
-        path_filter = (filter or {}).get("_path_filter") if filter else None
+        raw = (filter or {}).get("_path_filter") if filter else None
+        path_prefix: str | None = None
+        if raw and raw != "/":
+            path_prefix = raw.rstrip("/")
 
         with self.rel.transaction() as sess:
-            if path_filter and path_filter != "/":
-                pf = path_filter.rstrip("/")
-                allowed = set(
+            # Snapshot doc_ids inside scope (only for BM25/Tree; skip
+            # entirely when no path_filter — they'll work on the full set).
+            allowed_doc_ids: set[str] | None = None
+            if path_prefix is not None:
+                allowed_doc_ids = set(
                     sess.execute(
                         select(Document.doc_id).where(
-                            Document.path.like(pf + "/%")
-                            | (Document.path == pf)
+                            (Document.path == path_prefix)
+                            | (Document.path.like(path_prefix + "/%"))
                         )
                     ).scalars()
                 )
-            else:
-                allowed = None
 
-            # Always exclude trashed docs
+            # Trashed doc_ids — always excluded from all paths
             trashed = set(
                 sess.execute(
                     select(Document.doc_id).where(
@@ -126,37 +128,26 @@ class RetrievalPipeline:
                 ).scalars()
             )
 
-        if allowed is None:
-            # No explicit scope, but still filter out trashed.
-            # We return None here and rely on the caller's post-filter
-            # to drop trashed chunks — cheaper than materializing the
-            # full non-trashed whitelist.
-            self._trashed_doc_ids = trashed
-            return None
         self._trashed_doc_ids = trashed
-        return allowed - trashed
+        if allowed_doc_ids is not None:
+            allowed_doc_ids -= trashed
+        return path_prefix, allowed_doc_ids
 
-    def _filter_hits_by_scope(self, hits, allowed_doc_ids: set[str] | None):
+    def _drop_trashed_hits(self, hits):
         """
-        Drop hits whose chunk's doc_id is not in the allowed set and
-        always drop trashed doc_ids. Works for both ScoredChunk (has
-        only chunk_id) and objects with .doc_id set.
+        Drop hits whose chunk lives in a trashed document. Used as a
+        post-filter safety net on top of the backend-native path_prefix
+        pre-filter. In practice the trashed set is tiny (items waiting
+        for nightly purge), so this is cheap even at high QPS.
         """
         trashed = getattr(self, "_trashed_doc_ids", set()) or set()
-        if allowed_doc_ids is None and not trashed:
+        if not trashed or not hits:
             return hits
-        if not hits:
-            return hits
-
         # Collect chunk_ids that still need doc_id resolution.
-        need_lookup = []
-        for h in hits:
-            did = getattr(h, "doc_id", None)
-            if did is None:
-                cid = getattr(h, "chunk_id", None)
-                if cid:
-                    need_lookup.append(cid)
-
+        need_lookup = [
+            getattr(h, "chunk_id", "") for h in hits
+            if getattr(h, "doc_id", None) is None and getattr(h, "chunk_id", None)
+        ]
         doc_id_by_chunk: dict[str, str] = {}
         if need_lookup:
             try:
@@ -164,19 +155,12 @@ class RetrievalPipeline:
                     doc_id_by_chunk[row["chunk_id"]] = row.get("doc_id", "")
             except Exception:
                 pass
-
         out = []
         for h in hits:
             did = getattr(h, "doc_id", None)
             if did is None:
-                did = doc_id_by_chunk.get(getattr(h, "chunk_id", ""), None)
-            if did is None:
-                # Defensive: keep if we genuinely can't resolve
-                out.append(h)
-                continue
-            if did in trashed:
-                continue
-            if allowed_doc_ids is not None and did not in allowed_doc_ids:
+                did = doc_id_by_chunk.get(getattr(h, "chunk_id", ""))
+            if did is not None and did in trashed:
                 continue
             out.append(h)
         return out
@@ -225,16 +209,16 @@ class RetrievalPipeline:
         stats: dict = {}
         _pcb = progress_cb or (lambda *a, **k: None)
 
-        # Resolve path-scoping → allowed doc_id whitelist. Lives in filter
-        # under the reserved key "_path_filter" (set by the API layer).
-        # When present, every retrieval path filters its output to this
-        # set before entering RRF. When absent, trashed docs are still
-        # excluded automatically.
-        allowed_doc_ids = self._resolve_path_scope(filter)
+        # Resolve path-scoping into two complementary representations:
+        #   - path_prefix  → passed to SQL/metadata-indexed backends
+        #     (pgvector, Chroma, Neo4j) for native prefix filtering.
+        #   - allowed_doc_ids → snapshot whitelist for Python backends
+        #     (BM25 in-memory index, Tree nav) that don't store path.
+        path_prefix, allowed_doc_ids = self._resolve_path_scope(filter)
+        if filter and "_path_filter" in filter:
+            stats["path_filter"] = filter["_path_filter"]
         if allowed_doc_ids is not None:
             stats["path_scope_size"] = len(allowed_doc_ids)
-            if filter and "_path_filter" in filter:
-                stats["path_filter"] = filter["_path_filter"]
 
         # ============================================================
         # Phase 0: Query Understanding (intent + routing + expansion)
@@ -412,17 +396,25 @@ class RetrievalPipeline:
                 return [], set()
             bm25_all: list[ScoredChunk] = []
             for q in queries:
-                for cid, score in self.bm25.search_chunks(q, self.cfg.bm25.top_k):
+                for cid, score in self.bm25.search_chunks(
+                    q,
+                    self.cfg.bm25.top_k,
+                    allowed_doc_ids=allowed_doc_ids,
+                ):
                     bm25_all.append(ScoredChunk(chunk_id=cid, score=score, source="bm25"))
             bm25_best: dict[str, ScoredChunk] = {}
             for sc in bm25_all:
                 if sc.chunk_id not in bm25_best or sc.score > bm25_best[sc.chunk_id].score:
                     bm25_best[sc.chunk_id] = sc
             hits = sorted(bm25_best.values(), key=lambda s: -s.score)
-            # Doc prefilter for Tree path
+            # Doc prefilter for Tree path — also scope-aware
             doc_ids: set[str] = set()
             for q in queries:
-                for doc_id, _ in self.bm25.search_docs(q, self.cfg.bm25.doc_prefilter_top_k):
+                for doc_id, _ in self.bm25.search_docs(
+                    q,
+                    self.cfg.bm25.doc_prefilter_top_k,
+                    allowed_doc_ids=allowed_doc_ids,
+                ):
                     doc_ids.add(doc_id)
             _timings["bm25"] = {"start": t0b, "end": time.time(), "llm_calls": []}
             _pcb(phase="bm25_path", status="done", detail=f"{len(hits)} hits")
@@ -455,11 +447,22 @@ class RetrievalPipeline:
                 latency_ms=embed_ms,
                 output_preview=f"{len(queries)} queries -> {len(q_vecs)} vectors",
             )
+            # Build vector filter:
+            #   - start with the base filter (default_filter or user-supplied)
+            #   - inject path_prefix so the vector store can do native
+            #     prefix filtering on its denormalized path metadata.
+            vector_filter: dict = {}
+            base = filter or self.cfg.vector.default_filter
+            if base:
+                # Strip our internal reserved key before sending downstream.
+                vector_filter = {k: v for k, v in base.items() if k != "_path_filter"}
+            if path_prefix:
+                vector_filter["path_prefix"] = path_prefix
             for q_vec in q_vecs:
                 hits = self.vector.search(
                     q_vec,
                     top_k=self.cfg.vector.top_k,
-                    filter=filter or self.cfg.vector.default_filter,
+                    filter=vector_filter or None,
                 )
                 all_raw.extend(hits)
                 all_vec.extend([ScoredChunk(chunk_id=h.chunk_id, score=h.score, source="vector") for h in hits])
@@ -504,6 +507,7 @@ class RetrievalPipeline:
                 query,
                 vector_doc_ids=doc_ids,
                 prefilter_hits=prefilter_hits,
+                allowed_doc_ids=allowed_doc_ids,
             )
             _timings["tree"] = {
                 "start": t0t,
@@ -525,7 +529,7 @@ class RetrievalPipeline:
             from .kg_path import KGPath
 
             kp = KGPath(self.cfg.kg_path, self.graph_store, self.rel, embedder=self.embedder)
-            result = kp.search(query)
+            result = kp.search(query, allowed_doc_ids=allowed_doc_ids)
             _kg_context[0] = kp.kg_context  # capture synthesized KG context
             _timings["kg"] = {
                 "start": t0k,
@@ -558,10 +562,14 @@ class RetrievalPipeline:
                 _pcb(phase="vector_path", status="done", detail=f"error: {type(e).__name__}")
                 _timings.setdefault("vector", {"start": time.time(), "end": time.time(), "llm_calls": []})
 
-            # Apply path scope (always at least drops trashed docs)
-            bm25_hits = self._filter_hits_by_scope(bm25_hits, allowed_doc_ids)
-            vector_hits = self._filter_hits_by_scope(vector_hits, allowed_doc_ids)
-            raw_vector_hits = self._filter_hits_by_scope(raw_vector_hits, allowed_doc_ids)
+            # Trashed-doc safety net: BM25 and vector search don't know
+            # about /__trash__. Pre-filtering via path_prefix already
+            # blocks trash when a non-trash scope is set, but the
+            # unscoped case still needs this post-filter pass. It's O(N)
+            # over hits, not over the corpus.
+            bm25_hits = self._drop_trashed_hits(bm25_hits)
+            vector_hits = self._drop_trashed_hits(vector_hits)
+            raw_vector_hits = self._drop_trashed_hits(raw_vector_hits)
 
             # Phase 2: Tree navigation — uses combined doc_ids from
             # BM25 + Vector for cross-validated document routing.
@@ -624,9 +632,11 @@ class RetrievalPipeline:
                 _pcb(phase="kg_path", status="done", detail=f"error: {type(e).__name__}")
                 _timings.setdefault("kg", {"start": time.time(), "end": time.time(), "llm_calls": []})
 
-            # Apply path scope to the remaining two paths too
-            tree_hits = self._filter_hits_by_scope(tree_hits, allowed_doc_ids)
-            kg_hits = self._filter_hits_by_scope(kg_hits, allowed_doc_ids)
+            # Tree/KG are already pre-filtered by allowed_doc_ids (passed
+            # into their search()); here we only need to drop trashed
+            # chunks that slipped through in the unscoped case.
+            tree_hits = self._drop_trashed_hits(tree_hits)
+            kg_hits = self._drop_trashed_hits(kg_hits)
 
         # ── Record traces for all parallel paths with real timings ──
         # Order: BM25 → Vector → KG → Tree (reflects actual start order)

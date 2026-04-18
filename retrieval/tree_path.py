@@ -115,20 +115,42 @@ class TreePath:
         query: str,
         vector_doc_ids: set[str] | None = None,
         prefilter_hits: list[PreFilterHit] | None = None,
+        *,
+        allowed_doc_ids: set[str] | None = None,
     ) -> list[ScoredChunk]:
+        """
+        Navigate document trees for the query.
+
+        ``allowed_doc_ids`` — when set, restricts BOTH the internal BM25
+        prefilter and any externally-supplied vector doc_ids to the given
+        whitelist, so the LLM tree navigator never reasons about documents
+        outside the user's requested scope.
+        """
         if not self.cfg.enabled:
             return []
 
         # BM25 doc prefilter (may return empty for non-Latin queries, etc.)
-        doc_hits = self.bm25.search_docs(query, self.bm25_cfg.doc_prefilter_top_k)
+        # Pass scope through to BM25 so the prefilter itself is pre-filtered.
+        doc_hits = self.bm25.search_docs(
+            query,
+            self.bm25_cfg.doc_prefilter_top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
         bm25_doc_set = {d for d, _ in doc_hits}
 
         # Merge externally-provided doc_ids (from pipeline's BM25 + Vector)
         # so tree nav runs even when the internal BM25 prefilter misses.
         ext_ids = (vector_doc_ids or set()) - bm25_doc_set
+        if allowed_doc_ids is not None:
+            ext_ids = ext_ids & allowed_doc_ids
         if ext_ids:
             for did in ext_ids:
                 doc_hits.append((did, 0.0))  # score 0 = no BM25 signal
+
+        # Also scope the prefilter_hits so the heat-map doesn't leak
+        # other-scope chunks into the navigator's prompt.
+        if allowed_doc_ids is not None and prefilter_hits:
+            prefilter_hits = [h for h in prefilter_hits if h.doc_id in allowed_doc_ids]
 
         if not doc_hits:
             return []

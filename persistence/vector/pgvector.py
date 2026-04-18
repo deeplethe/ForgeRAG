@@ -134,11 +134,24 @@ class PgvectorStore:
         }
         if filter:
             for i, (k, v) in enumerate(filter.items()):
-                if k not in ("doc_id", "parse_version", "node_id", "content_type"):
+                # Exact-match filters on low-cardinality columns
+                if k in ("doc_id", "parse_version", "node_id", "content_type"):
+                    pname = f"f{i}"
+                    where_parts.append(f"{k} = :{pname}")
+                    params[pname] = v
                     continue
-                pname = f"f{i}"
-                where_parts.append(f"{k} = :{pname}")
-                params[pname] = v
+                # Path prefix: the denormalized chunks.path column supports
+                # native B-tree prefix scans (ix_chunks_path_prefix). The
+                # caller passes a folder path like '/legal/2024' and we
+                # match any chunk whose path starts with it (including the
+                # exact equality case for the rare empty-folder situation).
+                if k == "path_prefix" and isinstance(v, str) and v not in ("", "/"):
+                    pfx = v.rstrip("/")
+                    pname = f"f{i}"
+                    where_parts.append(f"(chunks.path = :{pname}_eq OR chunks.path LIKE :{pname}_lk)")
+                    params[f"{pname}_eq"] = pfx
+                    params[f"{pname}_lk"] = pfx + "/%"
+                    continue
         where = " AND ".join(where_parts)
 
         sql = text(
