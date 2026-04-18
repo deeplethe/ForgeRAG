@@ -527,11 +527,13 @@ class FolderService:
         else:
             self.sess.add(
                 PendingFolderOp(
-                    op_type="path_rewrite",
-                    old_prefix=old_prefix,
-                    new_prefix=new_prefix,
+                    op_id=_new_id(),
+                    op_type="rename",
+                    old_path=old_prefix,
+                    new_path=new_prefix,
                     affected_chunks=int(affected_chunks),
                     status="pending",
+                    queued_by=self.actor_id,
                 )
             )
 

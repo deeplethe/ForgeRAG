@@ -423,6 +423,7 @@ class Neo4jGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine search over entity name embeddings using Neo4j's
         native HNSW vector index (``kg_entity_embedding``).
@@ -441,14 +442,24 @@ class Neo4jGraphStore(GraphStore):
         """
         if not query_embedding:
             return []
+        # Collapse path_prefix + path_prefixes_or into a single list
+        # passed to Cypher as $prefixes — the query accepts any match,
+        # which also cleanly handles the OR-fallback case (pending
+        # rename not yet drained).
+        prefixes: list[str] = []
         if path_prefix:
+            prefixes.append(path_prefix.rstrip("/") or "/")
+        if path_prefixes_or:
+            prefixes.extend(p.rstrip("/") or "/" for p in path_prefixes_or)
+        if prefixes:
             fetch_k = int(top_k) * 5
             cypher = """
             CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
             YIELD node, score
             WITH node, score
-            WHERE any(p IN coalesce(node.source_paths, [])
-                     WHERE p = $prefix OR p STARTS WITH $prefix + '/')
+            WHERE any(pfx IN $prefixes WHERE
+                     any(p IN coalesce(node.source_paths, [])
+                         WHERE p = pfx OR p STARTS WITH pfx + '/'))
             RETURN node.entity_id AS entity_id, node.name AS name,
                    node.entity_type AS entity_type, node.description AS description,
                    node.source_doc_ids AS source_doc_ids,
@@ -461,7 +472,7 @@ class Neo4jGraphStore(GraphStore):
             params = {
                 "k": fetch_k,
                 "vec": list(query_embedding),
-                "prefix": path_prefix.rstrip("/") or "/",
+                "prefixes": prefixes,
                 "final_k": int(top_k),
             }
         else:
@@ -492,6 +503,7 @@ class Neo4jGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         """Cosine search over relation description embeddings using
         Neo4j's native relationship vector index (``kg_relation_embedding``).
@@ -504,14 +516,20 @@ class Neo4jGraphStore(GraphStore):
         """
         if not query_embedding:
             return []
+        prefixes: list[str] = []
         if path_prefix:
+            prefixes.append(path_prefix.rstrip("/") or "/")
+        if path_prefixes_or:
+            prefixes.extend(p.rstrip("/") or "/" for p in path_prefixes_or)
+        if prefixes:
             fetch_k = int(top_k) * 5
             cypher = """
             CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
             YIELD relationship, score
             WITH relationship, score
-            WHERE any(p IN coalesce(relationship.source_paths, [])
-                     WHERE p = $prefix OR p STARTS WITH $prefix + '/')
+            WHERE any(pfx IN $prefixes WHERE
+                     any(p IN coalesce(relationship.source_paths, [])
+                         WHERE p = pfx OR p STARTS WITH pfx + '/'))
             RETURN relationship.relation_id AS relation_id,
                    startNode(relationship).entity_id AS source_entity,
                    endNode(relationship).entity_id AS target_entity,
@@ -528,7 +546,7 @@ class Neo4jGraphStore(GraphStore):
             params = {
                 "k": fetch_k,
                 "vec": list(query_embedding),
-                "prefix": path_prefix.rstrip("/") or "/",
+                "prefixes": prefixes,
                 "final_k": int(top_k),
             }
         else:

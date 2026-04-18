@@ -183,6 +183,7 @@ class GraphStore(ABC):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine-similarity search over entity name embeddings.
 
@@ -206,6 +207,7 @@ class GraphStore(ABC):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         """Cosine-similarity search over relation description embeddings.
 

@@ -63,6 +63,7 @@ class KGPath:
         *,
         allowed_doc_ids: set[str] | None = None,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[ScoredChunk]:
         """
         Multi-level KG retrieval.
@@ -87,6 +88,7 @@ class KGPath:
         # entity-resolution helpers can apply the same path scope
         # without plumbing a new argument through every hop.
         self._path_prefix = path_prefix
+        self._path_prefixes_or = path_prefixes_or or []
 
         # Step 1: Extract entities and keywords from query
         entity_names, keywords = self._extract_query_entities(query)
@@ -421,6 +423,7 @@ class KGPath:
             query_vec,
             top_k=top_k,
             path_prefix=getattr(self, "_path_prefix", None),
+            path_prefixes_or=getattr(self, "_path_prefixes_or", None),
         )
         if not matches:
             return {}
@@ -474,11 +477,17 @@ class KGPath:
         unresolved_names: list[str] = []
 
         pfx = getattr(self, "_path_prefix", None)
+        or_pfx = getattr(self, "_path_prefixes_or", None) or []
+        all_pfxs = ([pfx] if pfx else []) + list(or_pfx)
         for i, name in enumerate(entity_names):
             entity = self.graph.get_entity(entity_id_from_name(name))
             # Exact-hash hits bypass the vector index — apply the same
-            # path scope manually so scope leakage is impossible.
-            if entity is not None and pfx and not _entity_matches_prefix(entity, pfx):
+            # path scope manually so scope leakage is impossible. The
+            # OR-fallback list lets us still see entities whose Neo4j
+            # source_paths haven't caught up with a pending rename.
+            if entity is not None and all_pfxs and not any(
+                _entity_matches_prefix(entity, p) for p in all_pfxs
+            ):
                 entity = None
             if entity is not None:
                 resolved.append(entity)
@@ -511,8 +520,11 @@ class KGPath:
         Returns up to ``top_k`` Entity objects, ordered by relevance.
         """
         pfx = getattr(self, "_path_prefix", None)
+        or_pfx = getattr(self, "_path_prefixes_or", None)
         if vec:
-            hits = self.graph.search_entities_by_embedding(vec, top_k=top_k, path_prefix=pfx)
+            hits = self.graph.search_entities_by_embedding(
+                vec, top_k=top_k, path_prefix=pfx, path_prefixes_or=or_pfx,
+            )
             # Filter below threshold: prevents a cold graph from returning
             # random near-orthogonal nearest neighbors.
             good = [e for e, score in hits if score >= self._EMBED_SEARCH_THRESHOLD]

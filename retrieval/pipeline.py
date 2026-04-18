@@ -99,6 +99,7 @@ class RetrievalPipeline:
 
         from persistence.folder_service import TRASH_PATH
         from persistence.models import Document
+        from persistence.pending_ops import or_fallback_prefixes
 
         raw = (filter or {}).get("_path_filter") if filter else None
         path_prefix: str | None = None
@@ -128,9 +129,20 @@ class RetrievalPipeline:
                 ).scalars()
             )
 
+            # Pending rename OR-fallback: when a big rename is still
+            # draining through pending_folder_ops, Chroma/Neo4j haven't
+            # seen the rewrite yet, so an incoming query scoped to the
+            # NEW path would miss chunks whose denormalised metadata
+            # still carries the OLD path. These are the prefixes we
+            # tell the stores to ALSO match.
+            or_prefixes = or_fallback_prefixes(sess, path_prefix)
+
         self._trashed_doc_ids = trashed
         if allowed_doc_ids is not None:
             allowed_doc_ids -= trashed
+        # Stash for worker closures that can't easily plumb a new
+        # argument (kg_path, chroma metadata builder).
+        self._or_fallback_prefixes = or_prefixes
         return path_prefix, allowed_doc_ids
 
     def _drop_trashed_hits(self, hits):
@@ -458,6 +470,13 @@ class RetrievalPipeline:
                 vector_filter = {k: v for k, v in base.items() if k != "_path_filter"}
             if path_prefix:
                 vector_filter["path_prefix"] = path_prefix
+            # OR-fallback for pending renames: Chroma's denormalised
+            # metadata may still carry the old path, so add those as an
+            # alternative-match set. pgvector already mirrors PG so this
+            # is a no-op there.
+            or_pfx = getattr(self, "_or_fallback_prefixes", None) or []
+            if or_pfx:
+                vector_filter["path_prefix_or"] = or_pfx
             for q_vec in q_vecs:
                 hits = self.vector.search(
                     q_vec,
@@ -533,6 +552,7 @@ class RetrievalPipeline:
                 query,
                 allowed_doc_ids=allowed_doc_ids,
                 path_prefix=path_prefix,
+                path_prefixes_or=getattr(self, "_or_fallback_prefixes", None),
             )
             _kg_context[0] = kp.kg_context  # capture synthesized KG context
             _timings["kg"] = {

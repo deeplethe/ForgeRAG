@@ -433,6 +433,7 @@ class NetworkXGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine-similarity search over entity name embeddings.
 
@@ -446,14 +447,21 @@ class NetworkXGraphStore(GraphStore):
         with self._lock:
             if not query_embedding:
                 return []
-            fetch_k = top_k * 5 if path_prefix else top_k
+            prefixes: list[str] = []
+            if path_prefix:
+                prefixes.append(path_prefix)
+            if path_prefixes_or:
+                prefixes.extend(path_prefixes_or)
+            fetch_k = top_k * 5 if prefixes else top_k
             hits = self._entity_idx.search(query_embedding, fetch_k)
             results: list[tuple[Entity, float]] = []
             for eid, score in hits:
                 if eid not in self._graph:
                     continue
                 ent: Entity = self._graph.nodes[eid]["entity"]
-                if path_prefix and not _match_any_prefix(ent.source_paths, path_prefix):
+                if prefixes and not any(
+                    _match_any_prefix(ent.source_paths, p) for p in prefixes
+                ):
                     continue
                 results.append((ent, score))
                 if len(results) >= top_k:
@@ -467,18 +475,26 @@ class NetworkXGraphStore(GraphStore):
         query_embedding: list[float],
         top_k: int = 10,
         path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         with self._lock:
             if not query_embedding:
                 return []
-            fetch_k = top_k * 5 if path_prefix else top_k
+            prefixes: list[str] = []
+            if path_prefix:
+                prefixes.append(path_prefix)
+            if path_prefixes_or:
+                prefixes.extend(path_prefixes_or)
+            fetch_k = top_k * 5 if prefixes else top_k
             hits = self._relation_idx.search(query_embedding, fetch_k)
             results: list[tuple[Relation, float]] = []
             for rid, score in hits:
                 rel = self._rel_cache.get(rid)
                 if rel is None:
                     continue
-                if path_prefix and not _match_any_prefix(rel.source_paths, path_prefix):
+                if prefixes and not any(
+                    _match_any_prefix(rel.source_paths, p) for p in prefixes
+                ):
                     continue
                 results.append((rel, score))
                 if len(results) >= top_k:
