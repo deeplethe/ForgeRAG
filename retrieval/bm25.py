@@ -180,33 +180,57 @@ class InMemoryBM25Index:
             score += idf * (tf * (self.k1 + 1)) / (tf + norm)
         return score
 
-    def search_chunks(self, query: str, top_k: int) -> list[tuple[str, float]]:
+    def search_chunks(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """
+        Score every chunk in the index, optionally limiting candidates to
+        those whose doc_id is in ``allowed_doc_ids`` (pre-filter). When
+        ``allowed_doc_ids`` is None, no scoping is applied.
+        """
         if not self._finalized:
             self.finalize()
         q_tokens = tokenize(query)
         if not q_tokens or not self.chunk_ids:
             return []
+        scoped = allowed_doc_ids is not None
         scored: list[tuple[int, float]] = []
         for i in range(len(self.chunk_ids)):
+            if scoped and self.doc_ids[i] not in allowed_doc_ids:
+                continue
             s = self._score_chunk(i, q_tokens)
             if s > 0:
                 scored.append((i, s))
         scored.sort(key=lambda kv: -kv[1])
         return [(self.chunk_ids[i], s) for i, s in scored[:top_k]]
 
-    def search_docs(self, query: str, top_k: int) -> list[tuple[str, float]]:
-        """Return top doc_ids by max chunk BM25 within each doc."""
+    def search_docs(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """Return top doc_ids by max chunk BM25 within each doc, optionally
+        restricted to a whitelist of doc_ids."""
         if not self._finalized:
             self.finalize()
         q_tokens = tokenize(query)
         if not q_tokens or not self.chunk_ids:
             return []
+        scoped = allowed_doc_ids is not None
         best: dict[str, float] = {}
         for i in range(len(self.chunk_ids)):
+            did = self.doc_ids[i]
+            if scoped and did not in allowed_doc_ids:
+                continue
             s = self._score_chunk(i, q_tokens)
             if s <= 0:
                 continue
-            did = self.doc_ids[i]
             if s > best.get(did, 0.0):
                 best[did] = s
         ranked = sorted(best.items(), key=lambda kv: -kv[1])

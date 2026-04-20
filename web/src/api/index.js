@@ -18,6 +18,7 @@ export {
   rebuildBM25,
   testConnection,
   getInfrastructure,
+  getComponentHealth,
 } from './health'
 
 // Files (上传层)
@@ -102,6 +103,8 @@ export {
   createLLMProvider,
   updateLLMProvider,
   deleteLLMProvider,
+  listProviderPresets,
+  testLLMProvider,
 } from './llmProviders'
 
 // Knowledge Graph
@@ -116,5 +119,18 @@ export {
 // Benchmark
 export {
   startBenchmark, cancelBenchmark, getBenchmarkStatus,
-  downloadBenchmarkReport,
+  listBenchmarkReports, downloadBenchmarkReport,
 } from './benchmark'
+
+// Folders + document path
+export {
+  listFolders, getFolderTree, getFolderInfo,
+  createFolder, renameFolder, moveFolder, deleteFolder,
+  moveDocument, bulkMoveDocuments,
+} from './folders'
+
+// Trash
+export {
+  listTrash, getTrashStats,
+  restoreFromTrash, purgeTrashItems, emptyTrash,
+} from './trash'

@@ -7,6 +7,7 @@ The API never exposes raw API keys in GET responses (only a boolean flag).
 
 from __future__ import annotations
 
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,137 @@ from ..schemas import LLMProviderCreate, LLMProviderOut, LLMProviderUpdate
 from ..state import AppState
 
 router = APIRouter(prefix="/api/v1/llm-providers", tags=["llm-providers"])
+
+
+# ---------------------------------------------------------------------------
+# Presets (read-only catalogue)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/presets")
+def list_presets(provider_type: str | None = None) -> dict:
+    """Return curated provider presets, optionally filtered by type."""
+    from config.provider_presets import PROVIDER_PRESETS, presets_for_type
+
+    data = presets_for_type(provider_type) if provider_type else PROVIDER_PRESETS
+    return {"presets": data}
+
+
+# ---------------------------------------------------------------------------
+# Test connection
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{provider_id}/test")
+def test_provider(provider_id: str, state: AppState = Depends(get_state)) -> dict:
+    """
+    Send a minimal probe request to the provider's endpoint and return
+    the latency + outcome. Used by the "Test Connection" button in the
+    Provider edit modal to catch schema/key/endpoint mismatches before
+    the user runs a real query.
+
+    Different provider_types use different probes:
+        chat / vlm   — litellm.completion({role: user, content: "ping"})
+        embedding    — litellm.embedding(input=["ping"])
+        reranker     — litellm.rerank(query="ping", documents=[...])
+    """
+    row = state.store.get_llm_provider(provider_id)
+    if not row:
+        raise HTTPException(404, f"provider {provider_id!r} not found")
+
+    import litellm
+
+    kwargs: dict = {}
+    if row.get("api_key"):
+        kwargs["api_key"] = row["api_key"]
+    if row.get("api_base"):
+        kwargs["api_base"] = row["api_base"]
+
+    t0 = time.time()
+    try:
+        ptype = row["provider_type"]
+        if ptype == "reranker":
+            resp = litellm.rerank(
+                model=row["model_name"],
+                query="ping",
+                documents=["the quick brown fox", "hello world"],
+                top_n=2,
+                timeout=15.0,
+                **kwargs,
+            )
+            results = getattr(resp, "results", None)
+            if not results and isinstance(resp, dict):
+                results = resp.get("results")
+            ok = bool(results)
+            preview = f"got {len(results) if results else 0} ranked results"
+        elif ptype == "embedding":
+            resp = litellm.embedding(
+                model=row["model_name"],
+                input=["ping"],
+                timeout=15.0,
+                **kwargs,
+            )
+            data = getattr(resp, "data", None)
+            if not data and isinstance(resp, dict):
+                data = resp.get("data")
+            ok = bool(data)
+            preview = f"got embedding dim={len(data[0]['embedding']) if data else 0}"
+        else:  # chat, vlm
+            resp = litellm.completion(
+                model=row["model_name"],
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=8,
+                timeout=15.0,
+                **kwargs,
+            )
+            content = ""
+            try:
+                content = resp.choices[0].message.content or ""
+            except Exception:
+                pass
+            ok = True
+            preview = f"response: {content[:60]!r}"
+    except Exception as e:
+        latency_ms = int((time.time() - t0) * 1000)
+        cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+        inner = f" (cause: {type(cause).__name__}: {cause})" if cause is not None else ""
+        suggested = _suggest_fix(type(e).__name__, str(e), row)
+        return {
+            "ok": False,
+            "latency_ms": latency_ms,
+            "error_type": type(e).__name__,
+            "message": f"{e}{inner}",
+            "suggested_fix": suggested,
+        }
+
+    latency_ms = int((time.time() - t0) * 1000)
+    return {
+        "ok": ok,
+        "latency_ms": latency_ms,
+        "response_preview": preview,
+    }
+
+
+def _suggest_fix(err_type: str, err_msg: str, provider: dict) -> str | None:
+    """Return a short hint string for common configuration mistakes."""
+    msg_l = err_msg.lower()
+    if "llm provider not provided" in msg_l or "provider list" in msg_l:
+        return (
+            "Model string is missing a recognized LiteLLM provider prefix. "
+            "For SiliconFlow rerank, prefix with 'jina_ai/' (not 'siliconflow/')."
+        )
+    if "401" in err_msg or "unauthorized" in msg_l or "invalid" in msg_l and "api" in msg_l:
+        return "401 Unauthorized — check the API key."
+    if "not found" in msg_l and "model" in msg_l:
+        return f"Model {provider.get('model_name')!r} not found at this endpoint — check model name/spelling."
+    if err_type == "APIConnectionError":
+        return "Connection failed — check api_base URL and network reachability."
+    if "schema" in msg_l or "texts" in msg_l or "documents" in msg_l:
+        return (
+            "Request schema mismatch. For Cohere-compat rerank endpoints (Jina/SiliconFlow), "
+            "use 'jina_ai/<model>'. For TEI servers, use 'huggingface/<model>'."
+        )
+    return None
 
 
 def _to_out(row: dict) -> LLMProviderOut:

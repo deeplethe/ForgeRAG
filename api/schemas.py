@@ -208,8 +208,19 @@ class TreeOut(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str
+    query: str = Field(..., min_length=1, max_length=8192)
     filter: dict[str, Any] | None = None
+    # Path scoping: when set, retrieval is limited to documents whose path
+    # starts with this prefix (e.g. "/legal/2024"). Trashed documents are
+    # always excluded regardless of this filter.
+    path_filter: str | None = Field(
+        None,
+        description=(
+            "Limit retrieval to documents under this folder path. "
+            "Matches by path prefix (e.g. '/legal' matches '/legal/2024/x.pdf'). "
+            "Trashed documents are always excluded."
+        ),
+    )
     conversation_id: str | None = Field(
         None,
         description=(

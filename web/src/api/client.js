@@ -72,5 +72,16 @@ export const put = (path, body) =>
 export const patch = (path, body) =>
   request(path, { method: 'PATCH', body })
 
-export const del = (path) =>
-  request(path, { method: 'DELETE' })
+export const del = (path, params, options = {}) => {
+  // Support optional query-string `params` and optional `body` via `options.body`
+  let url = path
+  if (params) {
+    const clean = Object.fromEntries(
+      Object.entries(params).filter(([, v]) => v != null),
+    )
+    if (Object.keys(clean).length) {
+      url += '?' + new URLSearchParams(clean).toString()
+    }
+  }
+  return request(url, { method: 'DELETE', ...options })
+}

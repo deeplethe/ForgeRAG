@@ -70,7 +70,13 @@ def rehydrate(
     merged: dict[str, MergedChunk],
     relational: RelationalStore,
 ) -> None:
-    """Load Chunk objects for every merged entry (in place)."""
+    """Load Chunk objects for every merged entry (in place).
+
+    Chunks that no longer exist in the relational store (deleted or
+    re-ingested between retrieval and rehydration) are removed from
+    ``merged`` so downstream expansion / citation logic never sees a
+    ``None`` chunk.
+    """
     missing = [cid for cid, m in merged.items() if m.chunk is None]
     if not missing:
         return
@@ -79,6 +85,12 @@ def rehydrate(
         c = row_to_chunk(row)
         if c.chunk_id in merged:
             merged[c.chunk_id].chunk = c
+    # Drop entries that still have no chunk (DB didn't have them).
+    still_null = [cid for cid in missing if cid in merged and merged[cid].chunk is None]
+    if still_null:
+        log.warning("rehydrate: %d chunk(s) missing from store, dropping: %s", len(still_null), still_null[:10])
+        for cid in still_null:
+            del merged[cid]
 
 
 # ---------------------------------------------------------------------------

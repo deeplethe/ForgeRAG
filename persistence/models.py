@@ -78,6 +78,28 @@ class Document(Base):
         ForeignKey("files.file_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # ── Folder tree membership ──────────────────────────────────────
+    # folder_id is the stable anchor (used for permissions + relationship).
+    # path is a cached denormalization for fast prefix queries — kept in
+    # sync by FolderService transactions. `__root__` is the default folder.
+    folder_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("folders.folder_id", ondelete="RESTRICT"),
+        default="__root__",
+        server_default="__root__",
+        index=True,
+    )
+    path: Mapped[str] = mapped_column(
+        String(1024),
+        default="/",
+        server_default="/",
+        index=True,
+    )
+    # Populated only for trashed documents: original folder + path + metadata
+    # Stored as JSON so we can restore accurately even if the original
+    # folder was also trashed. Shape: {original_folder_id, original_path,
+    # trashed_at (iso), trashed_by}
+    trashed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     filename: Mapped[str] = mapped_column(String(512), default="")
     format: Mapped[str] = mapped_column(String(32))
     active_parse_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -330,6 +352,130 @@ class QueryTrace(Base):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Folder tree (permission basis + path scoping)
+# ---------------------------------------------------------------------------
+#
+# Design contract:
+#   - folder_id is the stable anchor. Rename / move never changes it.
+#   - path is a cached denormalization — kept in sync by FolderService.
+#     Permission queries use folder_id; retrieval queries use path.
+#   - Two built-in system folders seeded by the migration:
+#       __root__   (path='/')       — everything's ancestor
+#       __trash__  (path='/__trash__') — trash bin
+#   - A document always belongs to exactly one folder. "No folder" = __root__.
+
+
+class Folder(Base):
+    __tablename__ = "folders"
+
+    folder_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    path: Mapped[str] = mapped_column(String(1024), unique=True, index=True)
+    path_lower: Mapped[str] = mapped_column(
+        String(1024),
+        index=True,
+        default="",
+        server_default="",
+    )  # case-insensitive dedup lookup (keeps original case in `path` for display)
+    parent_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("folders.folder_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # When trashed_at is NOT NULL, this folder is inside trash (a descendant of
+    # __trash__). Documents inside it inherit the trashed view automatically.
+    trashed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class FolderGrant(Base):
+    """
+    Permission grants on folders. Phase 1: table exists but permission
+    checks always return True (single-user mode). Phase 2+: authenticated
+    user_id + role-based evaluation with inheritance up the folder tree.
+    """
+
+    __tablename__ = "folder_grants"
+
+    grant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    folder_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("folders.folder_id", ondelete="CASCADE"),
+        index=True,
+    )
+    principal_id: Mapped[str] = mapped_column(String(128), index=True)  # user/group id
+    principal_type: Mapped[str] = mapped_column(String(16))  # 'user' | 'group' | 'public'
+    permission: Mapped[str] = mapped_column(String(16))  # 'view' | 'edit' | 'admin'
+    inherit: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    granted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    granted_by: Mapped[str] = mapped_column(
+        String(128), default="system", server_default="system"
+    )
+
+
+class AuditLogRow(Base):
+    """Append-only audit trail for all folder/document mutations.
+
+    Phase 1: actor_id is always 'local'. Phase 2+: populated from the
+    authenticated request context.
+    """
+
+    __tablename__ = "audit_log"
+
+    audit_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_id: Mapped[str] = mapped_column(String(128), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PendingFolderOp(Base):
+    """
+    Queue of folder rename/move/delete operations that exceed the async
+    threshold (default 2000 affected chunks). The PG side is always
+    updated synchronously when the op is enqueued so `documents.path`
+    and `chunks.path` are immediately consistent. Chroma and Neo4j
+    lag — their path metadata is updated by ``scripts/nightly_maintenance.py``
+    during the maintenance window.
+
+    Between enqueue and maintenance, retrieval on affected scopes uses
+    an OR-fallback filter ("match new_path OR old_path") for Chroma and
+    Neo4j so queries remain complete.
+    """
+
+    __tablename__ = "pending_folder_ops"
+
+    op_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    op_type: Mapped[str] = mapped_column(String(16))        # rename | move | delete
+    old_path: Mapped[str] = mapped_column(String(1024), index=True)
+    new_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, index=True)
+    affected_chunks: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending"
+    )                                                         # pending | running | done | failed
+    queued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    queued_by: Mapped[str] = mapped_column(
+        String(128), default="local", server_default="local"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Chunks
+# ---------------------------------------------------------------------------
+
+
 class ChunkRow(Base):
     __tablename__ = "chunks"
 
@@ -341,6 +487,15 @@ class ChunkRow(Base):
     )
     parse_version: Mapped[int] = mapped_column(Integer, index=True)
     node_id: Mapped[str] = mapped_column(String(255), index=True)
+    # Denormalized from documents.path for fast path-prefix retrieval
+    # queries (`WHERE chunks.path LIKE '/legal/%'`). Kept in sync by
+    # FolderService on rename / move — the relational update runs
+    # synchronously inside the same transaction that updates
+    # documents.path, so PG is always coherent.  Chroma / Neo4j get the
+    # same path via their own store-level denormalization.
+    path: Mapped[str] = mapped_column(
+        String(1024), default="/", server_default="/", index=True
+    )
 
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str] = mapped_column(String(32))

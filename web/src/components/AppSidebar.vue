@@ -14,6 +14,7 @@ const emit = defineEmits(['select-conv', 'new-chat', 'delete-conv'])
 const tabs = [
   { path: '/chat', label: 'Chat', isChat: true },
   { path: '/architecture', label: 'Architecture' },
+  { path: '/workspace', label: 'Workspace' },
   { path: '/repository', label: 'Repository' },
   { path: '/knowledge-graph', label: 'Knowledge Graph' },
   { path: '/benchmark', label: 'Benchmark', dev: true },

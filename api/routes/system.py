@@ -220,8 +220,8 @@ def test_connection(
 class InfrastructureInfo(BaseModel):
     storage_mode: str  # local / s3 / oss
     storage_root: str  # path or bucket
-    relational_backend: str  # sqlite / postgres / mysql
-    relational_path: str  # db path or host:port/db
+    relational_backend: str  # postgres (production); sqlite only in test fixtures
+    relational_path: str  # host:port/db
     vector_backend: str  # pgvector / chromadb
     vector_detail: str  # collection or index info
     graph_backend: str = ""  # networkx / neo4j / none
@@ -249,9 +249,6 @@ def infrastructure(state: AppState = Depends(get_state)):
     elif r_backend == "postgres" and cfg.persistence.relational.postgres:
         pg = cfg.persistence.relational.postgres
         r_path = f"{pg.host}:{pg.port}/{pg.database}"
-    elif r_backend == "mysql" and cfg.persistence.relational.mysql:
-        my = cfg.persistence.relational.mysql
-        r_path = f"{my.host}:{my.port}/{my.database}"
 
     # Vector
     v_backend = cfg.persistence.vector.backend

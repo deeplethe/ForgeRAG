@@ -1,22 +1,19 @@
 """
 Persistence configuration.
 
-Two orthogonal choices:
+ForgeRAG production runtime requires PostgreSQL.  SQLite remains
+available for the test suite only (see TESTING_ALLOW_SQLITE env var);
+MySQL has been removed entirely.
 
-    relational.backend:  "postgres" | "mysql" | "sqlite"
+    relational.backend:  "postgres"  (production)
     vector.backend:      "pgvector" | "chromadb" | "qdrant" | "milvus" | "weaviate"
 
-Valid combinations:
-    postgres + pgvector   -- single-DB deployment (recommended)
-    postgres + chromadb   -- metadata in PG, vectors in Chroma
-    any      + qdrant     -- standalone Qdrant vector DB
-    any      + milvus     -- standalone Milvus vector DB
-    any      + weaviate   -- standalone Weaviate vector DB
-    mysql    + chromadb   -- MySQL shops; vectors in Chroma
-    mysql    + pgvector   -- INVALID (MySQL has no pgvector equivalent)
-
-Credentials: prefer {driver}.password_env over plaintext password.
+Credentials: prefer postgres.password_env over plaintext password.
 The store factory reads the env var at connect time.
+
+NOTE: The SQLiteConfig class is retained so pytest fixtures can still
+construct ephemeral in-memory DBs for fast unit tests, but the main
+config validator rejects sqlite in normal runtime.
 """
 
 from __future__ import annotations
@@ -51,22 +48,20 @@ class SQLiteConfig(BaseModel):
     synchronous: Literal["off", "normal", "full"] = "normal"
 
 
-class MySQLConfig(BaseModel):
-    host: str = "localhost"
-    port: int = 3306
-    database: str = "forgerag"
-    user: str = "forgerag"
-    password: str = ""
-    password_env: str | None = None
-    pool_size: int = 5
-    connect_timeout: int = 10
-    charset: str = "utf8mb4"
+import os
 
 
 class RelationalConfig(BaseModel):
-    backend: Literal["postgres", "mysql", "sqlite"] = "postgres"
+    """
+    Production: postgres only.
+
+    sqlite is still accepted inside the test-suite (env var
+    TESTING_ALLOW_SQLITE=1 set by pytest fixtures); anywhere else it
+    raises. MySQL support has been removed.
+    """
+
+    backend: Literal["postgres", "sqlite"] = "postgres"
     postgres: PostgresConfig | None = Field(default_factory=PostgresConfig)
-    mysql: MySQLConfig | None = None
     sqlite: SQLiteConfig | None = None
     schema_auto_init: bool = True
 
@@ -74,10 +69,16 @@ class RelationalConfig(BaseModel):
     def _check_section(self) -> RelationalConfig:
         if self.backend == "postgres" and self.postgres is None:
             self.postgres = PostgresConfig()
-        if self.backend == "mysql" and self.mysql is None:
-            raise ValueError("relational.backend=mysql but relational.mysql section missing")
-        if self.backend == "sqlite" and self.sqlite is None:
-            self.sqlite = SQLiteConfig()
+        if self.backend == "sqlite":
+            # Test-only escape hatch; reject in production environments.
+            if os.environ.get("TESTING_ALLOW_SQLITE") != "1":
+                raise ValueError(
+                    "relational.backend=sqlite is test-only. Production "
+                    "ForgeRAG runs on PostgreSQL. Set TESTING_ALLOW_SQLITE=1 "
+                    "to use SQLite from a pytest fixture."
+                )
+            if self.sqlite is None:
+                self.sqlite = SQLiteConfig()
         return self
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
 from ..deps import get_state
 from ..schemas import (
@@ -305,6 +306,115 @@ def delete_document(doc_id: str, state: AppState = Depends(get_state)):
                 state.store.delete_file(file_id)
         except Exception:
             log.warning("file cleanup failed for %s", file_id)
+
+
+# ---------------------------------------------------------------------------
+# Folder membership (move + bulk-move into another folder)
+# ---------------------------------------------------------------------------
+
+
+class MoveDocumentReq(BaseModel):
+    to_path: str  # destination folder (e.g. '/legal/2024')
+
+
+class BulkMoveReq(BaseModel):
+    doc_ids: list[str]
+    to_path: str
+
+
+@router.patch("/{doc_id}/path")
+def move_document(doc_id: str, body: "MoveDocumentReq", state: AppState = Depends(get_state)):
+    """Move a single document to another folder."""
+    from persistence.folder_service import (
+        FolderNotFound,
+        FolderService,
+        join_path,
+        unique_document_path,
+    )
+    from persistence.permissions import Permission, PermissionService
+
+    perm = PermissionService(state.store)
+    row = state.store.get_document(doc_id)
+    if not row:
+        raise HTTPException(404, "document not found")
+
+    with state.store.transaction() as sess:
+        svc = FolderService(sess)
+        try:
+            target = svc.require_by_path(body.to_path)
+        except FolderNotFound:
+            raise HTTPException(404, f"target folder not found: {body.to_path!r}")
+        perm.require_folder(target.folder_id, Permission.EDIT)
+
+        from persistence.models import Document
+        doc = sess.get(Document, doc_id)
+        if doc is None:
+            raise HTTPException(404, "document not found")
+
+        # Filename stays the same; just compute new path with collision suffix
+        filename = doc.filename or (doc.path.rsplit("/", 1)[-1] if doc.path else doc_id)
+        new_path = unique_document_path(sess, target, filename)
+
+        doc.folder_id = target.folder_id
+        doc.path = new_path
+
+        sess.add_all([
+            # audit log via sess (committed with the transaction)
+        ])
+        from persistence.models import AuditLogRow
+        sess.add(AuditLogRow(
+            actor_id="local",
+            action="document.move",
+            target_type="document",
+            target_id=doc_id,
+            details={"to_path": new_path, "to_folder_id": target.folder_id},
+        ))
+
+    return {"doc_id": doc_id, "path": new_path, "folder_id": target.folder_id}
+
+
+@router.post("/bulk-move")
+def bulk_move_documents(body: "BulkMoveReq", state: AppState = Depends(get_state)):
+    """Move many documents at once."""
+    from persistence.folder_service import (
+        FolderNotFound,
+        FolderService,
+        unique_document_path,
+    )
+    from persistence.permissions import Permission, PermissionService
+
+    perm = PermissionService(state.store)
+    moved: list[dict] = []
+    errors: list[dict] = []
+    with state.store.transaction() as sess:
+        svc = FolderService(sess)
+        try:
+            target = svc.require_by_path(body.to_path)
+        except FolderNotFound:
+            raise HTTPException(404, f"target folder not found: {body.to_path!r}")
+        perm.require_folder(target.folder_id, Permission.EDIT)
+
+        from persistence.models import AuditLogRow, Document
+
+        for doc_id in body.doc_ids:
+            doc = sess.get(Document, doc_id)
+            if doc is None:
+                errors.append({"doc_id": doc_id, "error": "not found"})
+                continue
+            filename = doc.filename or (doc.path.rsplit("/", 1)[-1] if doc.path else doc_id)
+            new_path = unique_document_path(sess, target, filename)
+            doc.folder_id = target.folder_id
+            doc.path = new_path
+            moved.append({"doc_id": doc_id, "path": new_path})
+            sess.add(AuditLogRow(
+                actor_id="local",
+                action="document.move",
+                target_type="document",
+                target_id=doc_id,
+                details={"to_path": new_path, "to_folder_id": target.folder_id, "bulk": True},
+            ))
+
+    return {"moved": moved, "errors": errors}
 
 
 @router.post("/{doc_id}/reparse", response_model=IngestAcceptedResponse, status_code=202)

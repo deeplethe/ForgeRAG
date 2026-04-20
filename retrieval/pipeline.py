@@ -76,6 +76,96 @@ class RetrievalPipeline:
         self._expander = None
 
     # ------------------------------------------------------------------
+    # Path scoping
+    # ------------------------------------------------------------------
+
+    def _resolve_path_scope(self, filter: dict | None) -> tuple[str | None, set[str] | None]:
+        """
+        Resolve the API-level path_filter into:
+          1. A path prefix string for backends that support native
+             path-prefix filtering (pgvector, Chroma, Neo4j). None means
+             "no user-visible scope — match anything except trash".
+          2. A doc_id snapshot set for backends that don't store path
+             (Python BM25 index, in-memory tree nav). The snapshot is
+             resolved once per query from the documents table so all
+             retrieval paths see a consistent scope even if a concurrent
+             rename commits mid-query.
+
+        Trashed documents are ALWAYS excluded, regardless of path_filter:
+        ``_trashed_doc_ids`` is populated as a side effect and used by
+        the minimal post-filter step that follows merge.
+        """
+        from sqlalchemy import select
+
+        from persistence.folder_service import TRASH_PATH
+        from persistence.models import Document
+
+        raw = (filter or {}).get("_path_filter") if filter else None
+        path_prefix: str | None = None
+        if raw and raw != "/":
+            path_prefix = raw.rstrip("/")
+
+        with self.rel.transaction() as sess:
+            # Snapshot doc_ids inside scope (only for BM25/Tree; skip
+            # entirely when no path_filter — they'll work on the full set).
+            allowed_doc_ids: set[str] | None = None
+            if path_prefix is not None:
+                allowed_doc_ids = set(
+                    sess.execute(
+                        select(Document.doc_id).where(
+                            (Document.path == path_prefix)
+                            | (Document.path.like(path_prefix + "/%"))
+                        )
+                    ).scalars()
+                )
+
+            # Trashed doc_ids — always excluded from all paths
+            trashed = set(
+                sess.execute(
+                    select(Document.doc_id).where(
+                        Document.path.like(TRASH_PATH + "/%")
+                    )
+                ).scalars()
+            )
+
+        self._trashed_doc_ids = trashed
+        if allowed_doc_ids is not None:
+            allowed_doc_ids -= trashed
+        return path_prefix, allowed_doc_ids
+
+    def _drop_trashed_hits(self, hits):
+        """
+        Drop hits whose chunk lives in a trashed document. Used as a
+        post-filter safety net on top of the backend-native path_prefix
+        pre-filter. In practice the trashed set is tiny (items waiting
+        for nightly purge), so this is cheap even at high QPS.
+        """
+        trashed = getattr(self, "_trashed_doc_ids", set()) or set()
+        if not trashed or not hits:
+            return hits
+        # Collect chunk_ids that still need doc_id resolution.
+        need_lookup = [
+            getattr(h, "chunk_id", "") for h in hits
+            if getattr(h, "doc_id", None) is None and getattr(h, "chunk_id", None)
+        ]
+        doc_id_by_chunk: dict[str, str] = {}
+        if need_lookup:
+            try:
+                for row in self.rel.get_chunks_by_ids(need_lookup):
+                    doc_id_by_chunk[row["chunk_id"]] = row.get("doc_id", "")
+            except Exception:
+                pass
+        out = []
+        for h in hits:
+            did = getattr(h, "doc_id", None)
+            if did is None:
+                did = doc_id_by_chunk.get(getattr(h, "chunk_id", ""))
+            if did is not None and did in trashed:
+                continue
+            out.append(h)
+        return out
+
+    # ------------------------------------------------------------------
     def analyze_query(
         self,
         query: str,
@@ -119,6 +209,17 @@ class RetrievalPipeline:
         stats: dict = {}
         _pcb = progress_cb or (lambda *a, **k: None)
 
+        # Resolve path-scoping into two complementary representations:
+        #   - path_prefix  → passed to SQL/metadata-indexed backends
+        #     (pgvector, Chroma, Neo4j) for native prefix filtering.
+        #   - allowed_doc_ids → snapshot whitelist for Python backends
+        #     (BM25 in-memory index, Tree nav) that don't store path.
+        path_prefix, allowed_doc_ids = self._resolve_path_scope(filter)
+        if filter and "_path_filter" in filter:
+            stats["path_filter"] = filter["_path_filter"]
+        if allowed_doc_ids is not None:
+            stats["path_scope_size"] = len(allowed_doc_ids)
+
         # ============================================================
         # Phase 0: Query Understanding (intent + routing + expansion)
         # ============================================================
@@ -156,6 +257,13 @@ class RetrievalPipeline:
                 expanded_count=len(queries),
                 fallback=False,
             )
+            # The QU LLM call already happened upstream, before this pipeline
+            # was invoked. The begin_phase/end_phase sandwich above ran in
+            # ~0ms because it's just metadata bookkeeping. Override the
+            # recorded duration so the trace reflects the real upstream work
+            # (matches how the parallel paths post-fix their timings).
+            if precomputed_plan.latency_ms:
+                trace.phases[-1]["duration_ms"] = precomputed_plan.latency_ms
 
         qu_cfg = self.cfg.query_understanding
         if qu_cfg.enabled and precomputed_plan is None:
@@ -288,17 +396,25 @@ class RetrievalPipeline:
                 return [], set()
             bm25_all: list[ScoredChunk] = []
             for q in queries:
-                for cid, score in self.bm25.search_chunks(q, self.cfg.bm25.top_k):
+                for cid, score in self.bm25.search_chunks(
+                    q,
+                    self.cfg.bm25.top_k,
+                    allowed_doc_ids=allowed_doc_ids,
+                ):
                     bm25_all.append(ScoredChunk(chunk_id=cid, score=score, source="bm25"))
             bm25_best: dict[str, ScoredChunk] = {}
             for sc in bm25_all:
                 if sc.chunk_id not in bm25_best or sc.score > bm25_best[sc.chunk_id].score:
                     bm25_best[sc.chunk_id] = sc
             hits = sorted(bm25_best.values(), key=lambda s: -s.score)
-            # Doc prefilter for Tree path
+            # Doc prefilter for Tree path — also scope-aware
             doc_ids: set[str] = set()
             for q in queries:
-                for doc_id, _ in self.bm25.search_docs(q, self.cfg.bm25.doc_prefilter_top_k):
+                for doc_id, _ in self.bm25.search_docs(
+                    q,
+                    self.cfg.bm25.doc_prefilter_top_k,
+                    allowed_doc_ids=allowed_doc_ids,
+                ):
                     doc_ids.add(doc_id)
             _timings["bm25"] = {"start": t0b, "end": time.time(), "llm_calls": []}
             _pcb(phase="bm25_path", status="done", detail=f"{len(hits)} hits")
@@ -331,11 +447,22 @@ class RetrievalPipeline:
                 latency_ms=embed_ms,
                 output_preview=f"{len(queries)} queries -> {len(q_vecs)} vectors",
             )
+            # Build vector filter:
+            #   - start with the base filter (default_filter or user-supplied)
+            #   - inject path_prefix so the vector store can do native
+            #     prefix filtering on its denormalized path metadata.
+            vector_filter: dict = {}
+            base = filter or self.cfg.vector.default_filter
+            if base:
+                # Strip our internal reserved key before sending downstream.
+                vector_filter = {k: v for k, v in base.items() if k != "_path_filter"}
+            if path_prefix:
+                vector_filter["path_prefix"] = path_prefix
             for q_vec in q_vecs:
                 hits = self.vector.search(
                     q_vec,
                     top_k=self.cfg.vector.top_k,
-                    filter=filter or self.cfg.vector.default_filter,
+                    filter=vector_filter or None,
                 )
                 all_raw.extend(hits)
                 all_vec.extend([ScoredChunk(chunk_id=h.chunk_id, score=h.score, source="vector") for h in hits])
@@ -380,6 +507,7 @@ class RetrievalPipeline:
                 query,
                 vector_doc_ids=doc_ids,
                 prefilter_hits=prefilter_hits,
+                allowed_doc_ids=allowed_doc_ids,
             )
             _timings["tree"] = {
                 "start": t0t,
@@ -401,7 +529,7 @@ class RetrievalPipeline:
             from .kg_path import KGPath
 
             kp = KGPath(self.cfg.kg_path, self.graph_store, self.rel, embedder=self.embedder)
-            result = kp.search(query)
+            result = kp.search(query, allowed_doc_ids=allowed_doc_ids)
             _kg_context[0] = kp.kg_context  # capture synthesized KG context
             _timings["kg"] = {
                 "start": t0k,
@@ -433,6 +561,15 @@ class RetrievalPipeline:
                 vector_hits, raw_vector_hits = [], []
                 _pcb(phase="vector_path", status="done", detail=f"error: {type(e).__name__}")
                 _timings.setdefault("vector", {"start": time.time(), "end": time.time(), "llm_calls": []})
+
+            # Trashed-doc safety net: BM25 and vector search don't know
+            # about /__trash__. Pre-filtering via path_prefix already
+            # blocks trash when a non-trash scope is set, but the
+            # unscoped case still needs this post-filter pass. It's O(N)
+            # over hits, not over the corpus.
+            bm25_hits = self._drop_trashed_hits(bm25_hits)
+            vector_hits = self._drop_trashed_hits(vector_hits)
+            raw_vector_hits = self._drop_trashed_hits(raw_vector_hits)
 
             # Phase 2: Tree navigation — uses combined doc_ids from
             # BM25 + Vector for cross-validated document routing.
@@ -495,6 +632,12 @@ class RetrievalPipeline:
                 _pcb(phase="kg_path", status="done", detail=f"error: {type(e).__name__}")
                 _timings.setdefault("kg", {"start": time.time(), "end": time.time(), "llm_calls": []})
 
+            # Tree/KG are already pre-filtered by allowed_doc_ids (passed
+            # into their search()); here we only need to drop trashed
+            # chunks that slipped through in the unscoped case.
+            tree_hits = self._drop_trashed_hits(tree_hits)
+            kg_hits = self._drop_trashed_hits(kg_hits)
+
         # ── Record traces for all parallel paths with real timings ──
         # Order: BM25 → Vector → KG → Tree (reflects actual start order)
         _trace_started = trace.started_at  # retrieval epoch
@@ -520,6 +663,8 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((bt["end"] - bt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((bt["start"] - _trace_started) * 1000)
         stats["bm25_hits"] = len(bm25_hits)
+        # Per-path top-5 chunk_ids (for benchmark per-path attribution analysis)
+        stats["bm25_top_ids"] = [s.chunk_id for s in bm25_hits[:5]]
 
         # Vector
         trace.begin_phase("vector_path")
@@ -543,6 +688,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((vt["end"] - vt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((vt["start"] - _trace_started) * 1000)
         stats["vector_hits"] = len(vector_hits)
+        stats["vector_top_ids"] = [s.chunk_id for s in vector_hits[:5]]
 
         # KG
         trace.begin_phase("kg_path")
@@ -557,6 +703,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((kt["end"] - kt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((kt["start"] - _trace_started) * 1000)
         stats["kg_hits"] = len(kg_hits)
+        stats["kg_top_ids"] = [s.chunk_id for s in kg_hits[:5]]
 
         # Tree (runs after BM25 + Vector, so recorded last)
         trace.begin_phase("tree_path")
@@ -577,6 +724,7 @@ class RetrievalPipeline:
             trace.phases[-1]["duration_ms"] = int((tt["end"] - tt["start"]) * 1000)
             trace.phases[-1]["started_at_ms"] = int((tt["start"] - _trace_started) * 1000)
         stats["tree_hits"] = len(tree_hits)
+        stats["tree_top_ids"] = [s.chunk_id for s in tree_hits[:5]]
         stats["vector_doc_ids"] = len(vector_doc_ids)
 
         # ============================================================
@@ -669,13 +817,31 @@ class RetrievalPipeline:
             top_k=self.cfg.rerank.top_k,
             candidates=len(finalized),
         )
+        rerank_error: str | None = None
         if self.cfg.rerank.enabled:
-            picked = self.reranker.rerank(query, finalized, top_k=self.cfg.rerank.top_k)
+            try:
+                picked = self.reranker.rerank(query, finalized, top_k=self.cfg.rerank.top_k)
+            except Exception as e:  # including RerankerError in strict mode
+                # Log + record in trace but keep the query alive with RRF order
+                # so the user still gets an answer. The UI will show the error
+                # via the health-components endpoint + architecture red dot.
+                rerank_error = f"{type(e).__name__}: {e}"
+                log.warning("rerank phase failed — falling back to RRF order: %s", rerank_error)
+                picked = finalized[: self.cfg.rerank.top_k]
         else:
             picked = finalized[: self.cfg.rerank.top_k]
-        trace.end_phase(output_count=len(picked))
-        _pcb(phase="rerank", status="done", detail=f"{len(picked)} selected")
+        if rerank_error:
+            trace.end_phase(output_count=len(picked), error=rerank_error)
+        else:
+            trace.end_phase(output_count=len(picked))
+        _pcb(
+            phase="rerank",
+            status="error" if rerank_error else "done",
+            detail=rerank_error or f"{len(picked)} selected",
+        )
         stats["reranked_count"] = len(picked)
+        if rerank_error:
+            stats["rerank_error"] = rerank_error
 
         # ============================================================
         # Phase 6: Citations

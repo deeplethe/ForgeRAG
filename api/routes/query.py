@@ -49,11 +49,24 @@ def query(req: QueryRequest, state: AppState = Depends(get_state)):
 # ---------------------------------------------------------------------------
 
 
+def _inject_path_filter(req: QueryRequest) -> dict | None:
+    """
+    Merge path_filter into the retrieval filter dict under the
+    reserved key '_path_filter'. RetrievalPipeline reads it to
+    build a doc_id whitelist.
+    """
+    if not req.path_filter:
+        return req.filter
+    merged = dict(req.filter or {})
+    merged["_path_filter"] = req.path_filter
+    return merged
+
+
 def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
     try:
         answer = state.answering.ask(
             req.query,
-            filter=req.filter,
+            filter=_inject_path_filter(req),
             conversation_id=req.conversation_id,
         )
     except Exception as e:
@@ -98,7 +111,7 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
         try:
             for event in state.answering.ask_stream(
                 req.query,
-                filter=req.filter,
+                filter=_inject_path_filter(req),
                 conversation_id=req.conversation_id,
             ):
                 event_type = event.get("event", "delta")

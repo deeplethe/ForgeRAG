@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { startBenchmark, cancelBenchmark, getBenchmarkStatus, downloadBenchmarkReport } from '@/api'
+import { startBenchmark, cancelBenchmark, getBenchmarkStatus, downloadBenchmarkReport, listBenchmarkReports } from '@/api'
 import Spinner from '@/components/Spinner.vue'
 
 /* ── state ── */
@@ -9,6 +9,12 @@ const numQuestions = ref(30)
 const starting = ref(false)
 const error = ref('')
 let _poll = null
+/* Replay mode: pick a saved run to re-run with the exact same questions */
+const availableReports = ref([])
+const replayFromRunId = ref('')
+async function loadAvailableReports() {
+  try { const r = await listBenchmarkReports(); availableReports.value = r?.reports || [] } catch {}
+}
 
 const st = computed(() => status.value?.status || 'idle')
 const isIdle = computed(() => st.value === 'idle')
@@ -64,7 +70,10 @@ async function doStart() {
   starting.value = true
   reachedSection.value = 0
   try {
-    await startBenchmark(numQuestions.value)
+    await startBenchmark({
+      numQuestions: numQuestions.value,
+      ...(replayFromRunId.value ? { replayFromRunId: replayFromRunId.value } : {}),
+    })
     startPolling()
     scrollToPhases()
   } catch (e) { error.value = e.message || 'Failed to start' }
@@ -107,6 +116,7 @@ watch(activeSection, (v) => {
 })
 
 onMounted(() => {
+  loadAvailableReports()
   poll().then(() => {
     if (isRunning.value) {
       reachedSection.value = activeSection.value
@@ -194,15 +204,27 @@ onUnmounted(() => stopPolling())
         </div>
 
         <!-- Start controls -->
-        <div class="mt-10 flex items-end gap-5">
+        <div class="mt-10 flex items-end gap-5 flex-wrap">
           <div>
             <label class="text-[10px] text-t3 uppercase tracking-wider block mb-1.5">Questions</label>
             <input v-model.number="numQuestions" type="number" min="5" max="200" step="5"
-              class="w-24 px-3 py-2 rounded-lg border border-line bg-bg text-sm text-t1 outline-none focus:border-brand" />
+              :disabled="!!replayFromRunId"
+              class="w-24 px-3 py-2 rounded-lg border border-line bg-bg text-sm text-t1 outline-none focus:border-brand disabled:opacity-40" />
+          </div>
+          <!-- Replay mode: optionally reuse questions from a prior run for strict A/B comparison -->
+          <div v-if="availableReports.length">
+            <label class="text-[10px] text-t3 uppercase tracking-wider block mb-1.5">Replay from</label>
+            <select v-model="replayFromRunId"
+              class="px-3 py-2 rounded-lg border border-line bg-bg text-sm text-t1 outline-none focus:border-brand">
+              <option value="">— new questions —</option>
+              <option v-for="r in availableReports" :key="r.run_id" :value="r.run_id">
+                {{ r.run_id }} · {{ r.num_items }}q · CP {{ r.context_precision ?? '?' }}
+              </option>
+            </select>
           </div>
           <button @click="doStart" :disabled="starting || isRunning"
             class="px-7 py-2 rounded-lg text-sm font-semibold bg-brand text-white hover:opacity-90 disabled:opacity-40 transition-opacity">
-            {{ starting ? 'Starting...' : 'Start Benchmark' }}
+            {{ starting ? 'Starting...' : (replayFromRunId ? 'Replay' : 'Start Benchmark') }}
           </button>
           <button v-if="isRunning" @click="doCancel"
             class="px-5 py-2 rounded-lg text-sm border border-line text-t2 hover:bg-bg3 transition-colors">

@@ -67,18 +67,6 @@ class Relation:
             self.relation_id = f"{self.source_entity}->{self.target_entity}"
 
 
-@dataclass
-class Community:
-    """A cluster of related entities discovered via community detection."""
-
-    community_id: str = ""
-    level: int = 0
-    entity_ids: list[str] = field(default_factory=list)
-    title: str = ""
-    summary: str = ""
-    summary_embedding: list[float] = field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Abstract store
 # ---------------------------------------------------------------------------
@@ -114,6 +102,19 @@ class GraphStore(ABC):
     @abstractmethod
     def get_entity(self, entity_id: str) -> Entity | None:
         """Return a single entity by ID, or ``None``."""
+
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
+        """Batch lookup. Returns ``{entity_id: Entity}`` — missing IDs are omitted.
+
+        Default implementation loops ``get_entity`` per ID. Backends with
+        network round-trips (Neo4j) MUST override with a single query.
+        """
+        out: dict[str, Entity] = {}
+        for eid in entity_ids:
+            ent = self.get_entity(eid)
+            if ent is not None:
+                out[eid] = ent
+        return out
 
     @abstractmethod
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
@@ -166,27 +167,21 @@ class GraphStore(ABC):
         """Return every entity in the store. Override for efficiency."""
         return []
 
-    # -- community detection ------------------------------------------------
+    # -- entity semantic search ---------------------------------------------
 
-    def detect_communities(self, resolution: float = 1.0) -> list[Community]:
-        """Run Leiden clustering on the graph. Override in backends."""
-        return []
-
-    def get_communities(self) -> list[Community]:
-        """Return all stored communities."""
-        return []
-
-    def upsert_community(self, community: Community) -> None:
-        """Store or update a community."""
-
-    def search_communities(
+    def search_entities_by_embedding(
         self,
         query_embedding: list[float],
-        top_k: int = 5,
-    ) -> list[tuple[Community, float]]:
-        """Cosine-similarity search over community summary embeddings.
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine-similarity search over entity name embeddings.
 
-        Returns list of (community, score) tuples sorted by score desc.
+        Backends that don't maintain a name-embedding index return an
+        empty list (the retrieval path will fall back to name-based
+        lookup). NetworkX and other backends that do persist entity
+        name vectors override this with a real index.
+
+        Returns list of (entity, score) tuples sorted by score desc.
         """
         return []
 

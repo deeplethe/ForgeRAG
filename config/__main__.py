@@ -153,9 +153,6 @@ def _print_summary(path: Path, cfg: AppConfig) -> None:
         lines.append(f"  user                  : {rel.postgres.user}")
         cred = rel.postgres.password_env or "(plaintext in config)"
         lines.append(f"  password              : {cred}")
-    elif rel.backend == "mysql" and rel.mysql:
-        lines.append(f"  host                  : {rel.mysql.host}:{rel.mysql.port}/{rel.mysql.database}")
-        lines.append(f"  user                  : {rel.mysql.user}")
 
     lines.append("")
     lines.append("persistence.vector")

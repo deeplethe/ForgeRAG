@@ -14,6 +14,7 @@ Typical usage:
 
 from .answering import AnsweringSection, GeneratorConfig
 from .app import AppConfig
+from .benchmark import BenchmarkConfig
 from .embedder import (
     EmbedderConfig,
     LiteLLMEmbedderConfig,
@@ -38,7 +39,6 @@ from .parser import (
 from .persistence import (
     ChromaConfig,
     MilvusConfig,
-    MySQLConfig,
     PersistenceConfig,
     PgvectorConfig,
     PostgresConfig,
@@ -69,6 +69,7 @@ from .storage import (
 __all__ = [
     "AnsweringSection",
     "AppConfig",
+    "BenchmarkConfig",
     "BM25Config",
     "BackendsConfig",
     "ChromaConfig",
@@ -87,7 +88,6 @@ __all__ = [
     "MergeConfig",
     "MilvusConfig",
     "MinerUConfig",
-    "MySQLConfig",
     "Neo4jConfig",
     "NetworkXConfig",
     "NormalizeConfig",

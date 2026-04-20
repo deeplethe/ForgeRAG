@@ -39,6 +39,20 @@ log = logging.getLogger(__name__)
 
 # (key, group, label, description, value_type, enum_options)
 EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
+    # --- Benchmark ---
+    (
+        "benchmark.judge_provider_id",
+        "benchmark",
+        "Judge LLM",
+        (
+            "LLM used to score benchmark answers (Faithfulness / Relevancy / "
+            "Context Precision). Pick a DIFFERENT provider than the Answer "
+            "LLM to avoid self-preference bias. If left empty, falls back to "
+            "the Answer LLM with a warning."
+        ),
+        "string",
+        None,
+    ),
     # --- Generation ---
     ("answering.generator.provider_id", "llm", "Answer LLM", "Chat model for answer generation", "string", None),
     ("answering.generator.temperature", "llm", "Temperature", "0.0 = deterministic, 1.0 = creative", "float", None),
@@ -79,19 +93,19 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.query_understanding.max_expansions",
-        "query_understanding",
-        "Max query expansions",
-        "Number of search query variants to generate for broader recall",
-        "int",
-        None,
-    ),
-    (
         "retrieval.query_understanding.provider_id",
         "query_understanding",
         "Understanding LLM",
         "Chat model for intent classification and query expansion",
         "string",
+        None,
+    ),
+    (
+        "retrieval.query_understanding.max_expansions",
+        "query_understanding",
+        "Max query expansions",
+        "Number of search query variants to generate for broader recall",
+        "int",
         None,
     ),
     # --- Retrieval: Path A — Vector ---
@@ -154,6 +168,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
+    ("retrieval.tree_path.top_k", "retrieval_tree", "Top-k", "Max chunks returned from tree navigation", "int", None),
     (
         "retrieval.tree_path.llm_nav_enabled",
         "retrieval_tree",
@@ -162,7 +177,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
-    ("retrieval.tree_path.top_k", "retrieval_tree", "Top-k", "Max chunks returned from tree navigation", "int", None),
     (
         "retrieval.tree_path.nav.provider_id",
         "retrieval_tree",
@@ -290,11 +304,52 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "retrieval.rerank.enabled",
         "rerank",
         "Enable rerank",
-        "LLM-powered re-scoring of candidates after fusion",
+        (
+            "Recommended. Cross-encoder re-scoring of RRF candidates. In our "
+            "benchmark this raised Context Precision by 78% (0.15 → 0.267). "
+            "Requires a reranker provider — use the 'SiliconFlow · BGE Reranker' "
+            "preset for a quick start."
+        ),
         "bool",
         None,
     ),
-    ("retrieval.rerank.backend", "rerank", "Backend", "Reranking method", "enum", ["passthrough", "litellm"]),
+    (
+        "retrieval.rerank.backend",
+        "rerank",
+        "Backend",
+        (
+            "Reranking method. "
+            "• passthrough: keep RRF order. "
+            "• rerank_api: calls litellm.rerank() with a dedicated cross-encoder "
+            "— fast and cheap, recommended. For SiliconFlow BGE use model "
+            "\"jina_ai/BAAI/bge-reranker-v2-m3\" + api_base "
+            "https://api.siliconflow.cn/v1 (Jina uses Cohere-compat schema, "
+            "which SiliconFlow speaks). Do NOT use \"huggingface/\" prefix — "
+            "it sends TEI schema (texts=[], return_text=true) that SiliconFlow "
+            "rejects. Other working providers: \"cohere/rerank-v3.5\" (Cohere "
+            "native), \"voyage/rerank-2\", \"together_ai/...\". "
+            "• llm_as_reranker: chat LLM as rank judge via JSON index array "
+            "— slower and more expensive; use only when no dedicated rerank "
+            "endpoint is available."
+        ),
+        "enum",
+        ["passthrough", "rerank_api", "llm_as_reranker"],
+    ),
+    (
+        "retrieval.rerank.on_failure",
+        "rerank",
+        "On failure",
+        (
+            "What to do if the rerank call fails. "
+            "• strict (recommended): surface the error to the architecture "
+            "UI (red dot) so misconfigurations are caught immediately. Query "
+            "still returns with RRF-order chunks as fallback. "
+            "• passthrough: silently return RRF-order chunks. Legacy behaviour "
+            "that hides bugs — avoid."
+        ),
+        "enum",
+        ["strict", "passthrough"],
+    ),
     ("retrieval.rerank.provider_id", "rerank", "Rerank model", "Select a reranker from LLM Providers", "string", None),
     (
         "retrieval.rerank.top_k",
@@ -304,7 +359,231 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "int",
         None,
     ),
+    # --- Persistence: Relational DB ---
+    (
+        "persistence.relational.backend",
+        "persistence_relational",
+        "Relational backend",
+        "Database engine. ForgeRAG production requires PostgreSQL.",
+        "enum",
+        ["postgres"],
+    ),
+    (
+        "persistence.relational.postgres.host",
+        "persistence_relational",
+        "PostgreSQL host",
+        "PostgreSQL server hostname",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.port",
+        "persistence_relational",
+        "PostgreSQL port",
+        "PostgreSQL server port",
+        "int",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.database",
+        "persistence_relational",
+        "PostgreSQL database",
+        "Database name",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.user",
+        "persistence_relational",
+        "PostgreSQL user",
+        "Database user",
+        "string",
+        None,
+    ),
+    (
+        "persistence.relational.postgres.password",
+        "persistence_relational",
+        "PostgreSQL password",
+        "Database password (leave empty to use password_env)",
+        "secret",
+        None,
+    ),
+    # --- Persistence: Vector Store ---
+    (
+        "persistence.vector.backend",
+        "persistence_vector",
+        "Vector backend",
+        "Vector database for embeddings (restart required)",
+        "enum",
+        ["chromadb", "pgvector", "qdrant", "milvus", "weaviate"],
+    ),
+    (
+        "persistence.vector.chromadb.persist_directory",
+        "persistence_vector",
+        "ChromaDB directory",
+        "Local directory for ChromaDB persistent storage",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.qdrant.url",
+        "persistence_vector",
+        "Qdrant URL",
+        "Qdrant server URL",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.qdrant.api_key",
+        "persistence_vector",
+        "Qdrant API key",
+        "API key for Qdrant Cloud (optional for local)",
+        "secret",
+        None,
+    ),
+    (
+        "persistence.vector.milvus.uri",
+        "persistence_vector",
+        "Milvus URI",
+        "Milvus server URI",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.milvus.token",
+        "persistence_vector",
+        "Milvus token",
+        "Authentication token for Milvus (optional for local)",
+        "secret",
+        None,
+    ),
+    (
+        "persistence.vector.weaviate.url",
+        "persistence_vector",
+        "Weaviate URL",
+        "Weaviate server URL",
+        "string",
+        None,
+    ),
+    (
+        "persistence.vector.weaviate.api_key",
+        "persistence_vector",
+        "Weaviate API key",
+        "API key for Weaviate Cloud (optional for local)",
+        "secret",
+        None,
+    ),
+    # --- Persistence: Graph Store ---
+    (
+        "graph.backend",
+        "persistence_graph",
+        "Graph backend",
+        (
+            "Knowledge graph storage engine. ForgeRAG production requires "
+            "Neo4j 5.11+ (multi-worker safety + native vector index + "
+            "Cypher for path-scoped KG retrieval). NetworkX is test-only."
+        ),
+        "enum",
+        ["neo4j"],
+    ),
+    (
+        "graph.neo4j.uri",
+        "persistence_graph",
+        "Neo4j URI",
+        "Neo4j Bolt connection URI",
+        "string",
+        None,
+    ),
+    (
+        "graph.neo4j.user",
+        "persistence_graph",
+        "Neo4j user",
+        "Neo4j database user",
+        "string",
+        None,
+    ),
+    (
+        "graph.neo4j.password",
+        "persistence_graph",
+        "Neo4j password",
+        "Neo4j password (leave empty to use password_env)",
+        "secret",
+        None,
+    ),
+    (
+        "graph.neo4j.database",
+        "persistence_graph",
+        "Neo4j database",
+        "Neo4j database name",
+        "string",
+        None,
+    ),
     # --- Storage & Cache ---
+    # --- Blob Storage ---
+    (
+        "storage.mode",
+        "blob_storage",
+        "Storage mode",
+        "Blob storage backend for files and figures (restart required)",
+        "enum",
+        ["local", "s3", "oss"],
+    ),
+    (
+        "storage.local.root",
+        "blob_storage",
+        "Local root path",
+        "Directory for local blob storage",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.endpoint",
+        "blob_storage",
+        "S3 endpoint",
+        "S3-compatible endpoint URL",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.bucket",
+        "blob_storage",
+        "S3 bucket",
+        "S3 bucket name",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.region",
+        "blob_storage",
+        "S3 region",
+        "AWS region",
+        "string",
+        None,
+    ),
+    (
+        "storage.s3.prefix",
+        "blob_storage",
+        "S3 prefix",
+        "Key prefix within the bucket",
+        "string",
+        None,
+    ),
+    (
+        "storage.oss.endpoint",
+        "blob_storage",
+        "OSS endpoint",
+        "Alibaba OSS endpoint URL",
+        "string",
+        None,
+    ),
+    (
+        "storage.oss.bucket",
+        "blob_storage",
+        "OSS bucket",
+        "OSS bucket name",
+        "string",
+        None,
+    ),
     (
         "cache.bm25_persistence",
         "cache",
@@ -348,6 +627,14 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     ),
     # --- Document Parser ---
     (
+        "parser.ingest_max_workers",
+        "parser",
+        "Ingest concurrency",
+        "Max documents processed in parallel (restart required)",
+        "int",
+        None,
+    ),
+    (
         "parser.backends.mineru.enabled",
         "parser",
         "Enable MinerU",
@@ -373,6 +660,22 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     ),
     # --- Tree Builder ---
     (
+        "parser.tree_builder.min_coverage",
+        "tree_builder",
+        "Min page coverage",
+        "Minimum fraction of pages that must be covered by tree leaves",
+        "float",
+        None,
+    ),
+    (
+        "parser.tree_builder.max_reasonable_depth",
+        "tree_builder",
+        "Max tree depth",
+        "Maximum tree depth before quality penalty applies",
+        "int",
+        None,
+    ),
+    (
         "parser.tree_builder.llm_enabled",
         "tree_builder",
         "LLM tree building",
@@ -387,22 +690,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "Tree builder LLM",
         "Chat model for tree building and summary generation",
         "string",
-        None,
-    ),
-    (
-        "parser.tree_builder.min_coverage",
-        "tree_builder",
-        "Min page coverage",
-        "Minimum fraction of pages that must be covered by tree leaves",
-        "float",
-        None,
-    ),
-    (
-        "parser.tree_builder.max_reasonable_depth",
-        "tree_builder",
-        "Max tree depth",
-        "Maximum tree depth before quality penalty applies",
-        "int",
         None,
     ),
     (
@@ -456,15 +743,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "int",
         None,
     ),
-    # --- Ingestion ---
-    (
-        "parser.ingest_max_workers",
-        "parser",
-        "Ingest concurrency",
-        "Max documents processed in parallel (restart required)",
-        "int",
-        None,
-    ),
     # --- Knowledge Graph: Extraction (ingestion-time) ---
     (
         "retrieval.kg_extraction.enabled",
@@ -506,15 +784,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
-    # --- Knowledge Graph: Community detection ---
-    (
-        "graph.community_detection.enabled",
-        "kg_extraction",
-        "Enable community detection",
-        "Auto-run Leiden clustering + LLM summarization after ingestion. Inherits KG extraction LLM if not configured separately.",
-        "bool",
-        None,
-    ),
     # --- Knowledge Graph: Retrieval path ---
     (
         "retrieval.kg_path.enabled",
@@ -547,14 +816,6 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "kg",
         "Global weight",
         "Weight for global keyword entity search (0-1)",
-        "float",
-        None,
-    ),
-    (
-        "retrieval.kg_path.community_weight",
-        "kg",
-        "Community weight",
-        "Weight for community-based semantic retrieval (0-1). Requires community detection.",
         "float",
         None,
     ),
@@ -688,24 +949,46 @@ def seed_defaults(cfg, store: Store) -> int:
     if removed:
         log.info("removed %d stale settings", removed)
 
-    # --- seed missing keys ---
+    # --- seed missing keys + refresh metadata on existing keys ---
     count = 0
     for key, group, label, desc, vtype, enums in EDITABLE_SETTINGS:
         existing = store.get_setting(key)
-        if existing is not None:
-            continue
-        value = _resolve_dotted(cfg, key)
-        record = {
-            "key": key,
-            "value_json": value,
-            "group_name": group,
-            "label": label,
-            "description": desc,
-            "value_type": vtype,
-            "enum_options": enums,
-        }
-        store.upsert_setting(record)
-        count += 1
+        if existing is None:
+            # New key — seed with current config value
+            value = _resolve_dotted(cfg, key)
+            store.upsert_setting(
+                {
+                    "key": key,
+                    "value_json": value,
+                    "group_name": group,
+                    "label": label,
+                    "description": desc,
+                    "value_type": vtype,
+                    "enum_options": enums,
+                }
+            )
+            count += 1
+        else:
+            # Existing key — refresh metadata but keep user's value_json
+            needs_update = (
+                existing.get("group_name") != group
+                or existing.get("label") != label
+                or existing.get("description") != desc
+                or existing.get("value_type") != vtype
+                or existing.get("enum_options") != enums
+            )
+            if needs_update:
+                store.upsert_setting(
+                    {
+                        "key": key,
+                        "value_json": existing["value_json"],
+                        "group_name": group,
+                        "label": label,
+                        "description": desc,
+                        "value_type": vtype,
+                        "enum_options": enums,
+                    }
+                )
     if count:
         log.info("seeded %d default settings", count)
     return count
@@ -795,6 +1078,7 @@ _PROVIDER_FIELDS = [
     ("parser.tree_builder", "llm_model", "llm_api_key", "llm_api_base"),
     ("retrieval.kg_extraction", "model", "api_key", "api_base"),
     ("retrieval.kg_path", "model", "api_key", "api_base"),
+    ("benchmark", "model", "api_key", "api_base"),
 ]
 
 # For embedder, provider_id lives on EmbedderConfig but credentials go to litellm sub-config
@@ -816,7 +1100,9 @@ def resolve_providers(cfg, store: Store) -> int:
         pid_obj = _resolve_dotted(cfg, pid_path)
         if pid_obj is None:
             continue
-        provider_id = getattr(pid_obj, "provider_id", None)
+        # Most components use `provider_id`; benchmark uses `judge_provider_id`
+        # to make the intent explicit in settings. Probe both field names.
+        provider_id = getattr(pid_obj, "provider_id", None) or getattr(pid_obj, "judge_provider_id", None)
         if not provider_id:
             continue
 

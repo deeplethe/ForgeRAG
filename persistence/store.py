@@ -85,6 +85,61 @@ class Store:
         assert self._engine is not None
         Base.metadata.create_all(self._engine)
         self._migrate_add_columns()
+        self._seed_system_folders()
+
+    def _seed_system_folders(self) -> None:
+        """
+        Ensure the two system folders (__root__, __trash__) exist.
+        Both the alembic migration and the test-mode Base.metadata.create_all()
+        rely on this — the migration runs this SQL explicitly, but tests use
+        create_all() which doesn't execute data seeds.
+        """
+        from sqlalchemy import text
+
+        assert self._engine is not None
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folders (folder_id, path, path_lower, parent_id,
+                                         name, is_system, metadata_json)
+                    SELECT '__root__', '/', '/', NULL, 'Root', :tt, '{}'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folders WHERE folder_id = '__root__'
+                    )
+                    """
+                ),
+                {"tt": True},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folders (folder_id, path, path_lower, parent_id,
+                                         name, is_system, metadata_json)
+                    SELECT '__trash__', '/__trash__', '/__trash__', '__root__',
+                           'Trash', :tt, '{}'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folders WHERE folder_id = '__trash__'
+                    )
+                    """
+                ),
+                {"tt": True},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folder_grants (grant_id, folder_id, principal_id,
+                                               principal_type, permission,
+                                               inherit, granted_by)
+                    SELECT '__bootstrap__', '__root__', 'local', 'user',
+                           'admin', :inh, 'system'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folder_grants WHERE grant_id = '__bootstrap__'
+                    )
+                    """
+                ),
+                {"inh": True},
+            )
 
     # Column renames: (table_name, old_col, new_col)
     _COLUMN_RENAMES: list[tuple[str, str, str]] = [
@@ -456,8 +511,34 @@ class Store:
     # =======================================================================
 
     def insert_chunks(self, rows: list[dict]) -> None:
+        """
+        Insert chunk rows. The ``path`` column is denormalized from
+        the owning ``documents.path`` at write time — callers don't need
+        to know or supply it. This keeps ingestion code path-agnostic
+        while letting retrieval queries filter natively on chunks.path.
+        """
         if not rows:
             return
+        # Auto-fill chunks.path from documents.path for any row that
+        # didn't supply one. Callers that already know the path (bulk
+        # rename, restoration, etc.) can pass it explicitly to skip
+        # the lookup.
+        need_path = [r for r in rows if not r.get("path")]
+        if need_path:
+            from sqlalchemy import select as _sel
+
+            doc_ids = list({r["doc_id"] for r in need_path if r.get("doc_id")})
+            path_by_doc: dict[str, str] = {}
+            if doc_ids:
+                with self._session() as s:
+                    for did, p in s.execute(
+                        _sel(Document.doc_id, Document.path).where(
+                            Document.doc_id.in_(doc_ids)
+                        )
+                    ):
+                        path_by_doc[did] = p or "/"
+            for r in need_path:
+                r["path"] = path_by_doc.get(r.get("doc_id", ""), "/")
         with self._session() as s:
             s.execute(insert(ChunkRow), rows)
 

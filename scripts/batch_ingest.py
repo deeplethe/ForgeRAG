@@ -228,7 +228,7 @@ def build_pipeline(args: argparse.Namespace) -> tuple[IngestionPipeline, Store]:
         from persistence.vector.base import make_vector_store
 
         embedder = make_embedder(cfg.embedder)
-        # pgvector needs postgres -- auto-fallback to chromadb for sqlite/mysql
+        # pgvector needs postgres -- auto-fallback to chromadb for sqlite test fixtures
         if cfg.persistence.vector.backend == "pgvector" and cfg.persistence.relational.backend != "postgres":
             from config import ChromaConfig, VectorConfig
 

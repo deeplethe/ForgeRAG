@@ -14,6 +14,7 @@ Statistics from both retrieval and generation are merged into
 
 from __future__ import annotations
 
+import collections
 import logging
 import time
 from uuid import uuid4
@@ -45,7 +46,17 @@ class AnsweringPipeline:
         self.store = store  # if set, traces are persisted to DB
         # Per-conversation cache of last retrieval result for reuse
         # on reformulation queries ("用中文回答", "简短一点", etc.)
-        self._retrieval_cache: dict[str, RetrievalResult] = {}
+        # Bounded to prevent unbounded memory growth on long-running
+        # processes that serve many conversations.
+        self._retrieval_cache: collections.OrderedDict[str, RetrievalResult] = collections.OrderedDict()
+        self._cache_max = 200
+
+    def _cache_put(self, conversation_id: str, result: RetrievalResult) -> None:
+        """Insert into LRU cache, evicting oldest if over capacity."""
+        self._retrieval_cache[conversation_id] = result
+        self._retrieval_cache.move_to_end(conversation_id)
+        while len(self._retrieval_cache) > self._cache_max:
+            self._retrieval_cache.popitem(last=False)
 
     # ------------------------------------------------------------------
     def ask(
@@ -119,7 +130,7 @@ class AnsweringPipeline:
                         retrieval_result.query_plan = qp_early
                         stats["retrieval"] = retrieval_result.stats
                         if conversation_id:
-                            self._retrieval_cache[conversation_id] = retrieval_result
+                            self._cache_put(conversation_id, retrieval_result)
                         _reuse = True
 
         if not _reuse:
@@ -132,7 +143,7 @@ class AnsweringPipeline:
             )
             stats["retrieval"] = retrieval_result.stats
             if conversation_id:
-                self._retrieval_cache[conversation_id] = retrieval_result
+                self._cache_put(conversation_id, retrieval_result)
 
         messages, used_in_prompt = build_messages(
             query=query,
@@ -196,6 +207,26 @@ class AnsweringPipeline:
             stats.get("generate_ms", 0),
             conversation_id or "none",
         )
+
+        # Stash the synthesized KG context (entities + relations injected
+        # into the prompt) into stats so downstream consumers — notably
+        # the benchmark — can see the full set of material the LLM had
+        # available, not just chunk citations. Without this, LLM-judge
+        # evaluations mis-score answers grounded in KG synthesis as
+        # "hallucinated" because they're not in any citation snippet.
+        if retrieval_result.kg_context and not retrieval_result.kg_context.is_empty:
+            kg = retrieval_result.kg_context
+            stats["kg_context"] = {
+                "entities": [{"name": e.get("name", ""), "description": e.get("description", "")} for e in kg.entities],
+                "relations": [
+                    {
+                        "source": r.get("source", ""),
+                        "target": r.get("target", ""),
+                        "description": r.get("description", ""),
+                    }
+                    for r in kg.relations
+                ],
+            }
 
         answer = Answer(
             query=query,
@@ -287,6 +318,17 @@ class AnsweringPipeline:
             qp_early = self.retrieval.analyze_query(query, chat_history=chat_history)
             _early_qu_done = qp_early is not None
 
+            if qp_early and qp_early.needs_retrieval:
+                # Normal path: QU done, proceed to retrieval
+                yield {
+                    "event": "progress",
+                    "data": {
+                        "phase": "query_understanding",
+                        "status": "done",
+                        "detail": f"{qp_early.intent}, {len(qp_early.expanded_queries)} queries",
+                    },
+                }
+
             if qp_early and not qp_early.needs_retrieval and not qp_early.direct_answer and conversation_id:
                 # Reformulation / no-retrieval intent without direct answer
                 cached = self._retrieval_cache.get(conversation_id)
@@ -329,7 +371,7 @@ class AnsweringPipeline:
                         )
                         _reuse_result.query_plan = qp_early
                         if conversation_id:
-                            self._retrieval_cache[conversation_id] = _reuse_result
+                            self._cache_put(conversation_id, _reuse_result)
                         stats["retrieval"] = _reuse_result.stats
                         yield {
                             "event": "progress",
@@ -395,11 +437,7 @@ class AnsweringPipeline:
 
             # Cache for potential reuse by next turn
             if conversation_id:
-                self._retrieval_cache[conversation_id] = retrieval_result
-                # Limit cache size to avoid memory leak
-                if len(self._retrieval_cache) > 200:
-                    oldest = next(iter(self._retrieval_cache))
-                    del self._retrieval_cache[oldest]
+                self._cache_put(conversation_id, retrieval_result)
 
         qp = retrieval_result.query_plan
 

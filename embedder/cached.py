@@ -134,7 +134,13 @@ class CachedEmbedder:
         if misses:
             miss_texts = [t for _, t in misses]
             new_vecs = self.inner.embed_texts(miss_texts)
-            for (orig_i, t), vec in zip(misses, new_vecs, strict=False):
+            if len(new_vecs) != len(misses):
+                log.error(
+                    "embed_texts returned %d vectors for %d inputs — possible silent truncation; padding with zeros",
+                    len(new_vecs),
+                    len(misses),
+                )
+            for (orig_i, t), vec in zip(misses, new_vecs, strict=True):
                 h = self._hash(t)
                 self._cache[h] = vec
                 results[orig_i] = vec

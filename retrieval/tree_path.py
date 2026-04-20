@@ -115,20 +115,42 @@ class TreePath:
         query: str,
         vector_doc_ids: set[str] | None = None,
         prefilter_hits: list[PreFilterHit] | None = None,
+        *,
+        allowed_doc_ids: set[str] | None = None,
     ) -> list[ScoredChunk]:
+        """
+        Navigate document trees for the query.
+
+        ``allowed_doc_ids`` — when set, restricts BOTH the internal BM25
+        prefilter and any externally-supplied vector doc_ids to the given
+        whitelist, so the LLM tree navigator never reasons about documents
+        outside the user's requested scope.
+        """
         if not self.cfg.enabled:
             return []
 
         # BM25 doc prefilter (may return empty for non-Latin queries, etc.)
-        doc_hits = self.bm25.search_docs(query, self.bm25_cfg.doc_prefilter_top_k)
+        # Pass scope through to BM25 so the prefilter itself is pre-filtered.
+        doc_hits = self.bm25.search_docs(
+            query,
+            self.bm25_cfg.doc_prefilter_top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
         bm25_doc_set = {d for d, _ in doc_hits}
 
         # Merge externally-provided doc_ids (from pipeline's BM25 + Vector)
         # so tree nav runs even when the internal BM25 prefilter misses.
         ext_ids = (vector_doc_ids or set()) - bm25_doc_set
+        if allowed_doc_ids is not None:
+            ext_ids = ext_ids & allowed_doc_ids
         if ext_ids:
             for did in ext_ids:
                 doc_hits.append((did, 0.0))  # score 0 = no BM25 signal
+
+        # Also scope the prefilter_hits so the heat-map doesn't leak
+        # other-scope chunks into the navigator's prompt.
+        if allowed_doc_ids is not None and prefilter_hits:
+            prefilter_hits = [h for h in prefilter_hits if h.doc_id in allowed_doc_ids]
 
         if not doc_hits:
             return []
@@ -159,10 +181,16 @@ class TreePath:
                 -d[1],  # then by BM25 score desc
             ),
         )
+        # Limit candidate docs to avoid excessive LLM calls
+        max_docs = getattr(nav_cfg, "max_docs", 5)
+        if len(prioritized) > max_docs:
+            prioritized = prioritized[:max_docs]
+
         dual = sum(1 for d, _ in prioritized if d in vector_doc_ids)
         log.info(
-            "tree_path: %d BM25 docs, %d dual-hit (prioritized)",
+            "tree_path: %d candidate docs (capped from %d), %d dual-hit",
             len(prioritized),
+            len(doc_hits),
             dual,
         )
 
@@ -182,9 +210,24 @@ class TreePath:
         results_by_doc: dict[str, list[ScoredChunk]] = {}
         t0 = time.time()
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Explicit pool + finally (not `with`) so that when early-stop
+        # triggers we don't block on the executor's implicit shutdown.
+        # The `with` form calls shutdown(wait=True) on exit, which waits
+        # for every running future to finish — including the slowest LLM
+        # call, defeating the whole point of early-stop. Here we call
+        # shutdown(wait=False, cancel_futures=True) instead:
+        #   * cancel_futures cancels anything still pending in the queue,
+        #   * wait=False returns immediately; orphaned workers (already
+        #     running LLM calls) will finish on their own and their
+        #     threads will die when their work returns.
+        # Orphaned LLM calls still cost tokens until they complete — that
+        # trade-off is acceptable because we'd otherwise be blocked on
+        # the same slow call anyway. The net is faster wall time for the
+        # caller, same LLM spend.
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tree_nav")
+        try:
             futures = {
-                executor.submit(
+                pool.submit(
                     self._nav_one_doc,
                     query,
                     doc_id,
@@ -194,8 +237,10 @@ class TreePath:
             }
 
             accumulated = 0
+            completed: set = set()
             for fut in as_completed(futures):
                 doc_id = futures[fut]
+                completed.add(fut)
                 try:
                     chunks = fut.result()
                     results_by_doc[doc_id] = chunks
@@ -205,15 +250,23 @@ class TreePath:
 
                 # --- Early stop ---
                 if accumulated >= nav_cfg.target_chunks:
+                    pending = sum(1 for f in futures if f not in completed)
+                    # Cancel pending (not-yet-scheduled) futures. Already
+                    # running ones can't be cancelled but will be
+                    # abandoned by the finally-block shutdown(wait=False).
                     for f in futures:
-                        f.cancel()
+                        if f not in completed:
+                            f.cancel()
                     log.info(
-                        "tree_path early stop: %d chunks from %d/%d docs",
+                        "tree_path early stop: %d chunks from %d/%d docs (%d pending abandoned)",
                         accumulated,
                         len(results_by_doc),
                         len(prioritized),
+                        pending,
                     )
                     break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         elapsed = int((time.time() - t0) * 1000)
         log.info(
@@ -247,6 +300,9 @@ class TreePath:
         if not tree_json:
             return []
 
+        # Cheap tree-size proxy for the diagnostic log (no extra IO).
+        tree_node_count = len(tree_json.get("nodes", {}))
+
         t0 = time.time()
 
         # Use scored navigation if available
@@ -263,16 +319,36 @@ class TreePath:
             nav_results = [NavResult(nid, 0.5) for nid in node_ids]
 
         nav_ms = int((time.time() - t0) * 1000)
+
+        # Pull navigator's per-call diagnostics from its TLS. These are
+        # populated by LLMTreeNavigator; other implementations may not
+        # set them, so default to None and skip those fields.
+        tls = getattr(self.navigator, "_tls", None)
+        outline_chars = getattr(tls, "last_outline_chars", None) if tls is not None else None
+        prompt_chars = getattr(tls, "last_prompt_chars", None) if tls is not None else None
+        response_chars = getattr(tls, "last_response_chars", None) if tls is not None else None
+
+        # Record LLM call for trace (thread-safe). Extra fields help us
+        # diagnose tree_nav latency outliers — is the prompt big, is the
+        # response big, or is it neither (pointing at rate-limit/retry/
+        # network)?
         model_name = getattr(self.navigator, "model", "unknown")
+        call_record: dict = dict(
+            model=model_name,
+            purpose=f"tree_nav:{doc_id[:20]}",
+            latency_ms=nav_ms,
+            output_preview=str([(r.node_id, r.relevance) for r in nav_results[:5]]),
+            tree_node_count=tree_node_count,
+            returned_nodes=len(nav_results),
+        )
+        if outline_chars is not None:
+            call_record["outline_chars"] = outline_chars
+        if prompt_chars is not None:
+            call_record["prompt_chars"] = prompt_chars
+        if response_chars is not None:
+            call_record["response_chars"] = response_chars
         with self._llm_calls_lock:
-            self._llm_calls.append(
-                dict(
-                    model=model_name,
-                    purpose=f"tree_nav:{doc_id[:20]}",
-                    latency_ms=nav_ms,
-                    output_preview=str([(r.node_id, r.relevance) for r in nav_results[:5]]),
-                )
-            )
+            self._llm_calls.append(call_record)
         log.debug(
             "tree nav doc=%s nodes=%d nav_ms=%d",
             doc_id[:20],

@@ -17,7 +17,7 @@ from typing import Any
 
 import networkx as nx
 
-from .base import Community, Entity, GraphStore, Relation
+from .base import Entity, GraphStore, Relation
 from .faiss_index import VectorIndex
 
 logger = logging.getLogger(__name__)
@@ -84,30 +84,6 @@ def _relation_from_dict(d: dict[str, Any]) -> Relation:
     )
 
 
-def _community_to_dict(c: Community) -> dict[str, Any]:
-    d: dict[str, Any] = {
-        "community_id": c.community_id,
-        "level": c.level,
-        "entity_ids": c.entity_ids,
-        "title": c.title,
-        "summary": c.summary,
-    }
-    if c.summary_embedding:
-        d["summary_embedding"] = c.summary_embedding
-    return d
-
-
-def _community_from_dict(d: dict[str, Any]) -> Community:
-    return Community(
-        community_id=d.get("community_id", ""),
-        level=d.get("level", 0),
-        entity_ids=d.get("entity_ids", []),
-        title=d.get("title", ""),
-        summary=d.get("summary", ""),
-        summary_embedding=d.get("summary_embedding", []),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
@@ -119,11 +95,10 @@ class NetworkXGraphStore(GraphStore):
     def __init__(self, path: str = "./storage/kg.json") -> None:
         self._path = Path(path)
         self._graph: nx.DiGraph = nx.DiGraph()
-        self._communities: dict[str, Community] = {}
         self._lock = threading.RLock()
         # FAISS-backed vector indexes for semantic search
-        self._community_idx = VectorIndex()
         self._relation_idx = VectorIndex()
+        self._entity_idx = VectorIndex()
         # relation_id → Relation quick-lookup cache (avoids O(n) scan per search)
         self._rel_cache: dict[str, Relation] = {}
         self._load()
@@ -143,18 +118,16 @@ class NetworkXGraphStore(GraphStore):
             for ed in data.get("edges", []):
                 rel = _relation_from_dict(ed)
                 self._graph.add_edge(rel.source_entity, rel.target_entity, relation=rel)
-            for cd in data.get("communities", []):
-                comm = _community_from_dict(cd)
-                self._communities[comm.community_id] = comm
+            # Silently discard any legacy "communities" block from older
+            # kg.json files written when community detection was enabled.
             # Rebuild FAISS indexes from loaded data
-            self._rebuild_community_index()
             self._rebuild_relation_index()
+            self._rebuild_entity_index()
             logger.info(
-                "Loaded KG from %s: %d entities, %d relations, %d communities",
+                "Loaded KG from %s: %d entities, %d relations",
                 self._path,
                 self._graph.number_of_nodes(),
                 self._graph.number_of_edges(),
-                len(self._communities),
             )
         except Exception:
             logger.exception("Failed to load KG from %s", self._path)
@@ -164,11 +137,10 @@ class NetworkXGraphStore(GraphStore):
             self._path.parent.mkdir(parents=True, exist_ok=True)
             nodes = [_entity_to_dict(self._graph.nodes[n]["entity"]) for n in self._graph.nodes]
             edges = [_relation_to_dict(self._graph.edges[u, v]["relation"]) for u, v in self._graph.edges]
-            communities = [_community_to_dict(c) for c in self._communities.values()]
             tmp = self._path.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(
-                    {"nodes": nodes, "edges": edges, "communities": communities},
+                    {"nodes": nodes, "edges": edges},
                     fh,
                     ensure_ascii=False,
                     indent=2,
@@ -176,17 +148,6 @@ class NetworkXGraphStore(GraphStore):
             tmp.replace(self._path)
 
     # -- index rebuilders ---------------------------------------------------
-
-    def _rebuild_community_index(self) -> None:
-        """Rebuild the community summary FAISS index from scratch."""
-        self._community_idx.clear()
-        keys, vecs = [], []
-        for cid, comm in self._communities.items():
-            if comm.summary_embedding:
-                keys.append(cid)
-                vecs.append(comm.summary_embedding)
-        if keys:
-            self._community_idx.add_batch(keys, vecs)
 
     def _rebuild_relation_index(self) -> None:
         """Rebuild the relation description FAISS index and cache from scratch."""
@@ -201,6 +162,25 @@ class NetworkXGraphStore(GraphStore):
                 vecs.append(rel.description_embedding)
         if keys:
             self._relation_idx.add_batch(keys, vecs)
+
+    def _rebuild_entity_index(self) -> None:
+        """Rebuild the entity name FAISS index from scratch.
+
+        Enables cross-lingual entity lookup: a Chinese query like
+        "蜜蜂" can find an entity named "bee" as long as the embedder
+        is multilingual. Only entities that have a populated
+        ``name_embedding`` are indexed (set at ingest by the
+        embedding pipeline when disambiguation is enabled).
+        """
+        self._entity_idx.clear()
+        keys, vecs = [], []
+        for nid in self._graph.nodes:
+            ent: Entity = self._graph.nodes[nid]["entity"]
+            if ent.name_embedding:
+                keys.append(ent.entity_id)
+                vecs.append(ent.name_embedding)
+        if keys:
+            self._entity_idx.add_batch(keys, vecs)
 
     # -- mutations ----------------------------------------------------------
 
@@ -228,6 +208,11 @@ class NetworkXGraphStore(GraphStore):
                     entity=entity,
                     _type_counts=Counter({entity.entity_type: 1}),
                 )
+            # Keep the entity-name FAISS index in sync so query-time
+            # embedding search can find this entity without a rebuild.
+            final_ent: Entity = self._graph.nodes[eid]["entity"]
+            if final_ent.name_embedding:
+                self._entity_idx.add(eid, final_ent.name_embedding)
             self._save()
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
@@ -283,6 +268,12 @@ class NetworkXGraphStore(GraphStore):
         if entity_id in self._graph:
             return self._graph.nodes[entity_id]["entity"]
         return None
+
+    def get_entities_by_ids(self, entity_ids: list[str]) -> dict[str, Entity]:
+        if not entity_ids:
+            return {}
+        with self._lock:
+            return {eid: self._graph.nodes[eid]["entity"] for eid in entity_ids if eid in self._graph}
 
     def get_neighbors(self, entity_id: str, max_hops: int = 2) -> list[Entity]:
         with self._lock:
@@ -409,108 +400,28 @@ class NetworkXGraphStore(GraphStore):
         with self._lock:
             return [self._graph.nodes[nid]["entity"] for nid in self._graph.nodes]
 
-    # -- community detection ------------------------------------------------
+    # -- entity semantic search ---------------------------------------------
 
-    def detect_communities(self, resolution: float = 1.0) -> list[Community]:
-        """Run Leiden clustering. Requires python-igraph + leidenalg."""
-        with self._lock:
-            if self._graph.number_of_nodes() < 2:
-                return []
-            try:
-                import igraph as ig
-                import leidenalg
-            except ImportError:
-                logger.warning(
-                    "Community detection requires python-igraph and leidenalg: pip install python-igraph leidenalg"
-                )
-                return []
-
-            # Convert NetworkX → igraph (undirected for community detection)
-            undirected = self._graph.to_undirected()
-            node_list = list(undirected.nodes)
-            node_index = {n: i for i, n in enumerate(node_list)}
-
-            ig_graph = ig.Graph(n=len(node_list), directed=False)
-            ig_graph.vs["name"] = node_list
-            ig_edges = []
-            ig_weights = []
-            seen_edges: set[tuple[str, str]] = set()
-            for u, v in undirected.edges:
-                pair = (min(u, v), max(u, v))
-                if pair in seen_edges:
-                    continue
-                seen_edges.add(pair)
-                ig_edges.append((node_index[u], node_index[v]))
-                # Use relation weight if available
-                w = 1.0
-                if self._graph.has_edge(u, v):
-                    w = self._graph.edges[u, v]["relation"].weight
-                elif self._graph.has_edge(v, u):
-                    w = self._graph.edges[v, u]["relation"].weight
-                ig_weights.append(max(w, 0.1))
-            ig_graph.add_edges(ig_edges)
-
-            # Run Leiden
-            partition = leidenalg.find_partition(
-                ig_graph,
-                leidenalg.ModularityVertexPartition,
-                weights=ig_weights if ig_weights else None,
-                resolution_parameter=resolution,
-            )
-
-            communities: list[Community] = []
-            for idx, members in enumerate(partition):
-                entity_ids = [node_list[m] for m in members]
-                # Build a short title from top entities
-                names = []
-                for eid in entity_ids[:5]:
-                    ent = self._graph.nodes[eid]["entity"]
-                    names.append(ent.name)
-                title = ", ".join(names)
-                if len(entity_ids) > 5:
-                    title += f" (+{len(entity_ids) - 5})"
-
-                communities.append(
-                    Community(
-                        community_id=f"c_{idx}",
-                        level=0,
-                        entity_ids=entity_ids,
-                        title=title,
-                    )
-                )
-
-            logger.info(
-                "Leiden detected %d communities (resolution=%.2f)",
-                len(communities),
-                resolution,
-            )
-            return communities
-
-    def get_communities(self) -> list[Community]:
-        with self._lock:
-            return list(self._communities.values())
-
-    def upsert_community(self, community: Community) -> None:
-        with self._lock:
-            self._communities[community.community_id] = community
-            if community.summary_embedding:
-                self._community_idx.add(community.community_id, community.summary_embedding)
-            self._save()
-
-    def search_communities(
+    def search_entities_by_embedding(
         self,
         query_embedding: list[float],
-        top_k: int = 5,
-    ) -> list[tuple[Community, float]]:
+        top_k: int = 10,
+    ) -> list[tuple[Entity, float]]:
+        """Cosine-similarity search over entity name embeddings.
+
+        Powers cross-lingual entity lookup when the embedder is
+        multilingual: a query vector derived from "蜜蜂" will land
+        close to the stored "bee" name vector.
+        """
         with self._lock:
             if not query_embedding:
                 return []
-            hits = self._community_idx.search(query_embedding, top_k)
-            results: list[tuple[Community, float]] = []
-            for cid, score in hits:
-                comm = self._communities.get(cid)
-                if comm is not None:
-                    results.append((comm, score))
+            hits = self._entity_idx.search(query_embedding, top_k)
+            results: list[tuple[Entity, float]] = []
+            for eid, score in hits:
+                if eid in self._graph:
+                    ent: Entity = self._graph.nodes[eid]["entity"]
+                    results.append((ent, score))
             return results
 
     # -- relation semantic search -------------------------------------------
@@ -567,8 +478,14 @@ class NetworkXGraphStore(GraphStore):
                 self._graph.remove_node(nid)
 
             if deleted:
-                # Rebuild FAISS indexes to remove stale entries
+                # Rebuild FAISS indexes to remove stale entries. The
+                # entity index matters for cross-lingual search: without
+                # this rebuild, search_entities_by_embedding could
+                # return FAISS hits whose underlying entity no longer
+                # exists in the graph (silently dropped by the caller,
+                # but wastes top-k slots).
                 self._rebuild_relation_index()
+                self._rebuild_entity_index()
                 self._save()
             return deleted
 
@@ -622,6 +539,7 @@ class NetworkXGraphStore(GraphStore):
 
             if removed_edges or removed_nodes:
                 self._rebuild_relation_index()
+                self._rebuild_entity_index()
                 self._save()
 
             return {

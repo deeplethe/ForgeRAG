@@ -50,24 +50,6 @@ def make_engine(cfg: RelationalConfig) -> Engine:
         kwargs.update(pool_size=pg.pool_min, max_overflow=pg.pool_max - pg.pool_min)
         engine = create_engine(url, **kwargs)
 
-    elif cfg.backend == "mysql":
-        assert cfg.mysql is not None
-        my = cfg.mysql
-        url = URL.create(
-            drivername="mysql+pymysql",
-            username=my.user,
-            password=_resolve_password(my),
-            host=my.host,
-            port=my.port,
-            database=my.database,
-            query={
-                "charset": my.charset,
-                "connect_timeout": str(my.connect_timeout),
-            },
-        )
-        kwargs.update(pool_size=my.pool_size)
-        engine = create_engine(url, **kwargs)
-
     elif cfg.backend == "sqlite":
         assert cfg.sqlite is not None
         sq = cfg.sqlite

@@ -277,35 +277,18 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
 
     # ----- Relational store -----
     section("1/6  Metadata database")
-    answers["relational"] = ask_choice(
-        "Which relational backend?",
-        [
-            ("sqlite", "zero-config, single file, good for dev"),
-            ("postgres", "recommended for production + pgvector"),
-            ("mysql", "if your org standard is MySQL (vectors go to Chroma)"),
-        ],
-        default=defaults.get("relational", "sqlite"),
+    # ForgeRAG production requires PostgreSQL.
+    answers["relational"] = "postgres"
+    answers["pg_host"] = ask("Postgres host", default=defaults.get("pg_host", "localhost"))
+    answers["pg_port"] = ask_int("Postgres port", default=defaults.get("pg_port", 5432))
+    answers["pg_database"] = ask("Postgres database", default=defaults.get("pg_database", "forgerag"))
+    answers["pg_user"] = ask("Postgres user", default=defaults.get("pg_user", "forgerag"))
+    answers["pg_password_env"] = ask(
+        "Env var containing the password",
+        default=defaults.get("pg_password_env", "PG_PASSWORD"),
     )
-    if answers["relational"] == "sqlite":
-        answers["sqlite_path"] = ask(
-            "SQLite file path",
-            default=defaults.get("sqlite_path", "./storage/forgerag.db"),
-        )
-    elif answers["relational"] == "postgres":
-        answers["pg_host"] = ask("Postgres host", default=defaults.get("pg_host", "localhost"))
-        answers["pg_port"] = ask_int("Postgres port", default=defaults.get("pg_port", 5432))
-        answers["pg_database"] = ask("Postgres database", default=defaults.get("pg_database", "forgerag"))
-        answers["pg_user"] = ask("Postgres user", default=defaults.get("pg_user", "forgerag"))
-        answers["pg_password_env"] = ask(
-            "Env var containing the password",
-            default=defaults.get("pg_password_env", "PG_PASSWORD"),
-        )
-    elif answers["relational"] == "mysql":
-        answers["my_host"] = ask("MySQL host", default="localhost")
-        answers["my_port"] = ask_int("MySQL port", default=3306)
-        answers["my_database"] = ask("MySQL database", default="forgerag")
-        answers["my_user"] = ask("MySQL user", default="forgerag")
-        answers["my_password_env"] = ask("Env var containing the password", default="MYSQL_PASSWORD")
+
+    _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
 
     _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
 
@@ -452,25 +435,14 @@ def build_config_dict(a: dict[str, Any]) -> dict[str, Any]:
     cfg["storage"] = storage
 
     # --- persistence ---
-    rel: dict[str, Any] = {"backend": a["relational"]}
-    if a["relational"] == "sqlite":
-        rel["sqlite"] = {"path": a["sqlite_path"], "journal_mode": "wal"}
-    elif a["relational"] == "postgres":
-        rel["postgres"] = {
-            "host": a["pg_host"],
-            "port": a["pg_port"],
-            "database": a["pg_database"],
-            "user": a["pg_user"],
-            "password_env": a["pg_password_env"],
-        }
-    elif a["relational"] == "mysql":
-        rel["mysql"] = {
-            "host": a["my_host"],
-            "port": a["my_port"],
-            "database": a["my_database"],
-            "user": a["my_user"],
-            "password_env": a["my_password_env"],
-        }
+    rel: dict[str, Any] = {"backend": "postgres"}
+    rel["postgres"] = {
+        "host": a["pg_host"],
+        "port": a["pg_port"],
+        "database": a["pg_database"],
+        "user": a["pg_user"],
+        "password_env": a["pg_password_env"],
+    }
 
     vec: dict[str, Any] = {"backend": a["vector"]}
     if a["vector"] == "pgvector":
