@@ -141,11 +141,14 @@ class ChunkerConfig(BaseModel):
 
 
 class TreeBuilderConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     llm_enabled: bool = False  # LLM builds tree + summary via page-group strategy
-    llm_model: str | None = None  # e.g. "openai/gpt-4o-mini"; None = use generator model
-    llm_api_key: str | None = None
-    llm_api_base: str | None = None
+    # Unified LLM fields (same names as every other module). Empty model
+    # disables the LLM tree builder entirely; populate model + api_base +
+    # api_key_env (or api_key for dev) to wire it up.
+    model: str | None = None  # e.g. "openai/gpt-4o-mini"
+    api_key: str | None = None
+    api_key_env: str | None = None
+    api_base: str | None = None
 
     # Quality scoring parameters (used for tree_navigable decision)
     min_coverage: float = 0.80

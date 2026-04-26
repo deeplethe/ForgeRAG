@@ -37,7 +37,6 @@ class VectorSearchConfig(BaseModel):
 class TreeNavConfig(BaseModel):
     """LLM tree navigator config (PageIndex-style)."""
 
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
     api_key_env: str | None = None
@@ -95,7 +94,6 @@ class MergeConfig(BaseModel):
 
 
 class RerankConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     enabled: bool = False
     backend: Literal["passthrough", "rerank_api", "llm_as_reranker"] = "passthrough"
     # on_failure="strict" raises the error so the UI lights up red on the
@@ -124,7 +122,6 @@ class CitationsConfig(BaseModel):
 class QueryExpansionConfig(BaseModel):
     """Legacy — kept for backward compat. Use QueryUnderstandingConfig."""
 
-    provider_id: str | None = None
     enabled: bool = False
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
@@ -137,7 +134,6 @@ class QueryExpansionConfig(BaseModel):
 class QueryUnderstandingConfig(BaseModel):
     """Unified query understanding: intent + routing + expansion."""
 
-    provider_id: str | None = None
     enabled: bool = False
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
@@ -153,7 +149,6 @@ class KGExtractionConfig(BaseModel):
     """Ingestion-time entity/relation extraction settings."""
 
     enabled: bool = False
-    provider_id: str | None = None
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
     api_key_env: str | None = None
@@ -173,8 +168,7 @@ class KGPathConfig(BaseModel):
     """Knowledge graph retrieval path settings."""
 
     enabled: bool = False
-    provider_id: str | None = None  # LLM for extracting entities from query
-    model: str = "openai/gpt-4o-mini"
+    model: str = "openai/gpt-4o-mini"  # LLM for extracting entities from query
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None

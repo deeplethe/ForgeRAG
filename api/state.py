@@ -51,17 +51,14 @@ class AppState:
         self.store.connect()
         self.store.ensure_schema()
 
-        # Seed + apply DB settings overrides + resolve provider_id → credentials
-        # This MUST happen before any component reads cfg.*
-        from config.settings_manager import apply_overrides, resolve_providers, seed_defaults
+        # yaml is the single source of truth; the DB carries a one-way
+        # mirror so read-only admin views can see the effective state.
+        # Each module already owns its model/api_key/api_base inline —
+        # no provider-id indirection layer to resolve.
+        from config.settings_manager import snapshot_to_db
 
-        seed_defaults(cfg, self.store)
-        applied = apply_overrides(cfg, self.store)
-        if applied:
-            log.info("applied %d DB setting overrides", applied)
-        resolved = resolve_providers(cfg, self.store)
-        if resolved:
-            log.info("resolved %d LLM providers", resolved)
+        # Mirror yaml → DB (backup only, never read back at runtime).
+        snapshot_to_db(cfg, self.store)
 
         # Blob store for figures + uploaded files
         self.blob: BlobStore = blob_store or make_blob_store(cfg.storage.to_dataclass())

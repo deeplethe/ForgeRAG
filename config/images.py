@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 
 class ImageEnrichmentConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     enabled: bool = False
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None

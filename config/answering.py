@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 
 
 class GeneratorConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     backend: Literal["litellm"] = "litellm"
     model: str = "openai/gpt-4o-mini"
     temperature: float = 0.1

@@ -263,7 +263,9 @@ class IngestionPipeline:
             summary_count = 0
             tree_has_summaries = tree.generation_method == "page_groups"
             if do_summary:
-                enrich_provider_id = getattr(self.parser.cfg.image_enrichment, "provider_id", None)
+                # provider_id audit column kept for legacy rows; new ingests
+                # only record the model id (each module owns its own).
+                enrich_provider_id = None
                 enrich_model = getattr(self.parser.cfg.image_enrichment, "model", None)
                 self.rel.update_document_status(doc_id, enrich_status="running", enrich_started_at=datetime.utcnow())
                 image_count = self._enrich_images(parsed)
@@ -316,11 +318,10 @@ class IngestionPipeline:
                     kg_started_at=datetime.utcnow(),
                 )
                 log.info(
-                    "KG extraction starting: model=%s api_base=%s api_key=%s provider_id=%s",
+                    "KG extraction starting: model=%s api_base=%s api_key=%s",
                     kg_cfg.model,
                     kg_cfg.api_base,
                     ("***" + kg_cfg.api_key[-4:]) if kg_cfg.api_key else "NONE",
-                    getattr(kg_cfg, "provider_id", None),
                 )
                 try:
                     from ingestion.kg_extractor import KGExtractor
@@ -419,7 +420,7 @@ class IngestionPipeline:
                         kg_entity_count=len(entities),
                         kg_relation_count=len(relations),
                         kg_completed_at=datetime.utcnow(),
-                        kg_provider_id=getattr(kg_cfg, "provider_id", None),
+                        kg_provider_id=None,
                         kg_model=kg_cfg.model,
                     )
                     log.info(
@@ -439,7 +440,7 @@ class IngestionPipeline:
             self._assert_not_deleted(doc_id)
 
             # ── Phase 6: Write relational + embed ──
-            embed_provider_id = getattr(self.parser.cfg.embedder, "provider_id", None)
+            embed_provider_id = None
             embed_model = getattr(getattr(self.parser.cfg.embedder, "litellm", None), "model", None)
             self.rel.update_document_status(
                 doc_id, status="embedding", embed_status="running", embed_started_at=datetime.utcnow()

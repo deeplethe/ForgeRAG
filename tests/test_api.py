@@ -290,18 +290,17 @@ class TestSettings:
         assert r.status_code == 200
         assert "groups" in r.json()
 
-    def test_update_and_reset(self, client):
+    def test_settings_are_read_only(self, client):
+        # All mutating settings routes were removed: yaml is the single
+        # source of truth, edit the file and restart to change config.
         c, *_ = client
-        # Update
         r = c.put(
             "/api/v1/settings/key/retrieval.vector.top_k",
             json={"value_json": 99},
         )
-        assert r.status_code == 200
-        assert r.json()["value_json"] == 99
-        # Reset
+        assert r.status_code == 405
         r = c.delete("/api/v1/settings/key/retrieval.vector.top_k")
-        assert r.status_code == 200
+        assert r.status_code == 405
 
 
 # --- Traces ---

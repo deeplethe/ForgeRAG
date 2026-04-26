@@ -1,26 +1,26 @@
 """
-SettingsManager: merge DB overrides onto yaml base config.
+SettingsManager: yaml is the single source of truth.
 
 Architecture:
-    yaml (forgerag.yaml)   = base config, read-only at runtime
-    DB (settings table)      = overrides, editable via frontend
-    effective config          = deep_merge(yaml, db_overrides)
+    yaml (forgerag.yaml + myconfig.yaml) = authoritative config
+    DB (settings table)                    = one-way backup snapshot
+    Runtime                                = cfg object, never touches DB
 
-The frontend edits individual keys like "retrieval.rerank.enabled".
-The SettingsManager reads all settings from DB, builds a nested
-dict, and merges it onto the yaml-loaded AppConfig to produce the
-effective runtime config.
+On startup, ``snapshot_to_db`` mirrors the current cfg values into the
+``settings`` table so admin tools / read-only UIs can see the effective
+state, but nothing in the live request path reads from it. The DB
+mirror is overwritten every boot — any drift is resolved in yaml's
+favour.
 
-Seed:
-    On first startup, seed_defaults() populates the settings table
-    with the current yaml values so the frontend has something to
-    render. Existing keys are never overwritten.
+Each module that calls an LLM owns its own ``model``, ``api_key``
+(or ``api_key_env``), and ``api_base`` fields directly on its config
+section — no central provider registry, no startup indirection. The
+legacy ``llm_providers`` DB table is not used at runtime; it's kept
+to avoid a destructive migration.
 
-Workflow:
-    1. App loads yaml → AppConfig
-    2. SettingsManager.seed_defaults(cfg, store)  — first run only
-    3. SettingsManager.apply_overrides(cfg, store) — every request or on change
-    4. Components read cfg.* as usual — they don't know about the DB
+EDITABLE_SETTINGS and PROMPT_DEFAULTS are retained as metadata
+registries used by the read-only ``GET /settings`` endpoints; they drive
+UI labels/descriptions, not runtime behaviour.
 """
 
 from __future__ import annotations
@@ -41,20 +41,20 @@ log = logging.getLogger(__name__)
 EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     # --- Benchmark ---
     (
-        "benchmark.judge_provider_id",
+        "benchmark.model",
         "benchmark",
         "Judge LLM",
         (
             "LLM used to score benchmark answers (Faithfulness / Relevancy / "
-            "Context Precision). Pick a DIFFERENT provider than the Answer "
-            "LLM to avoid self-preference bias. If left empty, falls back to "
-            "the Answer LLM with a warning."
+            "Context Precision). Set to a DIFFERENT model than the Answer "
+            "LLM to avoid self-preference bias. Leave empty to fall back to "
+            "the Answer LLM (with a warning)."
         ),
         "string",
         None,
     ),
     # --- Generation ---
-    ("answering.generator.provider_id", "llm", "Answer LLM", "Chat model for answer generation", "string", None),
+    ("answering.generator.model", "llm", "Answer LLM", "Chat model for answer generation", "string", None),
     ("answering.generator.temperature", "llm", "Temperature", "0.0 = deterministic, 1.0 = creative", "float", None),
     (
         "answering.generator.max_tokens",
@@ -74,10 +74,10 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
     ),
     # --- Embedding ---
     (
-        "embedder.provider_id",
+        "embedder.litellm.model",
         "embedding",
         "Embedding model",
-        "Select an embedding provider from LLM Providers",
+        "Litellm model id (e.g. openai/text-embedding-3-small, voyage/voyage-3, ollama/bge-m3)",
         "string",
         None,
     ),
@@ -93,7 +93,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.query_understanding.provider_id",
+        "retrieval.query_understanding.model",
         "query_understanding",
         "Understanding LLM",
         "Chat model for intent classification and query expansion",
@@ -178,7 +178,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.tree_path.nav.provider_id",
+        "retrieval.tree_path.nav.model",
         "retrieval_tree",
         "Navigation LLM",
         "Chat model for tree structural reasoning",
@@ -350,7 +350,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "enum",
         ["strict", "passthrough"],
     ),
-    ("retrieval.rerank.provider_id", "rerank", "Rerank model", "Select a reranker from LLM Providers", "string", None),
+    ("retrieval.rerank.model", "rerank", "Rerank model", "Litellm model id of the reranker (e.g. jina_ai/jina-reranker-v2-base-multilingual)", "string", None),
     (
         "retrieval.rerank.top_k",
         "rerank",
@@ -610,7 +610,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "image_enrichment.provider_id",
+        "image_enrichment.model",
         "images",
         "VLM model",
         "Vision-capable chat model for image description",
@@ -685,7 +685,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "parser.tree_builder.provider_id",
+        "parser.tree_builder.model",
         "tree_builder",
         "Tree builder LLM",
         "Chat model for tree building and summary generation",
@@ -753,7 +753,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.kg_extraction.provider_id",
+        "retrieval.kg_extraction.model",
         "kg_extraction",
         "Extraction LLM",
         "Chat model for entity/relation extraction",
@@ -794,7 +794,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "retrieval.kg_path.provider_id",
+        "retrieval.kg_path.model",
         "kg",
         "KG query LLM",
         "Chat model for extracting entities from user queries",
@@ -926,20 +926,27 @@ PROMPT_DEFAULTS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Seed defaults from yaml into DB
+# Snapshot yaml state into DB (one-way mirror, overwritten every boot)
 # ---------------------------------------------------------------------------
 
 
-def seed_defaults(cfg, store: Store) -> int:
+def snapshot_to_db(cfg, store: Store) -> int:
     """
-    Populate the settings table with current yaml values for every
-    editable key. Existing keys are NOT overwritten (DB wins).
-    Also removes stale keys that are no longer in EDITABLE_SETTINGS.
-    Returns the number of newly seeded keys.
+    Mirror the currently-loaded yaml cfg into the ``settings`` table.
+
+    Semantics (one-way, yaml wins):
+      * Rows for every key in EDITABLE_SETTINGS are upserted with the
+        resolved cfg value, group, label, description, type, and enums.
+      * Stale rows (keys no longer in the registry) are deleted.
+
+    This is *backup only*. The runtime never reads from settings at
+    request time — components read cfg.* directly. The mirror lets
+    read-only admin views surface the effective state without having
+    to re-load yaml on every request.
     """
     valid_keys = {k for k, *_ in EDITABLE_SETTINGS}
 
-    # --- remove stale keys no longer in the registry ---
+    # Drop rows that no longer correspond to a registered setting.
     all_existing = store.get_all_settings()
     removed = 0
     for s in all_existing:
@@ -947,192 +954,29 @@ def seed_defaults(cfg, store: Store) -> int:
             store.delete_setting(s["key"])
             removed += 1
     if removed:
-        log.info("removed %d stale settings", removed)
+        log.info("snapshot: removed %d stale settings", removed)
 
-    # --- seed missing keys + refresh metadata on existing keys ---
     count = 0
     for key, group, label, desc, vtype, enums in EDITABLE_SETTINGS:
-        existing = store.get_setting(key)
-        if existing is None:
-            # New key — seed with current config value
-            value = _resolve_dotted(cfg, key)
-            store.upsert_setting(
-                {
-                    "key": key,
-                    "value_json": value,
-                    "group_name": group,
-                    "label": label,
-                    "description": desc,
-                    "value_type": vtype,
-                    "enum_options": enums,
-                }
-            )
-            count += 1
-        else:
-            # Existing key — refresh metadata but keep user's value_json
-            needs_update = (
-                existing.get("group_name") != group
-                or existing.get("label") != label
-                or existing.get("description") != desc
-                or existing.get("value_type") != vtype
-                or existing.get("enum_options") != enums
-            )
-            if needs_update:
-                store.upsert_setting(
-                    {
-                        "key": key,
-                        "value_json": existing["value_json"],
-                        "group_name": group,
-                        "label": label,
-                        "description": desc,
-                        "value_type": vtype,
-                        "enum_options": enums,
-                    }
-                )
-    if count:
-        log.info("seeded %d default settings", count)
+        value = _resolve_dotted(cfg, key)
+        store.upsert_setting(
+            {
+                "key": key,
+                "value_json": value,
+                "group_name": group,
+                "label": label,
+                "description": desc,
+                "value_type": vtype,
+                "enum_options": enums,
+            }
+        )
+        count += 1
+    log.info("snapshot: mirrored %d settings to DB", count)
     return count
 
 
 # ---------------------------------------------------------------------------
-# Apply DB overrides onto live config
-# ---------------------------------------------------------------------------
-
-
-def apply_overrides(cfg, store: Store) -> int:
-    """
-    Read all settings from DB and patch the cfg object in-place.
-    Returns the number of overrides applied.
-    """
-    all_settings = store.get_all_settings()
-    count = 0
-    for s in all_settings:
-        key = s["key"]
-        value = s["value_json"]
-        try:
-            _set_dotted(cfg, key, value)
-            count += 1
-        except (AttributeError, KeyError, TypeError) as e:
-            log.warning("could not apply setting %s=%r: %s", key, value, e)
-
-    # Re-validate dimension consistency after overrides
-    emb_dim = cfg.embedder.dimension
-    if cfg.persistence.vector.backend == "pgvector" and cfg.persistence.vector.pgvector:
-        if cfg.persistence.vector.pgvector.dimension != emb_dim:
-            log.warning(
-                "dimension mismatch: embedder=%d pgvector=%d — forcing pgvector to match",
-                emb_dim,
-                cfg.persistence.vector.pgvector.dimension,
-            )
-            cfg.persistence.vector.pgvector.dimension = emb_dim
-    if cfg.persistence.vector.backend == "chromadb" and cfg.persistence.vector.chromadb:
-        if cfg.persistence.vector.chromadb.dimension != emb_dim:
-            log.warning(
-                "dimension mismatch: embedder=%d chromadb=%d — forcing chromadb to match",
-                emb_dim,
-                cfg.persistence.vector.chromadb.dimension,
-            )
-            cfg.persistence.vector.chromadb.dimension = emb_dim
-    if cfg.persistence.vector.backend == "qdrant" and cfg.persistence.vector.qdrant:
-        if cfg.persistence.vector.qdrant.dimension != emb_dim:
-            log.warning(
-                "dimension mismatch: embedder=%d qdrant=%d — forcing qdrant to match",
-                emb_dim,
-                cfg.persistence.vector.qdrant.dimension,
-            )
-            cfg.persistence.vector.qdrant.dimension = emb_dim
-    if cfg.persistence.vector.backend == "milvus" and cfg.persistence.vector.milvus:
-        if cfg.persistence.vector.milvus.dimension != emb_dim:
-            log.warning(
-                "dimension mismatch: embedder=%d milvus=%d — forcing milvus to match",
-                emb_dim,
-                cfg.persistence.vector.milvus.dimension,
-            )
-            cfg.persistence.vector.milvus.dimension = emb_dim
-    if cfg.persistence.vector.backend == "weaviate" and cfg.persistence.vector.weaviate:
-        if cfg.persistence.vector.weaviate.dimension != emb_dim:
-            log.warning(
-                "dimension mismatch: embedder=%d weaviate=%d — forcing weaviate to match",
-                emb_dim,
-                cfg.persistence.vector.weaviate.dimension,
-            )
-            cfg.persistence.vector.weaviate.dimension = emb_dim
-
-    return count
-
-
-# ---------------------------------------------------------------------------
-# Resolve provider_id → model / api_key / api_base
-# ---------------------------------------------------------------------------
-
-# Maps: (config path to provider_id, field prefix for model/key/base)
-# Most components use model/api_key/api_base; tree_builder uses llm_model/llm_api_key/llm_api_base.
-_PROVIDER_FIELDS = [
-    # (dotted path to the object that has provider_id, model_field, key_field, base_field)
-    ("answering.generator", "model", "api_key", "api_base"),
-    ("embedder.litellm", "model", "api_key", "api_base"),
-    ("retrieval.query_understanding", "model", "api_key", "api_base"),
-    ("retrieval.tree_path.nav", "model", "api_key", "api_base"),
-    ("retrieval.rerank", "model", "api_key", "api_base"),
-    ("image_enrichment", "model", "api_key", "api_base"),
-    ("parser.tree_builder", "llm_model", "llm_api_key", "llm_api_base"),
-    ("retrieval.kg_extraction", "model", "api_key", "api_base"),
-    ("retrieval.kg_path", "model", "api_key", "api_base"),
-    ("benchmark", "model", "api_key", "api_base"),
-]
-
-# For embedder, provider_id lives on EmbedderConfig but credentials go to litellm sub-config
-_PROVIDER_ID_OVERRIDES = {
-    "embedder.litellm": "embedder",  # read provider_id from embedder, apply to embedder.litellm
-}
-
-
-def resolve_providers(cfg, store: Store) -> int:
-    """
-    For each component that has a non-empty provider_id, look up the
-    LLM provider from the DB and populate model / api_key / api_base.
-    Returns the number of providers resolved.
-    """
-    count = 0
-    for obj_path, model_f, key_f, base_f in _PROVIDER_FIELDS:
-        # Where to read provider_id from
-        pid_path = _PROVIDER_ID_OVERRIDES.get(obj_path, obj_path)
-        pid_obj = _resolve_dotted(cfg, pid_path)
-        if pid_obj is None:
-            continue
-        # Most components use `provider_id`; benchmark uses `judge_provider_id`
-        # to make the intent explicit in settings. Probe both field names.
-        provider_id = getattr(pid_obj, "provider_id", None) or getattr(pid_obj, "judge_provider_id", None)
-        if not provider_id:
-            continue
-
-        # Look up from DB
-        provider = store.get_llm_provider(provider_id)
-        if not provider:
-            log.warning("provider_id %r not found in llm_providers table", provider_id)
-            continue
-
-        # Apply to the target config object
-        target = _resolve_dotted(cfg, obj_path)
-        if target is None:
-            continue
-
-        try:
-            if hasattr(target, model_f):
-                setattr(target, model_f, provider["model_name"])
-            if hasattr(target, key_f) and provider.get("api_key"):
-                setattr(target, key_f, provider["api_key"])
-            if hasattr(target, base_f) and provider.get("api_base"):
-                setattr(target, base_f, provider["api_base"])
-            count += 1
-            log.info("resolved provider %r → %s (model=%s)", provider["name"], obj_path, provider["model_name"])
-        except Exception as e:
-            log.warning("failed to resolve provider for %s: %s", obj_path, e)
-    return count
-
-
-# ---------------------------------------------------------------------------
-# Dotted path utilities
+# Dotted-path utility (used by snapshot)
 # ---------------------------------------------------------------------------
 
 
@@ -1147,31 +991,3 @@ def _resolve_dotted(obj: Any, path: str) -> Any:
         else:
             return None
     return obj
-
-
-def _set_dotted(obj: Any, path: str, value: Any) -> None:
-    """Set 'a.b.c' on a pydantic model / nested object."""
-    parts = path.split(".")
-    for part in parts[:-1]:
-        if hasattr(obj, part):
-            obj = getattr(obj, part)
-        elif isinstance(obj, dict):
-            obj = obj[part]
-        else:
-            raise AttributeError(f"cannot traverse {part!r} on {type(obj)}")
-    last = parts[-1]
-    if hasattr(obj, last):
-        # Validate type before setting
-        field_info = obj.model_fields.get(last)
-        if field_info and field_info.annotation:
-            from pydantic import TypeAdapter
-
-            try:
-                value = TypeAdapter(field_info.annotation).validate_python(value)
-            except Exception:
-                pass  # keep original value, let Pydantic handle it
-        setattr(obj, last, value)
-    elif isinstance(obj, dict):
-        obj[last] = value
-    else:
-        raise AttributeError(f"cannot set {last!r} on {type(obj)}")
