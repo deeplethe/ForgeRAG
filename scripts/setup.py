@@ -40,7 +40,6 @@ if str(_ROOT) not in sys.path:
 
 _RELATIONAL_PACKAGES: dict[str, tuple[str, str]] = {
     "postgres": ("psycopg", "psycopg[binary]"),
-    "mysql": ("pymysql", "pymysql"),
 }
 
 _VECTOR_PACKAGES: dict[str, tuple[str, str]] = {
@@ -287,8 +286,6 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
         "Env var containing the password",
         default=defaults.get("pg_password_env", "PG_PASSWORD"),
     )
-
-    _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
 
     _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
 
