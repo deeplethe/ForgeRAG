@@ -438,37 +438,7 @@ Key uses dotted notation: `retrieval.vector.top_k`.
 
 ## LLM Providers
 
-Providers live under `llm_providers:` in the yaml config ([configuration.md](configuration.md)). The HTTP surface is **read-only**; edit the yaml + restart to change providers.
-
-### List Providers
-
-```
-GET /api/v1/llm-providers?provider_type=chat
-```
-
-Returns providers from `cfg.llm_providers`, optionally filtered by `provider_type` (`chat`, `embedding`, `reranker`). API keys are never exposed — only a boolean `api_key_set`.
-
-### Get Provider
-
-```
-GET /api/v1/llm-providers/{provider_id}
-```
-
-### Curated Presets
-
-```
-GET /api/v1/llm-providers/presets?provider_type=embedding
-```
-
-Returns the static preset catalogue (OpenAI, Azure, Ollama, SiliconFlow, Jina, etc.) for filling in `llm_providers` in yaml.
-
-### Test Connection
-
-```
-POST /api/v1/llm-providers/{provider_id}/test
-```
-
-Non-mutating probe: fires one minimal request (`completion` / `embedding` / `rerank` depending on provider_type) and returns `{ok, latency_ms, ...}` so you can catch model/key/endpoint mistakes before running a real query. Credentials come from yaml.
+> The dedicated `/api/v1/llm-providers/*` HTTP surface was removed in v0.2.0 along with the `provider_id` indirection. Models + credentials are now inlined directly under each subsystem in `forgerag.yaml` (see [configuration.md](configuration.md)). To check or change them: edit the yaml and restart, or re-run `python scripts/setup.py` (the wizard live-tests every endpoint before saving).
 
 ---
 

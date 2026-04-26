@@ -39,18 +39,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The base `requirements.txt` includes only the core dependencies. Optional backends need extra packages:
+`requirements.txt` ships only **core** dependencies (FastAPI, SQLAlchemy, LiteLLM, PyMuPDF, etc.) — every optional backend (PostgreSQL, Neo4j, ChromaDB, Qdrant, Milvus, Weaviate, S3, OSS, MinerU, FAISS, …) is auto-installed by the setup wizard in step 5 based on the choices you make.
 
-| Backend | Extra packages | Install command |
-|---------|----------------|-----------------|
-| PostgreSQL | `psycopg[binary]` | `pip install "psycopg[binary]>=3.1"` |
-| pgvector | `psycopg[binary]` | (same as above) |
-| MySQL | `pymysql` | `pip install "pymysql>=1.1"` |
-| Neo4j | `neo4j` | `pip install "neo4j>=5.0"` |
-| S3 storage | `boto3` | `pip install "boto3>=1.34"` |
-| Alibaba OSS | `oss2` | `pip install "oss2>=2.18"` |
-| Local embeddings | `sentence-transformers` | `pip install "sentence-transformers>=3.0"` |
-| MinerU parser | `mineru` | `pip install mineru` |
+If you skip the wizard and edit `forgerag.yaml` directly, re-sync deps with:
+
+```bash
+python scripts/setup.py --sync-deps forgerag.yaml
+```
+
+This reads the yaml and pip-installs only the optional packages your config actually uses. No need to memorise the pip names per backend.
 
 ### 4. Build the frontend
 
@@ -63,21 +60,27 @@ cd ..
 
 The built files are placed in `web/dist/` and served automatically by the backend.
 
-### 5. Set your API key
+### 5. Run the setup wizard
 
 ```bash
-# Linux / macOS
-export OPENAI_API_KEY=sk-...
-
-# Windows PowerShell
-$env:OPENAI_API_KEY = "sk-..."
+python scripts/setup.py
 ```
 
-Or copy `.env.example` to `.env` and fill in your key:
+The wizard is bilingual (EN / 中文, switchable from the first menu) and walks through 13 steps with arrow-key navigation:
 
-```bash
-cp .env.example .env
-```
+1. Relational database (SQLite / PostgreSQL)
+2. Vector database (ChromaDB / pgvector / Qdrant / Milvus / Weaviate)
+3. Blob storage (local / S3 / OSS)
+4. Knowledge graph database (NetworkX / Neo4j)
+5. PDF parser (`pymupdf` / `mineru` / `mineru-vlm`)
+6. Embedding model — wizard runs a live API call and **auto-detects the embedding dimension** from the response
+7. Answer-generation LLM — wizard runs a live completion test
+8–12. Per-subsystem LLM routing for query_understanding / rerank / kg_extraction / kg_path / tree_path.nav. Each step opens with the cost / latency / quality rationale for overriding; reuse the answer-LLM by default.
+13. Image enrichment (optional VLM-based figure OCR + description)
+
+State is checkpointed after every step, so a crash mid-wizard (Ctrl-C, pip install failure, network blip) re-asks "resume or restart?" on the next run. After completing the wizard, optional pip installs run automatically based on yaml choices.
+
+Put real credentials directly when prompted (saved plaintext into yaml — keep `forgerag.yaml` out of git, it's already gitignored), or leave the API-key prompt blank to use an environment variable. The wizard suggests a sensible env-var name based on the model's provider prefix (e.g. `deepseek/...` → `DEEPSEEK_API_KEY`).
 
 ### 6. Start the server
 
@@ -85,14 +88,7 @@ cp .env.example .env
 python main.py
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in your browser.
-
-On first boot, if no `forgerag.yaml` exists, ForgeRAG writes a skeleton you must finish filling in:
-
-- **Infrastructure defaults**: PostgreSQL, ChromaDB, local blob storage (paths under `./storage/`)
-- **LLM providers**: **empty** — add at least one `chat` and one `embedding` entry under `llm_providers:` and point `embedder.provider_id` / `answering.generator.provider_id` at them. Put real credentials in environment variables referenced by `api_key_env` (never in yaml). See the [minimal config example](configuration.md#example-minimal-config).
-
-The server will boot without providers, but any retrieval call (embedding, LLM answer) will fail explicitly until you configure them.
+Open [http://localhost:8000](http://localhost:8000) in your browser. The first request runs schema migrations and warms the BM25 index.
 
 ## CLI Options
 
@@ -106,7 +102,7 @@ python main.py [OPTIONS]
 | `--host HOST` | `0.0.0.0` | Bind address (or `$FORGERAG_HOST`) |
 | `--port PORT` | `8000` | Bind port (or `$FORGERAG_PORT`) |
 | `--reload` | off | Hot-reload on code changes (development) |
-| `--workers N` | `4` | Uvicorn worker processes (each runs its own ingestion queue; stuck jobs auto-recover on restart) |
+| `--workers N` | `1` | Uvicorn worker processes. Values > 1 require multi-process-safe backends (PostgreSQL + Neo4j + non-persistent vector store); startup exits with code 2 if SQLite, NetworkX, or persistent ChromaDB are configured. |
 | `--log-level LEVEL` | `info` | `debug`, `info`, `warning`, `error` |
 | `--init-only` | off | Write default config and exit |
 

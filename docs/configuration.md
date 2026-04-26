@@ -17,7 +17,7 @@ A subset of retrieval knobs can be overridden **per query** via `QueryOverrides`
 
 ## DB as a one-way backup mirror
 
-On startup, ForgeRAG writes the resolved cfg into the `settings` and `llm_providers` tables as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot.
+On startup, ForgeRAG writes the resolved cfg into the `settings` table as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot. (A legacy `llm_providers` table also exists for migration compatibility but is unused since v0.2.0 dropped the `provider_id` indirection.)
 
 ## Changing configuration — the only way
 
@@ -31,30 +31,28 @@ Edit `forgerag.yaml` (or `myconfig.yaml` via `--config`) and restart the backend
 
 Controls document parsing, chunking, and tree building.
 
-#### `parser.backends.pymupdf`
+#### `parser.backend`
 
-PyMuPDF backend (always available, lowest latency).
+Single explicit choice — no fallback chain. Pick one of:
+
+| Value | Description |
+|-------|-------------|
+| `pymupdf` (default) | Fast, no extra dependencies. |
+| `mineru` | Layout-aware (tables / formulas / multi-column). Pulls GBs of model weights on first run. |
+| `mineru-vlm` | Vision-language MinerU. Best for scanned / handwritten / very complex layouts. Heaviest. |
+
+#### `parser.mineru`
+
+Sub-config for MinerU; only used when `parser.backend` is `mineru` or `mineru-vlm`. The pipeline auto-derives `mineru.backend` from the top-level choice.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable PyMuPDF backend |
-| `min_quality` | float | `0.0` | Minimum quality score to accept (0 = always accept) |
-
-#### `parser.backends.mineru`
-
-MinerU backend (optional, higher quality for complex documents).
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable MinerU backend |
-| `min_quality` | float | `0.70` | Minimum quality score to accept |
-| `backend` | string | `"pipeline"` | Engine: `pipeline`, `hybrid-auto-engine`, `vlm-auto-engine`, etc. |
 | `device` | string | `"cuda"` | Compute device: `cuda` or `cpu` |
 | `lang` | string | `"ch"` | Primary OCR language |
 | `formula_enable` | bool | `true` | Enable formula detection |
 | `table_enable` | bool | `true` | Enable table detection |
 | `parse_method` | string | `"auto"` | Parse method: `auto`, `txt`, `ocr` |
-| `server_url` | string | null | URL for remote MinerU server |
+| `server_url` | string | null | Remote VLM server URL (leave blank for local inference, only meaningful with `mineru-vlm`) |
 
 #### `parser.chunker`
 
@@ -280,14 +278,16 @@ Embedding model configuration.
 
 Controls all retrieval paths and merge strategy.
 
+> **Always-on subsystems.** `query_understanding`, `rerank`, `kg_extraction`, and `kg_path` no longer have `enabled` toggles in v0.2.0 — they always run when the relevant infrastructure is configured (e.g. `kg_*` runs whenever a `graph` store is set). To opt out per query, pass `QueryOverrides` in the API request body (e.g. `{"overrides": {"rerank": false, "kg_path": false}}`). To opt out the whole KG layer, just omit the `graph:` config block.
+
 #### `retrieval.query_understanding`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable query understanding LLM call |
 | `model` | string | `"openai/gpt-4o-mini"` | LLM model |
+| `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials (skip to inherit answer-LLM creds) |
 | `max_expansions` | int | `3` | Maximum query expansions |
-| `timeout` | float | `30.0` | Timeout in seconds |
+| `timeout` | float | `10.0` | Timeout in seconds |
 | `system_prompt` | string | null | Custom system prompt |
 | `user_prompt_template` | string | null | Custom user prompt template |
 
@@ -331,28 +331,30 @@ Controls all retrieval paths and merge strategy.
 
 #### `retrieval.kg_extraction`
 
+Runs whenever a `graph` store is configured. To skip the KG layer entirely, omit the `graph:` block in yaml. Relation descriptions and entity names are always embedded — both downstream paths (`EntityDisambiguation`, `KGPath.relation_weight` semantic search) silently degrade without them, so the toggles were dropped.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable KG extraction during ingestion |
 | `model` | string | `"openai/gpt-4o-mini"` | LLM model |
+| `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials |
 | `max_workers` | int | `5` | Parallel extraction workers |
-| `timeout` | float | `60.0` | Timeout per chunk |
-| `embed_relations` | bool | `false` | Embed relation descriptions for semantic search at query time |
-| `embed_entity_names` | bool | `false` | Embed entity names for disambiguation |
-| `merge_description_threshold` | int | `6` | Fragment count that triggers LLM description consolidation (0 = disable) |
+| `timeout` | float | `120.0` | Timeout per chunk |
+| `merge_description_threshold` | int | `6` | Fragment count that triggers LLM description consolidation |
 | `merge_description_max_chars` | int | `2000` | Char length that triggers LLM description consolidation |
 
 #### `retrieval.kg_path`
 
+Participates in retrieval whenever a `graph` store is configured. Per-query opt-out: `QueryOverrides.kg_path = false`.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable KG retrieval path |
 | `model` | string | `"openai/gpt-4o-mini"` | LLM model for entity extraction |
+| `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials |
 | `top_k` | int | `30` | Number of chunks from KG path |
-| `max_hops` | int | `2` | BFS depth in graph traversal |
+| `max_hops` | int | `1` | Hop depth in graph traversal (1 is the safe default; 2-hop on hub entities can explode) |
 | `local_weight` | float | `0.5` | Weight for local (entity-direct) chunks |
 | `global_weight` | float | `0.2` | Weight for global (keyword-search) chunks |
-| `relation_weight` | float | `0.1` | Weight for relation description semantic search (requires embed_relations) |
+| `relation_weight` | float | `0.1` | Weight for relation description semantic search |
 | `relation_top_k` | int | `10` | Max relations matched per query |
 
 #### `retrieval.merge`
@@ -378,14 +380,17 @@ RRF fusion and expansion strategies.
 
 #### `retrieval.rerank`
 
+Always runs. Per-query opt-out: `QueryOverrides.rerank = false`.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable LLM reranking |
-| `backend` | string | `"passthrough"` | Backend: `passthrough`, `litellm` |
-| `model` | string | `"openai/gpt-4o-mini"` | Reranking model |
+| `backend` | string | `"llm_as_reranker"` | Backend: `passthrough` (no-op) / `rerank_api` (dedicated cross-encoder via `litellm.rerank()`) / `llm_as_reranker` (chat LLM as judge) |
+| `on_failure` | string | `"strict"` | `"strict"` raises `RerankerError` on failure; `"passthrough"` falls back to RRF order silently |
+| `model` | string | `"openai/gpt-4o-mini"` | For `llm_as_reranker` use a chat model. For `rerank_api` use a litellm-rerank-compatible prefix: `infinity/`, `cohere/`, `jina_ai/`, `voyage/`, `together_ai/`. SiliconFlow's BGE rerank works as `infinity/BAAI/bge-reranker-v2-m3` + `api_base=https://api.siliconflow.cn/v1`. |
+| `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials |
 | `top_k` | int | `10` | Results after reranking |
 | `timeout` | float | `30.0` | Timeout in seconds |
-| `snippet_chars` | int | `500` | Per-candidate snippet budget |
+| `snippet_chars` | int | `500` | Per-candidate snippet budget (only for `llm_as_reranker`) |
 
 #### `retrieval.citations`
 
@@ -505,35 +510,27 @@ The `api_key_env` / `password_env` pattern throughout the config refers to envir
 
 ## Example: Minimal Config
 
+Yaml is the single source of truth: model + api_key + api_base are inlined directly under each subsystem (no `provider_id` indirection). The retrieval subsystems inherit from `answering.generator` if you don't override them.
+
 Set `$OPENAI_API_KEY`, then:
 
 ```yaml
 # forgerag.yaml — minimum viable
-# Providers live in a top-level list; each component points at one by id.
-
 embedder:
-  provider_id: openai_embed
+  backend: litellm
   dimension: 1536
+  litellm:
+    model: openai/text-embedding-3-small
+    api_key_env: OPENAI_API_KEY
 
 answering:
   generator:
-    provider_id: openai_chat
-
-llm_providers:
-  - id: openai_embed
-    name: OpenAI Embedding
-    provider_type: embedding
-    model_name: openai/text-embedding-3-small
-    api_key_env: OPENAI_API_KEY
-
-  - id: openai_chat
-    name: OpenAI GPT-4o-mini
-    provider_type: chat
-    model_name: openai/gpt-4o-mini
+    backend: litellm
+    model: openai/gpt-4o-mini
     api_key_env: OPENAI_API_KEY
 ```
 
-Remaining roles (`retrieval.query_understanding.provider_id`, `retrieval.tree_path.nav.provider_id`, …) fall back to whichever provider you reference in their section; omit them to disable the feature.
+Run `python scripts/setup.py` to generate this interactively — the wizard also walks through every retrieval subsystem (query_understanding / rerank / kg_extraction / kg_path / tree_path.nav) so you can override the model per-subsystem (e.g. cheap-and-fast for kg_extraction, strong for tree_path.nav). Subsystems left without overrides reuse the answer-LLM credentials.
 
 ## Example: Production Config (PostgreSQL + pgvector + S3 + dedicated reranker)
 
@@ -563,35 +560,24 @@ storage:
     secret_key_env: AWS_SECRET_ACCESS_KEY
 
 embedder:
-  provider_id: openai_embed_large
+  backend: litellm
   dimension: 1536
-
-retrieval:
-  rerank:
-    enabled: true
-    provider_id: cohere_rerank
-    top_k: 10
+  litellm:
+    model: openai/text-embedding-3-large
+    api_key_env: OPENAI_API_KEY
 
 answering:
   generator:
-    provider_id: openai_gpt4o
+    backend: litellm
+    model: openai/gpt-4o
+    api_key_env: OPENAI_API_KEY
 
-llm_providers:
-  - id: openai_embed_large
-    name: OpenAI text-embedding-3-large
-    provider_type: embedding
-    model_name: openai/text-embedding-3-large
-    api_key_env: OPENAI_API_KEY
-  - id: cohere_rerank
-    name: Cohere rerank-v3
-    provider_type: reranker
-    model_name: cohere/rerank-english-v3.0
+retrieval:
+  rerank:
+    backend: rerank_api
+    model: cohere/rerank-english-v3.0
     api_key_env: COHERE_API_KEY
-  - id: openai_gpt4o
-    name: OpenAI GPT-4o
-    provider_type: chat
-    model_name: openai/gpt-4o
-    api_key_env: OPENAI_API_KEY
+    top_k: 10
 
 cors:
   allow_origins:
