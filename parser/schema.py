@@ -1,7 +1,7 @@
 """
 Parser layer data contract.
 
-All parser backends (PyMuPDF / MinerU / VLM / Docling) produce a
+All parser backends (PyMuPDF / MinerU / MinerU-VLM) produce a
 ParsedDocument that conforms to this schema. Downstream modules
 (tree builder, chunker, retriever, citation resolver) depend only
 on this file.
@@ -52,68 +52,51 @@ class BlockType(str, Enum):
     FOOTER = "footer"  # page footer (usually excluded from reading flow)
 
 
-class Complexity(str, Enum):
-    SIMPLE = "simple"
-    MEDIUM = "medium"
-    COMPLEX = "complex"
-
-
 # ---------------------------------------------------------------------------
-# Layer 0 probe output
+# Document profile — cheap, always-computed features
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DocProfile:
-    """Cheap, always-computed features from the Layer-0 probe."""
+    """Lightweight per-document metadata.
+
+    Trimmed from the legacy multi-tier-probe shape (complexity / needed_tier
+    / scanned_ratio / table_density / multicolumn / TOC / etc.) which was
+    only useful when the parser had a fallback chain. Now the user picks
+    the backend explicitly and we just need a few facts the downstream
+    layers actually consume:
+
+      * ``page_count``           — read by tree_builder for proportionality
+      * ``heading_hint_strength``— read by md_headings + tree_builder to
+                                   decide whether to use the heading-based
+                                   strategy vs. fallback grouping
+      * ``format`` / ``file_size_bytes`` — observability
+    """
 
     page_count: int
     format: DocFormat
     file_size_bytes: int
-
-    text_density: float  # avg chars per page
-    scanned_ratio: float  # fraction of pages dominated by images
-    has_embedded_toc: bool
-    has_multicolumn: bool
-    table_density: float  # heuristic 0~1
-    figure_count: int
-    heading_hint_strength: float  # 0~1 based on font-size distribution
-
-    complexity: Complexity
-    needed_tier: int  # 0 / 1 / 2 -- the tier this doc *wants*
+    heading_hint_strength: float = 0.0  # 0~1; bumped by md_headings
 
 
 # ---------------------------------------------------------------------------
-# Parse trace (observability + rerun decisions)
+# Parse trace (observability)
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class BackendAttempt:
-    backend: str
-    tier: int
-    started_at: float  # unix timestamp
-    duration_ms: int
-    quality_score: float  # 0~1, backend self_check
-    status: Literal["ok", "quality_low", "error", "unavailable"]
-    error_message: str | None = None
 
 
 @dataclass
 class ParseTrace:
-    attempts: list[BackendAttempt] = field(default_factory=list)
-    final_backend: str | None = None
-    final_tier: int | None = None
-    final_quality: float | None = None
-    total_duration_ms: int = 0
+    """Single-backend parse summary.
 
-    def record(self, attempt: BackendAttempt) -> None:
-        self.attempts.append(attempt)
-        self.total_duration_ms += attempt.duration_ms
-        if attempt.status == "ok":
-            self.final_backend = attempt.backend
-            self.final_tier = attempt.tier
-            self.final_quality = attempt.quality_score
+    The legacy multi-attempt fallback chain is gone — there's exactly one
+    backend per parse now, picked by ``parser.backend`` config. We keep
+    a flat record for observability and DB compatibility.
+    """
+
+    backend: str | None = None
+    duration_ms: int = 0
+    error_message: str | None = None
 
 
 # ---------------------------------------------------------------------------

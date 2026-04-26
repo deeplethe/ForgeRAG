@@ -1,10 +1,10 @@
 """
 Parser-layer configuration.
 
-Holds backend enable/disable flags, quality thresholds, probe
-thresholds, and normalizer switches. Storage config is intentionally
-separate (see config/storage.py) because it is shared with
-non-parser modules.
+Single explicit ``parser.backend`` choice — no probe-driven tier
+fallback chain. PyMuPDF is fast/baseline, MinerU pipeline is
+layout-aware, MinerU VLM is the heaviest (vision model, best for
+scanned/handwritten/very-complex layouts).
 """
 
 from __future__ import annotations
@@ -14,91 +14,55 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# Backends
+# Backend sub-configs
 # ---------------------------------------------------------------------------
 
 
 class PyMuPDFConfig(BaseModel):
-    enabled: bool = True
-    min_quality: float = 0.0  # always passes -- final fallback
+    """No knobs needed beyond the implicit selection at parser.backend."""
 
 
 class MinerUConfig(BaseModel):
-    enabled: bool = False
-    min_quality: float = 0.70
-    # Backend mode. Supports both MinerU 2.x and 3.0 names; the
-    # `do_parse` signature is backward compatible across releases.
-    #
-    # MinerU 3.0 (default in upstream is hybrid-auto-engine):
-    #     pipeline              -- fast, CPU/GPU, stable
-    #     hybrid-auto-engine    -- next-gen, best accuracy, local
-    #     hybrid-http-client    -- hybrid via remote OpenAI-style server
-    #     vlm-auto-engine       -- VLM backend, local
-    #     vlm-http-client       -- VLM backend, remote
-    #
-    # MinerU 2.x legacy names (still accepted when running 2.x):
-    #     vlm-transformers      -- VLM via transformers
-    #     vlm-sglang-engine     -- VLM via sglang
-    #     vlm-sglang-client     -- VLM via remote sglang server
-    backend: Literal[
-        "pipeline",
-        "hybrid-auto-engine",
-        "hybrid-http-client",
-        "vlm-auto-engine",
-        "vlm-http-client",
-        "vlm-transformers",
-        "vlm-sglang-engine",
-        "vlm-sglang-client",
-    ] = "pipeline"
+    """Settings shared by MinerU's pipeline + VLM modes.
+
+    The ``parser.backend`` top-level choice picks ``pipeline`` (fast,
+    layout-only) vs ``mineru-vlm`` (vision model). When VLM is selected,
+    set ``server_url`` to use a remote inference server (``vlm-http-client``);
+    otherwise the local ``vlm-auto-engine`` is used.
+    """
 
     parse_method: Literal["auto", "txt", "ocr"] = "auto"
     device: Literal["cuda", "cpu"] = "cuda"
-    # Primary OCR language (single lang per doc in both 2.x and 3.0)
+    # Primary OCR language (single lang per doc).
     lang: str = "ch"
-    # Enable formula / table parsing
+    # Enable formula / table parsing.
     formula_enable: bool = True
     table_enable: bool = True
-    # Required for any *-http-client / *-sglang-client backend.
-    # Ignored otherwise.
+    # When set together with parser.backend=mineru-vlm, MinerU runs in
+    # ``vlm-http-client`` mode pointing at this URL. Otherwise (vlm with
+    # no server_url) MinerU runs ``vlm-auto-engine`` locally.
     server_url: str | None = None
-
-
-class VLMConfig(BaseModel):
-    enabled: bool = False
-    min_quality: float = 0.75
-    model: str = "Qwen2.5-VL-7B"
-    mode: Literal["whole_document"] = "whole_document"
-    max_pages: int = 200  # refuse docs larger than this
-
-
-class DoclingConfig(BaseModel):
-    enabled: bool = False
-    min_quality: float = 0.60
+    # Internal MinerU sub-backend identifier. NOT user-set in yaml — the
+    # pipeline derives it from ``parser.backend`` + ``server_url`` and
+    # injects via model_copy() before constructing MinerUBackend. Kept
+    # here only because the adapter reads ``self.cfg.backend`` directly.
+    backend: Literal[
+        "pipeline",
+        "vlm-auto-engine",
+        "vlm-http-client",
+        "vlm-sglang-client",
+    ] = "pipeline"
 
 
 class BackendsConfig(BaseModel):
+    """Per-backend sub-configs.
+
+    Only the one corresponding to ``parser.backend`` is read; the others
+    are ignored. ``pymupdf`` carries no settings (placeholder).
+    """
+
     pymupdf: PyMuPDFConfig = Field(default_factory=PyMuPDFConfig)
     mineru: MinerUConfig = Field(default_factory=MinerUConfig)
-    vlm: VLMConfig = Field(default_factory=VLMConfig)
-    docling: DoclingConfig = Field(default_factory=DoclingConfig)
-
-
-# ---------------------------------------------------------------------------
-# Probe thresholds
-# ---------------------------------------------------------------------------
-
-
-class ProbeConfig(BaseModel):
-    scanned_ratio_threshold: float = 0.30
-    text_density_min: int = 50  # chars per page
-    table_density_threshold: float = 0.15
-    multicolumn_x_cluster_gap: float = 50.0  # pt
-    heading_hint_min_strength: float = 0.20
-
-    # Complexity bucket thresholds
-    complex_page_count: int = 100
-    complex_scanned_ratio: float = 0.30
-    medium_page_count: int = 20
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +135,20 @@ class TreeBuilderConfig(BaseModel):
 
 
 class ParserSection(BaseModel):
+    # Top-level explicit choice — one backend, no fallback chain.
+    #
+    #   pymupdf      — fast, CPU-only, baseline-quality text extraction.
+    #                  Ships with the project; no extra deps.
+    #   mineru       — MinerU's traditional layout-detection pipeline.
+    #                  Best for complex tables / formulas / multi-column.
+    #                  Heavy (PyTorch + GBs of model weights).
+    #   mineru-vlm   — MinerU's VLM-backend mode. Highest quality on
+    #                  scanned / handwritten / extremely complex layouts.
+    #                  Most expensive; the same MinerU output schema, so
+    #                  citations + bbox highlighting still work.
+    backend: Literal["pymupdf", "mineru", "mineru-vlm"] = "pymupdf"
+
     backends: BackendsConfig = Field(default_factory=BackendsConfig)
-    probe: ProbeConfig = Field(default_factory=ProbeConfig)
     normalize: NormalizeConfig = Field(default_factory=NormalizeConfig)
     tree_builder: TreeBuilderConfig = Field(default_factory=TreeBuilderConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)

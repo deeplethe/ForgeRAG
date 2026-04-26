@@ -858,6 +858,53 @@ def _step_llm(answers: dict, defaults: dict) -> None:
         return
 
 
+def _step_parser_backend(answers: dict, defaults: dict) -> None:
+    """Pick the PDF parser backend (no probe-driven fallback)."""
+    print(_c(_t(
+        "  Pick the PDF parser. PyMuPDF is fast and ships with the project;",
+        "  选择 PDF 解析器。PyMuPDF 快且无额外依赖；",
+    ), "dim"))
+    print(_c(_t(
+        "  MinerU adds layout-aware parsing (tables / formulas / multi-column);",
+        "  MinerU 启用版面感知解析（表格 / 公式 / 多栏）；",
+    ), "dim"))
+    print(_c(_t(
+        "  MinerU-VLM uses a vision model — best for scanned / handwritten /",
+        "  MinerU-VLM 走视觉模型 — 最适合扫描件 / 手写 /",
+    ), "dim"))
+    print(_c(_t(
+        "  very complex layouts. Both MinerU options pull GBs of model weights.",
+        "  极复杂版面。MinerU 两档都需下载几 GB 模型权重。",
+    ), "dim"))
+    answers["parser_backend"] = ask_choice(
+        _t("Which parser backend?", "选择解析器后端？"),
+        [
+            ("pymupdf",    _t("fast, no extra deps",
+                             "快、无额外依赖")),
+            ("mineru",     _t("layout-aware (MinerU pipeline)",
+                             "版面感知 (MinerU pipeline 模式)")),
+            ("mineru-vlm", _t("vision-model (MinerU VLM) — heaviest",
+                             "视觉模型 (MinerU VLM) — 最重")),
+        ],
+        default=defaults.get("parser_backend", "pymupdf"),
+    )
+    if answers["parser_backend"] in ("mineru", "mineru-vlm"):
+        from importlib.util import find_spec
+        if find_spec("mineru") is None:
+            print(_c(_t(
+                "  Note: 'mineru' Python package not detected — will be installed on first run.",
+                "  提示：未检测到 'mineru' Python 包 — 首次运行时会自动安装。",
+            ), "yellow"))
+    if answers["parser_backend"] == "mineru-vlm":
+        url = ask(
+            _t("Remote VLM server URL (leave blank for local inference)",
+               "远端 VLM 服务器 URL（留空走本地推理）"),
+            default=defaults.get("mineru_server_url", ""),
+            allow_empty=True,
+        )
+        answers["mineru_server_url"] = url
+
+
 def _step_image_enrichment(answers: dict, defaults: dict) -> None:
     """Optional: enable VLM image enrichment (per-figure OCR + description).
 
@@ -905,6 +952,7 @@ _STEPS: list[tuple[str, str, Callable[[dict, dict], None]]] = [
     ("Metadata database (PostgreSQL)", "元数据库 (PostgreSQL)",     _step_postgres),
     ("Vector database",                "向量数据库",                _step_vector),
     ("Blob storage",                   "Blob 存储",                 _step_blob),
+    ("Parser backend",                 "PDF 解析器后端",            _step_parser_backend),
     ("Embedding model",                "向量嵌入模型",              _step_embedder),
     ("Answer-generation LLM",          "答案生成大模型",            _step_llm),
     ("Image enrichment (optional)",    "图片增强 (可选)",            _step_image_enrichment),
@@ -983,8 +1031,11 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
 def build_config_dict(a: dict[str, Any]) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
 
-    # --- parser (minimal: pymupdf always on; MinerU via /settings) ---
-    cfg["parser"] = {"backends": {"pymupdf": {"enabled": True}}}
+    # --- parser (single explicit backend choice — no fallback chain) ---
+    parser_block: dict[str, Any] = {"backend": a.get("parser_backend", "pymupdf")}
+    if a.get("parser_backend") == "mineru-vlm" and a.get("mineru_server_url"):
+        parser_block["backends"] = {"mineru": {"server_url": a["mineru_server_url"]}}
+    cfg["parser"] = parser_block
 
     # --- storage (blob) ---
     storage: dict[str, Any] = {"mode": a["blob"]}

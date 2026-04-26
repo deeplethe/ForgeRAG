@@ -19,9 +19,6 @@ renamed the VLM backends and added the hybrid family.
         vlm-sglang-client
 
 Any *-http-client / *-sglang-client backend requires cfg.server_url.
-The router rejects documents beyond max_pages (see VLMConfig) to
-cap inference cost; MinerU 3.0's hybrid engine is fast enough that
-you can raise that limit aggressively.
 
 Why the API over subprocess:
     - No process-start overhead per document
@@ -103,25 +100,10 @@ _MIN_FIGURE_AREA = 2500.0  # 50 * 50
 
 class MinerUBackend(ParserBackend):
     name = "mineru"
-    tier = 1
-    supports = {DocFormat.PDF, DocFormat.IMAGE}
 
     def __init__(self, cfg: MinerUConfig, blob_store: BlobStore):
         super().__init__(blob_store)
         self.cfg = cfg
-        self.min_quality = cfg.min_quality
-
-    # ------------------------------------------------------------------
-    def available(self) -> bool:
-        if not self.cfg.enabled:
-            return False
-        try:
-            # Probe the exact symbol we will call
-            from mineru.cli.common import do_parse  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
 
     # ------------------------------------------------------------------
     def parse(
@@ -172,23 +154,6 @@ class MinerUBackend(ParserBackend):
             blocks=blocks,
             toc=None,  # MinerU does not reliably expose PDF TOC; leave to probe
         )
-
-    # ------------------------------------------------------------------
-    def self_check(self, result: ParsedDocument) -> float:
-        if not result.blocks:
-            return 0.0
-        total = len(result.blocks)
-        non_empty = sum(1 for b in result.blocks if b.text.strip() or b.figure_storage_key)
-        coverage = non_empty / total
-
-        avg_conf = sum(b.confidence for b in result.blocks) / total
-
-        structure_types = {BlockType.HEADING, BlockType.TABLE, BlockType.FIGURE}
-        structure_hits = sum(1 for b in result.blocks if b.type in structure_types)
-        structure = min(1.0, structure_hits / max(1, total) * 10)  # ~10% -> 1.0
-
-        score = 0.5 * coverage + 0.3 * avg_conf + 0.2 * structure
-        return round(score, 3)
 
     # ==================================================================
     # Internals

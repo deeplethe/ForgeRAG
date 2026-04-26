@@ -8,7 +8,7 @@ Typical usage:
 
     from config import load_config
     cfg = load_config("forgerag.yaml")
-    cfg.parser.backends.mineru.enabled
+    cfg.parser.backend                  # "pymupdf" | "mineru" | "mineru-vlm"
     cfg.storage.mode
 """
 
@@ -27,14 +27,11 @@ from .logging import LoggingConfig, setup_logging
 from .parser import (
     BackendsConfig,
     ChunkerConfig,
-    DoclingConfig,
     MinerUConfig,
     NormalizeConfig,
     ParserSection,
-    ProbeConfig,
     PyMuPDFConfig,
     TreeBuilderConfig,
-    VLMConfig,
 )
 from .persistence import (
     ChromaConfig,
@@ -75,7 +72,6 @@ __all__ = [
     "ChromaConfig",
     "ChunkerConfig",
     "CitationsConfig",
-    "DoclingConfig",
     "EmbedderConfig",
     "FilesConfig",
     "GeneratorConfig",
@@ -96,7 +92,6 @@ __all__ = [
     "PersistenceConfig",
     "PgvectorConfig",
     "PostgresConfig",
-    "ProbeConfig",
     "PyMuPDFConfig",
     "QdrantConfig",
     "RelationalConfig",
@@ -108,7 +103,6 @@ __all__ = [
     "StorageModel",
     "TreeBuilderConfig",
     "TreePathConfig",
-    "VLMConfig",
     "VectorConfig",
     "VectorSearchConfig",
     "WeaviateConfig",

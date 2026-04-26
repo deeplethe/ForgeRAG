@@ -620,26 +620,23 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     (
-        "parser.backends.mineru.enabled",
+        "parser.backend",
         "parser",
-        "Enable MinerU",
-        "Layout-aware PDF parsing with table, formula, and complex layout support",
-        "bool",
-        None,
-    ),
-    (
-        "parser.backends.mineru.backend",
-        "parser",
-        "MinerU engine",
-        "MinerU processing engine",
+        "Parser backend",
+        (
+            "Which PDF parser to run. pymupdf is the no-extra-deps baseline; "
+            "mineru is layout-aware (tables / formulas / multi-column); "
+            "mineru-vlm uses MinerU's vision model — heaviest, best on "
+            "scanned / handwritten / very complex layouts."
+        ),
         "enum",
-        ["pipeline", "hybrid-auto-engine", "vlm-auto-engine", "hybrid-http-client", "vlm-http-client"],
+        ["pymupdf", "mineru", "mineru-vlm"],
     ),
     (
         "parser.backends.mineru.device",
         "parser",
         "MinerU device",
-        "Hardware for MinerU inference",
+        "Hardware for MinerU inference (only used when parser.backend is mineru / mineru-vlm)",
         "enum",
         ["cuda", "cpu"],
     ),

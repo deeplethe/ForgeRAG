@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from parser.schema import (
-    BackendAttempt,
     Block,
     BlockType,
     Chunk,
-    Complexity,
     DocFormat,
     DocProfile,
     DocTree,
@@ -33,35 +31,12 @@ def _sample_profile() -> DocProfile:
         page_count=10,
         format=DocFormat.PDF,
         file_size_bytes=1024,
-        text_density=500.0,
-        scanned_ratio=0.1,
-        has_embedded_toc=True,
-        has_multicolumn=False,
-        table_density=0.3,
-        figure_count=2,
         heading_hint_strength=0.8,
-        complexity=Complexity.MEDIUM,
-        needed_tier=1,
     )
 
 
 def _sample_trace() -> ParseTrace:
-    t = ParseTrace()
-    t.attempts.append(
-        BackendAttempt(
-            backend="pymupdf",
-            tier=0,
-            started_at=1.0,
-            duration_ms=100,
-            quality_score=0.9,
-            status="ok",
-        )
-    )
-    t.final_backend = "pymupdf"
-    t.final_tier = 0
-    t.final_quality = 0.9
-    t.total_duration_ms = 100
-    return t
+    return ParseTrace(backend="pymupdf", duration_ms=100)
 
 
 class TestProfileTrace:
@@ -75,9 +50,42 @@ class TestProfileTrace:
         t = _sample_trace()
         d = trace_to_dict(t)
         t2 = trace_from_dict(d)
-        assert t2.final_backend == "pymupdf"
-        assert len(t2.attempts) == 1
-        assert t2.attempts[0].status == "ok"
+        assert t2.backend == "pymupdf"
+        assert t2.duration_ms == 100
+
+    def test_profile_legacy_dict(self):
+        """Tolerate dict shapes from before the trim — legacy fields are
+        silently dropped by profile_from_dict so old DB rows keep loading."""
+        legacy = {
+            "page_count": 5,
+            "format": "pdf",
+            "file_size_bytes": 200,
+            "text_density": 500.0,
+            "scanned_ratio": 0.0,
+            "has_embedded_toc": False,
+            "has_multicolumn": False,
+            "table_density": 0.0,
+            "figure_count": 0,
+            "heading_hint_strength": 0.4,
+            "complexity": "simple",
+            "needed_tier": 0,
+        }
+        p = profile_from_dict(legacy)
+        assert p.page_count == 5
+        assert p.heading_hint_strength == 0.4
+
+    def test_trace_legacy_dict(self):
+        """Likewise for the old multi-attempt fallback trace shape."""
+        legacy = {
+            "attempts": [{"backend": "pymupdf", "status": "ok"}],
+            "final_backend": "pymupdf",
+            "final_tier": 0,
+            "final_quality": 0.9,
+            "total_duration_ms": 250,
+        }
+        t = trace_from_dict(legacy)
+        assert t.backend == "pymupdf"
+        assert t.duration_ms == 250
 
 
 class TestBlock:

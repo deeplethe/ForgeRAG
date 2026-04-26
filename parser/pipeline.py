@@ -1,7 +1,16 @@
 """
-Parser pipeline -- the single public entry point.
+Parser pipeline — the single public entry point.
 
-Wires together: probe -> router -> normalizer.
+Single explicit backend choice (``parser.backend``); no probe-driven
+tier fallback chain. The pipeline:
+
+    1. Quick-profiles the document (format, page count, file size).
+    2. Dispatches to the chosen backend exactly once.
+    3. Runs the normalizer.
+
+If the chosen backend's optional dependency is missing, we raise a
+clear error rather than silently fall back to PyMuPDF — the user
+asked for that backend explicitly.
 
 Typical usage:
 
@@ -11,28 +20,75 @@ Typical usage:
     cfg = load_config("forgerag.yaml")
     pipeline = ParserPipeline.from_config(cfg)
     doc = pipeline.parse("paper.pdf", doc_id="doc_abc", parse_version=1)
-
-The pipeline owns the backend instances and the BlobStore; it is
-cheap to construct but should be reused across documents so that
-boto3/oss2 clients and model handles are shared.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
+
+import fitz  # PyMuPDF — already a transitive baseline dep
 
 from config import AppConfig
 
-from .backends.base import ParserBackend
+from .backends.base import BackendUnavailable, ParserBackend
 from .backends.pymupdf import PyMuPDFBackend
 from .blob_store import BlobStore, make_blob_store
 from .normalizer import normalize
-from .probe import probe
-from .router import Router
-from .schema import ParsedDocument
+from .schema import DocFormat, DocProfile, ParsedDocument, ParseTrace
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Format detection
+# ---------------------------------------------------------------------------
+
+
+_EXT_TO_FORMAT = {
+    ".pdf":  DocFormat.PDF,
+    ".docx": DocFormat.DOCX,
+    ".doc":  DocFormat.DOCX,
+    ".pptx": DocFormat.PPTX,
+    ".ppt":  DocFormat.PPTX,
+    ".xlsx": DocFormat.XLSX,
+    ".xls":  DocFormat.XLSX,
+    ".html": DocFormat.HTML,
+    ".htm":  DocFormat.HTML,
+    ".md":   DocFormat.TEXT,
+    ".txt":  DocFormat.TEXT,
+    ".png":  DocFormat.IMAGE,
+    ".jpg":  DocFormat.IMAGE,
+    ".jpeg": DocFormat.IMAGE,
+    ".tif":  DocFormat.IMAGE,
+    ".tiff": DocFormat.IMAGE,
+}
+
+
+def _quick_profile(path: str) -> DocProfile:
+    """Cheap inspection: format, page count, size. No heuristics."""
+    p = Path(path)
+    ext = p.suffix.lower()
+    fmt = _EXT_TO_FORMAT.get(ext, DocFormat.PDF)
+    size = p.stat().st_size if p.exists() else 0
+    page_count = 1
+    if fmt == DocFormat.PDF:
+        try:
+            with fitz.open(path) as doc:
+                page_count = doc.page_count
+        except Exception as e:
+            log.warning("quick_profile: failed to open PDF for page count: %s", e)
+    return DocProfile(
+        page_count=page_count,
+        format=fmt,
+        file_size_bytes=size,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
 
 
 class ParserPipeline:
@@ -40,19 +96,19 @@ class ParserPipeline:
         self,
         cfg: AppConfig,
         blob_store: BlobStore,
-        backends: list[ParserBackend],
+        backend: ParserBackend,
     ):
         self.cfg = cfg
         self.blob_store = blob_store
-        self.router = Router(backends)
+        self.backend = backend
 
     # ------------------------------------------------------------------
     @classmethod
     def from_config(cls, cfg: AppConfig) -> ParserPipeline:
         """Build a pipeline from a validated AppConfig."""
         blob_store = make_blob_store(cfg.storage.to_dataclass())
-        backends = _build_backends(cfg, blob_store)
-        return cls(cfg=cfg, blob_store=blob_store, backends=backends)
+        backend = _build_backend(cfg, blob_store)
+        return cls(cfg=cfg, blob_store=blob_store, backend=backend)
 
     # ------------------------------------------------------------------
     def parse(
@@ -62,40 +118,33 @@ class ParserPipeline:
         doc_id: str,
         parse_version: int = 1,
     ) -> ParsedDocument:
-        """
-        Parse a single document end-to-end.
-
-        Raises:
-            ValueError       -- unsupported format
-            NoBackendAvailable -- no backend could handle the file
-        """
+        """Parse a single document end-to-end."""
         path_str = str(path)
-        log.info("parse start doc_id=%s path=%s", doc_id, path_str)
+        log.info("parse start doc_id=%s path=%s backend=%s", doc_id, path_str, self.backend.name)
 
-        # 1. Layer-0 probe
-        profile = probe(path_str, self.cfg.parser.probe)
-        log.info(
-            "probe doc_id=%s format=%s pages=%d needed_tier=%d complexity=%s",
-            doc_id,
-            profile.format.value,
-            profile.page_count,
-            profile.needed_tier,
-            profile.complexity.value,
-        )
+        # 1. Quick profile (page count + format)
+        profile = _quick_profile(path_str)
 
-        # 2. Router -> backend chain -> parse
-        result = self.router.parse(
-            path=path_str,
-            doc_id=doc_id,
-            parse_version=parse_version,
-            profile=profile,
-        )
+        # 2. Single-backend parse
+        t0 = time.time()
+        try:
+            result = self.backend.parse(
+                path=path_str,
+                doc_id=doc_id,
+                parse_version=parse_version,
+                profile=profile,
+            )
+        except BackendUnavailable as e:
+            log.error("backend %s unavailable: %s", self.backend.name, e)
+            raise
+        duration_ms = int((time.time() - t0) * 1000)
+        result.parse_trace = ParseTrace(backend=self.backend.name, duration_ms=duration_ms)
         log.info(
-            "parse done doc_id=%s backend=%s quality=%.3f blocks=%d",
+            "parse done doc_id=%s backend=%s blocks=%d duration=%dms",
             doc_id,
-            result.parse_trace.final_backend,
-            result.parse_trace.final_quality or 0.0,
+            self.backend.name,
             len(result.blocks),
+            duration_ms,
         )
 
         # 3. Normalizer (always runs; controlled by config switches)
@@ -115,47 +164,36 @@ class ParserPipeline:
 # ---------------------------------------------------------------------------
 
 
-def _build_backends(cfg: AppConfig, blob_store: BlobStore) -> list[ParserBackend]:
-    """
-    Instantiate every backend whose config section has enabled=True.
-    Layer 1/2/Docling backends are imported lazily so missing optional
-    dependencies don't crash the pipeline at import time.
-    """
-    backends: list[ParserBackend] = []
-    pcfg = cfg.parser.backends
+def _build_backend(cfg: AppConfig, blob_store: BlobStore) -> ParserBackend:
+    """Instantiate the single backend the user picked.
 
-    # Layer 0 -- PyMuPDF (always the final fallback)
-    if pcfg.pymupdf.enabled:
-        backends.append(PyMuPDFBackend(pcfg.pymupdf, blob_store))
+    Heavy backends (MinerU) are imported lazily so PyMuPDF-only
+    deployments don't pay the optional-dep cost at import time.
+    """
+    choice = cfg.parser.backend  # "pymupdf" | "mineru" | "mineru-vlm"
+    if choice == "pymupdf":
+        return PyMuPDFBackend(cfg.parser.backends.pymupdf, blob_store)
 
-    # Layer 1 -- MinerU (lazy import)
-    if pcfg.mineru.enabled:
+    if choice in ("mineru", "mineru-vlm"):
         try:
             from .backends.mineru import MinerUBackend  # type: ignore
-
-            backends.append(MinerUBackend(pcfg.mineru, blob_store))
         except ImportError as e:
-            log.warning("MinerU enabled in config but import failed: %s", e)
+            raise BackendUnavailable(
+                f"parser.backend={choice!r} requires the 'mineru' package. "
+                "Install with: pip install mineru. "
+                "Or pick parser.backend=pymupdf in your config."
+            ) from e
 
-    # Layer 2 -- VLM (lazy import)
-    if pcfg.vlm.enabled:
-        try:
-            from .backends.vlm import VLMBackend  # type: ignore
+        # Derive MinerU's internal sub-backend from the top-level choice +
+        # whether the user provided a server_url for remote inference.
+        mineru_cfg = cfg.parser.backends.mineru
+        if choice == "mineru":
+            sub = "pipeline"
+        else:  # "mineru-vlm"
+            sub = "vlm-http-client" if mineru_cfg.server_url else "vlm-auto-engine"
+        return MinerUBackend(mineru_cfg.model_copy(update={"backend": sub}), blob_store)
 
-            backends.append(VLMBackend(pcfg.vlm, blob_store))
-        except ImportError as e:
-            log.warning("VLM enabled in config but import failed: %s", e)
-
-    # Office / HTML -- Docling (lazy import)
-    if pcfg.docling.enabled:
-        try:
-            from .backends.docling import DoclingBackend  # type: ignore
-
-            backends.append(DoclingBackend(pcfg.docling, blob_store))
-        except ImportError as e:
-            log.warning("Docling enabled in config but import failed: %s", e)
-
-    return backends
+    raise ValueError(f"unknown parser.backend: {choice!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +211,8 @@ def parse(
     parse_version: int = 1,
     cfg: AppConfig | None = None,
 ) -> ParsedDocument:
-    """
-    One-shot parse using a cached default pipeline. For production
-    use prefer constructing ParserPipeline explicitly and reusing it.
-    """
+    """One-shot parse using a cached default pipeline. For production
+    use prefer constructing ParserPipeline explicitly and reusing it."""
     global _default_pipeline
     if _default_pipeline is None or cfg is not None:
         from config import load_config

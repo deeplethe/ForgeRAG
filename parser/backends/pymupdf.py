@@ -38,24 +38,10 @@ from .base import BackendUnavailable, ParserBackend
 
 class PyMuPDFBackend(ParserBackend):
     name = "pymupdf"
-    tier = 0
-    supports = {DocFormat.PDF}
 
     def __init__(self, cfg: PyMuPDFConfig, blob_store: BlobStore):
         super().__init__(blob_store)
         self.cfg = cfg
-        self.min_quality = cfg.min_quality
-
-    # ------------------------------------------------------------------
-    def available(self) -> bool:
-        if not self.cfg.enabled:
-            return False
-        try:
-            import fitz  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
 
     # ------------------------------------------------------------------
     def parse(
@@ -121,28 +107,13 @@ class PyMuPDFBackend(ParserBackend):
                 format=DocFormat.PDF,
                 parse_version=parse_version,
                 profile=profile,
-                parse_trace=ParseTrace(),  # router fills this in
+                parse_trace=ParseTrace(),  # pipeline overrides with backend + duration
                 pages=pages,
                 blocks=blocks,
                 toc=toc,
             )
         finally:
             doc.close()
-
-    # ------------------------------------------------------------------
-    def self_check(self, result: ParsedDocument) -> float:
-        """
-        PyMuPDF is the final fallback: it always passes. We still
-        return a meaningful score for observability / UI display.
-        """
-        if not result.blocks:
-            return 0.0
-        non_empty = sum(1 for b in result.blocks if b.text.strip())
-        coverage = non_empty / max(1, len(result.blocks))
-        heading_ratio = sum(1 for b in result.blocks if b.type == BlockType.HEADING) / max(1, len(result.blocks))
-        # Reward having *some* structure, but don't punish heading-light docs
-        structure = min(1.0, heading_ratio * 20)  # ~5% headings -> 1.0
-        return round(0.7 * coverage + 0.3 * structure, 3)
 
     # ==================================================================
     # Internal helpers

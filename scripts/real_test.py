@@ -282,7 +282,7 @@ def main():
 
                     block_rows = rel.get_blocks(d, pv)
                     blocks = [row_to_block(r) for r in block_rows]
-                    from parser.schema import Complexity, DocFormat, DocProfile, ParsedDocument, ParseTrace
+                    from parser.schema import DocFormat, DocProfile, ParsedDocument, ParseTrace
 
                     mini_doc = ParsedDocument(
                         doc_id=d,
@@ -293,15 +293,6 @@ def main():
                             page_count=0,
                             format=DocFormat.PDF,
                             file_size_bytes=0,
-                            text_density=0,
-                            scanned_ratio=0,
-                            has_embedded_toc=False,
-                            has_multicolumn=False,
-                            table_density=0,
-                            figure_count=0,
-                            heading_hint_strength=0,
-                            complexity=Complexity.SIMPLE,
-                            needed_tier=0,
                         ),
                         parse_trace=ParseTrace(),
                         pages=[],
