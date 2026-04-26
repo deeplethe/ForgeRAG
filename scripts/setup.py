@@ -77,24 +77,227 @@ def _ensure_package(import_name: str, pip_name: str) -> None:
     """Install *pip_name* if *import_name* cannot be imported."""
     if importlib.util.find_spec(import_name) is not None:
         return
-    print(_c(f"  '{pip_name}' is not installed — installing now…", "yellow"))
+    print(_c(_t(
+        f"  '{pip_name}' is not installed — installing now…",
+        f"  '{pip_name}' 未安装 — 现在自动安装…",
+    ), "yellow"))
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", pip_name],
             check=True,
         )
-        print(_c(f"  '{pip_name}' installed successfully.", "green"))
+        print(_c(_t(
+            f"  '{pip_name}' installed successfully.",
+            f"  '{pip_name}' 已安装成功。",
+        ), "green"))
     except subprocess.CalledProcessError as exc:
-        print(_c(f"  failed to install '{pip_name}': {exc}", "magenta"))
-        print(_c(f"  install it manually and re-run: pip install {pip_name}", "dim"))
+        print(_c(_t(
+            f"  failed to install '{pip_name}': {exc}",
+            f"  安装 '{pip_name}' 失败：{exc}",
+        ), "magenta"))
+        print(_c(_t(
+            f"  install it manually and re-run: pip install {pip_name}",
+            f"  请手动安装后重试：pip install {pip_name}",
+        ), "dim"))
 
 
 def _ensure_backend_package(mapping: dict[str, tuple[str, str]], backend: str) -> None:
-    """Look up *backend* in *mapping* and install its package if missing."""
+    """Look up *mapping* and install its package if missing."""
     if backend not in mapping:
         return
     import_name, pip_name = mapping[backend]
     _ensure_package(import_name, pip_name)
+
+
+# ---------------------------------------------------------------------------
+# Localisation — single source of truth: a per-call _t(en, zh) helper.
+# Translations live next to the call site so a missing zh string is
+# obvious in code review (no scattered dict to fall out of sync).
+# ---------------------------------------------------------------------------
+
+
+_LANG = "en"  # set by _select_language() at startup
+
+
+def _t(en: str, zh: str) -> str:
+    return zh if _LANG == "zh" else en
+
+
+# ---------------------------------------------------------------------------
+# Arrow-key cross-platform menu
+# ---------------------------------------------------------------------------
+
+
+def _read_key() -> str:
+    """Block until one logical key is read. Returns one of:
+        "UP" "DOWN" "ENTER" "BACK" "ABORT" "OTHER"
+    No echo. Restores terminal state on POSIX."""
+    if os.name == "nt":
+        import msvcrt
+        ch = msvcrt.getch()
+        # Arrow keys / function keys: \xe0 prefix on most consoles, \x00 on some.
+        if ch in (b"\xe0", b"\x00"):
+            ch2 = msvcrt.getch()
+            if ch2 == b"H":
+                return "UP"
+            if ch2 == b"P":
+                return "DOWN"
+            return "OTHER"
+        if ch in (b"\r", b"\n"):
+            return "ENTER"
+        if ch == b"\x03":  # Ctrl-C in raw-ish mode
+            return "ABORT"
+        if ch in (b"b", b"B", b"<"):
+            return "BACK"
+        return "OTHER"
+    # POSIX
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":  # ESC — could start an arrow CSI or be lone ESC
+            ch2 = sys.stdin.read(1)
+            if ch2 == "[":
+                ch3 = sys.stdin.read(1)
+                if ch3 == "A":
+                    return "UP"
+                if ch3 == "B":
+                    return "DOWN"
+                return "OTHER"
+            return "ABORT"  # bare ESC
+        if ch in ("\r", "\n"):
+            return "ENTER"
+        if ch == "\x03":
+            return "ABORT"
+        if ch in ("b", "B", "<"):
+            return "BACK"
+        return "OTHER"
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _arrow_select(
+    options: list[tuple[str, str]],
+    *,
+    default_idx: int = 0,
+    allow_back: bool = True,
+) -> str:
+    """Up/Down navigation, Enter to confirm. ``options`` is [(value, label)].
+
+    Falls back to numbered input when stdin/stdout aren't both TTYs (CI,
+    piped tests, IDE consoles), so the wizard stays scriptable. Raises
+    ``_GoBack`` on 'b' / Backspace and ``Aborted`` on Ctrl-C / ESC.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return _numbered_fallback(options, default_idx=default_idx, allow_back=allow_back)
+
+    idx = max(0, min(default_idx, len(options) - 1))
+    n = len(options)
+
+    def _draw() -> None:
+        for i, (_value, label) in enumerate(options):
+            if i == idx:
+                line = _c(f"  ❯ {label}", "cyan")
+            else:
+                line = f"    {label}"
+            print(line)
+        hint = _t(
+            "  ↑/↓ to move · Enter to select · b to go back · Ctrl-C to abort",
+            "  ↑/↓ 移动 · Enter 确认 · b 返回上一步 · Ctrl-C 中止",
+        )
+        if not allow_back:
+            hint = _t(
+                "  ↑/↓ to move · Enter to select · Ctrl-C to abort",
+                "  ↑/↓ 移动 · Enter 确认 · Ctrl-C 中止",
+            )
+        print(_c(hint, "dim"))
+
+    def _undraw() -> None:
+        # n option lines + 1 hint line
+        for _ in range(n + 1):
+            sys.stdout.write("\033[F\033[2K")
+        sys.stdout.flush()
+
+    _draw()
+    while True:
+        try:
+            key = _read_key()
+        except (EOFError, KeyboardInterrupt):
+            raise Aborted()
+        if key == "ABORT":
+            raise Aborted()
+        if key == "BACK":
+            if not allow_back:
+                continue
+            raise _GoBack()
+        if key == "UP":
+            idx = (idx - 1) % n
+        elif key == "DOWN":
+            idx = (idx + 1) % n
+        elif key == "ENTER":
+            _undraw()
+            value, label = options[idx]
+            print(f"  ❯ {_c(label, 'green')}")
+            return value
+        else:
+            continue
+        _undraw()
+        _draw()
+
+
+def _numbered_fallback(
+    options: list[tuple[str, str]],
+    *,
+    default_idx: int = 0,
+    allow_back: bool = True,
+) -> str:
+    """Numbered prompt used when stdin/stdout aren't TTYs."""
+    for i, (_value, label) in enumerate(options, 1):
+        marker = _c(_t(" (default)", " (默认)"), "dim") if i - 1 == default_idx else ""
+        print(f"    {i}) {label}{marker}")
+    default_str = str(default_idx + 1)
+    enter_label = _t("enter", "选择")
+    while True:
+        try:
+            raw = input(f"  {enter_label} [1-{len(options)}] [{_c(default_str, 'yellow')}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise Aborted()
+        if allow_back and raw.lower() in _BACK_TOKENS:
+            raise _GoBack()
+        if not raw:
+            raw = default_str
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return options[idx - 1][0]
+        print(_c(_t(
+            f"  please enter a number 1-{len(options)}",
+            f"  请输入 1-{len(options)} 之间的数字",
+        ), "magenta"))
+
+
+def _select_language() -> str:
+    """First prompt of the wizard. Returns 'en' or 'zh'.
+
+    Uses arrow-key selection on a TTY; numbered fallback otherwise.
+    Defaults to English on EOF / Ctrl-C / piped non-interactive use.
+    """
+    print()
+    print("  Language / 语言")
+    try:
+        return _arrow_select(
+            [
+                ("en", "English"),
+                ("zh", "中文"),
+            ],
+            default_idx=0,
+            allow_back=False,
+        )
+    except (Aborted, _GoBack):
+        return "en"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +381,7 @@ def ask(
         if not raw and default is not None:
             raw = default
         if not raw and not allow_empty:
-            print(_c("  (required)", "magenta"))
+            print(_c(_t("  (required)", "  （必填）"), "magenta"))
             continue
         if validator:
             err = validator(raw)
@@ -202,7 +405,7 @@ def ask_bool(question: str, default: bool = False) -> bool:
             return True
         if raw in ("n", "no"):
             return False
-        print(_c("  please answer y or n", "magenta"))
+        print(_c(_t("  please answer y or n", "  请回答 y 或 n"), "magenta"))
 
 
 def ask_choice(
@@ -210,31 +413,21 @@ def ask_choice(
     options: list[tuple[str, str]],  # (value, description)
     default: str | None = None,
 ) -> str:
-    """Numbered menu selection. `options[i]` is (value, description)."""
+    """Arrow-key menu (numbered fallback when stdin isn't a TTY).
+
+    ``options[i]`` is ``(value, description)``. The shown label is
+    ``f"{value}  — {desc}"`` so the returned token stays visible
+    while the user is choosing.
+    """
     print(f"  {question}")
-    default_idx = None
-    for i, (value, desc) in enumerate(options, 1):
-        marker = ""
-        if default == value:
-            default_idx = i
-            marker = _c(" (default)", "dim")
-        print(f"    {i}) {_c(value, 'bold')}  {_c('— ' + desc, 'dim')}{marker}")
-    default_str = str(default_idx) if default_idx else None
-    while True:
-        try:
-            raw = input(
-                f"  enter [1-{len(options)}]{' [' + _c(default_str, 'yellow') + ']' if default_str else ''}: "
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            raise Aborted()
-        _check_back(raw)
-        if not raw and default_str:
-            raw = default_str
-        if raw.isdigit():
-            idx = int(raw)
-            if 1 <= idx <= len(options):
-                return options[idx - 1][0]
-        print(_c(f"  please enter a number 1-{len(options)}", "magenta"))
+    labelled = [(value, f"{value}  — {desc}") for value, desc in options]
+    default_idx = 0
+    if default is not None:
+        for i, (v, _l) in enumerate(labelled):
+            if v == default:
+                default_idx = i
+                break
+    return _arrow_select(labelled, default_idx=default_idx)
 
 
 def ask_int(question: str, default: int, *, min_: int = 1) -> int:
@@ -252,7 +445,10 @@ def ask_int(question: str, default: int, *, min_: int = 1) -> int:
                 raise ValueError
             return v
         except ValueError:
-            print(_c(f"  please enter an integer >= {min_}", "magenta"))
+            print(_c(_t(
+                f"  please enter an integer >= {min_}",
+                f"  请输入 >= {min_} 的整数",
+            ), "magenta"))
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +573,7 @@ def _test_completion(model: str, key: str | None, base: str | None, *, timeout: 
         return False, f"{type(e).__name__}: {e}"
 
 
-def _confirm_test_failure(target: str, error: str) -> str:
+def _confirm_test_failure(target_en: str, target_zh: str, error: str) -> str:
     """
     Show the test error and ask what to do. Returns one of:
       "retry" — re-run the same step
@@ -386,15 +582,19 @@ def _confirm_test_failure(target: str, error: str) -> str:
       "abort" — stop the wizard
     """
     print()
-    print(_c(f"  ✗ {target} connection test FAILED:", "magenta"))
+    print(_c(_t(
+        f"  ✗ {target_en} connection test FAILED:",
+        f"  ✗ {target_zh} 连接测试失败：",
+    ), "magenta"))
     print(_c(f"    {error}", "dim"))
     return ask_choice(
-        "What now?",
+        _t("What now?", "下一步？"),
         [
-            ("retry", "fix the values and try again"),
-            ("back",  "go back to the previous step"),
-            ("skip",  "save anyway (you can fix it via /settings later)"),
-            ("abort", "exit the wizard"),
+            ("retry", _t("fix the values and try again",                 "修改输入后重试")),
+            ("back",  _t("go back to the previous step",                 "返回上一步")),
+            ("skip",  _t("save anyway (you can fix it via /settings later)",
+                         "跳过测试，仍然保存（之后可在 /settings 修改）")),
+            ("abort", _t("exit the wizard",                              "退出向导")),
         ],
         default="retry",
     )
@@ -407,12 +607,16 @@ def _confirm_test_failure(target: str, error: str) -> str:
 
 def _step_postgres(answers: dict, defaults: dict) -> None:
     answers["relational"] = "postgres"
-    answers["pg_host"] = ask("Postgres host", default=defaults.get("pg_host", "localhost"))
-    answers["pg_port"] = ask_int("Postgres port", default=defaults.get("pg_port", 5432))
-    answers["pg_database"] = ask("Postgres database", default=defaults.get("pg_database", "forgerag"))
-    answers["pg_user"] = ask("Postgres user", default=defaults.get("pg_user", "forgerag"))
+    answers["pg_host"] = ask(_t("Postgres host", "Postgres 主机"),
+        default=defaults.get("pg_host", "localhost"))
+    answers["pg_port"] = ask_int(_t("Postgres port", "Postgres 端口"),
+        default=defaults.get("pg_port", 5432))
+    answers["pg_database"] = ask(_t("Postgres database", "Postgres 数据库名"),
+        default=defaults.get("pg_database", "forgerag"))
+    answers["pg_user"] = ask(_t("Postgres user", "Postgres 用户名"),
+        default=defaults.get("pg_user", "forgerag"))
     answers["pg_password_env"] = ask(
-        "Env var containing the password",
+        _t("Env var containing the password", "存放密码的环境变量名"),
         default=defaults.get("pg_password_env", "PG_PASSWORD"),
     )
     _ensure_backend_package(_RELATIONAL_PACKAGES, answers["relational"])
@@ -420,34 +624,45 @@ def _step_postgres(answers: dict, defaults: dict) -> None:
 
 def _step_vector(answers: dict, defaults: dict) -> None:
     standalone = [
-        ("chromadb", "ChromaDB — lightweight, backend-agnostic"),
-        ("qdrant",   "Qdrant — production-grade, rich filtering"),
-        ("milvus",   "Milvus — scalable, GPU-accelerated"),
-        ("weaviate", "Weaviate — multi-modal, GraphQL API"),
+        ("chromadb", _t("ChromaDB — lightweight, backend-agnostic",
+                        "ChromaDB — 轻量级，后端无关")),
+        ("qdrant",   _t("Qdrant — production-grade, rich filtering",
+                        "Qdrant — 生产级，丰富的过滤能力")),
+        ("milvus",   _t("Milvus — scalable, GPU-accelerated",
+                        "Milvus — 可扩展，支持 GPU 加速")),
+        ("weaviate", _t("Weaviate — multi-modal, GraphQL API",
+                        "Weaviate — 多模态，GraphQL API")),
     ]
-    valid = [("pgvector", "pgvector — in-database, zero extra ops"), *standalone]
+    valid = [
+        ("pgvector", _t("pgvector — in-database, zero extra ops",
+                        "pgvector — 直接在 Postgres 内，无额外运维")),
+        *standalone,
+    ]
     default_vec = defaults.get("vector", valid[0][0])
     if default_vec not in [v for v, _ in valid]:
         default_vec = valid[0][0]
-    answers["vector"] = ask_choice("Which vector backend?", valid, default=default_vec)
+    answers["vector"] = ask_choice(
+        _t("Which vector backend?", "选择向量数据库后端？"),
+        valid, default=default_vec,
+    )
     if answers["vector"] == "chromadb":
         answers["chroma_dir"] = ask(
-            "Chroma persist_directory",
+            _t("Chroma persist_directory", "Chroma 持久化目录"),
             default=defaults.get("chroma_dir", "./storage/chroma"),
         )
     elif answers["vector"] == "qdrant":
         answers["qdrant_url"] = ask(
-            "Qdrant server URL",
+            _t("Qdrant server URL", "Qdrant 服务器 URL"),
             default=defaults.get("qdrant_url", "http://localhost:6333"),
         )
     elif answers["vector"] == "milvus":
         answers["milvus_uri"] = ask(
-            "Milvus server URI",
+            _t("Milvus server URI", "Milvus 服务器 URI"),
             default=defaults.get("milvus_uri", "http://localhost:19530"),
         )
     elif answers["vector"] == "weaviate":
         answers["weaviate_url"] = ask(
-            "Weaviate server URL",
+            _t("Weaviate server URL", "Weaviate 服务器 URL"),
             default=defaults.get("weaviate_url", "http://localhost:8080"),
         )
     _ensure_backend_package(_VECTOR_PACKAGES, answers["vector"])
@@ -455,69 +670,79 @@ def _step_vector(answers: dict, defaults: dict) -> None:
 
 def _step_blob(answers: dict, defaults: dict) -> None:
     answers["blob"] = ask_choice(
-        "Where should blobs live?",
+        _t("Where should blobs live?", "Blob (上传文件 + 图片) 存放在哪里？"),
         [
-            ("local", "filesystem, single node"),
-            ("s3",    "any S3-compatible service"),
-            ("oss",   "Alibaba Cloud OSS"),
+            ("local", _t("filesystem, single node",  "本机文件系统")),
+            ("s3",    _t("any S3-compatible service", "任意 S3 兼容服务")),
+            ("oss",   _t("Alibaba Cloud OSS",        "阿里云 OSS")),
         ],
         default=defaults.get("blob", "local"),
     )
     if answers["blob"] == "local":
         answers["blob_root"] = ask(
-            "Blob root directory",
+            _t("Blob root directory", "Blob 根目录"),
             default=defaults.get("blob_root", "./storage/blobs"),
         )
     elif answers["blob"] == "s3":
-        answers["s3_endpoint"] = ask("S3 endpoint URL", default="https://s3.amazonaws.com")
-        answers["s3_bucket"] = ask("S3 bucket name")
-        answers["s3_region"] = ask("S3 region", default="us-east-1")
-        answers["s3_access_key_env"] = ask("Access key env var", default="S3_ACCESS_KEY")
-        answers["s3_secret_key_env"] = ask("Secret key env var", default="S3_SECRET_KEY")
+        answers["s3_endpoint"] = ask(_t("S3 endpoint URL", "S3 endpoint URL"),
+            default="https://s3.amazonaws.com")
+        answers["s3_bucket"] = ask(_t("S3 bucket name", "S3 bucket 名称"))
+        answers["s3_region"] = ask(_t("S3 region", "S3 region"), default="us-east-1")
+        answers["s3_access_key_env"] = ask(
+            _t("Access key env var", "Access key 的环境变量名"), default="S3_ACCESS_KEY")
+        answers["s3_secret_key_env"] = ask(
+            _t("Secret key env var", "Secret key 的环境变量名"), default="S3_SECRET_KEY")
         answers["s3_public_base_url"] = ask(
-            "Public CDN base URL (optional)",
-            default="",
-            allow_empty=True,
+            _t("Public CDN base URL (optional)", "公共 CDN 基础 URL (可选)"),
+            default="", allow_empty=True,
         )
     elif answers["blob"] == "oss":
         answers["oss_endpoint"] = ask(
-            "OSS endpoint",
+            _t("OSS endpoint", "OSS endpoint"),
             default="https://oss-cn-hangzhou.aliyuncs.com",
         )
-        answers["oss_bucket"] = ask("OSS bucket name")
-        answers["oss_access_key_env"] = ask("Access key env var", default="OSS_ACCESS_KEY")
-        answers["oss_secret_key_env"] = ask("Secret key env var", default="OSS_SECRET_KEY")
+        answers["oss_bucket"] = ask(_t("OSS bucket name", "OSS bucket 名称"))
+        answers["oss_access_key_env"] = ask(
+            _t("Access key env var", "Access key 的环境变量名"), default="OSS_ACCESS_KEY")
+        answers["oss_secret_key_env"] = ask(
+            _t("Secret key env var", "Secret key 的环境变量名"), default="OSS_SECRET_KEY")
         answers["oss_public_base_url"] = ask(
-            "Public base URL (optional)",
-            default="",
-            allow_empty=True,
+            _t("Public base URL (optional)", "公共 base URL (可选)"),
+            default="", allow_empty=True,
         )
     _ensure_backend_package(_BLOB_PACKAGES, answers["blob"])
 
 
-def _ask_credentials(prefix_label: str, defaults: dict, key_env: str, base_default: str) -> tuple[str, str, str]:
-    """Common credential subform for embedder + LLM steps.
-
-    Returns (api_key_env, api_key_plain, api_base). Exactly one of
-    ``api_key_env`` and ``api_key_plain`` will be non-empty (the env var
-    by default; falls through to plaintext only if the env var is unset
-    and the operator pastes the key directly).
-    """
-    print(_c(f"  {prefix_label} authentication", "dim"))
+def _ask_credentials(
+    prefix_en: str, prefix_zh: str, defaults: dict, key_env: str, base_default: str
+) -> tuple[str, str, str]:
+    """Common credential subform for embedder + LLM steps."""
+    print(_c(_t(f"  {prefix_en} authentication", f"  {prefix_zh} 认证"), "dim"))
     api_key_env = ask(
-        "Env var containing the API key",
+        _t("Env var containing the API key", "存放 API key 的环境变量名"),
         default=defaults.get(key_env, "OPENAI_API_KEY"),
         allow_empty=True,
     )
     api_key_plain = ""
     if api_key_env and not os.environ.get(api_key_env):
-        print(_c(f"  ! env var {api_key_env!r} is currently unset.", "yellow"))
-        if ask_bool("Paste the key now (saved as plaintext in yaml)?", default=False):
-            api_key_plain = ask("API key", allow_empty=False)
-            api_key_env = ""  # plaintext takes precedence — clear the env reference
+        print(_c(_t(
+            f"  ! env var {api_key_env!r} is currently unset.",
+            f"  ! 环境变量 {api_key_env!r} 当前未设置。",
+        ), "yellow"))
+        if ask_bool(
+            _t("Paste the key now (saved as plaintext in yaml)?",
+               "现在直接粘贴 key？(将以明文写入 yaml)"),
+            default=False,
+        ):
+            api_key_plain = ask(_t("API key", "API key"), allow_empty=False)
+            api_key_env = ""
     api_base = ask(
-        "Custom api_base (Ollama / OpenRouter / OneAPI / Azure URL)",
-        default=defaults.get("llm_api_base" if "llm" in prefix_label.lower() else "embedder_api_base", base_default),
+        _t("Custom api_base (Ollama / OpenRouter / OneAPI / Azure URL)",
+           "自定义 api_base (Ollama / OpenRouter / OneAPI / Azure 地址)"),
+        default=defaults.get(
+            "llm_api_base" if "llm" in prefix_en.lower() else "embedder_api_base",
+            base_default,
+        ),
         allow_empty=True,
     )
     return api_key_env, api_key_plain, api_base
@@ -525,16 +750,25 @@ def _ask_credentials(prefix_label: str, defaults: dict, key_env: str, base_defau
 
 def _step_embedder(answers: dict, defaults: dict) -> None:
     while True:
-        print(_c("  The embedding model converts text into vectors.", "dim"))
-        print(_c("  Common: openai/text-embedding-3-small (1536),", "dim"))
-        print(_c("  openai/text-embedding-3-large (3072), ollama/bge-m3 (1024).", "dim"))
+        print(_c(_t(
+            "  The embedding model converts text into vectors.",
+            "  向量嵌入模型把文本转换为向量。",
+        ), "dim"))
+        print(_c(_t(
+            "  Common: openai/text-embedding-3-small (1536),",
+            "  常见模型: openai/text-embedding-3-small (1536),",
+        ), "dim"))
+        print(_c(_t(
+            "  openai/text-embedding-3-large (3072), ollama/bge-m3 (1024).",
+            "  openai/text-embedding-3-large (3072), ollama/bge-m3 (1024)。",
+        ), "dim"))
         answers["embedder_model"] = ask(
-            "Embedding model (litellm format)",
+            _t("Embedding model (litellm format)", "嵌入模型 (litellm 格式)"),
             default=answers.get("embedder_model")
                 or defaults.get("embedder_model", "openai/text-embedding-3-small"),
         )
         api_key_env, api_key_plain, api_base = _ask_credentials(
-            "Embedder", defaults, "embedder_api_key_env", ""
+            "Embedder", "嵌入模型", defaults, "embedder_api_key_env", ""
         )
         answers["embedder_api_key_env"] = api_key_env
         answers["embedder_api_key"] = api_key_plain
@@ -542,15 +776,21 @@ def _step_embedder(answers: dict, defaults: dict) -> None:
 
         # Live test — auto-detects the output dimension from the response.
         print()
-        print(_c("  testing embedding endpoint (auto-detecting dimension)…", "dim"))
+        print(_c(_t(
+            "  testing embedding endpoint (auto-detecting dimension)…",
+            "  正在测试嵌入接口 (自动检测维度)…",
+        ), "dim"))
         key = _resolve_key(api_key_plain, api_key_env)
         ok, msg, dim = _test_embedding(answers["embedder_model"], key, api_base or None)
         if ok and dim:
             answers["embedder_dim"] = dim
             print(_c(f"  ✓ {msg}", "green"))
-            print(_c(f"  → embedder.dimension auto-set to {dim}", "dim"))
+            print(_c(_t(
+                f"  → embedder.dimension auto-set to {dim}",
+                f"  → embedder.dimension 自动设为 {dim}",
+            ), "dim"))
             return
-        choice = _confirm_test_failure("Embedding", msg)
+        choice = _confirm_test_failure("Embedding", "嵌入模型", msg)
         if choice == "retry":
             continue
         if choice == "back":
@@ -559,9 +799,12 @@ def _step_embedder(answers: dict, defaults: dict) -> None:
             raise Aborted()
         # "skip" — fall back to asking for the dimension since we couldn't
         # detect it from a live call.
-        print(_c("  test was skipped — please enter the dimension manually.", "yellow"))
+        print(_c(_t(
+            "  test was skipped — please enter the dimension manually.",
+            "  已跳过测试 — 请手动输入维度。",
+        ), "yellow"))
         answers["embedder_dim"] = ask_int(
-            "Embedding dimension",
+            _t("Embedding dimension", "嵌入向量维度"),
             default=answers.get("embedder_dim") or defaults.get("embedder_dim", 1536),
         )
         return
@@ -569,16 +812,25 @@ def _step_embedder(answers: dict, defaults: dict) -> None:
 
 def _step_llm(answers: dict, defaults: dict) -> None:
     while True:
-        print(_c("  The answer-generation LLM produces the final answer text.", "dim"))
-        print(_c("  Any litellm-compatible model works (OpenAI / Anthropic / DeepSeek /", "dim"))
-        print(_c("  Ollama / OpenRouter / Azure / Bedrock / Vertex / ...).", "dim"))
+        print(_c(_t(
+            "  The answer-generation LLM produces the final answer text.",
+            "  答案生成大模型负责输出最终的回答文本。",
+        ), "dim"))
+        print(_c(_t(
+            "  Any litellm-compatible model works (OpenAI / Anthropic / DeepSeek /",
+            "  支持任何 litellm 兼容模型 (OpenAI / Anthropic / DeepSeek /",
+        ), "dim"))
+        print(_c(_t(
+            "  Ollama / OpenRouter / Azure / Bedrock / Vertex / ...).",
+            "  Ollama / OpenRouter / Azure / Bedrock / Vertex / …)。",
+        ), "dim"))
         answers["llm_model"] = ask(
-            "Generator model (litellm format)",
+            _t("Generator model (litellm format)", "生成模型 (litellm 格式)"),
             default=answers.get("llm_model")
                 or defaults.get("llm_model", "openai/gpt-4o-mini"),
         )
         api_key_env, api_key_plain, api_base = _ask_credentials(
-            "LLM", defaults, "llm_api_key_env", ""
+            "LLM", "大模型", defaults, "llm_api_key_env", ""
         )
         answers["llm_api_key_env"] = api_key_env
         answers["llm_api_key"] = api_key_plain
@@ -586,13 +838,16 @@ def _step_llm(answers: dict, defaults: dict) -> None:
 
         # Live test
         print()
-        print(_c("  testing generator endpoint (one short completion call)…", "dim"))
+        print(_c(_t(
+            "  testing generator endpoint (one short completion call)…",
+            "  正在测试生成接口 (一次短补全调用)…",
+        ), "dim"))
         key = _resolve_key(api_key_plain, api_key_env)
         ok, msg = _test_completion(answers["llm_model"], key, api_base or None)
         if ok:
             print(_c(f"  ✓ {msg}", "green"))
             return
-        choice = _confirm_test_failure("LLM", msg)
+        choice = _confirm_test_failure("LLM", "大模型", msg)
         if choice == "retry":
             continue
         if choice == "back":
@@ -608,12 +863,12 @@ def _step_llm(answers: dict, defaults: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-_STEPS: list[tuple[str, Callable[[dict, dict], None]]] = [
-    ("Metadata database (PostgreSQL)", _step_postgres),
-    ("Vector database",                _step_vector),
-    ("Blob storage",                   _step_blob),
-    ("Embedding model",                _step_embedder),
-    ("Answer-generation LLM",          _step_llm),
+_STEPS: list[tuple[str, str, Callable[[dict, dict], None]]] = [
+    ("Metadata database (PostgreSQL)", "元数据库 (PostgreSQL)",     _step_postgres),
+    ("Vector database",                "向量数据库",                _step_vector),
+    ("Blob storage",                   "Blob 存储",                 _step_blob),
+    ("Embedding model",                "向量嵌入模型",              _step_embedder),
+    ("Answer-generation LLM",          "答案生成大模型",            _step_llm),
 ]
 
 
@@ -648,27 +903,36 @@ def run_wizard(profile: str, non_interactive: bool) -> dict[str, Any]:
             raise Aborted()
         return d
 
-    banner("ForgeRAG setup wizard")
-    print(_c("  Press Enter to accept the default in [yellow].", "dim"))
-    print(_c("  Type 'b' / 'back' / '<' to re-open the previous step.", "dim"))
-    print(_c("  Ctrl-C to abort.", "dim"))
+    banner(_t("ForgeRAG setup wizard", "ForgeRAG 安装向导"))
+    print(_c(_t(
+        "  Press Enter to accept the default in [yellow].",
+        "  按回车接受 [黄色] 中的默认值。",
+    ), "dim"))
+    print(_c(_t(
+        "  Type 'b' / 'back' / '<' to re-open the previous step.",
+        "  在任何提问处输入 'b' / 'back' / '<' 可返回上一步。",
+    ), "dim"))
+    print(_c(_t("  Ctrl-C to abort.", "  按 Ctrl-C 中止。"), "dim"))
 
     answers: dict[str, Any] = {}
     i = 0
     while i < len(_STEPS):
-        title, fn = _STEPS[i]
-        section(f"{i + 1}/{len(_STEPS)}  {title}")
+        title_en, title_zh, fn = _STEPS[i]
+        section(f"{i + 1}/{len(_STEPS)}  {_t(title_en, title_zh)}")
         try:
             fn(answers, defaults)
         except _GoBack:
             if i == 0:
-                print(_c("  already at the first step — nowhere to go back.", "yellow"))
+                print(_c(_t(
+                    "  already at the first step — nowhere to go back.",
+                    "  已经在第一步了 — 无法再返回。",
+                ), "yellow"))
                 continue
             i -= 1
             continue
         i += 1
 
-    section("Done!")
+    section(_t("Done!", "完成！"))
     return answers
 
 
@@ -819,7 +1083,7 @@ def _child_env() -> dict[str, str]:
 
 
 def post_setup(config_path: Path) -> None:
-    section("Next steps")
+    section(_t("Next steps", "下一步"))
 
     # Run config validator (subprocess isolates us from pydantic issues)
     try:
@@ -829,34 +1093,45 @@ def post_setup(config_path: Path) -> None:
             env=_child_env(),
         )
         if r.returncode != 0:
-            print(_c("  config validation FAILED — fix the file and re-run", "magenta"))
+            print(_c(_t(
+                "  config validation FAILED — fix the file and re-run",
+                "  配置校验失败 — 请修正后重新运行",
+            ), "magenta"))
             return
     except FileNotFoundError:
         pass
 
     print()
     choice = ask_choice(
-        "What do you want to do next?",
+        _t("What do you want to do next?", "接下来要做什么？"),
         [
-            ("nothing", "just exit; run it yourself later"),
-            ("batch",   "batch-ingest files from a directory now"),
-            ("api",     "start the HTTP API (uvicorn) now"),
+            ("nothing", _t("just exit; run it yourself later",
+                           "什么都不做；稍后自己启动")),
+            ("batch",   _t("batch-ingest files from a directory now",
+                           "立刻批量导入指定目录的文件")),
+            ("api",     _t("start the HTTP API (uvicorn) now",
+                           "立刻启动 HTTP API (uvicorn)")),
         ],
         default="nothing",
     )
     if choice == "nothing":
         print()
-        print(_c("  done. to use this config later:", "dim"))
+        print(_c(_t(
+            "  done. to use this config later:",
+            "  完成。下次使用此配置：",
+        ), "dim"))
         print(f"    export FORGERAG_CONFIG={config_path}")
         return
 
     if choice == "batch":
         target = ask(
-            "Directory to ingest",
+            _t("Directory to ingest", "要导入的目录"),
             default="./papers",
-            validator=lambda p: None if Path(p).exists() else f"not found: {p}",
+            validator=lambda p: None if Path(p).exists()
+                else _t(f"not found: {p}", f"目录不存在: {p}"),
         )
-        embed = ask_bool("Compute embeddings?", default=False)
+        embed = ask_bool(_t("Compute embeddings?", "同时计算向量嵌入？"),
+                         default=False)
         cmd = [
             sys.executable,
             "scripts/batch_ingest.py",
@@ -871,8 +1146,8 @@ def post_setup(config_path: Path) -> None:
         return
 
     if choice == "api":
-        host = ask("Host", default="0.0.0.0")
-        port = ask_int("Port", default=8000)
+        host = ask(_t("Host", "监听地址"), default="0.0.0.0")
+        port = ask_int(_t("Port", "监听端口"), default=8000)
         env = _child_env()
         env["FORGERAG_CONFIG"] = str(config_path)
         cmd = [
@@ -998,25 +1273,38 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
+    # Pick the wizard's display language before any other output. Skipped
+    # entirely in non-interactive mode (CI / Docker) where English is the
+    # safest default for log greppability.
+    global _LANG
+    if not args.non_interactive:
+        _LANG = _select_language()
+
     if args.output.exists() and not args.force:
-        print(_c(f"  {args.output} already exists. Use --force to overwrite.", "magenta"))
+        print(_c(_t(
+            f"  {args.output} already exists. Use --force to overwrite.",
+            f"  {args.output} 已存在。使用 --force 强制覆盖。",
+        ), "magenta"))
         return 2
 
     try:
         answers = run_wizard(args.profile, args.non_interactive)
     except Aborted:
-        print("\n  aborted.")
+        print(_t("\n  aborted.", "\n  已中止。"))
         return 130
 
     cfg_dict = build_config_dict(answers)
     try:
         write_yaml(cfg_dict, args.output)
     except Exception as e:
-        print(_c(f"  failed to write {args.output}: {e}", "magenta"))
+        print(_c(_t(
+            f"  failed to write {args.output}: {e}",
+            f"  写入 {args.output} 失败：{e}",
+        ), "magenta"))
         return 1
 
     print()
-    print(_c(f"  wrote {args.output}", "green"))
+    print(_c(_t(f"  wrote {args.output}", f"  已写入 {args.output}"), "green"))
     print()
 
     try:
