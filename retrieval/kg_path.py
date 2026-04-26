@@ -224,8 +224,7 @@ class KGPath:
                 # Use kg_path config; if api_key/api_base are empty, log and skip
                 if not self.cfg.api_key and not self.cfg.api_base:
                     log.warning(
-                        "KG path: no api_key or api_base configured (model=%s) "
-                        "— skipping query entity extraction",
+                        "KG path: no api_key or api_base configured (model=%s) — skipping query entity extraction",
                         self.cfg.model,
                     )
                     return [], []
@@ -485,9 +484,7 @@ class KGPath:
             # path scope manually so scope leakage is impossible. The
             # OR-fallback list lets us still see entities whose Neo4j
             # source_paths haven't caught up with a pending rename.
-            if entity is not None and all_pfxs and not any(
-                _entity_matches_prefix(entity, p) for p in all_pfxs
-            ):
+            if entity is not None and all_pfxs and not any(_entity_matches_prefix(entity, p) for p in all_pfxs):
                 entity = None
             if entity is not None:
                 resolved.append(entity)
@@ -523,7 +520,10 @@ class KGPath:
         or_pfx = getattr(self, "_path_prefixes_or", None)
         if vec:
             hits = self.graph.search_entities_by_embedding(
-                vec, top_k=top_k, path_prefix=pfx, path_prefixes_or=or_pfx,
+                vec,
+                top_k=top_k,
+                path_prefix=pfx,
+                path_prefixes_or=or_pfx,
             )
             # Filter below threshold: prevents a cold graph from returning
             # random near-orthogonal nearest neighbors.
@@ -614,6 +614,7 @@ class KGPath:
         """Drop entities / relations whose source_doc_ids don't overlap
         the allowed set. Uses the synthesized KGContext populated during
         retrieval (it already carries source_doc_ids on each entry)."""
+
         def _keep(e: dict) -> bool:
             srcs = e.get("source_doc_ids")
             if not srcs:
@@ -622,6 +623,7 @@ class KGPath:
             if isinstance(srcs, (list, set, tuple)):
                 return any(s in allowed_doc_ids for s in srcs)
             return srcs in allowed_doc_ids
+
         self.kg_context.entities = [e for e in self.kg_context.entities if _keep(e)]
         self.kg_context.relations = [r for r in self.kg_context.relations if _keep(r)]
 

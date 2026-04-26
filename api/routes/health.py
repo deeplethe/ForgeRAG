@@ -51,16 +51,16 @@ def health_components(state: AppState = Depends(get_state)) -> dict:
     # KG paths are gated on graph_store presence (not on a cfg toggle).
     has_graph = state.graph_store is not None
     components = {
-        "reranker":            {"status": "unknown"},
-        "embedder":            {"status": "unknown"},
-        "vector_path":         {"status": _enabled_or_disabled(r.vector.enabled)},
-        "bm25_path":           {"status": _enabled_or_disabled(r.bm25.enabled)},
-        "tree_path":           {"status": _enabled_or_disabled(r.tree_path.enabled)},
-        "kg_path":             {"status": "unknown" if has_graph else "disabled"},
-        "kg_extraction":       {"status": "unknown" if has_graph else "disabled"},
+        "reranker": {"status": "unknown"},
+        "embedder": {"status": "unknown"},
+        "vector_path": {"status": _enabled_or_disabled(r.vector.enabled)},
+        "bm25_path": {"status": _enabled_or_disabled(r.bm25.enabled)},
+        "tree_path": {"status": _enabled_or_disabled(r.tree_path.enabled)},
+        "kg_path": {"status": "unknown" if has_graph else "disabled"},
+        "kg_extraction": {"status": "unknown" if has_graph else "disabled"},
         "query_understanding": {"status": "unknown"},
-        "tree_navigator":      {"status": _enabled_or_disabled(r.tree_path.enabled and r.tree_path.llm_nav_enabled)},
-        "answer_generator":    {"status": "unknown"},
+        "tree_navigator": {"status": _enabled_or_disabled(r.tree_path.enabled and r.tree_path.llm_nav_enabled)},
+        "answer_generator": {"status": "unknown"},
     }
 
     # Overlay live data (healthy / error / degraded trumps config default)

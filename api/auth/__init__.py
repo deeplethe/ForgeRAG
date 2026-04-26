@@ -15,7 +15,7 @@ Routes live in ``api/routes/auth.py``; this module is the plumbing.
 """
 
 from .bootstrap import bootstrap_if_empty
-from .middleware import AuthMiddleware, AuthenticatedPrincipal, AuthError
+from .middleware import AuthenticatedPrincipal, AuthError, AuthMiddleware
 from .primitives import (
     generate_session_id,
     generate_sk,
@@ -25,13 +25,13 @@ from .primitives import (
 )
 
 __all__ = [
-    "hash_password",
-    "verify_password",
-    "generate_sk",
-    "hash_sk",
-    "generate_session_id",
     "AuthError",
+    "AuthMiddleware",
     "AuthenticatedPrincipal",
     "bootstrap_if_empty",
-    "AuthMiddleware",
+    "generate_session_id",
+    "generate_sk",
+    "hash_password",
+    "hash_sk",
+    "verify_password",
 ]

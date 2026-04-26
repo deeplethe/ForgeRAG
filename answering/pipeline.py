@@ -145,12 +145,11 @@ class AnsweringPipeline:
         if overrides is not None and getattr(overrides, "query_understanding", None) is not None:
             qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
-            _allow_partial = bool(
-                overrides is not None
-                and getattr(overrides, "allow_partial_failure", None) is True
-            )
+            _allow_partial = bool(overrides is not None and getattr(overrides, "allow_partial_failure", None) is True)
             qp_early = self.retrieval.analyze_query(
-                query, chat_history=chat_history, strict=not _allow_partial,
+                query,
+                chat_history=chat_history,
+                strict=not _allow_partial,
             )
             _early_qu_done = qp_early is not None
 
@@ -408,12 +407,11 @@ class AnsweringPipeline:
             qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
             yield {"event": "progress", "data": {"phase": "query_understanding", "status": "running"}}
-            _allow_partial = bool(
-                overrides is not None
-                and getattr(overrides, "allow_partial_failure", None) is True
-            )
+            _allow_partial = bool(overrides is not None and getattr(overrides, "allow_partial_failure", None) is True)
             qp_early = self.retrieval.analyze_query(
-                query, chat_history=chat_history, strict=not _allow_partial,
+                query,
+                chat_history=chat_history,
+                strict=not _allow_partial,
             )
             _early_qu_done = qp_early is not None
 
@@ -968,7 +966,7 @@ class AnsweringPipeline:
                 "trace_id": tid,
                 "query": answer.query,
                 "total_ms": answer.stats.get("total_ms", 0),
-                "total_llm_ms": 0,     # aggregate from spans if needed later
+                "total_llm_ms": 0,  # aggregate from spans if needed later
                 "total_llm_calls": 0,
                 "answer_text": answer.text,
                 "answer_model": answer.model,

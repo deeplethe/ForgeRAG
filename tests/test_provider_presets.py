@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from config.provider_presets import PROVIDER_PRESETS, presets_for_type
-
 
 REQUIRED_KEYS = {"id", "label", "provider_type", "model_name", "api_base", "note", "requires_api_key"}
 VALID_TYPES = {"chat", "embedding", "reranker", "vlm"}
@@ -40,8 +37,7 @@ def test_siliconflow_bge_uses_jina_ai_prefix():
     This test will catch anyone "fixing" the prefix back to huggingface/."""
     p = next(x for x in PROVIDER_PRESETS if x["id"] == "siliconflow_bge_reranker_v2_m3")
     assert p["model_name"].startswith("jina_ai/"), (
-        f"SiliconFlow BGE preset must use jina_ai/ prefix for schema compat, "
-        f"got: {p['model_name']}"
+        f"SiliconFlow BGE preset must use jina_ai/ prefix for schema compat, got: {p['model_name']}"
     )
     assert "siliconflow.cn" in p["api_base"]
 

@@ -69,7 +69,7 @@ from .state import AppState
 log = logging.getLogger(__name__)
 
 
-def _run_startup_probes(state: "AppState") -> None:
+def _run_startup_probes(state: AppState) -> None:
     """
     Call probe() on each pipeline component that has one. Results are
     recorded in the health registry; failures are logged but don't
@@ -230,10 +230,7 @@ def create_app(
                     status_code=503,
                     content={
                         "error": "read_only_mode",
-                        "message": (
-                            "Server is in read-only maintenance mode. "
-                            "Writes are temporarily disabled."
-                        ),
+                        "message": ("Server is in read-only maintenance mode. Writes are temporarily disabled."),
                     },
                 )
         return await call_next(request)
@@ -254,6 +251,7 @@ def create_app(
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)
     from .routes import auth as auth_routes
+
     app.include_router(auth_routes.router)
 
     # ── Auth middleware (no-op when auth.enabled=false) ──────────────

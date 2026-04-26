@@ -35,7 +35,6 @@ import logging
 import sys
 import time
 
-
 log = logging.getLogger("forgerag.nightly_maintenance")
 
 

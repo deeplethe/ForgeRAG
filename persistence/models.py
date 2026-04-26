@@ -392,9 +392,7 @@ class Folder(Base):
     # __trash__). Documents inside it inherit the trashed view automatically.
     trashed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -422,9 +420,7 @@ class FolderGrant(Base):
     permission: Mapped[str] = mapped_column(String(16))  # 'view' | 'edit' | 'admin'
     inherit: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     granted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    granted_by: Mapped[str] = mapped_column(
-        String(128), default="system", server_default="system"
-    )
+    granted_by: Mapped[str] = mapped_column(String(128), default="system", server_default="system")
 
 
 class AuditLogRow(Base):
@@ -462,17 +458,15 @@ class PendingFolderOp(Base):
     __tablename__ = "pending_folder_ops"
 
     op_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    op_type: Mapped[str] = mapped_column(String(16))        # rename | move | delete
+    op_type: Mapped[str] = mapped_column(String(16))  # rename | move | delete
     old_path: Mapped[str] = mapped_column(String(1024), index=True)
     new_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, index=True)
     affected_chunks: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(
         String(16), default="pending", server_default="pending"
-    )                                                         # pending | running | done | failed
+    )  # pending | running | done | failed
     queued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    queued_by: Mapped[str] = mapped_column(
-        String(128), default="local", server_default="local"
-    )
+    queued_by: Mapped[str] = mapped_column(String(128), default="local", server_default="local")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -500,7 +494,7 @@ class AuthUser(Base):
 
     user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))           # argon2id
+    password_hash: Mapped[str] = mapped_column(String(255))  # argon2id
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
@@ -525,9 +519,9 @@ class AuthToken(Base):
         ForeignKey("auth_users.user_id", ondelete="CASCADE"),
         index=True,
     )
-    name: Mapped[str] = mapped_column(String(128))          # human label
+    name: Mapped[str] = mapped_column(String(128))  # human label
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    hash_prefix: Mapped[str] = mapped_column(String(8))     # first 8 hex of hash, for UI fingerprint
+    hash_prefix: Mapped[str] = mapped_column(String(8))  # first 8 hex of hash, for UI fingerprint
     role: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -580,9 +574,7 @@ class ChunkRow(Base):
     # synchronously inside the same transaction that updates
     # documents.path, so PG is always coherent.  Chroma / Neo4j get the
     # same path via their own store-level denormalization.
-    path: Mapped[str] = mapped_column(
-        String(1024), default="/", server_default="/", index=True
-    )
+    path: Mapped[str] = mapped_column(String(1024), default="/", server_default="/", index=True)
 
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str] = mapped_column(String(32))

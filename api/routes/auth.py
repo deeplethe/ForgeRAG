@@ -130,9 +130,7 @@ def login(
         raise HTTPException(400, "auth disabled on this server")
 
     with state.store.transaction() as sess:
-        user = sess.execute(
-            select(AuthUser).where(AuthUser.username == body.username)
-        ).scalar_one_or_none()
+        user = sess.execute(select(AuthUser).where(AuthUser.username == body.username)).scalar_one_or_none()
         if user is None or not user.is_active:
             raise HTTPException(401, "invalid credentials")
         if not verify_password(body.password, user.password_hash):
@@ -143,12 +141,14 @@ def login(
         user.last_login_at = datetime.utcnow()
 
         sid = generate_session_id()
-        sess.add(AuthSession(
-            session_id=sid,
-            user_id=user.user_id,
-            ip=(request.client.host if request.client else None),
-            user_agent=request.headers.get("user-agent", "")[:500],
-        ))
+        sess.add(
+            AuthSession(
+                session_id=sid,
+                user_id=user.user_id,
+                ip=(request.client.host if request.client else None),
+                user_agent=request.headers.get("user-agent", "")[:500],
+            )
+        )
 
         out = {
             "user_id": user.user_id,
@@ -214,12 +214,16 @@ def change_password(
         # doesn't get bounced back to login right after changing).
         if state.cfg.auth.password_change_revokes_other_sessions:
             keep_sid = principal.session_id
-            active = sess.execute(
-                select(AuthSession).where(
-                    AuthSession.user_id == user.user_id,
-                    AuthSession.revoked_at.is_(None),
+            active = (
+                sess.execute(
+                    select(AuthSession).where(
+                        AuthSession.user_id == user.user_id,
+                        AuthSession.revoked_at.is_(None),
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for s in active:
                 if s.session_id != keep_sid:
                     s.revoked_at = datetime.utcnow()
@@ -253,9 +257,13 @@ def me(request: Request, state: AppState = Depends(get_state)):
 def list_tokens(request: Request, state: AppState = Depends(get_state)):
     principal = _require_principal(request)
     with state.store.transaction() as sess:
-        rows = sess.execute(
-            select(AuthToken).where(AuthToken.user_id == principal.user_id).order_by(AuthToken.created_at.desc())
-        ).scalars().all()
+        rows = (
+            sess.execute(
+                select(AuthToken).where(AuthToken.user_id == principal.user_id).order_by(AuthToken.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
         return [
             TokenOut(
                 token_id=r.token_id,
@@ -286,15 +294,17 @@ def create_token(
         expires_at = datetime.utcnow() + timedelta(days=body.expires_days)
 
     with state.store.transaction() as sess:
-        sess.add(AuthToken(
-            token_id=_new_id(),
-            user_id=principal.user_id,
-            name=body.name,
-            token_hash=hash_sk(raw),
-            hash_prefix=hash_prefix(raw),
-            role=principal.role,
-            expires_at=expires_at,
-        ))
+        sess.add(
+            AuthToken(
+                token_id=_new_id(),
+                user_id=principal.user_id,
+                name=body.name,
+                token_hash=hash_sk(raw),
+                hash_prefix=hash_prefix(raw),
+                role=principal.role,
+                expires_at=expires_at,
+            )
+        )
     # The raw token appears in the response exactly once and is never
     # retrievable again — the caller MUST save it now.
     return {
@@ -341,14 +351,15 @@ def patch_token(
         if body.name is not None:
             row.name = body.name
         if body.expires_days is not None:
-            row.expires_at = (
-                datetime.utcnow() + timedelta(days=body.expires_days)
-                if body.expires_days > 0 else None
-            )
+            row.expires_at = datetime.utcnow() + timedelta(days=body.expires_days) if body.expires_days > 0 else None
         return TokenOut(
-            token_id=row.token_id, name=row.name, role=row.role,
-            hash_prefix=row.hash_prefix, created_at=row.created_at,
-            last_used_at=row.last_used_at, expires_at=row.expires_at,
+            token_id=row.token_id,
+            name=row.name,
+            role=row.role,
+            hash_prefix=row.hash_prefix,
+            created_at=row.created_at,
+            last_used_at=row.last_used_at,
+            expires_at=row.expires_at,
             revoked_at=row.revoked_at,
         )
 
@@ -362,22 +373,30 @@ def patch_token(
 def list_sessions(request: Request, state: AppState = Depends(get_state)):
     principal = _require_principal(request)
     with state.store.transaction() as sess:
-        rows = sess.execute(
-            select(AuthSession).where(
-                AuthSession.user_id == principal.user_id,
-                AuthSession.revoked_at.is_(None),
-            ).order_by(AuthSession.last_seen_at.desc())
-        ).scalars().all()
+        rows = (
+            sess.execute(
+                select(AuthSession)
+                .where(
+                    AuthSession.user_id == principal.user_id,
+                    AuthSession.revoked_at.is_(None),
+                )
+                .order_by(AuthSession.last_seen_at.desc())
+            )
+            .scalars()
+            .all()
+        )
         out = []
         for s in rows:
-            out.append(SessionOut(
-                session_id=s.session_id,
-                created_at=s.created_at,
-                last_seen_at=s.last_seen_at,
-                ip=s.ip,
-                user_agent=s.user_agent,
-                is_current=(s.session_id == principal.session_id),
-            ))
+            out.append(
+                SessionOut(
+                    session_id=s.session_id,
+                    created_at=s.created_at,
+                    last_seen_at=s.last_seen_at,
+                    ip=s.ip,
+                    user_agent=s.user_agent,
+                    is_current=(s.session_id == principal.session_id),
+                )
+            )
         return out
 
 
@@ -403,12 +422,16 @@ def revoke_session(
 def sign_out_others(request: Request, state: AppState = Depends(get_state)):
     principal = _require_principal(request)
     with state.store.transaction() as sess:
-        active = sess.execute(
-            select(AuthSession).where(
-                AuthSession.user_id == principal.user_id,
-                AuthSession.revoked_at.is_(None),
+        active = (
+            sess.execute(
+                select(AuthSession).where(
+                    AuthSession.user_id == principal.user_id,
+                    AuthSession.revoked_at.is_(None),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         count = 0
         for s in active:
             if s.session_id != principal.session_id:

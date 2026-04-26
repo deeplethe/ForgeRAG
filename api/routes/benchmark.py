@@ -60,8 +60,7 @@ def start_benchmark(req: BenchmarkStartRequest, state: AppState = Depends(get_st
         if not replay_items:
             raise HTTPException(
                 404,
-                f"No saved report found for run_id {req.replay_from_run_id!r}. "
-                "Check benchmark_results/ directory.",
+                f"No saved report found for run_id {req.replay_from_run_id!r}. Check benchmark_results/ directory.",
             )
 
     try:
@@ -80,7 +79,6 @@ def start_benchmark(req: BenchmarkStartRequest, state: AppState = Depends(get_st
 def _load_replay_from_disk(run_id: str) -> list[dict] | None:
     """Look for bench_<run_id>.json in benchmark_results/ and extract the
     question / ground_truth / doc_id / doc_title fields from its items."""
-    import os
     from pathlib import Path
 
     safe_id = "".join(c for c in run_id if c.isalnum() or c in ("-", "_"))
@@ -100,12 +98,14 @@ def _load_replay_from_disk(run_id: str) -> list[dict] | None:
         q = it.get("question")
         if not q:
             continue
-        out.append({
-            "question": q,
-            "ground_truth": it.get("ground_truth", "") or "",
-            "doc_id": it.get("doc_id", "") or "",
-            "doc_title": it.get("doc_title", "") or "",
-        })
+        out.append(
+            {
+                "question": q,
+                "ground_truth": it.get("ground_truth", "") or "",
+                "doc_id": it.get("doc_id", "") or "",
+                "doc_title": it.get("doc_title", "") or "",
+            }
+        )
     return out or None
 
 
@@ -127,15 +127,17 @@ def list_reports() -> dict:
             scores = br.get("scores") or data.get("scores") or {}
             items = data.get("items") or []
             run_id = (br.get("run_id") or f.stem.replace("bench_", "") or "?")[:16]
-            out.append({
-                "run_id": run_id,
-                "num_items": len(items),
-                "faithfulness": scores.get("faithfulness"),
-                "answer_relevancy": scores.get("answer_relevancy"),
-                "context_precision": scores.get("context_precision"),
-                "mtime": f.stat().st_mtime,
-                "filename": f.name,
-            })
+            out.append(
+                {
+                    "run_id": run_id,
+                    "num_items": len(items),
+                    "faithfulness": scores.get("faithfulness"),
+                    "answer_relevancy": scores.get("answer_relevancy"),
+                    "context_precision": scores.get("context_precision"),
+                    "mtime": f.stat().st_mtime,
+                    "filename": f.name,
+                }
+            )
     return {"reports": out}
 
 

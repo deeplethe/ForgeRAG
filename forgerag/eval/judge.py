@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 _FAITHFULNESS_SYSTEM = (
     "You are a strict RAG evaluator. Read the ANSWER and the SOURCE SNIPPETS "
     "it cites. Decide whether every claim in the answer is supported by the "
-    "snippets. Respond ONLY with JSON: {\"score\": <0.0-1.0>, \"reason\": \"<1 sentence>\"}. "
+    'snippets. Respond ONLY with JSON: {"score": <0.0-1.0>, "reason": "<1 sentence>"}. '
     "1.0 = every claim directly supported. 0.0 = answer contradicts or "
     "invents content not in any snippet."
 )
@@ -36,8 +36,8 @@ _FAITHFULNESS_SYSTEM = (
 _CONTEXT_PRECISION_SYSTEM = (
     "You are a RAG evaluator. Given the ANSWER and each SOURCE SNIPPET, "
     "judge whether each snippet was actually useful for the answer. "
-    "Respond ONLY with JSON: {\"score\": <fraction-of-useful-snippets>, "
-    "\"reason\": \"<1 sentence>\"}."
+    'Respond ONLY with JSON: {"score": <fraction-of-useful-snippets>, '
+    '"reason": "<1 sentence>"}.'
 )
 
 
@@ -81,8 +81,7 @@ class LLMJudge:
             system=_FAITHFULNESS_SYSTEM,
             user=(
                 f"ANSWER:\n{answer}\n\n"
-                "SOURCE SNIPPETS:\n"
-                + "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(snippets, 1))
+                "SOURCE SNIPPETS:\n" + "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(snippets, 1))
             ),
         )
 
@@ -92,8 +91,7 @@ class LLMJudge:
             system=_CONTEXT_PRECISION_SYSTEM,
             user=(
                 f"ANSWER:\n{answer}\n\n"
-                "SOURCE SNIPPETS:\n"
-                + "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(snippets, 1))
+                "SOURCE SNIPPETS:\n" + "\n---\n".join(f"[{i}] {s}" for i, s in enumerate(snippets, 1))
             ),
         )
 

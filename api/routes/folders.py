@@ -25,7 +25,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from persistence.folder_service import (
-    ROOT_FOLDER_ID,
     TRASH_FOLDER_ID,
     TRASH_PATH,
     FolderAlreadyExists,
@@ -56,7 +55,7 @@ class FolderOut(BaseModel):
     parent_id: str | None
     name: str
     is_system: bool
-    trashed: bool                # derived from path under /__trash__
+    trashed: bool  # derived from path under /__trash__
     child_folders: int
     document_count: int
 
@@ -64,7 +63,7 @@ class FolderOut(BaseModel):
 
 
 class FolderTreeNode(FolderOut):
-    children: list["FolderTreeNode"] = Field(default_factory=list)
+    children: list[FolderTreeNode] = Field(default_factory=list)
 
 
 class CreateFolderReq(BaseModel):
@@ -121,8 +120,9 @@ def list_folders(
     """Flat list of all folders (excluding trashed unless include_trashed)."""
     with state.store.transaction() as sess:
         svc = FolderService(sess)
-        from persistence.models import Folder
         from sqlalchemy import select
+
+        from persistence.models import Folder
 
         all_folders = list(sess.execute(select(Folder).order_by(Folder.path)).scalars())
         if not include_trashed:
@@ -193,7 +193,7 @@ def create_folder(body: CreateFolderReq, state: AppState = Depends(get_state)):
 
 def _apply_post_commit_cross_store(
     pending_ops: list[dict],
-    state: "AppState",
+    state: AppState,
 ) -> None:
     """Run the sync-path update_paths on Chroma + Neo4j after the PG
     transaction commits. The FolderService already queued these ops
@@ -203,6 +203,7 @@ def _apply_post_commit_cross_store(
     if not pending_ops:
         return
     import logging
+
     log = logging.getLogger(__name__)
     for op in pending_ops:
         try:

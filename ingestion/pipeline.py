@@ -469,10 +469,7 @@ class IngestionPipeline:
             # lets the extractor denormalize path onto Entity/Relation.source_paths.
             doc_row = self.rel.get_document(doc_id) or {}
             doc_path = doc_row.get("path") or "/"
-            chunk_dicts = [
-                {"chunk_id": c.chunk_id, "content": c.content, "path": doc_path}
-                for c in chunks
-            ]
+            chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content, "path": doc_path} for c in chunks]
             entities, relations = extractor.extract_batch(
                 chunk_dicts,
                 doc_id,

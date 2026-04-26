@@ -57,7 +57,7 @@ class RequestSpanCollector(SpanProcessor):
         # ``spans`` is a list of ReadableSpan (already ended).
     """
 
-    _INSTANCE: ClassVar["RequestSpanCollector | None"] = None
+    _INSTANCE: ClassVar[RequestSpanCollector | None] = None
     _MAX_ENTRIES: ClassVar[int] = 500  # per-trace buffers kept in memory
 
     def __init__(self) -> None:
@@ -67,7 +67,7 @@ class RequestSpanCollector(SpanProcessor):
     # ── Singleton (ctor-less access for bootstrap) ───────────────────
 
     @classmethod
-    def singleton(cls) -> "RequestSpanCollector":
+    def singleton(cls) -> RequestSpanCollector:
         if cls._INSTANCE is None:
             cls._INSTANCE = cls()
         return cls._INSTANCE
@@ -128,16 +128,13 @@ def span_to_dict(span: ReadableSpan) -> dict[str, Any]:
     parent = span.parent
     return {
         "trace_id": f"{ctx.trace_id:032x}" if ctx else None,
-        "span_id":  f"{ctx.span_id:016x}"  if ctx else None,
+        "span_id": f"{ctx.span_id:016x}" if ctx else None,
         "parent_span_id": f"{parent.span_id:016x}" if parent else None,
         "name": span.name,
         "kind": str(span.kind).rsplit(".", 1)[-1] if span.kind else None,
         "start_time_unix_nano": span.start_time,
-        "end_time_unix_nano":   span.end_time,
-        "duration_ms": (
-            (span.end_time - span.start_time) / 1_000_000
-            if span.start_time and span.end_time else None
-        ),
+        "end_time_unix_nano": span.end_time,
+        "duration_ms": ((span.end_time - span.start_time) / 1_000_000 if span.start_time and span.end_time else None),
         "status": {
             "code": str(span.status.status_code).rsplit(".", 1)[-1],
             "description": span.status.description,
@@ -157,4 +154,3 @@ def span_to_dict(span: ReadableSpan) -> dict[str, Any]:
 def spans_to_payload(spans: list[ReadableSpan]) -> dict[str, Any]:
     """Wrap a list of spans in the response-shape the frontend consumes."""
     return {"spans": [span_to_dict(s) for s in spans]}
-

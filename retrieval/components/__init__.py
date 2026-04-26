@@ -37,12 +37,12 @@ from .retrievers.tree import TreeRetriever
 from .retrievers.vector import VectorRetriever
 
 __all__ = [
-    "PathScopeResolver",
     "BM25Retriever",
-    "VectorRetriever",
-    "TreeRetriever",
-    "KGRetriever",
-    "RRFFusion",
     "ContextExpander",
+    "KGRetriever",
+    "PathScopeResolver",
+    "RRFFusion",
     "RerankComponent",
+    "TreeRetriever",
+    "VectorRetriever",
 ]

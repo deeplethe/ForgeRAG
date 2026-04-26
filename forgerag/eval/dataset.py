@@ -16,9 +16,10 @@ that order. When in doubt, stick to lists of chunk IDs in
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 
 @dataclass
@@ -35,7 +36,7 @@ class EvalQuery:
     metadata: dict = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "EvalQuery":
+    def from_dict(cls, d: dict) -> EvalQuery:
         return cls(
             query_id=str(d.get("query_id") or d.get("id") or ""),
             query=d["query"],
@@ -59,7 +60,7 @@ class Dataset:
         return iter(self.queries)
 
     @classmethod
-    def from_jsonl(cls, path: str | Path, name: str | None = None) -> "Dataset":
+    def from_jsonl(cls, path: str | Path, name: str | None = None) -> Dataset:
         path = Path(path)
         rows = [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
         return cls(
@@ -68,7 +69,7 @@ class Dataset:
         )
 
     @classmethod
-    def from_records(cls, rows: Iterable[dict], name: str = "") -> "Dataset":
+    def from_records(cls, rows: Iterable[dict], name: str = "") -> Dataset:
         return cls(queries=[EvalQuery.from_dict(r) for r in rows], name=name)
 
 
@@ -85,7 +86,7 @@ class RetrievalRowResult:
     returned_doc_ids: list[str]
     answer_text: str | None = None
     error: str | None = None
-    raw: Any = None   # original return value, kept for debugging / metrics
+    raw: Any = None  # original return value, kept for debugging / metrics
 
 
 @dataclass
@@ -104,7 +105,7 @@ class RetrievalRun:
         retrieve: Callable[[EvalQuery], Any],
         *,
         on_progress: Callable[[int, int, EvalQuery], None] | None = None,
-    ) -> "RetrievalRun":
+    ) -> RetrievalRun:
         """
         Runs ``retrieve(query)`` for every query in ``dataset``. ``retrieve``
         may return:
@@ -126,22 +127,26 @@ class RetrievalRun:
             try:
                 raw = retrieve(q)
                 chunk_ids, doc_ids, text = _extract_hits(raw)
-                rows.append(RetrievalRowResult(
-                    query_id=q.query_id,
-                    query=q.query,
-                    returned_chunk_ids=chunk_ids,
-                    returned_doc_ids=doc_ids,
-                    answer_text=text,
-                    raw=raw,
-                ))
+                rows.append(
+                    RetrievalRowResult(
+                        query_id=q.query_id,
+                        query=q.query,
+                        returned_chunk_ids=chunk_ids,
+                        returned_doc_ids=doc_ids,
+                        answer_text=text,
+                        raw=raw,
+                    )
+                )
             except Exception as e:
-                rows.append(RetrievalRowResult(
-                    query_id=q.query_id,
-                    query=q.query,
-                    returned_chunk_ids=[],
-                    returned_doc_ids=[],
-                    error=f"{type(e).__name__}: {e}",
-                ))
+                rows.append(
+                    RetrievalRowResult(
+                        query_id=q.query_id,
+                        query=q.query,
+                        returned_chunk_ids=[],
+                        returned_doc_ids=[],
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
         return cls(dataset=dataset, rows=rows)
 
 

@@ -20,7 +20,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-
 @pytest.fixture(scope="session")
 def sample_pdf(tmp_path_factory) -> Path:
     """

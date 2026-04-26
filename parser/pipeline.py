@@ -47,21 +47,21 @@ log = logging.getLogger(__name__)
 
 
 _EXT_TO_FORMAT = {
-    ".pdf":  DocFormat.PDF,
+    ".pdf": DocFormat.PDF,
     ".docx": DocFormat.DOCX,
-    ".doc":  DocFormat.DOCX,
+    ".doc": DocFormat.DOCX,
     ".pptx": DocFormat.PPTX,
-    ".ppt":  DocFormat.PPTX,
+    ".ppt": DocFormat.PPTX,
     ".xlsx": DocFormat.XLSX,
-    ".xls":  DocFormat.XLSX,
+    ".xls": DocFormat.XLSX,
     ".html": DocFormat.HTML,
-    ".htm":  DocFormat.HTML,
-    ".md":   DocFormat.TEXT,
-    ".txt":  DocFormat.TEXT,
-    ".png":  DocFormat.IMAGE,
-    ".jpg":  DocFormat.IMAGE,
+    ".htm": DocFormat.HTML,
+    ".md": DocFormat.TEXT,
+    ".txt": DocFormat.TEXT,
+    ".png": DocFormat.IMAGE,
+    ".jpg": DocFormat.IMAGE,
     ".jpeg": DocFormat.IMAGE,
-    ".tif":  DocFormat.IMAGE,
+    ".tif": DocFormat.IMAGE,
     ".tiff": DocFormat.IMAGE,
 }
 

@@ -68,9 +68,9 @@ def test_error_msg_truncated_to_300_chars():
 
 
 def test_health_track_context_manager_ok():
-    reg_before = HealthRegistry()
     # Use the real module-level registry via health_track
     from api.health_registry import get_registry
+
     reg = get_registry()
     reg.clear("ctx_test_ok")
     with health_track("ctx_test_ok") as t:
@@ -83,6 +83,7 @@ def test_health_track_context_manager_ok():
 
 def test_health_track_context_manager_error():
     from api.health_registry import get_registry
+
     reg = get_registry()
     reg.clear("ctx_test_err")
     with pytest.raises(ValueError):
@@ -96,6 +97,7 @@ def test_health_track_context_manager_error():
 
 def test_singleton_returns_same_instance():
     from api.health_registry import get_registry
+
     r1 = get_registry()
     r2 = get_registry()
     assert r1 is r2

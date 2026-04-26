@@ -125,9 +125,17 @@ def ingest_document(
     name = file_row["display_name"]
     ext = _Path(name).suffix.lower().lstrip(".")
     fmt = {
-        "pdf": "pdf", "docx": "docx", "doc": "docx",
-        "pptx": "pptx", "ppt": "pptx", "xlsx": "xlsx", "xls": "xlsx",
-        "txt": "text", "md": "text", "html": "html", "htm": "html",
+        "pdf": "pdf",
+        "docx": "docx",
+        "doc": "docx",
+        "pptx": "pptx",
+        "ppt": "pptx",
+        "xlsx": "xlsx",
+        "xls": "xlsx",
+        "txt": "text",
+        "md": "text",
+        "html": "html",
+        "htm": "html",
     }.get(ext, ext or "unknown")
 
     # Create placeholder (if not force_reparse with existing doc)
@@ -223,15 +231,23 @@ async def upload_and_ingest(
 
     ext = _Path(name).suffix.lower().lstrip(".")
     fmt = {
-        "pdf": "pdf", "docx": "docx", "doc": "docx",
-        "pptx": "pptx", "ppt": "pptx", "xlsx": "xlsx", "xls": "xlsx",
-        "txt": "text", "md": "text", "html": "html", "htm": "html",
+        "pdf": "pdf",
+        "docx": "docx",
+        "doc": "docx",
+        "pptx": "pptx",
+        "ppt": "pptx",
+        "xlsx": "xlsx",
+        "xls": "xlsx",
+        "txt": "text",
+        "md": "text",
+        "html": "html",
+        "htm": "html",
     }.get(ext, ext or "unknown")
 
     state.store.create_document_placeholder(
         doc_id=actual_doc_id,
         file_id=file_id,
-        filename=_Path(doc_path).name,   # preserve collision suffix
+        filename=_Path(doc_path).name,  # preserve collision suffix
         format=fmt,
         status="pending",
         folder_id=target_folder_id,
@@ -377,12 +393,11 @@ class BulkMoveReq(BaseModel):
 
 
 @router.patch("/{doc_id}/path")
-def move_document(doc_id: str, body: "MoveDocumentReq", state: AppState = Depends(get_state)):
+def move_document(doc_id: str, body: MoveDocumentReq, state: AppState = Depends(get_state)):
     """Move a single document to another folder."""
     from persistence.folder_service import (
         FolderNotFound,
         FolderService,
-        join_path,
         unique_document_path,
     )
     from persistence.scope import ScopeMode, ScopeService
@@ -401,6 +416,7 @@ def move_document(doc_id: str, body: "MoveDocumentReq", state: AppState = Depend
         scope.require_folder(target.folder_id, ScopeMode.WRITE)
 
         from persistence.models import Document
+
         doc = sess.get(Document, doc_id)
         if doc is None:
             raise HTTPException(404, "document not found")
@@ -412,23 +428,28 @@ def move_document(doc_id: str, body: "MoveDocumentReq", state: AppState = Depend
         doc.folder_id = target.folder_id
         doc.path = new_path
 
-        sess.add_all([
-            # audit log via sess (committed with the transaction)
-        ])
+        sess.add_all(
+            [
+                # audit log via sess (committed with the transaction)
+            ]
+        )
         from persistence.models import AuditLogRow
-        sess.add(AuditLogRow(
-            actor_id="local",
-            action="document.move",
-            target_type="document",
-            target_id=doc_id,
-            details={"to_path": new_path, "to_folder_id": target.folder_id},
-        ))
+
+        sess.add(
+            AuditLogRow(
+                actor_id="local",
+                action="document.move",
+                target_type="document",
+                target_id=doc_id,
+                details={"to_path": new_path, "to_folder_id": target.folder_id},
+            )
+        )
 
     return {"doc_id": doc_id, "path": new_path, "folder_id": target.folder_id}
 
 
 @router.post("/bulk-move")
-def bulk_move_documents(body: "BulkMoveReq", state: AppState = Depends(get_state)):
+def bulk_move_documents(body: BulkMoveReq, state: AppState = Depends(get_state)):
     """Move many documents at once."""
     from persistence.folder_service import (
         FolderNotFound,
@@ -460,13 +481,15 @@ def bulk_move_documents(body: "BulkMoveReq", state: AppState = Depends(get_state
             doc.folder_id = target.folder_id
             doc.path = new_path
             moved.append({"doc_id": doc_id, "path": new_path})
-            sess.add(AuditLogRow(
-                actor_id="local",
-                action="document.move",
-                target_type="document",
-                target_id=doc_id,
-                details={"to_path": new_path, "to_folder_id": target.folder_id, "bulk": True},
-            ))
+            sess.add(
+                AuditLogRow(
+                    actor_id="local",
+                    action="document.move",
+                    target_type="document",
+                    target_id=doc_id,
+                    details={"to_path": new_path, "to_folder_id": target.folder_id, "bulk": True},
+                )
+            )
 
     return {"moved": moved, "errors": errors}
 

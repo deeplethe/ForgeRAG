@@ -16,6 +16,6 @@ Or construct from an explicit config + state:
     app = create_app(cfg=cfg, state=state)
 """
 
-from api.app import create_app  # noqa: F401
+from api.app import create_app
 
 __all__ = ["create_app"]

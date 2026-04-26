@@ -152,11 +152,13 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
             # structured error event and let the client decide. The
             # ``path`` field tells the UI which component died.
             log.warning("stream retrieval path %r failed: %s", e.path, e)
-            error_data = json.dumps({
-                "error": "retrieval_failed",
-                "path": e.path,
-                "message": str(e),
-            })
+            error_data = json.dumps(
+                {
+                    "error": "retrieval_failed",
+                    "path": e.path,
+                    "message": str(e),
+                }
+            )
             yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
             log.exception("stream query failed")

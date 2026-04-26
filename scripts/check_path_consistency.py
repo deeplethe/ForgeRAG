@@ -34,9 +34,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-5s  %(message)s",
     )
-    parser = argparse.ArgumentParser(
-        description="Sample and check cross-store path consistency."
-    )
+    parser = argparse.ArgumentParser(description="Sample and check cross-store path consistency.")
     parser.add_argument(
         "--sample",
         type=int,
@@ -61,13 +59,7 @@ def main() -> int:
     try:
         # ── Stage 1: sample documents from PG ──
         with state.store.transaction() as sess:
-            doc_rows = list(
-                sess.execute(
-                    select(Document.doc_id, Document.path).where(
-                        Document.path.isnot(None)
-                    )
-                ).all()
-            )
+            doc_rows = list(sess.execute(select(Document.doc_id, Document.path).where(Document.path.isnot(None))).all())
         if not doc_rows:
             log.info("no documents in PG — nothing to check")
             return 0
@@ -111,10 +103,7 @@ def main() -> int:
                         if vpath and vpath != doc_path:
                             chunks_chroma_drift += 1
                             if len(examples) < 5 or args.verbose:
-                                examples.append(
-                                    f"[chroma] doc={doc_id} pg={doc_path!r} "
-                                    f"chroma={vpath!r}"
-                                )
+                                examples.append(f"[chroma] doc={doc_id} pg={doc_path!r} chroma={vpath!r}")
                 except Exception as e:
                     log.debug("chroma sample failed for %s: %s", doc_id, e)
 

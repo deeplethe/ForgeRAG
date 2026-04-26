@@ -29,7 +29,6 @@ from persistence.folder_service import (
     ROOT_PATH,
     TRASH_FOLDER_ID,
     TRASH_PATH,
-    FolderService,
 )
 from persistence.models import Document, Folder
 from persistence.store import Store
@@ -67,10 +66,7 @@ def main():
         # 2. Every folder except root has a parent
         orphan_folders = list(
             sess.execute(
-                select(Folder).where(
-                    (Folder.folder_id != ROOT_FOLDER_ID)
-                    & (Folder.parent_id.is_(None))
-                )
+                select(Folder).where((Folder.folder_id != ROOT_FOLDER_ID) & (Folder.parent_id.is_(None)))
             ).scalars()
         )
         if orphan_folders:
@@ -102,11 +98,7 @@ def main():
 
         # 4. Every document has a folder_id + path
         orphan_docs = list(
-            sess.execute(
-                select(Document).where(
-                    (Document.folder_id.is_(None)) | (Document.folder_id == "")
-                )
-            ).scalars()
+            sess.execute(select(Document).where((Document.folder_id.is_(None)) | (Document.folder_id == ""))).scalars()
         )
         if orphan_docs:
             problems += len(orphan_docs)
@@ -142,13 +134,9 @@ def main():
             log.info("✓ document paths consistent with their folder")
 
         # 6. Doc counts
-        total_docs = sess.execute(
-            select(func.count()).select_from(Document)
-        ).scalar_one()
+        total_docs = sess.execute(select(func.count()).select_from(Document)).scalar_one()
         docs_in_root = sess.execute(
-            select(func.count()).select_from(Document).where(
-                Document.folder_id == ROOT_FOLDER_ID
-            )
+            select(func.count()).select_from(Document).where(Document.folder_id == ROOT_FOLDER_ID)
         ).scalar_one()
         log.info("total docs: %d (in __root__: %d)", total_docs, docs_in_root)
 
@@ -163,13 +151,11 @@ def main():
         if entities is None:
             log.info("KG: no entities or unsupported backend; skipping")
         else:
-            known_doc_ids = set(
-                sess.execute(select(Document.doc_id)).scalars()
-            ) if False else set()  # re-open session to avoid detached state
+            known_doc_ids = (
+                set(sess.execute(select(Document.doc_id)).scalars()) if False else set()
+            )  # re-open session to avoid detached state
             with store.transaction() as sess2:
-                known_doc_ids = set(
-                    sess2.execute(select(Document.doc_id)).scalars()
-                )
+                known_doc_ids = set(sess2.execute(select(Document.doc_id)).scalars())
             no_source = 0
             stale_sources = 0
             for e in entities:

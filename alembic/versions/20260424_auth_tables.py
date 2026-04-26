@@ -23,6 +23,7 @@ frontend grows a username field. No schema migration needed.
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -51,7 +52,8 @@ def upgrade() -> None:
         "auth_tokens",
         sa.Column("token_id", sa.String(32), primary_key=True),
         sa.Column(
-            "user_id", sa.String(32),
+            "user_id",
+            sa.String(32),
             sa.ForeignKey("auth_users.user_id", ondelete="CASCADE"),
             nullable=False,
         ),
@@ -71,7 +73,8 @@ def upgrade() -> None:
         "auth_sessions",
         sa.Column("session_id", sa.String(64), primary_key=True),
         sa.Column(
-            "user_id", sa.String(32),
+            "user_id",
+            sa.String(32),
             sa.ForeignKey("auth_users.user_id", ondelete="CASCADE"),
             nullable=False,
         ),

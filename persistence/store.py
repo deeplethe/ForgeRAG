@@ -559,11 +559,7 @@ class Store:
             path_by_doc: dict[str, str] = {}
             if doc_ids:
                 with self._session() as s:
-                    for did, p in s.execute(
-                        _sel(Document.doc_id, Document.path).where(
-                            Document.doc_id.in_(doc_ids)
-                        )
-                    ):
+                    for did, p in s.execute(_sel(Document.doc_id, Document.path).where(Document.doc_id.in_(doc_ids))):
                         path_by_doc[did] = p or "/"
             for r in need_path:
                 r["path"] = path_by_doc.get(r.get("doc_id", ""), "/")

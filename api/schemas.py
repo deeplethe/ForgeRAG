@@ -255,7 +255,9 @@ class QueryOverrides(BaseModel):
 
     # Fusion / expansion
     candidate_limit: int | None = Field(
-        None, ge=1, le=500,
+        None,
+        ge=1,
+        le=500,
         description="Cap on merged candidates passed to rerank / downstream.",
     )
     descendant_expansion: bool | None = None

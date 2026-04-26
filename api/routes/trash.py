@@ -61,14 +61,12 @@ def trash_stats(state: AppState = Depends(get_state)):
 
     with state.store.transaction() as sess:
         doc_count = sess.execute(
-            select(func.count()).select_from(Document).where(
-                Document.path.like(TRASH_PATH + "/%")
-            )
+            select(func.count()).select_from(Document).where(Document.path.like(TRASH_PATH + "/%"))
         ).scalar_one()
         folder_count = sess.execute(
-            select(func.count()).select_from(Folder).where(
-                (Folder.path.like(TRASH_PATH + "/%")) & (Folder.parent_id == TRASH_FOLDER_ID)
-            )
+            select(func.count())
+            .select_from(Folder)
+            .where((Folder.path.like(TRASH_PATH + "/%")) & (Folder.parent_id == TRASH_FOLDER_ID))
         ).scalar_one()
     return {"items": int(doc_count or 0), "top_level_folders": int(folder_count or 0)}
 

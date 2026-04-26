@@ -1,11 +1,12 @@
 """Config surface — pydantic models the SDK user instantiates or loads."""
 
-from config import AppConfig, load_config  # noqa: F401
-from config.observability import ObservabilityConfig, bootstrap as bootstrap_observability  # noqa: F401
+from config import AppConfig, load_config
+from config.observability import ObservabilityConfig
+from config.observability import bootstrap as bootstrap_observability
 
 __all__ = [
     "AppConfig",
-    "load_config",
     "ObservabilityConfig",
     "bootstrap_observability",
+    "load_config",
 ]

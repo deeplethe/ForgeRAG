@@ -29,14 +29,14 @@ ForgeRAG project itself can sanity-check its own retrieval on every
 release. Users supply their own datasets for their own domains.
 """
 
-from .dataset import Dataset, EvalQuery, RetrievalRun  # noqa: F401
-from .judge import LLMJudge  # noqa: F401
-from . import metrics  # noqa: F401
+from . import metrics
+from .dataset import Dataset, EvalQuery, RetrievalRun
+from .judge import LLMJudge
 
 __all__ = [
     "Dataset",
     "EvalQuery",
-    "RetrievalRun",
     "LLMJudge",
+    "RetrievalRun",
     "metrics",
 ]

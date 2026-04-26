@@ -76,7 +76,9 @@ class VectorRetriever:
                     ex = best.get(h.chunk_id)
                     if ex is None or h.score > ex.score:
                         best[h.chunk_id] = ScoredChunk(
-                            chunk_id=h.chunk_id, score=h.score, source="vector",
+                            chunk_id=h.chunk_id,
+                            score=h.score,
+                            source="vector",
                         )
 
             deduped_raw: dict[str, Any] = {}

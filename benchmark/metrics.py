@@ -106,11 +106,7 @@ def score_items(
     # An independent judge is configured when benchmark.model is non-empty
     # AND it isn't the same model as the generator. Anything else falls
     # back to the generator with a self-preference-bias warning.
-    use_independent_judge = bool(
-        bench_cfg
-        and bench_cfg.model
-        and bench_cfg.model != gen_cfg.model
-    )
+    use_independent_judge = bool(bench_cfg and bench_cfg.model and bench_cfg.model != gen_cfg.model)
 
     if use_independent_judge:
         model = bench_cfg.model

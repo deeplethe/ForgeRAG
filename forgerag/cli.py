@@ -19,22 +19,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     # Delegate to the existing main.py launcher (config resolution, uvicorn, etc.).
     import main as _main
 
-    ns = argparse.Namespace(
-        config=args.config,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        workers=args.workers,
-        log_level=args.log_level,
-        init_only=False,
-    )
     # main.main() reads CLI args via parse_args(); re-invoke by building argv.
     argv = ["main.py"]
     if args.config:
@@ -113,6 +104,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
 
 def _cmd_version(_args: argparse.Namespace) -> int:
     from . import __version__
+
     print(__version__)
     return 0
 
@@ -144,11 +136,12 @@ def _auth_reset_password(args: argparse.Namespace) -> int:
     """Direct DB write — bypasses HTTP, useful if admin locked themselves out."""
     from getpass import getpass
 
+    from sqlalchemy import select
+
     from api.auth.primitives import hash_password
     from config.loader import load_config
     from persistence.models import AuthUser
     from persistence.store import Store
-    from sqlalchemy import select
 
     cfg = load_config(args.config)
     new_pw = args.new_password or getpass("New password: ")
@@ -160,9 +153,7 @@ def _auth_reset_password(args: argparse.Namespace) -> int:
     store.connect()
     store.ensure_schema()
     with store.transaction() as sess:
-        user = sess.execute(
-            select(AuthUser).where(AuthUser.username == args.username)
-        ).scalar_one_or_none()
+        user = sess.execute(select(AuthUser).where(AuthUser.username == args.username)).scalar_one_or_none()
         if user is None:
             print(f"user {args.username!r} not found", file=sys.stderr)
             return 2
@@ -197,7 +188,7 @@ def _auth_list_tokens(args: argparse.Namespace) -> int:
     print(f"{'ID':18}  {'NAME':24}  {'PREFIX':8}  {'STATUS':10}  CREATED")
     for t in rows:
         status = "revoked" if t.get("revoked_at") else "active"
-        print(f"{t['token_id']:18}  {t['name']:24}  {t['hash_prefix']:8}  {status:10}  {t.get('created_at','')}")
+        print(f"{t['token_id']:18}  {t['name']:24}  {t['hash_prefix']:8}  {status:10}  {t.get('created_at', '')}")
     return 0
 
 
@@ -289,8 +280,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     rp = au_sub.add_parser("reset-password", help="Reset a user's password (direct DB)")
     rp.add_argument("username", nargs="?", default="admin")
-    rp.add_argument("--new-password", default=None,
-                    help="New password; prompt if omitted")
+    rp.add_argument("--new-password", default=None, help="New password; prompt if omitted")
     rp.add_argument("--config", default=None, help="yaml path (for DB connection)")
 
     wh = au_sub.add_parser("whoami", help="GET /auth/me using $FORGERAG_API_TOKEN")

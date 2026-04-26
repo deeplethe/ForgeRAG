@@ -271,10 +271,13 @@ class TestQuery:
         _wait_ingest(state)
         # Test fixtures have no LLM credentials; QU and rerank now run on
         # every retrieve unless explicitly disabled, so opt out per-request.
-        r = c.post("/api/v1/query", json={
-            "query": "introduction",
-            "overrides": {"query_understanding": False, "rerank": False},
-        })
+        r = c.post(
+            "/api/v1/query",
+            json={
+                "query": "introduction",
+                "overrides": {"query_understanding": False, "rerank": False},
+            },
+        )
         assert r.status_code == 200
         body = r.json()
         assert body["finish_reason"] in ("stop", "no_context")

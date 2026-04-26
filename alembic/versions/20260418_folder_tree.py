@@ -21,16 +21,13 @@ Existing documents are backfilled into __root__ with path='/<filename>'.
 
 from __future__ import annotations
 
-import json
-
 import sqlalchemy as sa
 
 from alembic import op
 
-
 # ─── Alembic identifiers ───────────────────────────────────────────────
 revision = "20260418_folder_tree"
-down_revision = None   # stand-alone — this repo has no prior migration
+down_revision = None  # stand-alone — this repo has no prior migration
 branch_labels = None
 depends_on = None
 
@@ -93,10 +90,7 @@ def _create_folders_table() -> None:
     op.create_index("ix_folders_path_lower", "folders", ["path_lower"])
     op.create_index("ix_folders_parent_id", "folders", ["parent_id"])
     # Postgres-only: prefix index for "all descendants of path X" queries
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_folders_path_prefix "
-        "ON folders (path varchar_pattern_ops)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_folders_path_prefix ON folders (path varchar_pattern_ops)")
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -119,9 +113,7 @@ def _create_folder_grants_table() -> None:
         sa.Column("permission", sa.String(16), nullable=False),
         sa.Column("inherit", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("granted_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
-        sa.Column(
-            "granted_by", sa.String(128), nullable=False, server_default="system"
-        ),
+        sa.Column("granted_by", sa.String(128), nullable=False, server_default="system"),
     )
     op.create_index("ix_folder_grants_folder_id", "folder_grants", ["folder_id"])
     op.create_index(
@@ -148,9 +140,7 @@ def _create_audit_log_table() -> None:
         sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_audit_log_actor", "audit_log", ["actor_id", "created_at"])
-    op.create_index(
-        "ix_audit_log_target", "audit_log", ["target_type", "target_id", "created_at"]
-    )
+    op.create_index("ix_audit_log_target", "audit_log", ["target_type", "target_id", "created_at"])
     op.create_index("ix_audit_log_action", "audit_log", ["action", "created_at"])
 
 
@@ -170,17 +160,12 @@ def _extend_documents_table() -> None:
                 server_default=ROOT_FOLDER_ID,
             )
         )
-        batch.add_column(
-            sa.Column("path", sa.String(1024), nullable=False, server_default=ROOT_PATH)
-        )
+        batch.add_column(sa.Column("path", sa.String(1024), nullable=False, server_default=ROOT_PATH))
         batch.add_column(sa.Column("trashed_metadata", sa.JSON, nullable=True))
     op.create_index("ix_documents_folder_id", "documents", ["folder_id"])
     op.create_index("ix_documents_path", "documents", ["path"])
     # Postgres prefix index for subtree queries (`WHERE path LIKE '/legal/%'`)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_documents_path_prefix "
-        "ON documents (path varchar_pattern_ops)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_documents_path_prefix ON documents (path varchar_pattern_ops)")
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -190,7 +175,6 @@ def _extend_documents_table() -> None:
 
 def _seed_system_folders() -> None:
     conn = op.get_bind()
-    now = sa.func.now()
     conn.execute(
         sa.text(
             """
@@ -229,9 +213,7 @@ def _backfill_existing_documents() -> None:
     from duplicate filenames get a '(N)' suffix.
     """
     conn = op.get_bind()
-    rows = conn.execute(
-        sa.text("SELECT doc_id, filename FROM documents ORDER BY created_at, doc_id")
-    ).fetchall()
+    rows = conn.execute(sa.text("SELECT doc_id, filename FROM documents ORDER BY created_at, doc_id")).fetchall()
 
     seen_paths: set[str] = set()
     for doc_id, filename in rows:
@@ -251,9 +233,7 @@ def _backfill_existing_documents() -> None:
                 i += 1
         seen_paths.add(candidate.lower())
         conn.execute(
-            sa.text(
-                "UPDATE documents SET folder_id = :fid, path = :path WHERE doc_id = :doc_id"
-            ),
+            sa.text("UPDATE documents SET folder_id = :fid, path = :path WHERE doc_id = :doc_id"),
             {"fid": ROOT_FOLDER_ID, "path": candidate, "doc_id": doc_id},
         )
 

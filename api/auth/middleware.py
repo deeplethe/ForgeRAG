@@ -77,10 +77,10 @@ class AuthenticatedPrincipal:
     user_id: str
     username: str
     role: str
-    via: str                              # "token" / "session" / "forwarded"
-    token_id: str | None = None           # populated when via="token"
-    session_id: str | None = None         # populated when via="session"
-    token_name: str | None = None         # "alice-laptop", "ci", etc.
+    via: str  # "token" / "session" / "forwarded"
+    token_id: str | None = None  # populated when via="token"
+    session_id: str | None = None  # populated when via="session"
+    token_name: str | None = None  # "alice-laptop", "ci", etc.
     metadata: dict = field(default_factory=dict)
 
 
@@ -155,8 +155,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal | None:
-    from persistence.models import AuthSession, AuthToken, AuthUser
     from sqlalchemy import and_, select, update
+
+    from persistence.models import AuthSession, AuthToken, AuthUser
 
     # (1) Bearer token
     auth_header = request.headers.get("authorization") or ""
@@ -167,9 +168,9 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
         tid_hash = hash_sk(raw)
         with store.transaction() as sess:
             row = sess.execute(
-                select(AuthToken, AuthUser).join(
-                    AuthUser, AuthUser.user_id == AuthToken.user_id
-                ).where(AuthToken.token_hash == tid_hash)
+                select(AuthToken, AuthUser)
+                .join(AuthUser, AuthUser.user_id == AuthToken.user_id)
+                .where(AuthToken.token_hash == tid_hash)
             ).first()
             if not row:
                 raise AuthError("invalid token")
@@ -213,9 +214,9 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
         if sid:
             with store.transaction() as sess:
                 row = sess.execute(
-                    select(AuthSession, AuthUser).join(
-                        AuthUser, AuthUser.user_id == AuthSession.user_id
-                    ).where(AuthSession.session_id == sid)
+                    select(AuthSession, AuthUser)
+                    .join(AuthUser, AuthUser.user_id == AuthSession.user_id)
+                    .where(AuthSession.session_id == sid)
                 ).first()
                 if not row:
                     raise AuthError("session not found")
@@ -247,8 +248,7 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
                 peer = request.client.host if request.client else None
                 if not _peer_in_trusted_cidrs(peer, trusted):
                     log.warning(
-                        "rejecting %s header from untrusted peer %s "
-                        "(set auth.forwarded_trusted_proxy_cidrs to permit)",
+                        "rejecting %s header from untrusted peer %s (set auth.forwarded_trusted_proxy_cidrs to permit)",
                         cfg.forwarded_user_header,
                         peer,
                     )
@@ -257,16 +257,15 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
             # source of truth; we just need a local identity for scoping
             # tokens and sessions.
             with store.transaction() as sess:
-                row = sess.execute(
-                    select(AuthUser).where(AuthUser.username == fwd)
-                ).scalar_one_or_none()
+                row = sess.execute(select(AuthUser).where(AuthUser.username == fwd)).scalar_one_or_none()
                 if row is None:
                     import uuid
+
                     default_role = getattr(cfg, "forwarded_default_role", "viewer")
                     row = AuthUser(
                         user_id=uuid.uuid4().hex[:16],
                         username=fwd,
-                        password_hash="",   # never logs in with password
+                        password_hash="",  # never logs in with password
                         role=default_role,  # operator promotes to admin via Tokens UI
                         is_active=True,
                         must_change_password=False,

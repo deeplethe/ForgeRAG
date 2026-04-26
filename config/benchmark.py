@@ -20,7 +20,7 @@ class BenchmarkConfig(BaseModel):
     Set to a DIFFERENT model than the generator for rigorous scoring.
     """
 
-    model: str = ""           # empty → fall back to answering.generator
+    model: str = ""  # empty → fall back to answering.generator
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None

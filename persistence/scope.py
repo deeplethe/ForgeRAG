@@ -32,9 +32,9 @@ from enum import Enum
 
 
 class ScopeMode(str, Enum):
-    READ = "read"        # list / retrieve / query
-    WRITE = "write"      # upload / rename / move
-    MANAGE = "manage"    # destructive: empty trash, hard-delete
+    READ = "read"  # list / retrieve / query
+    WRITE = "write"  # upload / rename / move
+    MANAGE = "manage"  # destructive: empty trash, hard-delete
 
 
 class OutOfScope(RuntimeError):
@@ -59,15 +59,14 @@ class ScopeService:
 
     def require_folder(self, folder_id: str, mode: ScopeMode) -> None:
         if not self.can_folder(folder_id, mode):
-            raise OutOfScope(
-                f"actor {self.actor_id!r} cannot {mode.value} folder {folder_id!r}"
-            )
+            raise OutOfScope(f"actor {self.actor_id!r} cannot {mode.value} folder {folder_id!r}")
 
     # ── Document-level ──────────────────────────────────────────────
     # A document's scope IS its folder's scope. One rule, no surprises.
 
     def can_document(self, doc_id: str, mode: ScopeMode) -> bool:
         from .models import Document
+
         with self.store.transaction() as sess:
             doc = sess.get(Document, doc_id)
             if doc is None:
@@ -76,6 +75,4 @@ class ScopeService:
 
     def require_document(self, doc_id: str, mode: ScopeMode) -> None:
         if not self.can_document(doc_id, mode):
-            raise OutOfScope(
-                f"actor {self.actor_id!r} cannot {mode.value} document {doc_id!r}"
-            )
+            raise OutOfScope(f"actor {self.actor_id!r} cannot {mode.value} document {doc_id!r}")

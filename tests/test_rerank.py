@@ -18,7 +18,6 @@ from retrieval.rerank import (
     make_reranker,
 )
 
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -200,7 +199,7 @@ def test_rerank_api_happy_path_reorders(monkeypatch):
 
     cands = [_mk_candidate("first"), _mk_candidate("second"), _mk_candidate("third")]
     out = r.rerank("q", cands, top_k=2)
-    assert out[0] is cands[2]   # rank 0 in response
+    assert out[0] is cands[2]  # rank 0 in response
     assert out[1] is cands[0]
 
 

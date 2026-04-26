@@ -24,24 +24,26 @@ Typical usage:
 See each component's module docstring for the full contract.
 """
 
-from retrieval.components import (  # noqa: F401  (public re-export)
+from retrieval.components import (
     BM25Retriever,
     ContextExpander,
     KGRetriever,
     PathScopeResolver,
-    RerankComponent as Reranker,
     RRFFusion,
     TreeRetriever,
     VectorRetriever,
 )
+from retrieval.components import (
+    RerankComponent as Reranker,
+)
 
 __all__ = [
-    "PathScopeResolver",
     "BM25Retriever",
-    "VectorRetriever",
-    "TreeRetriever",
-    "KGRetriever",
-    "RRFFusion",
     "ContextExpander",
+    "KGRetriever",
+    "PathScopeResolver",
+    "RRFFusion",
     "Reranker",
+    "TreeRetriever",
+    "VectorRetriever",
 ]

@@ -35,16 +35,16 @@ from typing import Any
 class ComponentHealth:
     """Mutable snapshot of one component's operational history."""
 
-    component: str                              # e.g. "reranker"
-    status: str = "unknown"                     # healthy | degraded | error | disabled | unknown
-    last_ok_ts: float | None = None             # epoch seconds
+    component: str  # e.g. "reranker"
+    status: str = "unknown"  # healthy | degraded | error | disabled | unknown
+    last_ok_ts: float | None = None  # epoch seconds
     last_error_ts: float | None = None
-    last_error_type: str | None = None          # e.g. "BadRequestError"
-    last_error_msg: str | None = None           # short message, trimmed to 300 chars
-    last_latency_ms: int | None = None          # latency of the most recent call
+    last_error_type: str | None = None  # e.g. "BadRequestError"
+    last_error_msg: str | None = None  # short message, trimmed to 300 chars
+    last_latency_ms: int | None = None  # latency of the most recent call
     total_ok: int = 0
     total_err: int = 0
-    extra: dict[str, Any] = field(default_factory=dict)   # component-specific metadata
+    extra: dict[str, Any] = field(default_factory=dict)  # component-specific metadata
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,11 +185,11 @@ class health_track:
         self.start_ts = 0.0
         self.extra: dict[str, Any] = {}
 
-    def __enter__(self) -> "health_track":
+    def __enter__(self) -> health_track:
         self.start_ts = time.time()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:  # noqa: ANN001
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         latency_ms = int((time.time() - self.start_ts) * 1000)
         reg = get_registry()
         if exc_val is None:

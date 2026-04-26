@@ -307,12 +307,12 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
             "• passthrough: keep RRF order. "
             "• rerank_api: calls litellm.rerank() with a dedicated cross-encoder "
             "— fast and cheap, recommended. For SiliconFlow BGE use model "
-            "\"jina_ai/BAAI/bge-reranker-v2-m3\" + api_base "
+            '"jina_ai/BAAI/bge-reranker-v2-m3" + api_base '
             "https://api.siliconflow.cn/v1 (Jina uses Cohere-compat schema, "
-            "which SiliconFlow speaks). Do NOT use \"huggingface/\" prefix — "
+            'which SiliconFlow speaks). Do NOT use "huggingface/" prefix — '
             "it sends TEI schema (texts=[], return_text=true) that SiliconFlow "
-            "rejects. Other working providers: \"cohere/rerank-v3.5\" (Cohere "
-            "native), \"voyage/rerank-2\", \"together_ai/...\". "
+            'rejects. Other working providers: "cohere/rerank-v3.5" (Cohere '
+            'native), "voyage/rerank-2", "together_ai/...". '
             "• llm_as_reranker: chat LLM as rank judge via JSON index array "
             "— slower and more expensive; use only when no dedicated rerank "
             "endpoint is available."
@@ -335,7 +335,14 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "enum",
         ["strict", "passthrough"],
     ),
-    ("retrieval.rerank.model", "rerank", "Rerank model", "Litellm model id of the reranker (e.g. jina_ai/jina-reranker-v2-base-multilingual)", "string", None),
+    (
+        "retrieval.rerank.model",
+        "rerank",
+        "Rerank model",
+        "Litellm model id of the reranker (e.g. jina_ai/jina-reranker-v2-base-multilingual)",
+        "string",
+        None,
+    ),
     (
         "retrieval.rerank.top_k",
         "rerank",

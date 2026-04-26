@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Iterable
 
 from sqlalchemy import select
 
@@ -18,9 +17,6 @@ from .folder_service import (
     ROOT_FOLDER_ID,
     TRASH_FOLDER_ID,
     TRASH_PATH,
-    FolderAlreadyExists,
-    FolderError,
-    FolderNotFound,
     FolderService,
     join_path,
     unique_document_path,
@@ -77,15 +73,8 @@ class TrashService:
             # Documents directly under __trash__ (or any descendant — we'll show
             # only those NOT inside a trashed folder, to avoid duplicate display)
             trashed_folder_prefixes = [f.path + "/" for f in trashed_folders]
-            raw_docs = list(
-                sess.execute(
-                    select(Document).where(Document.path.like(TRASH_PATH + "/%"))
-                ).scalars()
-            )
-            top_level_docs = [
-                d for d in raw_docs
-                if not any(d.path.startswith(p) for p in trashed_folder_prefixes)
-            ]
+            raw_docs = list(sess.execute(select(Document).where(Document.path.like(TRASH_PATH + "/%"))).scalars())
+            top_level_docs = [d for d in raw_docs if not any(d.path.startswith(p) for p in trashed_folder_prefixes)]
 
             items: list[dict] = []
             for f in trashed_folders:
@@ -112,7 +101,7 @@ class TrashService:
         with self.store.transaction() as sess:
             svc = FolderService(sess, actor_id=self.actor_id)
 
-            for doc_id in (doc_ids or []):
+            for doc_id in doc_ids or []:
                 doc = sess.get(Document, doc_id)
                 if doc is None or not _doc_in_trash(doc):
                     errors.append({"doc_id": doc_id, "error": "not in trash"})
@@ -129,15 +118,17 @@ class TrashService:
                 doc.path = new_path
                 doc.trashed_metadata = None
                 restored.append({"doc_id": doc_id, "path": new_path})
-                sess.add(AuditLogRow(
-                    actor_id=self.actor_id,
-                    action="document.restore",
-                    target_type="document",
-                    target_id=doc_id,
-                    details={"to_path": new_path},
-                ))
+                sess.add(
+                    AuditLogRow(
+                        actor_id=self.actor_id,
+                        action="document.restore",
+                        target_type="document",
+                        target_id=doc_id,
+                        details={"to_path": new_path},
+                    )
+                )
 
-            for folder_path in (folder_paths or []):
+            for folder_path in folder_paths or []:
                 folder = svc.get_by_path(folder_path)
                 if folder is None or not _folder_in_trash(folder):
                     errors.append({"folder_path": folder_path, "error": "not in trash"})
@@ -171,13 +162,15 @@ class TrashService:
                 folder.name = candidate
                 folder.trashed_metadata = None
                 restored.append({"folder_path": folder_path, "path": new_path})
-                sess.add(AuditLogRow(
-                    actor_id=self.actor_id,
-                    action="folder.restore",
-                    target_type="folder",
-                    target_id=folder.folder_id,
-                    details={"old_path": old_path, "new_path": new_path},
-                ))
+                sess.add(
+                    AuditLogRow(
+                        actor_id=self.actor_id,
+                        action="folder.restore",
+                        target_type="folder",
+                        target_id=folder.folder_id,
+                        details={"old_path": old_path, "new_path": new_path},
+                    )
+                )
 
         return {"restored": restored, "errors": errors}
 
@@ -195,12 +188,12 @@ class TrashService:
             purge_doc_ids: list[str] = []
             purge_folder_ids: list[str] = []
 
-            for doc_id in (doc_ids or []):
+            for doc_id in doc_ids or []:
                 doc = sess.get(Document, doc_id)
                 if doc is not None and _doc_in_trash(doc):
                     purge_doc_ids.append(doc_id)
 
-            for fp in (folder_paths or []):
+            for fp in folder_paths or []:
                 f = FolderService(sess).get_by_path(fp)
                 if f is not None and _folder_in_trash(f):
                     # Collect folder + all descendants + their docs
@@ -209,11 +202,11 @@ class TrashService:
                     purge_folder_ids.extend(x.folder_id for x in subtree)
                     subtree_paths = [f.path] + [x.path for x in subtree]
                     for p in subtree_paths:
-                        docs = list(sess.execute(
-                            select(Document.doc_id).where(
-                                (Document.path == p) | (Document.path.like(p + "/%"))
-                            )
-                        ).scalars())
+                        docs = list(
+                            sess.execute(
+                                select(Document.doc_id).where((Document.path == p) | (Document.path.like(p + "/%")))
+                            ).scalars()
+                        )
                         purge_doc_ids.extend(docs)
 
         # De-dup
@@ -246,21 +239,25 @@ class TrashService:
                 if f is None:
                     continue
                 sess.delete(f)
-                sess.add(AuditLogRow(
-                    actor_id=self.actor_id,
-                    action="folder.purge",
-                    target_type="folder",
-                    target_id=fid,
-                    details={"path": f.path},
-                ))
+                sess.add(
+                    AuditLogRow(
+                        actor_id=self.actor_id,
+                        action="folder.purge",
+                        target_type="folder",
+                        target_id=fid,
+                        details={"path": f.path},
+                    )
+                )
             for did in purge_doc_ids:
-                sess.add(AuditLogRow(
-                    actor_id=self.actor_id,
-                    action="document.purge",
-                    target_type="document",
-                    target_id=did,
-                    details={},
-                ))
+                sess.add(
+                    AuditLogRow(
+                        actor_id=self.actor_id,
+                        action="document.purge",
+                        target_type="document",
+                        target_id=did,
+                        details={},
+                    )
+                )
 
         # BM25 refresh — once, at the end
         try:
@@ -279,15 +276,9 @@ class TrashService:
     def empty(self) -> dict:
         """Permanently delete everything in /__trash__."""
         with self.store.transaction() as sess:
-            top_folders = list(
-                sess.execute(
-                    select(Folder.path).where(Folder.parent_id == TRASH_FOLDER_ID)
-                ).scalars()
-            )
+            top_folders = list(sess.execute(select(Folder.path).where(Folder.parent_id == TRASH_FOLDER_ID)).scalars())
             top_docs = list(
-                sess.execute(
-                    select(Document.doc_id).where(Document.folder_id == TRASH_FOLDER_ID)
-                ).scalars()
+                sess.execute(select(Document.doc_id).where(Document.folder_id == TRASH_FOLDER_ID)).scalars()
             )
         return self.purge(doc_ids=top_docs, folder_paths=top_folders)
 
@@ -299,11 +290,8 @@ class TrashService:
         cutoff_iso = cutoff.isoformat()
 
         with self.store.transaction() as sess:
-            old_folders = list(
-                sess.execute(
-                    select(Folder.path).where(Folder.parent_id == TRASH_FOLDER_ID)
-                ).scalars()
-            )
+            old_folders = list(sess.execute(select(Folder.path).where(Folder.parent_id == TRASH_FOLDER_ID)).scalars())
+
             # Filter by trashed_at < cutoff via Python (metadata is JSON)
             def _stale(f_path: str) -> bool:
                 f = FolderService(sess).get_by_path(f_path)
@@ -314,15 +302,8 @@ class TrashService:
 
             old_folder_paths = [p for p in old_folders if _stale(p)]
 
-            old_docs = list(
-                sess.execute(
-                    select(Document).where(Document.folder_id == TRASH_FOLDER_ID)
-                ).scalars()
-            )
-            old_doc_ids = [
-                d.doc_id for d in old_docs
-                if (d.trashed_metadata or {}).get("trashed_at", "") < cutoff_iso
-            ]
+            old_docs = list(sess.execute(select(Document).where(Document.folder_id == TRASH_FOLDER_ID)).scalars())
+            old_doc_ids = [d.doc_id for d in old_docs if (d.trashed_metadata or {}).get("trashed_at", "") < cutoff_iso]
 
         if not old_folder_paths and not old_doc_ids:
             return {"purged_documents": 0, "purged_folders": 0, "reason": "nothing stale"}

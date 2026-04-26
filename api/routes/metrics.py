@@ -47,8 +47,8 @@ RangeKey = Literal["24h", "7d", "30d"]
 # client-side resampling.
 _RANGE_TO_BUCKET = {
     "24h": ("15 minutes", timedelta(hours=24)),
-    "7d":  ("1 hour",      timedelta(days=7)),
-    "30d": ("6 hours",     timedelta(days=30)),
+    "7d": ("1 hour", timedelta(days=7)),
+    "30d": ("6 hours", timedelta(days=30)),
 }
 
 
@@ -76,12 +76,12 @@ def _require_postgres(state: AppState) -> None:
 # ---------------------------------------------------------------------------
 
 _PATH_SPANS = {
-    "qu":     ("forgerag.query_understanding",),
-    "bm25":   ("forgerag.bm25_path",),
+    "qu": ("forgerag.query_understanding",),
+    "bm25": ("forgerag.bm25_path",),
     "vector": ("forgerag.vector_path",),
-    "tree":   ("forgerag.tree_path",),
-    "kg":     ("forgerag.kg_path",),
-    "rrf":    ("forgerag.rrf_merge",),
+    "tree": ("forgerag.tree_path",),
+    "kg": ("forgerag.kg_path",),
+    "rrf": ("forgerag.rrf_merge",),
     "expand": ("forgerag.expansion",),
     "rerank": ("forgerag.rerank",),
 }
@@ -247,10 +247,7 @@ def metrics_summary(
         # Token totals — walk spans in a bounded window
         tokens_total = 0
         rows = s.execute(
-            text(
-                "SELECT trace_json FROM query_traces "
-                "WHERE timestamp >= :cutoff LIMIT 2000"
-            ),
+            text("SELECT trace_json FROM query_traces WHERE timestamp >= :cutoff LIMIT 2000"),
             {"cutoff": cutoff},
         ).all()
         for (tj,) in rows:
@@ -341,10 +338,7 @@ def query_tokens(
             box = agg.setdefault(key, {"prompt_tokens": 0, "completion_tokens": 0})
             box["prompt_tokens"] += tok["prompt_tokens"]
             box["completion_tokens"] += tok["completion_tokens"]
-    points = [
-        TokensPoint(ts=ts, model=model, **tok)
-        for (ts, model), tok in agg.items()
-    ]
+    points = [TokensPoint(ts=ts, model=model, **tok) for (ts, model), tok in agg.items()]
     points.sort(key=lambda p: (p.ts, p.model))
     return points
 
@@ -358,10 +352,7 @@ def query_path_timing(
     cutoff = _range_cutoff(range)
     with state.store._session() as s:
         rows = s.execute(
-            text(
-                "SELECT trace_json FROM query_traces "
-                "WHERE timestamp >= :cutoff LIMIT 2000"
-            ),
+            text("SELECT trace_json FROM query_traces WHERE timestamp >= :cutoff LIMIT 2000"),
             {"cutoff": cutoff},
         ).all()
 
@@ -373,8 +364,16 @@ def query_path_timing(
                 buckets[k].append(v)
 
     out: list[PathTiming] = []
-    labels = {"qu": "QU", "bm25": "BM25", "vector": "Vector", "kg": "KG",
-              "tree": "Tree", "rrf": "RRF", "expand": "Expand", "rerank": "Rerank"}
+    labels = {
+        "qu": "QU",
+        "bm25": "BM25",
+        "vector": "Vector",
+        "kg": "KG",
+        "tree": "Tree",
+        "rrf": "RRF",
+        "expand": "Expand",
+        "rerank": "Rerank",
+    }
     for key, samples in buckets.items():
         if not samples:
             continue
@@ -422,19 +421,22 @@ def query_slow(
             cits = r.citations_used
             if isinstance(cits, str):
                 import json as _json
+
                 try:
                     cits = _json.loads(cits)
                 except Exception:
                     cits = []
             ts_val = r.timestamp
-            out.append({
-                "trace_id": r.trace_id,
-                "ts": ts_val.isoformat() if ts_val is not None else None,
-                "query": (r.query or "")[:300],
-                "total_ms": r.total_ms or 0,
-                "answer_model": r.answer_model,
-                "citations": len(cits) if isinstance(cits, list) else 0,
-            })
+            out.append(
+                {
+                    "trace_id": r.trace_id,
+                    "ts": ts_val.isoformat() if ts_val is not None else None,
+                    "query": (r.query or "")[:300],
+                    "total_ms": r.total_ms or 0,
+                    "answer_model": r.answer_model,
+                    "citations": len(cits) if isinstance(cits, list) else 0,
+                }
+            )
     except Exception as e:
         log.exception("query_slow serialize failed")
         raise HTTPException(500, detail=f"ser: {type(e).__name__}: {e}")

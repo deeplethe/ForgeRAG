@@ -217,10 +217,7 @@ class TestFolderService:
             # descendants also moved
             assert svc.get_by_path("/legal/2024") is None
             # find the trashed subtree folder
-            all_in_trash = [
-                x for x in sess.execute(select(Folder)).scalars()
-                if x.path.startswith(TRASH_PATH + "/")
-            ]
+            all_in_trash = [x for x in sess.execute(select(Folder)).scalars() if x.path.startswith(TRASH_PATH + "/")]
             # Expect at least 2 (legal + 2024 under it)
             assert len(all_in_trash) >= 2
 
@@ -254,10 +251,15 @@ class TestFolderService:
     def test_unique_document_path_auto_suffix(self, store):
         """Insert a 'foo.pdf' document and verify the next call appends (1)."""
         with store.transaction() as sess:
-            sess.add(Document(
-                doc_id="d1", folder_id=ROOT_FOLDER_ID, path="/foo.pdf",
-                filename="foo.pdf", format="pdf",
-            ))
+            sess.add(
+                Document(
+                    doc_id="d1",
+                    folder_id=ROOT_FOLDER_ID,
+                    path="/foo.pdf",
+                    filename="foo.pdf",
+                    format="pdf",
+                )
+            )
         with store.transaction() as sess:
             svc = FolderService(sess)
             folder = svc.get_by_id(ROOT_FOLDER_ID)

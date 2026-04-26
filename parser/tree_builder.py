@@ -535,9 +535,7 @@ class _BuildContext:
             "max_tokens": 4096,
             "timeout": 120,  # 2 min hard ceiling
         }
-        api_key = resolve_api_key(
-            api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder"
-        )
+        api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
         if api_key:
             kwargs["api_key"] = api_key
         if cfg.api_base:
@@ -789,9 +787,7 @@ class _BuildContext:
             "max_tokens": 4096,
             "timeout": 120,
         }
-        api_key = resolve_api_key(
-            api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder"
-        )
+        api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
         if api_key:
             kwargs["api_key"] = api_key
         if cfg.api_base:
@@ -867,9 +863,7 @@ class _BuildContext:
                 "max_tokens": 4096,
                 "timeout": 120,
             }
-            api_key = resolve_api_key(
-                api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder"
-            )
+            api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
             if api_key:
                 kwargs["api_key"] = api_key
             if cfg.api_base:

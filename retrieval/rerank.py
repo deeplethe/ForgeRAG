@@ -446,7 +446,7 @@ class LlmAsReranker:
             kwargs["api_base"] = self.cfg.api_base
         t0 = time.time()
         try:
-            resp = litellm.completion(
+            litellm.completion(
                 model=self.cfg.model,
                 messages=[{"role": "user", "content": "Return [0]."}],
                 timeout=min(self.cfg.timeout, 15.0),

@@ -26,13 +26,11 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .models import AuditLogRow, Document, Folder, PendingFolderOp
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -48,7 +46,7 @@ TRASH_PATH = "/__trash__"
 _NAME_FORBIDDEN = re.compile(r'[\\/?*<>|":\x00-\x1f]')
 _MAX_NAME_LEN = 255
 _MAX_PATH_LEN = 1024
-_MAX_DEPTH = 10   # path.count('/') cannot exceed this
+_MAX_DEPTH = 10  # path.count('/') cannot exceed this
 
 # Threshold (number of affected chunks) above which cross-store rename
 # (Chroma metadata / Neo4j source_paths) is deferred to nightly maintenance
@@ -118,9 +116,7 @@ def normalize_name(name: str) -> str:
     if len(name) > _MAX_NAME_LEN:
         raise InvalidFolderName(f"folder name exceeds {_MAX_NAME_LEN} chars")
     if _NAME_FORBIDDEN.search(name):
-        raise InvalidFolderName(
-            f"folder name contains forbidden characters: {name!r}"
-        )
+        raise InvalidFolderName(f"folder name contains forbidden characters: {name!r}")
     if name in (".", ".."):
         raise InvalidFolderName(f"reserved folder name: {name!r}")
     return name
@@ -188,9 +184,7 @@ class FolderService:
 
     def get_by_path(self, path: str) -> Folder | None:
         path_l = path.lower()
-        return self.sess.execute(
-            select(Folder).where(Folder.path_lower == path_l)
-        ).scalar_one_or_none()
+        return self.sess.execute(select(Folder).where(Folder.path_lower == path_l)).scalar_one_or_none()
 
     def require_by_path(self, path: str) -> Folder:
         f = self.get_by_path(path)
@@ -200,11 +194,7 @@ class FolderService:
 
     def list_children(self, parent_id: str) -> list[Folder]:
         return list(
-            self.sess.execute(
-                select(Folder)
-                .where(Folder.parent_id == parent_id)
-                .order_by(Folder.name)
-            ).scalars()
+            self.sess.execute(select(Folder).where(Folder.parent_id == parent_id).order_by(Folder.name)).scalars()
         )
 
     def list_ancestors(self, folder_id: str) -> list[Folder]:
@@ -226,24 +216,15 @@ class FolderService:
             return []
         prefix = f.path if f.path == "/" else f.path + "/"
         if f.path == "/":
-            return list(
-                self.sess.execute(
-                    select(Folder).where(Folder.folder_id != ROOT_FOLDER_ID)
-                ).scalars()
-            )
-        return list(
-            self.sess.execute(
-                select(Folder).where(Folder.path.like(prefix + "%"))
-            ).scalars()
-        )
+            return list(self.sess.execute(select(Folder).where(Folder.folder_id != ROOT_FOLDER_ID)).scalars())
+        return list(self.sess.execute(select(Folder).where(Folder.path.like(prefix + "%"))).scalars())
 
     def count_documents(self, folder_id: str, *, recursive: bool = False) -> int:
         from sqlalchemy import func
+
         if not recursive:
             n = self.sess.execute(
-                select(func.count()).select_from(Document).where(
-                    Document.folder_id == folder_id
-                )
+                select(func.count()).select_from(Document).where(Document.folder_id == folder_id)
             ).scalar_one()
             return int(n or 0)
         f = self.get_by_id(folder_id)
@@ -251,13 +232,10 @@ class FolderService:
             return 0
         prefix = f.path if f.path == "/" else f.path + "/"
         if f.path == "/":
-            n = self.sess.execute(
-                select(func.count()).select_from(Document)
-            ).scalar_one()
+            n = self.sess.execute(select(func.count()).select_from(Document)).scalar_one()
         else:
             n = self.sess.execute(
-                select(func.count()).select_from(Document)
-                .where(Document.path.like(prefix + "%"))
+                select(func.count()).select_from(Document).where(Document.path.like(prefix + "%"))
             ).scalar_one()
         return int(n or 0)
 
@@ -275,9 +253,7 @@ class FolderService:
 
         new_path = join_path(parent.path, name)
         if len(new_path) > _MAX_PATH_LEN:
-            raise InvalidFolderName(
-                f"resulting path exceeds {_MAX_PATH_LEN} chars"
-            )
+            raise InvalidFolderName(f"resulting path exceeds {_MAX_PATH_LEN} chars")
         if depth_of(new_path) > _MAX_DEPTH:
             raise InvalidFolderName(f"folder depth exceeds {_MAX_DEPTH}")
 
@@ -294,10 +270,15 @@ class FolderService:
             metadata_json=metadata or {},
         )
         self.sess.add(folder)
-        self._audit("folder.create", "folder", folder.folder_id, {
-            "path": new_path,
-            "parent_id": parent.folder_id,
-        })
+        self._audit(
+            "folder.create",
+            "folder",
+            folder.folder_id,
+            {
+                "path": new_path,
+                "parent_id": parent.folder_id,
+            },
+        )
         self.sess.flush()
         return folder
 
@@ -322,9 +303,7 @@ class FolderService:
         if folder is None:
             raise FolderNotFound(folder_id)
         if folder.is_system:
-            raise FolderIsSystemProtected(
-                f"cannot rename system folder {folder.folder_id!r}"
-            )
+            raise FolderIsSystemProtected(f"cannot rename system folder {folder.folder_id!r}")
         new_name = normalize_name(new_name)
         old_path = folder.path
         new_path = join_path(parent_of(old_path), new_name)
@@ -352,24 +331,17 @@ class FolderService:
         if folder is None:
             raise FolderNotFound(folder_id)
         if folder.is_system:
-            raise FolderIsSystemProtected(
-                f"cannot move system folder {folder.folder_id!r}"
-            )
+            raise FolderIsSystemProtected(f"cannot move system folder {folder.folder_id!r}")
         new_parent = self.require_by_path(new_parent_path)
         # Cannot move a folder into itself / its own subtree
         if is_under(new_parent.path, folder.path):
-            raise FolderError(
-                f"cannot move folder {folder.path!r} into its own subtree "
-                f"{new_parent.path!r}"
-            )
+            raise FolderError(f"cannot move folder {folder.path!r} into its own subtree {new_parent.path!r}")
         old_path = folder.path
         new_path = join_path(new_parent.path, folder.name)
         if new_path == old_path:
             return folder
         if self.get_by_path(new_path) is not None:
-            raise FolderAlreadyExists(
-                f"destination already exists: {new_path!r}"
-            )
+            raise FolderAlreadyExists(f"destination already exists: {new_path!r}")
         if len(new_path) > _MAX_PATH_LEN:
             raise InvalidFolderName(f"resulting path exceeds {_MAX_PATH_LEN}")
 
@@ -395,9 +367,7 @@ class FolderService:
         if folder is None:
             raise FolderNotFound(folder_id)
         if folder.is_system:
-            raise FolderIsSystemProtected(
-                f"cannot trash system folder {folder.folder_id!r}"
-            )
+            raise FolderIsSystemProtected(f"cannot trash system folder {folder.folder_id!r}")
         trash = self.require_by_path(TRASH_PATH)
         original_parent_id = folder.parent_id
         original_path = folder.path
@@ -448,25 +418,25 @@ class FolderService:
             fallback filters on Chroma / Neo4j keep retrieval correct
             while the queue drains.
         """
-        from sqlalchemy import func, select as _select
+        from sqlalchemy import func
+        from sqlalchemy import select as _select
 
         from .models import ChunkRow
 
         # ── Pre-count: decide sync vs deferred before any write ──
-        affected_chunks = self.sess.execute(
-            _select(func.count()).select_from(ChunkRow).where(
-                (ChunkRow.path == old_prefix)
-                | (ChunkRow.path.like(old_prefix.rstrip("/") + "/%"))
-            )
-        ).scalar_one() or 0
+        affected_chunks = (
+            self.sess.execute(
+                _select(func.count())
+                .select_from(ChunkRow)
+                .where((ChunkRow.path == old_prefix) | (ChunkRow.path.like(old_prefix.rstrip("/") + "/%")))
+            ).scalar_one()
+            or 0
+        )
 
         # folders.path + path_lower
         folders_stmt = (
             update(Folder)
-            .where(
-                (Folder.path == old_prefix)
-                | (Folder.path.like(old_prefix.rstrip("/") + "/%"))
-            )
+            .where((Folder.path == old_prefix) | (Folder.path.like(old_prefix.rstrip("/") + "/%")))
             .values(
                 path=func.concat(
                     new_prefix,
@@ -484,10 +454,7 @@ class FolderService:
         # documents.path
         docs_stmt = (
             update(Document)
-            .where(
-                (Document.path == old_prefix)
-                | (Document.path.like(old_prefix.rstrip("/") + "/%"))
-            )
+            .where((Document.path == old_prefix) | (Document.path.like(old_prefix.rstrip("/") + "/%")))
             .values(
                 path=func.concat(
                     new_prefix,
@@ -501,10 +468,7 @@ class FolderService:
         # chunks.path — new in D1: denormalized mirror for fast retrieval.
         chunks_stmt = (
             update(ChunkRow)
-            .where(
-                (ChunkRow.path == old_prefix)
-                | (ChunkRow.path.like(old_prefix.rstrip("/") + "/%"))
-            )
+            .where((ChunkRow.path == old_prefix) | (ChunkRow.path.like(old_prefix.rstrip("/") + "/%")))
             .values(
                 path=func.concat(
                     new_prefix,
@@ -564,17 +528,13 @@ class FolderService:
             op_result = dict(op)
             try:
                 if graph_store is not None and hasattr(graph_store, "update_paths"):
-                    op_result["graph_touched"] = int(
-                        graph_store.update_paths(op["old_prefix"], op["new_prefix"])
-                    )
+                    op_result["graph_touched"] = int(graph_store.update_paths(op["old_prefix"], op["new_prefix"]))
             except Exception as e:
                 log.warning("sync update_paths on graph failed for %s: %s", op, e)
                 op_result["graph_error"] = str(e)
             try:
                 if vector_store is not None and hasattr(vector_store, "update_paths"):
-                    op_result["vector_touched"] = int(
-                        vector_store.update_paths(op["old_prefix"], op["new_prefix"])
-                    )
+                    op_result["vector_touched"] = int(vector_store.update_paths(op["old_prefix"], op["new_prefix"]))
             except Exception as e:
                 log.warning("sync update_paths on vector failed for %s: %s", op, e)
                 op_result["vector_error"] = str(e)
@@ -605,9 +565,7 @@ class FolderService:
 # ---------------------------------------------------------------------------
 
 
-def unique_document_path(
-    sess: Session, folder: Folder, filename: str
-) -> str:
+def unique_document_path(sess: Session, folder: Folder, filename: str) -> str:
     """
     Compose `<folder.path>/<filename>` — if the path already exists in
     `documents` under the same folder, append `(1)`, `(2)`, ... before
@@ -624,9 +582,7 @@ def unique_document_path(
     # serialize through this path-allocation step.
     try:
         sess.execute(
-            select(Folder.folder_id)
-            .where(Folder.folder_id == folder.folder_id)
-            .with_for_update()
+            select(Folder.folder_id).where(Folder.folder_id == folder.folder_id).with_for_update()
         ).scalar_one_or_none()
     except Exception:
         # Backend doesn't support row-level locking (e.g. SQLite under
@@ -637,9 +593,7 @@ def unique_document_path(
     # Only docs in the same folder can collide on filename
     existing_paths = set(
         (p or "").lower()
-        for p in sess.execute(
-            select(Document.path).where(Document.folder_id == folder.folder_id)
-        ).scalars()
+        for p in sess.execute(select(Document.path).where(Document.folder_id == folder.folder_id)).scalars()
     )
     base_path = join_path(folder.path, filename)
     if base_path.lower() not in existing_paths:

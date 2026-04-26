@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from config import RetrievalSection
 from embedder.base import Embedder
@@ -36,17 +35,9 @@ from persistence.vector.base import VectorStore
 
 from .bm25 import InMemoryBM25Index
 from .citations import build_citations
-from .merge import (
-    expand_crossrefs,
-    expand_descendants,
-    expand_siblings,
-    finalize_merged,
-    rehydrate,
-    rrf_merge,
-)
 from .rerank import Reranker, make_reranker
 from .telemetry import get_tracer
-from .tree_path import TreeNavigator, TreePath
+from .tree_path import TreeNavigator
 from .types import RetrievalResult, ScoredChunk
 
 _tracer = get_tracer()
@@ -100,6 +91,7 @@ class RetrievalError(RuntimeError):
     def __init__(self, path: str, cause: BaseException):
         self.path = path
         super().__init__(f"{path} path failed: {type(cause).__name__}: {cause}")
+
 
 log = logging.getLogger(__name__)
 
@@ -203,20 +195,13 @@ class RetrievalPipeline:
                 allowed_doc_ids = set(
                     sess.execute(
                         select(Document.doc_id).where(
-                            (Document.path == path_prefix)
-                            | (Document.path.like(path_prefix + "/%"))
+                            (Document.path == path_prefix) | (Document.path.like(path_prefix + "/%"))
                         )
                     ).scalars()
                 )
 
             # Trashed doc_ids — always excluded from all paths
-            trashed = set(
-                sess.execute(
-                    select(Document.doc_id).where(
-                        Document.path.like(TRASH_PATH + "/%")
-                    )
-                ).scalars()
-            )
+            trashed = set(sess.execute(select(Document.doc_id).where(Document.path.like(TRASH_PATH + "/%"))).scalars())
 
             # Pending rename OR-fallback: when a big rename is still
             # draining through pending_folder_ops, Chroma/Neo4j haven't
@@ -246,7 +231,8 @@ class RetrievalPipeline:
             return hits
         # Collect chunk_ids that still need doc_id resolution.
         need_lookup = [
-            getattr(h, "chunk_id", "") for h in hits
+            getattr(h, "chunk_id", "")
+            for h in hits
             if getattr(h, "doc_id", None) is None and getattr(h, "chunk_id", None)
         ]
         doc_id_by_chunk: dict[str, str] = {}
@@ -327,10 +313,21 @@ class RetrievalPipeline:
         if overrides is not None:
             # Record any explicitly-set overrides so the trace shows user intent.
             for ov_name in (
-                "query_understanding", "kg_path", "tree_path", "tree_llm_nav", "rerank",
-                "bm25_top_k", "vector_top_k", "tree_top_k", "kg_top_k", "rerank_top_k",
-                "candidate_limit", "descendant_expansion", "sibling_expansion",
-                "crossref_expansion", "allow_partial_failure",
+                "query_understanding",
+                "kg_path",
+                "tree_path",
+                "tree_llm_nav",
+                "rerank",
+                "bm25_top_k",
+                "vector_top_k",
+                "tree_top_k",
+                "kg_top_k",
+                "rerank_top_k",
+                "candidate_limit",
+                "descendant_expansion",
+                "sibling_expansion",
+                "crossref_expansion",
+                "allow_partial_failure",
             ):
                 _v = getattr(overrides, ov_name, None)
                 if _v is not None:
@@ -374,22 +371,22 @@ class RetrievalPipeline:
         # ``enabled`` toggle: when their dependencies are configured (LLM
         # creds, graph_store) they always run. Per-query opt-out is via
         # ``QueryOverrides.{query_understanding,kg_path,rerank} = False``.
-        eff_qu_on        = _ov("query_understanding", True)
-        eff_kg_on        = _ov("kg_path",       True)
-        eff_tree_on      = _ov("tree_path",     self.cfg.tree_path.enabled)
-        eff_tree_llm_nav = _ov("tree_llm_nav",  self.cfg.tree_path.llm_nav_enabled)
-        eff_rerank_on    = _ov("rerank",        True)
+        eff_qu_on = _ov("query_understanding", True)
+        eff_kg_on = _ov("kg_path", True)
+        eff_tree_on = _ov("tree_path", self.cfg.tree_path.enabled)
+        eff_tree_llm_nav = _ov("tree_llm_nav", self.cfg.tree_path.llm_nav_enabled)
+        eff_rerank_on = _ov("rerank", True)
 
-        eff_bm25_top_k   = _ov("bm25_top_k",    self.cfg.bm25.top_k)
-        eff_vector_top_k = _ov("vector_top_k",  self.cfg.vector.top_k)
-        eff_tree_top_k   = _ov("tree_top_k",    self.cfg.tree_path.top_k)
-        eff_kg_top_k     = _ov("kg_top_k",      self.cfg.kg_path.top_k)
-        eff_rerank_top_k = _ov("rerank_top_k",  self.cfg.rerank.top_k)
+        eff_bm25_top_k = _ov("bm25_top_k", self.cfg.bm25.top_k)
+        eff_vector_top_k = _ov("vector_top_k", self.cfg.vector.top_k)
+        eff_tree_top_k = _ov("tree_top_k", self.cfg.tree_path.top_k)
+        eff_kg_top_k = _ov("kg_top_k", self.cfg.kg_path.top_k)
+        eff_rerank_top_k = _ov("rerank_top_k", self.cfg.rerank.top_k)
 
         eff_candidate_limit = _ov("candidate_limit", self.cfg.merge.candidate_limit)
         eff_desc_expand = _ov("descendant_expansion", self.cfg.merge.descendant_expansion_enabled)
-        eff_sib_expand  = _ov("sibling_expansion",    self.cfg.merge.sibling_expansion_enabled)
-        eff_xref_expand = _ov("crossref_expansion",   self.cfg.merge.crossref_expansion_enabled)
+        eff_sib_expand = _ov("sibling_expansion", self.cfg.merge.sibling_expansion_enabled)
+        eff_xref_expand = _ov("crossref_expansion", self.cfg.merge.crossref_expansion_enabled)
 
         # Failure policy: default = fail loud (raise RetrievalError); opt in
         # via overrides.allow_partial_failure to swallow and continue.
@@ -402,10 +399,7 @@ class RetrievalPipeline:
         # warn-and-fallback behaviour so existing deployments don't break
         # when LLMTreeNavigator wiring is absent.
         if eff_tree_llm_nav and self.navigator is None:
-            override_set = (
-                overrides is not None
-                and getattr(overrides, "tree_llm_nav", None) is True
-            )
+            override_set = overrides is not None and getattr(overrides, "tree_llm_nav", None) is True
             if override_set and not eff_allow_partial:
                 raise RetrievalError(
                     "tree_llm_nav",
@@ -415,10 +409,7 @@ class RetrievalPipeline:
                         "Set overrides.allow_partial_failure=true to fall back to heuristic."
                     ),
                 )
-            log.warning(
-                "tree_llm_nav requested but LLMTreeNavigator is not initialised; "
-                "falling back to heuristic"
-            )
+            log.warning("tree_llm_nav requested but LLMTreeNavigator is not initialised; falling back to heuristic")
             eff_tree_llm_nav = False
 
         # Resolve path-scoping into two complementary representations:
@@ -449,12 +440,14 @@ class RetrievalPipeline:
             queries = precomputed_plan.expanded_queries or [query]
             _skip_paths = set(precomputed_plan.skip_paths)
             with _tracer.start_as_current_span("forgerag.query_understanding") as span:
-                span.set_attributes({
-                    "forgerag.intent": precomputed_plan.intent or "",
-                    "forgerag.needs_retrieval": bool(precomputed_plan.needs_retrieval),
-                    "forgerag.expanded_count": len(queries),
-                    "forgerag.precomputed": True,
-                })
+                span.set_attributes(
+                    {
+                        "forgerag.intent": precomputed_plan.intent or "",
+                        "forgerag.needs_retrieval": bool(precomputed_plan.needs_retrieval),
+                        "forgerag.expanded_count": len(queries),
+                        "forgerag.precomputed": True,
+                    }
+                )
                 if precomputed_plan.skip_paths:
                     span.set_attribute("forgerag.skip_paths", list(precomputed_plan.skip_paths))
                 if precomputed_plan.latency_ms:
@@ -482,11 +475,13 @@ class RetrievalPipeline:
                     query_plan = self._expander.analyze(query, chat_history=chat_history)
                     queries = query_plan.expanded_queries or [query]
                     _skip_paths = set(query_plan.skip_paths)
-                    span.set_attributes({
-                        "forgerag.intent": query_plan.intent or "",
-                        "forgerag.needs_retrieval": bool(query_plan.needs_retrieval),
-                        "forgerag.expanded_count": len(queries),
-                    })
+                    span.set_attributes(
+                        {
+                            "forgerag.intent": query_plan.intent or "",
+                            "forgerag.needs_retrieval": bool(query_plan.needs_retrieval),
+                            "forgerag.expanded_count": len(queries),
+                        }
+                    )
                     if query_plan.skip_paths:
                         span.set_attribute("forgerag.skip_paths", list(query_plan.skip_paths))
                     if query_plan.latency_ms:
@@ -502,7 +497,8 @@ class RetrievalPipeline:
                 status="done",
                 detail=(
                     f"{query_plan.intent}, {len(queries)} queries"
-                    if _qu_ok else "skipped (timeout), using original query"
+                    if _qu_ok
+                    else "skipped (timeout), using original query"
                 ),
             )
         stats["expanded_queries"] = queries
@@ -682,7 +678,9 @@ class RetrievalPipeline:
 
             tree_future = _pool.submit(
                 _propagate_ctx(_run_tree),
-                expanded_bm25_docs, vector_doc_ids, prefilter_hits,
+                expanded_bm25_docs,
+                vector_doc_ids,
+                prefilter_hits,
             )
 
             try:
@@ -714,14 +712,14 @@ class RetrievalPipeline:
         # kg_path) are already emitted from inside the workers via OTel; we
         # only populate the flat stats dict here for answering.pipeline /
         # benchmark consumers that expect counts + top-id previews.
-        stats["bm25_hits"]      = len(bm25_hits)
-        stats["bm25_top_ids"]   = [s.chunk_id for s in bm25_hits[:5]]
-        stats["vector_hits"]    = len(vector_hits)
+        stats["bm25_hits"] = len(bm25_hits)
+        stats["bm25_top_ids"] = [s.chunk_id for s in bm25_hits[:5]]
+        stats["vector_hits"] = len(vector_hits)
         stats["vector_top_ids"] = [s.chunk_id for s in vector_hits[:5]]
-        stats["kg_hits"]        = len(kg_hits)
-        stats["kg_top_ids"]     = [s.chunk_id for s in kg_hits[:5]]
-        stats["tree_hits"]      = len(tree_hits)
-        stats["tree_top_ids"]   = [s.chunk_id for s in tree_hits[:5]]
+        stats["kg_hits"] = len(kg_hits)
+        stats["kg_top_ids"] = [s.chunk_id for s in kg_hits[:5]]
+        stats["tree_hits"] = len(tree_hits)
+        stats["tree_top_ids"] = [s.chunk_id for s in tree_hits[:5]]
         stats["vector_doc_ids"] = len(vector_doc_ids)
 
         # ============================================================
@@ -741,16 +739,16 @@ class RetrievalPipeline:
         _pcb(phase="rrf_merge", status="running")
         rrf_inputs: list[list[ScoredChunk]] = []
         active_paths: list[str] = []
-        primary_has_hits = bool(
-            (eff_tree_on and tree_hits) or (eff_kg_on and kg_hits)
-        )
+        primary_has_hits = bool((eff_tree_on and tree_hits) or (eff_kg_on and kg_hits))
         if primary_has_hits:
             covered_doc_ids: set[str] = set()
             if eff_tree_on and tree_hits:
-                rrf_inputs.append(tree_hits); active_paths.append("tree")
+                rrf_inputs.append(tree_hits)
+                active_paths.append("tree")
                 covered_doc_ids |= {_doc_id_from_chunk_id(s.chunk_id) for s in tree_hits}
             if eff_kg_on and kg_hits:
-                rrf_inputs.append(kg_hits); active_paths.append("kg")
+                rrf_inputs.append(kg_hits)
+                active_paths.append("kg")
                 covered_doc_ids |= {_doc_id_from_chunk_id(s.chunk_id) for s in kg_hits}
             # Per-doc supplement: docs that BM25 / vector found but tree/KG
             # didn't visit (e.g. tree_navigable=False, low quality, or just
@@ -760,19 +758,23 @@ class RetrievalPipeline:
                 if self.cfg.vector.enabled and vector_hits:
                     vec_extra = [s for s in vector_hits if _doc_id_from_chunk_id(s.chunk_id) not in covered_doc_ids]
                     if vec_extra:
-                        rrf_inputs.append(vec_extra); active_paths.append("vector_supplement")
+                        rrf_inputs.append(vec_extra)
+                        active_paths.append("vector_supplement")
                 if self.cfg.bm25.enabled and bm25_hits:
                     bm25_extra = [s for s in bm25_hits if _doc_id_from_chunk_id(s.chunk_id) not in covered_doc_ids]
                     if bm25_extra:
-                        rrf_inputs.append(bm25_extra); active_paths.append("bm25_supplement")
+                        rrf_inputs.append(bm25_extra)
+                        active_paths.append("bm25_supplement")
         else:
             # No primary path — fuse BM25 + vector directly. (BM25 / vector
             # are always-on infrastructure paths; no per-request override
             # exposed for them today, so reading cfg directly is correct.)
             if self.cfg.vector.enabled and vector_hits:
-                rrf_inputs.append(vector_hits); active_paths.append("vector_fallback")
+                rrf_inputs.append(vector_hits)
+                active_paths.append("vector_fallback")
             if self.cfg.bm25.enabled and bm25_hits:
-                rrf_inputs.append(bm25_hits); active_paths.append("bm25_fallback")
+                rrf_inputs.append(bm25_hits)
+                active_paths.append("bm25_fallback")
 
         # ── Fusion ─────────────────────────────────────────────────────
         merged = self.c_fusion.run(rrf_inputs, labels=active_paths) if rrf_inputs else []

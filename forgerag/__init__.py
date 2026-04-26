@@ -24,13 +24,13 @@ Why the facade instead of a big rename?
 
 __all__ = [
     "__version__",
-    "components",
-    "retrieval",
     "answering",
     "client",
-    "server",
+    "components",
     "config",
     "eval",
+    "retrieval",
+    "server",
 ]
 
 __version__ = "0.2.0"

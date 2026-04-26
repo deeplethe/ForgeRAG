@@ -12,13 +12,13 @@ embedder, vector store, KG store, reranker) fails. Set
 ``QueryOverrides.allow_partial_failure = True`` to degrade gracefully.
 """
 
-from retrieval.pipeline import RetrievalError, RetrievalPipeline, build_bm25_index  # noqa: F401
-from retrieval.types import RetrievalResult, ScoredChunk  # noqa: F401
+from retrieval.pipeline import RetrievalError, RetrievalPipeline, build_bm25_index
+from retrieval.types import RetrievalResult, ScoredChunk
 
 __all__ = [
-    "RetrievalPipeline",
     "RetrievalError",
-    "build_bm25_index",
+    "RetrievalPipeline",
     "RetrievalResult",
     "ScoredChunk",
+    "build_bm25_index",
 ]

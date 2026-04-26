@@ -22,7 +22,7 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
-from .dataset import Dataset, EvalQuery, RetrievalRowResult, RetrievalRun
+from .dataset import EvalQuery, RetrievalRowResult, RetrievalRun
 
 
 def _by_id(rows: list[RetrievalRowResult]) -> dict[str, RetrievalRowResult]:
@@ -133,9 +133,9 @@ def summary(run: RetrievalRun, *, k: int = 10) -> dict[str, Any]:
         "dataset": run.dataset.name,
         "n_queries": len(run.dataset),
         "n_errors": sum(1 for r in run.rows if r.error),
-        "recall@k":     recall_at_k(run, k=k)["value"],
-        "precision@k":  precision_at_k(run, k=k)["value"],
-        "hit_rate@k":   hit_rate_at_k(run, k=k)["value"],
-        "mrr@k":        mrr(run, k=k)["value"],
+        "recall@k": recall_at_k(run, k=k)["value"],
+        "precision@k": precision_at_k(run, k=k)["value"],
+        "hit_rate@k": hit_rate_at_k(run, k=k)["value"],
+        "mrr@k": mrr(run, k=k)["value"],
         "k": k,
     }

@@ -41,20 +41,20 @@ log = logging.getLogger(__name__)
 _PRIVATE_NETS = [
     ipaddress.ip_network(n)
     for n in (
-        "0.0.0.0/8",        # "this network"
-        "10.0.0.0/8",       # RFC1918
-        "100.64.0.0/10",    # CGNAT
-        "127.0.0.0/8",      # loopback
-        "169.254.0.0/16",   # link-local (incl. AWS/Azure/GCP metadata 169.254.169.254)
-        "172.16.0.0/12",    # RFC1918
-        "192.0.0.0/24",     # IETF protocol assignments
-        "192.168.0.0/16",   # RFC1918
-        "198.18.0.0/15",    # benchmarking
-        "224.0.0.0/4",      # multicast
-        "240.0.0.0/4",      # reserved
-        "::1/128",          # ipv6 loopback
-        "fc00::/7",         # ipv6 unique-local
-        "fe80::/10",        # ipv6 link-local
+        "0.0.0.0/8",  # "this network"
+        "10.0.0.0/8",  # RFC1918
+        "100.64.0.0/10",  # CGNAT
+        "127.0.0.0/8",  # loopback
+        "169.254.0.0/16",  # link-local (incl. AWS/Azure/GCP metadata 169.254.169.254)
+        "172.16.0.0/12",  # RFC1918
+        "192.0.0.0/24",  # IETF protocol assignments
+        "192.168.0.0/16",  # RFC1918
+        "198.18.0.0/15",  # benchmarking
+        "224.0.0.0/4",  # multicast
+        "240.0.0.0/4",  # reserved
+        "::1/128",  # ipv6 loopback
+        "fc00::/7",  # ipv6 unique-local
+        "fe80::/10",  # ipv6 link-local
     )
 ]
 

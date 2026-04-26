@@ -66,9 +66,9 @@ from .storage import (
 __all__ = [
     "AnsweringSection",
     "AppConfig",
-    "BenchmarkConfig",
     "BM25Config",
     "BackendsConfig",
+    "BenchmarkConfig",
     "ChromaConfig",
     "ChunkerConfig",
     "CitationsConfig",

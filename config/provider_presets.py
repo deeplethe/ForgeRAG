@@ -95,7 +95,6 @@ PROVIDER_PRESETS: list[dict] = [
         "requires_api_key": False,
         "badge": "self-hosted",
     },
-
     # ── Chat (answer generator / tree navigator / KG extractor) ────────
     {
         "id": "dashscope_qwen3_max",
@@ -157,7 +156,6 @@ PROVIDER_PRESETS: list[dict] = [
         "requires_api_key": True,
         "badge": None,
     },
-
     # ── Embedding ──────────────────────────────────────────────────────
     {
         "id": "dashscope_text_embedding_v4",
@@ -199,7 +197,6 @@ PROVIDER_PRESETS: list[dict] = [
         "requires_api_key": True,
         "badge": "free-tier",
     },
-
     # ── VLM ────────────────────────────────────────────────────────────
     {
         "id": "dashscope_qwen3_vl_flash",

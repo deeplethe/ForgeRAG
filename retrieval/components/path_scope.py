@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from opentelemetry import trace as _otel_trace
-
 from ..telemetry import get_tracer
 
 _tracer = get_tracer()
@@ -69,18 +67,13 @@ class PathScopeResolver:
                     allowed_doc_ids = set(
                         sess.execute(
                             select(Document.doc_id).where(
-                                (Document.path == path_prefix)
-                                | (Document.path.like(path_prefix + "/%"))
+                                (Document.path == path_prefix) | (Document.path.like(path_prefix + "/%"))
                             )
                         ).scalars()
                     )
 
                 trashed = set(
-                    sess.execute(
-                        select(Document.doc_id).where(
-                            Document.path.like(TRASH_PATH + "/%")
-                        )
-                    ).scalars()
+                    sess.execute(select(Document.doc_id).where(Document.path.like(TRASH_PATH + "/%"))).scalars()
                 )
                 or_pfx = or_fallback_prefixes(sess, path_prefix) or []
 
@@ -110,7 +103,8 @@ class PathScopeResolver:
         if not trashed_doc_ids or not hits:
             return hits
         need_lookup = [
-            getattr(h, "chunk_id", "") for h in hits
+            getattr(h, "chunk_id", "")
+            for h in hits
             if getattr(h, "doc_id", None) is None and getattr(h, "chunk_id", None)
         ]
         doc_id_by_chunk: dict[str, str] = {}

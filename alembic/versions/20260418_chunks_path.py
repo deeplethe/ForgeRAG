@@ -58,18 +58,13 @@ def downgrade() -> None:
 
 def _add_chunks_path_column() -> None:
     with op.batch_alter_table("chunks") as batch:
-        batch.add_column(
-            sa.Column("path", sa.String(1024), nullable=False, server_default="/")
-        )
+        batch.add_column(sa.Column("path", sa.String(1024), nullable=False, server_default="/"))
     op.create_index("ix_chunks_path", "chunks", ["path"])
     # Postgres-only: prefix index for `WHERE path LIKE '/x/%'` queries.
     # SQLite (test fixtures) ignores this — create it conditionally.
     conn = op.get_bind()
     if conn.dialect.name == "postgresql":
-        op.execute(
-            "CREATE INDEX IF NOT EXISTS ix_chunks_path_prefix "
-            "ON chunks (path varchar_pattern_ops)"
-        )
+        op.execute("CREATE INDEX IF NOT EXISTS ix_chunks_path_prefix ON chunks (path varchar_pattern_ops)")
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -90,18 +85,14 @@ def _create_pending_folder_ops_table() -> None:
         # threshold router and is shown to the user in the UI.
         sa.Column("affected_chunks", sa.Integer, nullable=False),
         # "pending" | "running" | "done" | "failed"
-        sa.Column(
-            "status", sa.String(16), nullable=False, server_default="pending"
-        ),
+        sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
         sa.Column("queued_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
         sa.Column("queued_by", sa.String(128), nullable=False, server_default="local"),
         sa.Column("started_at", sa.DateTime, nullable=True),
         sa.Column("finished_at", sa.DateTime, nullable=True),
         sa.Column("error_msg", sa.Text, nullable=True),
     )
-    op.create_index(
-        "ix_pending_ops_status", "pending_folder_ops", ["status", "queued_at"]
-    )
+    op.create_index("ix_pending_ops_status", "pending_folder_ops", ["status", "queued_at"])
     op.create_index(
         "ix_pending_ops_old_path",
         "pending_folder_ops",

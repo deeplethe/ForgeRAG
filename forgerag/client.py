@@ -28,15 +28,15 @@ Per-request retrieval overrides:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 try:
     import httpx
 except ImportError as _e:  # pragma: no cover — httpx is a core dep via LiteLLM
     raise ImportError(
-        "forgerag.client requires httpx. It's included by default; reinstall "
-        "the project's requirements.txt to get it."
+        "forgerag.client requires httpx. It's included by default; reinstall the project's requirements.txt to get it."
     ) from _e
 
 
@@ -68,10 +68,10 @@ class Answer:
     citations_used: list[Citation]
     citations_all: list[Citation]
     stats: dict
-    trace: dict | None = None   # raw OTel spans payload — None if disabled
+    trace: dict | None = None  # raw OTel spans payload — None if disabled
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Answer":
+    def from_dict(cls, d: dict) -> Answer:
         return cls(
             query=d.get("query", ""),
             text=d.get("text", ""),
@@ -125,7 +125,7 @@ class Client:
         )
 
     # Context manager + close for resource hygiene in scripts
-    def __enter__(self) -> "Client":
+    def __enter__(self) -> Client:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -179,12 +179,12 @@ class Client:
     ) -> Iterator[tuple[str, dict]]:
         """SSE stream. Yields ``(event, data)`` tuples:
 
-            progress  {phase, status, detail?}
-            retrieval {vector_hits, bm25_hits, tree_hits, ...}
-            delta     {text}
-            done      {text, citations_used, citations_all, stats}
-            trace     {spans: [...]}
-            error     {error, path?, message}
+        progress  {phase, status, detail?}
+        retrieval {vector_hits, bm25_hits, tree_hits, ...}
+        delta     {text}
+        done      {text, citations_used, citations_all, stats}
+        trace     {spans: [...]}
+        error     {error, path?, message}
         """
         payload: dict[str, Any] = {"query": query, "stream": True}
         if conversation_id:
@@ -222,9 +222,9 @@ class Client:
                 if line.startswith(":"):
                     continue  # SSE comment
                 if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
+                    event = line[len("event:") :].strip()
                 elif line.startswith("data:"):
-                    data_buf.append(line[len("data:"):].lstrip())
+                    data_buf.append(line[len("data:") :].lstrip())
 
     # ── Documents ────────────────────────────────────────────────────────
 

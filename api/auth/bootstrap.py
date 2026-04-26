@@ -94,7 +94,7 @@ def bootstrap_if_empty(cfg, store) -> None:
         "=" * 78,
         "  FIRST-RUN ADMIN CREATED — save these, they won't appear again",
         "-" * 78,
-        f"  Username:   admin",
+        "  Username:   admin",
         f"  Password:   {cfg.auth.initial_password}    (change required on first web login)",
         f"  API Token:  {raw}    (use for CLI / SDK bearer)",
         "-" * 78,

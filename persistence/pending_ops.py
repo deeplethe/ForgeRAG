@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session
 
 from .models import PendingFolderOp
 
-
 # ---------------------------------------------------------------------------
 # Query-time OR fallback
 # ---------------------------------------------------------------------------
@@ -48,9 +47,7 @@ def or_fallback_prefixes(sess: Session, path_prefix: str | None) -> list[str]:
     """
     if not path_prefix:
         rows = sess.execute(
-            select(PendingFolderOp.old_path).where(
-                PendingFolderOp.status.in_(("pending", "running"))
-            )
+            select(PendingFolderOp.old_path).where(PendingFolderOp.status.in_(("pending", "running")))
         ).all()
         return [r[0] for r in rows if r[0]]
 
@@ -74,7 +71,7 @@ def or_fallback_prefixes(sess: Session, path_prefix: str | None) -> list[str]:
         if q_pfx == n or q_pfx.startswith(n + "/"):
             # Rebase: the old-world equivalent of q_pfx is
             #   old_path + q_pfx[len(new_path):]
-            rebased = old_path + q_pfx[len(n):]
+            rebased = old_path + q_pfx[len(n) :]
             out.append(rebased)
         # (b) Narrower match: query /Legal, op /Legal/2024 → /LegalV2/2024
         elif n.startswith(q_pfx + "/") or q_pfx == "/":

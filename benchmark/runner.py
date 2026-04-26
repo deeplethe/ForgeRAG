@@ -146,8 +146,8 @@ class BenchmarkRunner:
                 status="generating" if not replay_items else "running",
                 phase=(
                     f"Replaying {initial_total} questions from prior run…"
-                    if replay_items else
-                    "Generating test questions from documents…"
+                    if replay_items
+                    else "Generating test questions from documents…"
                 ),
                 total=initial_total,
                 started_at=time.time(),
@@ -195,7 +195,9 @@ class BenchmarkRunner:
                     BenchmarkItem(
                         idx=i,
                         question=(it.get("question") if isinstance(it, dict) else getattr(it, "question", "")),
-                        ground_truth=(it.get("ground_truth", "") if isinstance(it, dict) else getattr(it, "ground_truth", "")),
+                        ground_truth=(
+                            it.get("ground_truth", "") if isinstance(it, dict) else getattr(it, "ground_truth", "")
+                        ),
                         doc_id=(it.get("doc_id", "") if isinstance(it, dict) else getattr(it, "doc_id", "")),
                         doc_title=(it.get("doc_title", "") if isinstance(it, dict) else getattr(it, "doc_title", "")),
                     )

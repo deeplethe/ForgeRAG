@@ -459,9 +459,7 @@ class NetworkXGraphStore(GraphStore):
                 if eid not in self._graph:
                     continue
                 ent: Entity = self._graph.nodes[eid]["entity"]
-                if prefixes and not any(
-                    _match_any_prefix(ent.source_paths, p) for p in prefixes
-                ):
+                if prefixes and not any(_match_any_prefix(ent.source_paths, p) for p in prefixes):
                     continue
                 results.append((ent, score))
                 if len(results) >= top_k:
@@ -492,9 +490,7 @@ class NetworkXGraphStore(GraphStore):
                 rel = self._rel_cache.get(rid)
                 if rel is None:
                     continue
-                if prefixes and not any(
-                    _match_any_prefix(rel.source_paths, p) for p in prefixes
-                ):
+                if prefixes and not any(_match_any_prefix(rel.source_paths, p) for p in prefixes):
                     continue
                 results.append((rel, score))
                 if len(results) >= top_k:
@@ -517,7 +513,7 @@ class NetworkXGraphStore(GraphStore):
             for nid in self._graph.nodes:
                 ent: Entity = self._graph.nodes[nid]["entity"]
                 new_set = {
-                    (new_prefix + p[len(old_prefix):]) if p == old_prefix or p.startswith(old_prefix + "/") else p
+                    (new_prefix + p[len(old_prefix) :]) if p == old_prefix or p.startswith(old_prefix + "/") else p
                     for p in ent.source_paths
                 }
                 if new_set != ent.source_paths:
@@ -526,7 +522,7 @@ class NetworkXGraphStore(GraphStore):
             for u, v in self._graph.edges:
                 rel: Relation = self._graph.edges[u, v]["relation"]
                 new_set = {
-                    (new_prefix + p[len(old_prefix):]) if p == old_prefix or p.startswith(old_prefix + "/") else p
+                    (new_prefix + p[len(old_prefix) :]) if p == old_prefix or p.startswith(old_prefix + "/") else p
                     for p in rel.source_paths
                 }
                 if new_set != rel.source_paths:
