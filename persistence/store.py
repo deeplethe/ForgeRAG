@@ -65,6 +65,14 @@ class Store:
             expire_on_commit=False,
             future=True,
         )
+        # Mount OTel SQL instrumentation if observability is enabled.
+        # Safe no-op if the tracer provider is the default (tests).
+        try:
+            from config.observability import instrument_sqlalchemy
+
+            instrument_sqlalchemy(self._engine)
+        except Exception as e:
+            log.debug("SQLAlchemy OTel instrumentation skipped: %s", e)
         log.info("Store connected (backend=%s)", self.backend)
 
     def close(self) -> None:
@@ -355,11 +363,17 @@ class Store:
         filename: str,
         format: str,
         status: str = "pending",
+        folder_id: str = "__root__",
+        path: str = "/",
     ) -> None:
         """
         Create a minimal document row so the frontend can see it
         immediately after upload, before ingestion starts.
         If the document already exists this is a no-op.
+
+        ``folder_id`` + ``path`` place the new doc under a specific folder
+        (caller should pre-compute a collision-free path via
+        ``folder_service.unique_document_path``).
         """
         with self._session() as s:
             existing = s.get(Document, doc_id)
@@ -373,6 +387,8 @@ class Store:
                 active_parse_version=1,
                 metadata_json={},
                 status=status,
+                folder_id=folder_id,
+                path=path,
             )
             s.add(row)
 
@@ -810,8 +826,21 @@ class Store:
     # =======================================================================
 
     def list_documents(
-        self, *, limit: int = 50, offset: int = 0, search: str | None = None, status: str | None = None
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        status: str | None = None,
+        folder_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[dict]:
+        """
+        ``folder_id`` and ``path_prefix`` are mutually exclusive: pass the
+        former for exact-folder (direct-children) match using the folder_id
+        index, or the latter for subtree prefix match on ``Document.path``.
+        The route layer picks one based on the caller's ``recursive`` flag.
+        """
         with self._session() as s:
             from sqlalchemy import or_
 
@@ -828,10 +857,26 @@ class Store:
                     q = q.where(Document.status.in_([st.strip() for st in status.split(",")]))
                 else:
                     q = q.where(Document.status == status)
+            if folder_id is not None:
+                q = q.where(Document.folder_id == folder_id)
+            if path_prefix is not None:
+                p = path_prefix.rstrip("/") or "/"
+                if p == "/":
+                    # Root subtree = everything (no filter needed); skip
+                    pass
+                else:
+                    q = q.where(or_(Document.path == p, Document.path.like(p + "/%")))
             rows = s.execute(q.limit(limit).offset(offset)).scalars().all()
             return [_doc_to_dict(r) for r in rows]
 
-    def count_documents(self, *, status: str | None = None, search: str | None = None) -> int:
+    def count_documents(
+        self,
+        *,
+        status: str | None = None,
+        search: str | None = None,
+        folder_id: str | None = None,
+        path_prefix: str | None = None,
+    ) -> int:
         with self._session() as s:
             from sqlalchemy import func as sa_func
             from sqlalchemy import or_
@@ -849,6 +894,12 @@ class Store:
                     q = q.where(Document.status.in_([st.strip() for st in status.split(",")]))
                 else:
                     q = q.where(Document.status == status)
+            if folder_id is not None:
+                q = q.where(Document.folder_id == folder_id)
+            if path_prefix is not None:
+                p = path_prefix.rstrip("/") or "/"
+                if p != "/":
+                    q = q.where(or_(Document.path == p, Document.path.like(p + "/%")))
             return s.execute(q).scalar() or 0
 
     def get_blocks_paginated(self, doc_id: str, parse_version: int, *, limit: int = 100, offset: int = 0) -> list[dict]:
@@ -1041,6 +1092,9 @@ def _doc_to_dict(row: Document) -> dict:
         "pages_json": row.pages_json,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        # Folder membership — needed by workspace UI + retrieval path_filter
+        "folder_id": getattr(row, "folder_id", None),
+        "path": getattr(row, "path", None),
     }
 
 
