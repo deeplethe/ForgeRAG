@@ -79,7 +79,6 @@ class FakeStore:
 
 
 class FakeCfg:
-    provider_id: str | None = None
     model = "fake"
     api_key = ""
     api_key_env = ""

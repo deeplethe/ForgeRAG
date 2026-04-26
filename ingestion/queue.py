@@ -184,12 +184,13 @@ class IngestionQueue:
                             status="error",
                             error_message="No embedding model configured. Set a provider in Architecture → Embedding.",
                         )
+                        _err = RuntimeError("embedder pre-check failed")
                         if job.on_complete:
                             with contextlib.suppress(Exception):
-                                job.on_complete(doc_id, RuntimeError("embedder pre-check failed"))
+                                job.on_complete(doc_id, _err)
                         if self._on_complete:
                             with contextlib.suppress(Exception):
-                                self._on_complete(doc_id)
+                                self._on_complete(doc_id, _err)
                         return
                     api_key = getattr(backend_cfg, "api_key", None)
                     api_key_env = getattr(backend_cfg, "api_key_env", None)
@@ -206,12 +207,13 @@ class IngestionQueue:
                                 status="error",
                                 error_message="Embedding API key missing. Set a provider in Architecture → Embedding.",
                             )
+                            _err = RuntimeError("embedder pre-check failed")
                             if job.on_complete:
                                 with contextlib.suppress(Exception):
-                                    job.on_complete(doc_id, RuntimeError("embedder pre-check failed"))
+                                    job.on_complete(doc_id, _err)
                             if self._on_complete:
                                 with contextlib.suppress(Exception):
-                                    self._on_complete(doc_id)
+                                    self._on_complete(doc_id, _err)
                             return
             except Exception:
                 pass  # don't block on pre-check failures

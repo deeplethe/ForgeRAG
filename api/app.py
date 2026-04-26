@@ -55,16 +55,52 @@ from .routes import chunks as chunk_routes
 from .routes import conversations as conversation_routes
 from .routes import documents as document_routes
 from .routes import files as file_routes
+from .routes import folders as folder_routes
 from .routes import graph as graph_routes
 from .routes import health as health_routes
-from .routes import llm_providers as llm_provider_routes
+from .routes import metrics as metrics_routes
 from .routes import query as query_routes
 from .routes import settings as settings_routes
 from .routes import system as system_routes
 from .routes import traces as trace_routes
+from .routes import trash as trash_routes
 from .state import AppState
 
 log = logging.getLogger(__name__)
+
+
+def _run_startup_probes(state: AppState) -> None:
+    """
+    Call probe() on each pipeline component that has one. Results are
+    recorded in the health registry; failures are logged but don't
+    abort server startup — users should still be able to fix config
+    via the UI even if one provider is down.
+
+    Also runs trash auto-purge once on startup so items older than the
+    retention window are cleaned without requiring a cron task.
+    """
+    try:
+        from retrieval.rerank import make_reranker
+
+        rr = make_reranker(state.cfg.retrieval.rerank)
+        probe = getattr(rr, "probe", None)
+        if callable(probe):
+            try:
+                probe()
+                log.info("reranker probe OK (backend=%s)", state.cfg.retrieval.rerank.backend)
+            except Exception as e:
+                log.warning("reranker probe FAILED: %s", e)
+    except Exception as e:
+        log.warning("skipping reranker probe — cannot construct reranker: %s", e)
+
+    # Startup trash auto-purge. Retention read from config or defaults to 30.
+    try:
+        from persistence.trash_service import TrashService
+
+        retention = int(getattr(getattr(state.cfg, "trash", object()), "retention_days", 30))
+        TrashService(state).auto_purge(retention_days=retention)
+    except Exception as e:
+        log.warning("trash auto-purge on startup failed: %s", e)
 
 
 def create_app(
@@ -94,8 +130,31 @@ def create_app(
         from config.logging import setup_logging
 
         setup_logging(resolved.logging)
+
+        # Observability (OTel) — must happen BEFORE AppState is built so
+        # SQLAlchemy / httpx auto-instrumentation is in place when the
+        # relational store and any outbound HTTP clients come up.
+        from config.observability import bootstrap, instrument_app
+
+        bootstrap(resolved.observability)
+        instrument_app(app)
+
         built = AppState(resolved)
         app.state.app = built
+
+        # Auth: auto-provision the first admin when enabled + DB is empty.
+        # Safe no-op when auth.enabled=false or a user already exists.
+        try:
+            from .auth import bootstrap_if_empty
+
+            bootstrap_if_empty(resolved, built.store)
+        except Exception:
+            logging.getLogger(__name__).exception("auth bootstrap failed")
+
+        # Component probes: surface configuration errors on startup instead
+        # of waiting for the first user query. Health registry records the
+        # result so the Architecture UI can light up red dots immediately.
+        _run_startup_probes(built)
         try:
             yield
         finally:
@@ -104,7 +163,7 @@ def create_app(
     app = FastAPI(
         title="ForgeRAG",
         description="Structure-aware RAG with precise bbox citations.",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
 
@@ -140,6 +199,42 @@ def create_app(
         allow_headers=cors_headers,
     )
 
+    # ------------------------------------------------------------------
+    # Read-only maintenance mode.
+    #
+    # During the nightly maintenance window the server may be placed in
+    # read-only mode so the pending_folder_ops queue can drain without
+    # new writes racing against a cross-store rename. Enable with:
+    #   FORGERAG_READONLY=1
+    # Queries / GETs still work; mutating HTTP methods return 503.
+    # ------------------------------------------------------------------
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    _READONLY_ALLOW_PATHS = (
+        "/api/v1/health",
+        "/api/v1/system/readonly",  # toggle endpoint, if added later
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    )
+    _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+    @app.middleware("http")
+    async def _readonly_gate(request: Request, call_next):
+        if os.environ.get("FORGERAG_READONLY") == "1":
+            if request.method in _WRITE_METHODS and not any(
+                request.url.path.startswith(p) for p in _READONLY_ALLOW_PATHS
+            ):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "read_only_mode",
+                        "message": ("Server is in read-only maintenance mode. Writes are temporarily disabled."),
+                    },
+                )
+        return await call_next(request)
+
     # Register all route modules
     app.include_router(health_routes.router)
     app.include_router(file_routes.router)
@@ -150,9 +245,25 @@ def create_app(
     app.include_router(system_routes.router)
     app.include_router(trace_routes.router)
     app.include_router(settings_routes.router)
-    app.include_router(llm_provider_routes.router)
     app.include_router(graph_routes.router)
     app.include_router(benchmark_routes.router)
+    app.include_router(folder_routes.router)
+    app.include_router(trash_routes.router)
+    app.include_router(metrics_routes.router)
+    from .routes import auth as auth_routes
+
+    app.include_router(auth_routes.router)
+
+    # ── Auth middleware (no-op when auth.enabled=false) ──────────────
+    # Installed LAST so it wraps all routes above. The middleware reads
+    # AppState via app.state.app which is populated in the lifespan; it
+    # gracefully lets requests through until that appears.
+    from .auth import AuthMiddleware
+
+    def _state_getter(request):
+        return getattr(request.app.state, "app", None)
+
+    app.add_middleware(AuthMiddleware, state_getter=_state_getter)
 
     # ------------------------------------------------------------------
     # Serve frontend static files if web/ directory exists.

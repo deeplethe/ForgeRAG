@@ -269,7 +269,15 @@ class TestQuery:
         with open(sample_pdf, "rb") as f:
             c.post("/api/v1/documents/upload-and-ingest", files={"file": ("s.pdf", f, "application/pdf")})
         _wait_ingest(state)
-        r = c.post("/api/v1/query", json={"query": "introduction"})
+        # Test fixtures have no LLM credentials; QU and rerank now run on
+        # every retrieve unless explicitly disabled, so opt out per-request.
+        r = c.post(
+            "/api/v1/query",
+            json={
+                "query": "introduction",
+                "overrides": {"query_understanding": False, "rerank": False},
+            },
+        )
         assert r.status_code == 200
         body = r.json()
         assert body["finish_reason"] in ("stop", "no_context")
@@ -290,18 +298,17 @@ class TestSettings:
         assert r.status_code == 200
         assert "groups" in r.json()
 
-    def test_update_and_reset(self, client):
+    def test_settings_are_read_only(self, client):
+        # All mutating settings routes were removed: yaml is the single
+        # source of truth, edit the file and restart to change config.
         c, *_ = client
-        # Update
         r = c.put(
             "/api/v1/settings/key/retrieval.vector.top_k",
             json={"value_json": 99},
         )
-        assert r.status_code == 200
-        assert r.json()["value_json"] == 99
-        # Reset
+        assert r.status_code == 405
         r = c.delete("/api/v1/settings/key/retrieval.vector.top_k")
-        assert r.status_code == 200
+        assert r.status_code == 405
 
 
 # --- Traces ---

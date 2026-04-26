@@ -65,7 +65,7 @@ export const askQuery = ({ query, filter, conversationId }) =>
  *   else if (event === 'done') showCitations(data.citations_used)
  * }
  */
-export async function* askQueryStream({ query, filter, conversationId, signal }) {
+export async function* askQueryStream({ query, filter, conversationId, signal, pathFilter }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
   const res = await fetch(`${BASE}/api/v1/query`, {
     method: 'POST',
@@ -73,6 +73,7 @@ export async function* askQueryStream({ query, filter, conversationId, signal })
     body: JSON.stringify({
       query,
       filter: filter || null,
+      path_filter: pathFilter || null,
       conversation_id: conversationId || null,
       stream: true,
     }),

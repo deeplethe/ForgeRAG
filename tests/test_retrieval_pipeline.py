@@ -12,12 +12,17 @@ import uuid
 
 import pytest
 
+from api.schemas import QueryOverrides
 from config import RelationalConfig, RetrievalSection, SQLiteConfig
+
+# QU and rerank are now always-on at the cfg level. Tests run with Fake
+# stores and have no LLM credentials, so they explicitly opt out via
+# per-request overrides.
+_TEST_OVERRIDES = QueryOverrides(query_understanding=False, rerank=False)
 from parser.schema import (
     Block,
     BlockType,
     Chunk,
-    Complexity,
     DocFormat,
     DocProfile,
     DocTree,
@@ -138,15 +143,7 @@ def _build_doc(
             page_count=1,
             format=DocFormat.PDF,
             file_size_bytes=100,
-            text_density=50.0,
-            scanned_ratio=0.0,
-            has_embedded_toc=False,
-            has_multicolumn=False,
-            table_density=0.0,
-            figure_count=1,
             heading_hint_strength=0.5,
-            complexity=Complexity.SIMPLE,
-            needed_tier=0,
         ),
         parse_trace=ParseTrace(),
         pages=[Page(page_no=1, width=595, height=842, block_ids=[b.block_id for b in blocks])],
@@ -264,7 +261,7 @@ class TestPipeline:
             relational_store=rel,
             bm25_index=bm25,
         )
-        result = pipeline.retrieve("BM25 retrieval")
+        result = pipeline.retrieve("BM25 retrieval", overrides=_TEST_OVERRIDES)
         assert result.query == "BM25 retrieval"
         assert result.stats["vector_hits"] >= 0
         # Tree path must produce hits via BM25 fallback
@@ -285,7 +282,7 @@ class TestPipeline:
             relational_store=rel,
             bm25_index=bm25,
         )
-        result = pipeline.retrieve("BM25 fusion")
+        result = pipeline.retrieve("BM25 fusion", overrides=_TEST_OVERRIDES)
         # Some chunk should have been hit by one of the retrieval paths.
         # With new architecture: tree + KG are primary, vector/bm25 are
         # fallback when tree produces nothing.
@@ -309,7 +306,7 @@ class TestPipeline:
             relational_store=rel,
             bm25_index=bm25,
         )
-        result = pipeline.retrieve("RRF fusion")
+        result = pipeline.retrieve("RRF fusion", overrides=_TEST_OVERRIDES)
         ctypes = {m.chunk.content_type for m in result.merged if m.chunk}
         # Body chunks are text; crossref expansion should also bring the
         # figure chunk. If not directly, sibling expansion will (same node).

@@ -30,22 +30,17 @@ router = APIRouter(prefix="/api/v1/system", tags=["system"])
 
 @router.post("/restart")
 def restart_server(state: AppState = Depends(get_state)):
-    """Apply DB settings then restart the server process.
+    """Restart the server process to pick up yaml changes.
 
-    Works by sending SIGTERM to the current process after a short delay.
-    Uvicorn's process manager (or Docker/systemd) will restart it.
-    With ``--workers N``, only the handling worker dies and is respawned.
+    Sends SIGTERM to the current process after a short delay — uvicorn
+    (or Docker/systemd) restarts it. With ``--workers N``, only the
+    handling worker dies and is respawned.
     """
     import os
     import signal
     import threading
 
-    from config.settings_manager import apply_overrides, resolve_providers
-
-    # Apply settings first so the restart picks them up
-    count = apply_overrides(state.cfg, state.store)
-    resolved = resolve_providers(state.cfg, state.store)
-    log.info("restart: applied %d overrides, %d providers; sending SIGTERM in 1s", count, resolved)
+    log.info("restart: sending SIGTERM in 1s to pick up yaml changes")
 
     def _kill():
         import time
@@ -54,7 +49,7 @@ def restart_server(state: AppState = Depends(get_state)):
         os.kill(os.getpid(), signal.SIGTERM)
 
     threading.Thread(target=_kill, daemon=True).start()
-    return {"status": "restarting", "applied": count, "providers_resolved": resolved}
+    return {"status": "restarting"}
 
 
 # ---------------------------------------------------------------------------
@@ -116,18 +111,23 @@ def rebuild_bm25(state: AppState = Depends(get_state)):
 @router.get("/retrieval-status", response_model=RetrievalStatus)
 def retrieval_status(state: AppState = Depends(get_state)):
     cfg = state.cfg.retrieval
+    # query_understanding / rerank / kg_path / kg_extraction no longer
+    # carry a cfg.enabled toggle. They run whenever their dependencies
+    # are configured: KG paths require state.graph_store; QU + rerank
+    # require LLM credentials (and we treat "model is set" as "configured").
+    has_graph = state.graph_store is not None
     return RetrievalStatus(
         vector_enabled=cfg.vector.enabled,
         bm25_enabled=cfg.bm25.enabled,
         tree_enabled=cfg.tree_path.enabled,
         tree_llm_nav_enabled=cfg.tree_path.llm_nav_enabled,
-        query_understanding_enabled=cfg.query_understanding.enabled,
-        rerank_enabled=cfg.rerank.enabled,
+        query_understanding_enabled=True,
+        rerank_enabled=True,
         descendant_expansion_enabled=cfg.merge.descendant_expansion_enabled,
         sibling_expansion_enabled=cfg.merge.sibling_expansion_enabled,
         crossref_expansion_enabled=cfg.merge.crossref_expansion_enabled,
-        kg_enabled=cfg.kg_path.enabled,
-        kg_extraction_enabled=cfg.kg_extraction.enabled,
+        kg_enabled=has_graph,
+        kg_extraction_enabled=has_graph,
     )
 
 
@@ -220,8 +220,8 @@ def test_connection(
 class InfrastructureInfo(BaseModel):
     storage_mode: str  # local / s3 / oss
     storage_root: str  # path or bucket
-    relational_backend: str  # sqlite / postgres / mysql
-    relational_path: str  # db path or host:port/db
+    relational_backend: str  # postgres (production); sqlite only in test fixtures
+    relational_path: str  # host:port/db
     vector_backend: str  # pgvector / chromadb
     vector_detail: str  # collection or index info
     graph_backend: str = ""  # networkx / neo4j / none
@@ -249,9 +249,6 @@ def infrastructure(state: AppState = Depends(get_state)):
     elif r_backend == "postgres" and cfg.persistence.relational.postgres:
         pg = cfg.persistence.relational.postgres
         r_path = f"{pg.host}:{pg.port}/{pg.database}"
-    elif r_backend == "mysql" and cfg.persistence.relational.mysql:
-        my = cfg.persistence.relational.mysql
-        r_path = f"{my.host}:{my.port}/{my.database}"
 
     # Vector
     v_backend = cfg.persistence.vector.backend

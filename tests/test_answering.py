@@ -193,7 +193,12 @@ class FakeRetrievalPipeline:
         self._citations = citations
         self.cfg = None
 
-    def retrieve(self, query, *, filter=None, chat_history=None, precomputed_plan=None):
+    def analyze_query(self, query, *, chat_history=None, strict=True):
+        # AnsweringPipeline now always calls analyze_query (no cfg toggle).
+        # Return None to signal "no QU result" — caller proceeds without one.
+        return None
+
+    def retrieve(self, query, *, filter=None, chat_history=None, precomputed_plan=None, overrides=None):
         return RetrievalResult(
             query=query,
             merged=self._merged,

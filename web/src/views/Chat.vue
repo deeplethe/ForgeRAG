@@ -1,8 +1,8 @@
 <script>
 // ── Module-level state: survives component unmount/remount ──
-// When the user navigates away (e.g. to Architecture) and back,
-// the component is destroyed and recreated, but these refs persist
-// so the streaming progress and messages are still visible.
+// When the user navigates to another tab and back, the component is
+// destroyed and recreated, but these refs persist so the streaming
+// progress and messages are still visible.
 import { ref } from 'vue'
 
 export default { name: 'ChatView' }
@@ -35,13 +35,28 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 
 <script setup>
 import { ref, reactive, nextTick, computed, inject, watch, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { askQueryStream, createConversation, addMessage, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
 import { renderMarkdown } from '@/utils/renderMarkdown'
 import PdfViewer from '@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
+import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
+
+// Path scoping: read `path_filter` from URL (e.g. ?path_filter=/legal).
+// User can clear the chip via the Chat UI.
+const route = useRoute()
+const router = useRouter()
+const pathFilter = ref(route.query.path_filter || '')
+watch(() => route.query.path_filter, v => { pathFilter.value = v || '' })
+function clearPathFilter() {
+  pathFilter.value = ''
+  const q = { ...route.query }
+  delete q.path_filter
+  router.replace({ query: q })
+}
 
 // Bind module-level refs to local names for template access
 const msgs = _msgs
@@ -248,7 +263,7 @@ Every citation in ForgeRAG's answers carries **page number + bounding box coordi
 | **Advanced** | + KG extraction, multi-hop reasoning, VLM image enrichment | Toggle features on |
 | **Production** | + PostgreSQL/pgvector, S3, Neo4j, Docker one-click deploy | Setup wizard |
 
-Every component is independently toggleable. All settings — LLM providers, retrieval parameters, parsing strategies — are configurable **at runtime** through the web UI. No restart required.
+Every component is independently toggleable. All settings — LLM providers, retrieval parameters, parsing strategies — live in \`forgerag.yaml\` (or \`myconfig.yaml\` for secrets); edit and restart to change.
 
 Upload PDFs, DOCX, PPTX, XLSX, HTML, or Markdown. Ask questions. Get grounded answers with highlighted source regions you can actually verify.`,
   },
@@ -295,7 +310,7 @@ Both use **knowledge graphs** to enhance RAG, but their architectural philosophi
 1. **Complementary vs Dependent** — ForgeRAG's graph is one of two reasoning paths (alongside tree navigation); turn it off and retrieval still works via tree + BM25/vector fallback. GraphRAG's graph is the core; no graph, no retrieval
 2. **Structure + Semantics** — ForgeRAG understands both document structure (tree) and semantic relations (graph); GraphRAG has only the semantic graph
 3. **Precise Citations** — ForgeRAG traces back to the exact location in a document (pixel-level); GraphRAG traces to community summaries
-4. **Progressive** — ForgeRAG starts zero-config and grows with your needs; GraphRAG requires full graph construction before any query`,
+4. **Opt-in graph construction** — ForgeRAG's KG extraction is off by default (toggle \`retrieval.kg_extraction.enabled\`); GraphRAG requires full graph construction before any query`,
   },
 ]
 
@@ -345,7 +360,8 @@ async function send(text) {
   abortCtrl.value = new AbortController()
   try {
     let fin = null
-    for await (const { event, data } of askQueryStream({ query: q, conversationId: convId.value, signal: abortCtrl.value.signal })) {
+    let traceSpans = null   // OTel spans payload from the "trace" SSE event
+    for await (const { event, data } of askQueryStream({ query: q, conversationId: convId.value, pathFilter: pathFilter.value || null, signal: abortCtrl.value.signal })) {
       // If conversation switched away, stop updating UI but don't abort request
       if (myGenId !== _streamGenId) break
       if (event === 'progress') {
@@ -360,6 +376,7 @@ async function send(text) {
         scroll()
       } else if (event === 'retrieval') { retInfo.value = data }
       else if (event === 'delta') { streamText.value += data.text; scroll() }
+      else if (event === 'trace') { traceSpans = data }   // OTel {spans: [...]}
       else if (event === 'error') {
         const errMsg = typeof data === 'string' ? data : (data?.error || data?.detail || 'Unknown error')
         fin = { text: `Error: ${errMsg}`, citations_used: null, stats: null, trace_id: null }
@@ -371,7 +388,14 @@ async function send(text) {
       }
     }
     if (fin && myGenId === _streamGenId) {
-      msgs.value.push({ role: 'assistant', content: fin.text, citations: fin.citations_used, stats: fin.stats, traceId: fin.trace_id || null })
+      msgs.value.push({
+        role: 'assistant',
+        content: fin.text,
+        citations: fin.citations_used,
+        stats: fin.stats,
+        trace: traceSpans,
+        traceId: fin.trace_id || null,
+      })
       streamText.value = ''
     }
   } catch (e) {
@@ -523,15 +547,15 @@ watch(activeChunkId, (newChunkId) => {
 })
 
 /* ── Trace ── */
-function fmtMs(ms) { return ms === 0 ? '<1' : ms == null ? '-' : String(ms) }
-
-function openTrace(stats) {
-  trace.data = stats?.retrieval?.trace || null
-  trace.generation = stats ? {
-    model: stats.retrieval?.trace?.generation?.model || null,
-    latency_ms: stats.generate_ms || 0,
-    context_chunks: stats.context_chunks || 0,
-  } : null
+/**
+ * Trace display. `trace.data` is the OTel payload:
+ *   { spans: [{ name, parent_span_id, duration_ms, attributes, events, ... }] }
+ * Live queries carry this in the message itself (`m.trace`); historical
+ * messages only have a `traceId` so we fetch from /traces/{id} on click.
+ */
+function openTraceFromMessage(m) {
+  // m.trace = raw OTel payload from the live response / SSE "trace" event
+  trace.data = m.trace || null
   trace.show = true
 }
 
@@ -539,44 +563,18 @@ async function openTraceById(traceId) {
   if (!traceId) return
   try {
     const t = await getTrace(traceId)
+    // Persisted trace_json holds the same {spans: [...]} shape written
+    // by AnsweringPipeline._persist_trace.
     trace.data = t.trace_json || null
-    trace.generation = t.trace_json?.generation ? {
-      model: t.answer_model || t.trace_json.generation.model,
-      latency_ms: t.trace_json.generation.latency_ms || 0,
-      context_chunks: t.trace_json.generation.context_chunks || 0,
-    } : null
     trace.show = true
   } catch (e) { console.warn('Failed to load trace:', e) }
 }
 
 function onTraceClick(m) {
   if (trace.show) { trace.show = false; return }
-  if (m.stats) openTrace(m.stats)
+  if (m.trace) openTraceFromMessage(m)
   else if (m.traceId) openTraceById(m.traceId)
   else console.warn('No trace available for this message')
-}
-
-function buildPhaseGroups(phases) {
-  if (!phases?.length) return []
-  const sorted = [...phases].sort((a, b) => (a.started_at_ms || 0) - (b.started_at_ms || 0))
-  // Group phases that START within a small window of each other (truly parallel).
-  // This avoids grouping sequential phases (like Tree) with long-running parallel
-  // phases (like KG) just because their time ranges overlap.
-  const PARALLEL_WINDOW_MS = 100
-  const groups = []
-  let curGroup = { phases: [sorted[0]] }
-  for (let i = 1; i < sorted.length; i++) {
-    const p = sorted[i]
-    const groupStart = curGroup.phases[0].started_at_ms || 0
-    if ((p.started_at_ms || 0) - groupStart <= PARALLEL_WINDOW_MS) {
-      curGroup.phases.push(p)
-    } else {
-      groups.push(curGroup)
-      curGroup = { phases: [p] }
-    }
-  }
-  groups.push(curGroup)
-  return groups.map(g => ({ parallel: g.phases.length > 1, phases: g.phases }))
 }
 
 // Don't abort or stop timer on unmount — streaming state is module-level
@@ -584,98 +582,28 @@ function buildPhaseGroups(phases) {
 </script>
 
 <template>
-  <div class="flex h-full">
-    <!-- ═══════ Trace panel ═══════ -->
+  <div class="flex h-full relative">
+    <!-- Path-filter chip: visible only when @path scoping is active -->
+    <div
+      v-if="pathFilter"
+      class="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-[11px] text-brand select-none"
+      :title="'Chat scoped to: ' + pathFilter"
+    >
+      <span>📁 Scope:</span>
+      <span class="font-mono truncate max-w-[320px]">{{ pathFilter }}</span>
+      <button class="text-brand/80 hover:text-brand ml-1" @click="clearPathFilter" title="Clear scope">✕</button>
+    </div>
+
+    <!-- ═══════ Trace panel (OTel waterfall) ═══════ -->
     <Transition name="slide-trace">
-      <div v-if="trace.show" class="w-72 shrink-0 border-r border-line flex flex-col bg-bg overflow-hidden">
+      <div v-if="trace.show" class="w-96 shrink-0 border-r border-line flex flex-col bg-bg overflow-hidden">
         <div class="flex-none flex items-center justify-between px-4 py-2.5 border-b border-line">
-          <span class="text-[11px] text-t1 font-medium">Retrieval Trace</span>
+          <span class="text-[11px] text-t1 font-medium">Trace</span>
           <button @click="trace.show = false" class="p-1 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
-
-        <div class="flex-1 overflow-y-auto px-4 py-3">
-          <template v-if="trace.data">
-            <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-t3 mb-4 pb-3 border-b border-line">
-              <span><b class="text-t2">{{ fmtMs(trace.data.total_ms) }}</b>ms total</span>
-              <span><b class="text-t2">{{ trace.data.total_llm_calls || 0 }}</b> LLM calls</span>
-              <span v-if="trace.data.total_llm_ms"><b class="text-t2">{{ fmtMs(trace.data.total_llm_ms) }}</b>ms LLM</span>
-            </div>
-
-            <div class="space-y-2">
-              <template v-for="(group, gi) in buildPhaseGroups(trace.data.phases)" :key="gi">
-                <div v-if="group.parallel" class="relative pl-3 border-l-2 border-brand/30 mb-1">
-                  <div class="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-brand/40"></div>
-                  <div class="text-[8px] text-brand/60 uppercase tracking-wider mb-1.5 font-medium">parallel</div>
-                  <div class="space-y-2">
-                    <div v-for="p in group.phases" :key="p.name" class="py-1">
-                      <div class="flex items-center justify-between">
-                        <span class="text-[10px] text-t1 font-medium">{{ p.name }}</span>
-                        <span class="text-[9px] text-t3 font-mono tabular-nums">{{ fmtMs(p.duration_ms) }}ms</span>
-                      </div>
-                      <div class="h-1 rounded-full mt-1 bg-bg3 relative">
-                        <div class="h-full rounded-full bg-brand/60 absolute top-0"
-                          :style="{ left: ((p.started_at_ms||0)/(trace.data.total_ms||1)*100)+'%', width: Math.max(2,(p.duration_ms||0)/(trace.data.total_ms||1)*100)+'%' }"></div>
-                      </div>
-                      <div v-if="p.outputs && Object.keys(p.outputs).length" class="mt-1 space-y-px">
-                        <div v-for="(v, k) in p.outputs" :key="k" class="text-[9px] text-t3 flex justify-between">
-                          <span>{{ k }}</span><span class="text-t2 font-mono">{{ v }}</span>
-                        </div>
-                      </div>
-                      <div v-if="p.llm_calls?.length" class="mt-1 space-y-0.5">
-                        <div v-for="(lc, li) in p.llm_calls" :key="li" class="text-[9px] flex items-center gap-2 text-t3">
-                          <span class="text-brand/70 text-[8px] font-medium">LLM</span>
-                          <span class="truncate flex-1">{{ lc.purpose || lc.model }}</span>
-                          <span class="text-t2 font-mono shrink-0">{{ fmtMs(lc.latency_ms) }}ms</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-else v-for="p in group.phases" :key="p.name" class="py-1">
-                  <div class="flex items-center justify-between">
-                    <span class="text-[10px] text-t1 font-medium">{{ p.name }}</span>
-                    <span class="text-[9px] text-t3 font-mono tabular-nums">{{ fmtMs(p.duration_ms) }}ms</span>
-                  </div>
-                  <div class="h-1 rounded-full mt-1 bg-bg3 relative">
-                    <div class="h-full rounded-full bg-brand absolute top-0"
-                      :style="{ left: ((p.started_at_ms||0)/(trace.data.total_ms||1)*100)+'%', width: Math.max(2,(p.duration_ms||0)/(trace.data.total_ms||1)*100)+'%' }"></div>
-                  </div>
-                  <div v-if="p.outputs && Object.keys(p.outputs).length" class="mt-1 space-y-px">
-                    <div v-for="(v, k) in p.outputs" :key="k" class="text-[9px] text-t3 flex justify-between">
-                      <span>{{ k }}</span><span class="text-t2 font-mono">{{ v }}</span>
-                    </div>
-                  </div>
-                  <div v-if="p.llm_calls?.length" class="mt-1 space-y-0.5">
-                    <div v-for="(lc, li) in p.llm_calls" :key="li" class="text-[9px] flex items-center gap-2 text-t3">
-                      <span class="text-brand/70 text-[8px] font-medium">LLM</span>
-                      <span class="truncate flex-1">{{ lc.purpose || lc.model }}</span>
-                      <span class="text-t2 font-mono shrink-0">{{ fmtMs(lc.latency_ms) }}ms</span>
-                    </div>
-                  </div>
-                </div>
-              </template>
-            </div>
-
-            <div v-if="trace.generation" class="mt-4 pt-3 border-t border-line">
-              <div class="text-[9px] text-t3 uppercase tracking-widest mb-1.5 font-medium">Generation</div>
-              <div class="space-y-px text-[9px]">
-                <div v-if="trace.generation.model" class="flex justify-between text-t3">
-                  <span>model</span><span class="text-t2 font-mono">{{ trace.generation.model }}</span>
-                </div>
-                <div class="flex justify-between text-t3">
-                  <span>latency</span><span class="text-t2 font-mono">{{ fmtMs(trace.generation.latency_ms) }}ms</span>
-                </div>
-                <div class="flex justify-between text-t3">
-                  <span>context chunks</span><span class="text-t2 font-mono">{{ trace.generation.context_chunks }}</span>
-                </div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="text-[10px] text-t3 text-center py-6">No trace data available</div>
-        </div>
+        <OtelTraceViewer :trace="trace.data" />
       </div>
     </Transition>
 
@@ -687,7 +615,7 @@ function buildPhaseGroups(phases) {
         <div class="flex-[3]"></div>
         <div class="pl-8 pr-16">
           <div class="max-w-2xl mx-auto text-center">
-            <img src="/text_logo.png" alt="ForgeRAG" class="h-8 mx-auto mb-3" />
+            <h1 class="wordmark text-[32px] mb-2">ForgeRAG</h1>
             <p class="text-sm text-t3 mb-8">Multi-path fusion · Tree reasoning · Knowledge graph · Pixel-precise citations</p>
             <div class="flex flex-wrap justify-center gap-2 mb-10">
               <button v-for="p in presetQA" :key="p.q" @click="send(p.q)"
@@ -741,7 +669,7 @@ function buildPhaseGroups(phases) {
                     <span v-if="c.chunk_id" class="text-t3 font-mono truncate max-w-48">{{ c.chunk_id }}</span>
                   </button>
                 </div>
-                <button v-if="m.role === 'assistant' && (m.stats || m.traceId)"
+                <button v-if="m.role === 'assistant' && (m.trace || m.traceId)"
                   class="mt-1.5 text-[10px] text-t3 invisible group-hover:visible flex items-center gap-1"
                   @click="onTraceClick(m)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>

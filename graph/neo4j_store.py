@@ -44,6 +44,7 @@ def _entity_from_record(rec: dict[str, Any]) -> Entity:
         description=rec.get("description", ""),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        source_paths=set(rec.get("source_paths", [])),
         name_embedding=list(rec.get("name_embedding") or []),
     )
 
@@ -58,6 +59,7 @@ def _relation_from_record(rec: dict[str, Any]) -> Relation:
         weight=rec.get("weight", 1.0),
         source_doc_ids=set(rec.get("source_doc_ids", [])),
         source_chunk_ids=set(rec.get("source_chunk_ids", [])),
+        source_paths=set(rec.get("source_paths", [])),
         description_embedding=list(rec.get("description_embedding") or []),
     )
 
@@ -210,6 +212,7 @@ class Neo4jGraphStore(GraphStore):
             e.description     = $description,
             e.source_doc_ids  = $source_doc_ids,
             e.source_chunk_ids = $source_chunk_ids,
+            e.source_paths    = $source_paths,
             e._type_counts    = $entity_type + ':1',
             e.name_embedding  = $name_embedding
         ON MATCH SET
@@ -219,6 +222,7 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids  = apoc.coll.toSet(e.source_doc_ids + $source_doc_ids),
             e.source_chunk_ids = apoc.coll.toSet(e.source_chunk_ids + $source_chunk_ids),
+            e.source_paths    = apoc.coll.toSet(coalesce(e.source_paths, []) + $source_paths),
             e._type_counts    = e._type_counts + ',' + $entity_type + ':1',
             e.name_embedding  = coalesce($name_embedding, e.name_embedding)
         """
@@ -232,6 +236,7 @@ class Neo4jGraphStore(GraphStore):
             e.description      = $description,
             e.source_doc_ids   = $source_doc_ids,
             e.source_chunk_ids = $source_chunk_ids,
+            e.source_paths     = $source_paths,
             e.name_embedding   = $name_embedding
         ON MATCH SET
             e.description = CASE
@@ -240,6 +245,7 @@ class Neo4jGraphStore(GraphStore):
             END,
             e.source_doc_ids   = e.source_doc_ids + [x IN $source_doc_ids WHERE NOT x IN e.source_doc_ids],
             e.source_chunk_ids = e.source_chunk_ids + [x IN $source_chunk_ids WHERE NOT x IN e.source_chunk_ids],
+            e.source_paths     = coalesce(e.source_paths, []) + [x IN $source_paths WHERE NOT x IN coalesce(e.source_paths, [])],
             e.entity_type      = $entity_type,
             e.name_embedding   = coalesce($name_embedding, e.name_embedding)
         """
@@ -250,6 +256,7 @@ class Neo4jGraphStore(GraphStore):
             "description": entity.description,
             "source_doc_ids": sorted(entity.source_doc_ids),
             "source_chunk_ids": sorted(entity.source_chunk_ids),
+            "source_paths": sorted(entity.source_paths),
             # None tells Neo4j to leave the existing value alone (via coalesce).
             "name_embedding": list(entity.name_embedding) if entity.name_embedding else None,
         }
@@ -286,6 +293,7 @@ class Neo4jGraphStore(GraphStore):
             r.weight            = $weight,
             r.source_doc_ids    = $source_doc_ids,
             r.source_chunk_ids  = $source_chunk_ids,
+            r.source_paths      = $source_paths,
             r.description_embedding = $description_embedding
         ON MATCH SET
             r.description = CASE
@@ -295,6 +303,7 @@ class Neo4jGraphStore(GraphStore):
             r.weight            = r.weight + $weight,
             r.source_doc_ids    = r.source_doc_ids + [x IN $source_doc_ids WHERE NOT x IN r.source_doc_ids],
             r.source_chunk_ids  = r.source_chunk_ids + [x IN $source_chunk_ids WHERE NOT x IN r.source_chunk_ids],
+            r.source_paths      = coalesce(r.source_paths, []) + [x IN $source_paths WHERE NOT x IN coalesce(r.source_paths, [])],
             r.keywords          = CASE
                 WHEN r.keywords CONTAINS $keywords THEN r.keywords
                 ELSE r.keywords + ', ' + $keywords
@@ -310,6 +319,7 @@ class Neo4jGraphStore(GraphStore):
             "weight": relation.weight,
             "source_doc_ids": sorted(relation.source_doc_ids),
             "source_chunk_ids": sorted(relation.source_chunk_ids),
+            "source_paths": sorted(relation.source_paths),
             "description_embedding": list(relation.description_embedding) if relation.description_embedding else None,
         }
         with self._driver.session(database=self._database) as s:
@@ -325,7 +335,8 @@ class Neo4jGraphStore(GraphStore):
         RETURN e.entity_id AS entity_id, e.name AS name,
                e.entity_type AS entity_type, e.description AS description,
                e.source_doc_ids AS source_doc_ids,
-               e.source_chunk_ids AS source_chunk_ids
+               e.source_chunk_ids AS source_chunk_ids,
+               e.source_paths AS source_paths
         """
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, entity_id=entity_id)
@@ -342,7 +353,8 @@ class Neo4jGraphStore(GraphStore):
         RETURN e.entity_id AS entity_id, e.name AS name,
                e.entity_type AS entity_type, e.description AS description,
                e.source_doc_ids AS source_doc_ids,
-               e.source_chunk_ids AS source_chunk_ids
+               e.source_chunk_ids AS source_chunk_ids,
+               e.source_paths AS source_paths
         """
         out: dict[str, Entity] = {}
         with self._driver.session(database=self._database) as s:
@@ -364,7 +376,8 @@ class Neo4jGraphStore(GraphStore):
                node.entity_type AS entity_type,
                node.description AS description,
                node.source_doc_ids AS source_doc_ids,
-               node.source_chunk_ids AS source_chunk_ids
+               node.source_chunk_ids AS source_chunk_ids,
+               node.source_paths AS source_paths
         """
         cypher_no_apoc = f"""
         MATCH (start:KGEntity {{entity_id: $entity_id}})
@@ -375,7 +388,8 @@ class Neo4jGraphStore(GraphStore):
                neighbor.entity_type AS entity_type,
                neighbor.description AS description,
                neighbor.source_doc_ids AS source_doc_ids,
-               neighbor.source_chunk_ids AS source_chunk_ids
+               neighbor.source_chunk_ids AS source_chunk_ids,
+               neighbor.source_paths AS source_paths
         """
         with self._driver.session(database=self._database) as s:
             try:
@@ -397,7 +411,8 @@ class Neo4jGraphStore(GraphStore):
                r.keywords AS keywords, r.description AS description,
                r.weight AS weight,
                r.source_doc_ids AS source_doc_ids,
-               r.source_chunk_ids AS source_chunk_ids
+               r.source_chunk_ids AS source_chunk_ids,
+               r.source_paths AS source_paths
         """
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, entity_id=entity_id)
@@ -407,6 +422,8 @@ class Neo4jGraphStore(GraphStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine search over entity name embeddings using Neo4j's
         native HNSW vector index (``kg_entity_embedding``).
@@ -414,25 +431,66 @@ class Neo4jGraphStore(GraphStore):
         Cross-lingual by virtue of a multilingual embedder: a Chinese
         query vector lands near the English name vector it encodes.
 
+        When *path_prefix* is passed the vector query over-fetches
+        by 5× and applies a WHERE over ``node.source_paths`` so the
+        filter happens inside one Cypher round-trip rather than via a
+        client-side post-filter.
+
         Returns ``[]`` if the index doesn't exist (Neo4j < 5.11, or
         no embedded entities yet) or if the query dimension doesn't
         match — failures are logged but don't raise.
         """
         if not query_embedding:
             return []
-        cypher = """
-        CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
-        YIELD node, score
-        RETURN node.entity_id AS entity_id, node.name AS name,
-               node.entity_type AS entity_type, node.description AS description,
-               node.source_doc_ids AS source_doc_ids,
-               node.source_chunk_ids AS source_chunk_ids,
-               score
-        """
+        # Collapse path_prefix + path_prefixes_or into a single list
+        # passed to Cypher as $prefixes — the query accepts any match,
+        # which also cleanly handles the OR-fallback case (pending
+        # rename not yet drained).
+        prefixes: list[str] = []
+        if path_prefix:
+            prefixes.append(path_prefix.rstrip("/") or "/")
+        if path_prefixes_or:
+            prefixes.extend(p.rstrip("/") or "/" for p in path_prefixes_or)
+        if prefixes:
+            fetch_k = int(top_k) * 5
+            cypher = """
+            CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
+            YIELD node, score
+            WITH node, score
+            WHERE any(pfx IN $prefixes WHERE
+                     any(p IN coalesce(node.source_paths, [])
+                         WHERE p = pfx OR p STARTS WITH pfx + '/'))
+            RETURN node.entity_id AS entity_id, node.name AS name,
+                   node.entity_type AS entity_type, node.description AS description,
+                   node.source_doc_ids AS source_doc_ids,
+                   node.source_chunk_ids AS source_chunk_ids,
+                   node.source_paths AS source_paths,
+                   score
+            ORDER BY score DESC
+            LIMIT $final_k
+            """
+            params = {
+                "k": fetch_k,
+                "vec": list(query_embedding),
+                "prefixes": prefixes,
+                "final_k": int(top_k),
+            }
+        else:
+            cypher = """
+            CALL db.index.vector.queryNodes('kg_entity_embedding', $k, $vec)
+            YIELD node, score
+            RETURN node.entity_id AS entity_id, node.name AS name,
+                   node.entity_type AS entity_type, node.description AS description,
+                   node.source_doc_ids AS source_doc_ids,
+                   node.source_chunk_ids AS source_chunk_ids,
+                   node.source_paths AS source_paths,
+                   score
+            """
+            params = {"k": int(top_k), "vec": list(query_embedding)}
         results: list[tuple[Entity, float]] = []
         try:
             with self._driver.session(database=self._database) as s:
-                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                for rec in s.run(cypher, **params):
                     ent = _entity_from_record(dict(rec))
                     results.append((ent, float(rec["score"])))
         except Exception as e:
@@ -444,32 +502,73 @@ class Neo4jGraphStore(GraphStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         """Cosine search over relation description embeddings using
         Neo4j's native relationship vector index (``kg_relation_embedding``).
 
         Requires Neo4j 5.15+ (relationship vector indexes landed in
         that release). Returns ``[]`` if unavailable.
+
+        When *path_prefix* is given, over-fetches 5× and applies a
+        server-side ``WHERE`` on ``relationship.source_paths``.
         """
         if not query_embedding:
             return []
-        cypher = """
-        CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
-        YIELD relationship, score
-        RETURN relationship.relation_id AS relation_id,
-               startNode(relationship).entity_id AS source_entity,
-               endNode(relationship).entity_id AS target_entity,
-               relationship.keywords AS keywords,
-               relationship.description AS description,
-               relationship.weight AS weight,
-               relationship.source_doc_ids AS source_doc_ids,
-               relationship.source_chunk_ids AS source_chunk_ids,
-               score
-        """
+        prefixes: list[str] = []
+        if path_prefix:
+            prefixes.append(path_prefix.rstrip("/") or "/")
+        if path_prefixes_or:
+            prefixes.extend(p.rstrip("/") or "/" for p in path_prefixes_or)
+        if prefixes:
+            fetch_k = int(top_k) * 5
+            cypher = """
+            CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
+            YIELD relationship, score
+            WITH relationship, score
+            WHERE any(pfx IN $prefixes WHERE
+                     any(p IN coalesce(relationship.source_paths, [])
+                         WHERE p = pfx OR p STARTS WITH pfx + '/'))
+            RETURN relationship.relation_id AS relation_id,
+                   startNode(relationship).entity_id AS source_entity,
+                   endNode(relationship).entity_id AS target_entity,
+                   relationship.keywords AS keywords,
+                   relationship.description AS description,
+                   relationship.weight AS weight,
+                   relationship.source_doc_ids AS source_doc_ids,
+                   relationship.source_chunk_ids AS source_chunk_ids,
+                   relationship.source_paths AS source_paths,
+                   score
+            ORDER BY score DESC
+            LIMIT $final_k
+            """
+            params = {
+                "k": fetch_k,
+                "vec": list(query_embedding),
+                "prefixes": prefixes,
+                "final_k": int(top_k),
+            }
+        else:
+            cypher = """
+            CALL db.index.vector.queryRelationships('kg_relation_embedding', $k, $vec)
+            YIELD relationship, score
+            RETURN relationship.relation_id AS relation_id,
+                   startNode(relationship).entity_id AS source_entity,
+                   endNode(relationship).entity_id AS target_entity,
+                   relationship.keywords AS keywords,
+                   relationship.description AS description,
+                   relationship.weight AS weight,
+                   relationship.source_doc_ids AS source_doc_ids,
+                   relationship.source_chunk_ids AS source_chunk_ids,
+                   relationship.source_paths AS source_paths,
+                   score
+            """
+            params = {"k": int(top_k), "vec": list(query_embedding)}
         results: list[tuple[Relation, float]] = []
         try:
             with self._driver.session(database=self._database) as s:
-                for rec in s.run(cypher, k=int(top_k), vec=list(query_embedding)):
+                for rec in s.run(cypher, **params):
                     rel = _relation_from_record(dict(rec))
                     results.append((rel, float(rec["score"])))
         except Exception as e:
@@ -491,7 +590,8 @@ class Neo4jGraphStore(GraphStore):
                node.entity_type AS entity_type,
                node.description AS description,
                node.source_doc_ids AS source_doc_ids,
-               node.source_chunk_ids AS source_chunk_ids
+               node.source_chunk_ids AS source_chunk_ids,
+               node.source_paths AS source_paths
         ORDER BY score DESC
         LIMIT $limit
         """
@@ -501,7 +601,8 @@ class Neo4jGraphStore(GraphStore):
         RETURN e.entity_id AS entity_id, e.name AS name,
                e.entity_type AS entity_type, e.description AS description,
                e.source_doc_ids AS source_doc_ids,
-               e.source_chunk_ids AS source_chunk_ids
+               e.source_chunk_ids AS source_chunk_ids,
+               e.source_paths AS source_paths
         LIMIT $limit
         """
         with self._driver.session(database=self._database) as s:
@@ -576,6 +677,60 @@ class Neo4jGraphStore(GraphStore):
             if rec is None:
                 return {"nodes": [], "edges": []}
             return {"nodes": list(rec["nodes"]), "edges": list(rec["edges"])}
+
+    # -- path-prefix rewrite ------------------------------------------------
+
+    def update_paths(self, old_prefix: str, new_prefix: str) -> int:
+        """
+        Rewrite ``source_paths`` on all entities and relations whose
+        values start with ``old_prefix`` (exact or descendant) into
+        ``new_prefix + tail``. Returns the number of touched items.
+
+        Two Cypher calls (one for entities, one for relationships) run
+        in the same session. Uses list comprehension with an inline
+        replace because apoc might not be present on every deployment.
+        """
+        old_pfx = old_prefix.rstrip("/")
+        new_pfx = new_prefix.rstrip("/")
+
+        entity_cypher = """
+        MATCH (e:KGEntity)
+        WHERE any(p IN coalesce(e.source_paths, [])
+                  WHERE p = $old OR p STARTS WITH $old + '/')
+        SET e.source_paths = [
+          p IN coalesce(e.source_paths, []) |
+          CASE
+            WHEN p = $old THEN $new
+            WHEN p STARTS WITH $old + '/' THEN $new + substring(p, size($old))
+            ELSE p
+          END
+        ]
+        RETURN count(e) AS n
+        """
+        relation_cypher = """
+        MATCH ()-[r:RELATES_TO]-()
+        WHERE any(p IN coalesce(r.source_paths, [])
+                  WHERE p = $old OR p STARTS WITH $old + '/')
+        SET r.source_paths = [
+          p IN coalesce(r.source_paths, []) |
+          CASE
+            WHEN p = $old THEN $new
+            WHEN p STARTS WITH $old + '/' THEN $new + substring(p, size($old))
+            ELSE p
+          END
+        ]
+        RETURN count(r) AS n
+        """
+        params = {"old": old_pfx, "new": new_pfx}
+        touched = 0
+        with self._driver.session(database=self._database) as s:
+            rec = s.run(entity_cypher, **params).single()
+            if rec:
+                touched += int(rec["n"] or 0)
+            rec = s.run(relation_cypher, **params).single()
+            if rec:
+                touched += int(rec["n"] or 0)
+        return touched
 
     # -- deletion -----------------------------------------------------------
 

@@ -2,9 +2,10 @@
  * ForgeRAG API — 统一导出
  *
  * 按模块分文件,这里汇总导出供 Vue 组件使用。
+ * Config 走 yaml，不再有 settings 编辑 API。
  *
  * @example
- * import { askQueryStream, listDocuments, updateSetting } from '@/api'
+ * import { askQueryStream, listDocuments } from '@/api'
  */
 
 // HTTP client (底层,通常不直接使用)
@@ -18,6 +19,7 @@ export {
   rebuildBM25,
   testConnection,
   getInfrastructure,
+  getComponentHealth,
 } from './health'
 
 // Files (上传层)
@@ -82,28 +84,6 @@ export {
   deleteTrace,
 } from './traces'
 
-// Settings (运行时配置)
-export {
-  getAllSettings,
-  getSettingsByGroup,
-  getSetting,
-  updateSetting,
-  batchUpdateSettings,
-  resetSetting,
-  resetGroup,
-  resetAllSettings,
-  applySettings,
-} from './settings'
-
-// LLM Providers (pluggable model registry)
-export {
-  listLLMProviders,
-  getLLMProvider,
-  createLLMProvider,
-  updateLLMProvider,
-  deleteLLMProvider,
-} from './llmProviders'
-
 // Knowledge Graph
 export {
   getGraphStats,
@@ -116,5 +96,18 @@ export {
 // Benchmark
 export {
   startBenchmark, cancelBenchmark, getBenchmarkStatus,
-  downloadBenchmarkReport,
+  listBenchmarkReports, downloadBenchmarkReport,
 } from './benchmark'
+
+// Folders + document path
+export {
+  listFolders, getFolderTree, getFolderInfo,
+  createFolder, renameFolder, moveFolder, deleteFolder,
+  moveDocument, bulkMoveDocuments,
+} from './folders'
+
+// Trash
+export {
+  listTrash, getTrashStats,
+  restoreFromTrash, purgeTrashItems, emptyTrash,
+} from './trash'

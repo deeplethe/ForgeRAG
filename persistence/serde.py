@@ -16,15 +16,12 @@ Every function here is pure and does not touch a DB connection.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from parser.schema import (
-    BackendAttempt,
     Block,
     BlockType,
     Chunk,
-    Complexity,
     DocFormat,
     DocProfile,
     DocTree,
@@ -43,54 +40,39 @@ def profile_to_dict(p: DocProfile) -> dict[str, Any]:
         "page_count": p.page_count,
         "format": p.format.value,
         "file_size_bytes": p.file_size_bytes,
-        "text_density": p.text_density,
-        "scanned_ratio": p.scanned_ratio,
-        "has_embedded_toc": p.has_embedded_toc,
-        "has_multicolumn": p.has_multicolumn,
-        "table_density": p.table_density,
-        "figure_count": p.figure_count,
         "heading_hint_strength": p.heading_hint_strength,
-        "complexity": p.complexity.value,
-        "needed_tier": p.needed_tier,
     }
 
 
 def profile_from_dict(d: dict[str, Any]) -> DocProfile:
+    """Tolerant of legacy rows that still have the old fat schema
+    (text_density / scanned_ratio / complexity / needed_tier / etc.) —
+    those keys are silently ignored."""
     return DocProfile(
         page_count=d["page_count"],
         format=DocFormat(d["format"]),
         file_size_bytes=d["file_size_bytes"],
-        text_density=d["text_density"],
-        scanned_ratio=d["scanned_ratio"],
-        has_embedded_toc=d["has_embedded_toc"],
-        has_multicolumn=d["has_multicolumn"],
-        table_density=d["table_density"],
-        figure_count=d["figure_count"],
-        heading_hint_strength=d["heading_hint_strength"],
-        complexity=Complexity(d["complexity"]),
-        needed_tier=d["needed_tier"],
+        heading_hint_strength=d.get("heading_hint_strength", 0.0),
     )
 
 
 def trace_to_dict(t: ParseTrace) -> dict[str, Any]:
     return {
-        "attempts": [asdict(a) for a in t.attempts],
-        "final_backend": t.final_backend,
-        "final_tier": t.final_tier,
-        "final_quality": t.final_quality,
-        "total_duration_ms": t.total_duration_ms,
+        "backend": t.backend,
+        "duration_ms": t.duration_ms,
+        "error_message": t.error_message,
     }
 
 
 def trace_from_dict(d: dict[str, Any]) -> ParseTrace:
-    trace = ParseTrace(
-        attempts=[BackendAttempt(**a) for a in d.get("attempts", [])],
-        final_backend=d.get("final_backend"),
-        final_tier=d.get("final_tier"),
-        final_quality=d.get("final_quality"),
-        total_duration_ms=d.get("total_duration_ms", 0),
+    """Tolerant of legacy rows that have the old multi-attempt fallback
+    schema (``attempts`` / ``final_backend`` / ``total_duration_ms``);
+    we collapse them onto the new flat shape."""
+    return ParseTrace(
+        backend=d.get("backend") or d.get("final_backend"),
+        duration_ms=d.get("duration_ms") or d.get("total_duration_ms") or 0,
+        error_message=d.get("error_message"),
     )
-    return trace
 
 
 # ---------------------------------------------------------------------------

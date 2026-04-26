@@ -35,6 +35,9 @@ Thumbs.db
 forgerag.yaml
 myconfig.yaml
 
+# Wizard checkpoint (in-progress setup state; auto-deleted on success)
+*.yaml.wizard-state.json
+
 # Benchmark (large result files with LLM outputs)
 /benchmark_results/
 /benchmark_cache/

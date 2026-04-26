@@ -67,7 +67,7 @@
 
 <p align="center"><img src="docs/images/chat_demo.gif" alt="ForgeRAG 演示" width="700"></p>
 
-相比 RAGFlow 等较重的平台，ForgeRAG 专注于**核心管道设计**，开箱即用。
+相比 RAGFlow 等较重的平台，ForgeRAG 专注于**核心管道设计**——精简的检索-回答链 + 可自由拼装的组件。
 
 🔍 **双推理检索** · BM25 + 向量预筛选 → LLM 树导航 + 知识图谱，RRF 融合
 
@@ -79,7 +79,9 @@
 
 📄 **多格式入库** · PDF、DOCX、PPTX、XLSX、HTML、Markdown、TXT
 
-🔌 **可插拔 & Web 配置** · Web UI 切换任意后端，一键应用重启
+⚙️ **YAML 单一真值** · 一个文件 + 一次重启——无隐藏运行时状态
+
+🎛️ **按请求覆盖** · `QueryOverrides` 让你在单次查询里切检索路径 / top-k / rerank（SDK + A/B 利器）
 
 🏆 **超越 LightRAG** · UltraDomain 基准测试 55.48% 总体胜率
 
@@ -185,11 +187,12 @@ REST API 位于 `/api/v1/`。交互式文档：
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/v1/query` | 提问（流式 SSE 或同步） |
-| `POST /api/v1/documents` | 上传并入库文档 |
-| `GET /api/v1/documents/{id}/tree` | 文档层级结构 |
-| `GET /api/v1/graph` | 知识图谱可视化 |
-| `PUT /api/v1/settings/key/{key}` | 运行时更新配置 |
+| `POST /api/v1/query` | 提问（流式 SSE 或同步）——支持 `path_filter` + `overrides` 做 per-request 定制 |
+| `POST /api/v1/documents/upload-and-ingest` | 上传文档到指定文件夹（multipart，带 `folder_path` 表单字段） |
+| `GET  /api/v1/documents?path_filter=…&recursive=…` | 按 folder 列出文档 |
+| `GET  /api/v1/documents/{id}/tree` | 文档层级结构 |
+| `GET  /api/v1/graph` | 知识图谱可视化 |
+| `GET  /api/v1/settings` | 只读快照（yaml 为真值来源） |
 
 ## 文档
 

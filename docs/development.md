@@ -281,6 +281,12 @@ RRF fusion combines these diverse signals for robust recall.
 
 Files are stored by SHA256 hash. Uploading the same file twice creates one blob, two references. This saves storage and enables efficient dedup.
 
-### Why Two-Layer Configuration?
+### Why YAML-only Configuration?
 
-Infrastructure settings (database type, storage backend) require restart — they're in YAML. Runtime settings (model, temperature, top_k) can change on the fly — they're in the database, editable via the UI.
+Earlier versions kept "runtime" settings editable in the DB via the web UI. We removed that because:
+
+* **Two sources of truth drift.** YAML said one thing, DB said another, users forgot which was current. Every restart became a reconciliation ritual.
+* **Per-request overrides are the real need.** When a caller wants "skip QU for this query" or "bump top-k just this once", mutating a shared DB knob is the wrong tool — another concurrent request has to suffer the side-effect. `QueryOverrides` on `/api/v1/query` solves this cleanly; no global mutation.
+* **Secrets don't belong in a checkbox.** API keys live in `api_key_env` referencing an environment variable, not in a settings row an HTTP PUT can overwrite.
+
+The DB still has `settings` and `llm_providers` tables, but they're **write-once snapshots** of the running cfg — surfaced by `GET /api/v1/settings` for admin tools, never read back by the runtime.

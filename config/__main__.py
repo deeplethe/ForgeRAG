@@ -101,21 +101,12 @@ def _print_summary(path: Path, cfg: AppConfig) -> None:
 
     # Parser
     pcfg = cfg.parser.backends
-    enabled = [
-        name
-        for name, cfg_part in [
-            ("pymupdf", pcfg.pymupdf),
-            ("mineru", pcfg.mineru),
-            ("vlm", pcfg.vlm),
-            ("docling", pcfg.docling),
-        ]
-        if cfg_part.enabled
-    ]
     lines.append("parser")
-    lines.append(f"  backends enabled      : {', '.join(enabled) or '(none)'}")
-    if pcfg.mineru.enabled:
-        lines.append(f"  mineru backend        : {pcfg.mineru.backend}")
+    lines.append(f"  backend               : {cfg.parser.backend}")
+    if cfg.parser.backend in ("mineru", "mineru-vlm"):
         lines.append(f"  mineru device         : {pcfg.mineru.device}")
+        if pcfg.mineru.server_url:
+            lines.append(f"  mineru server_url     : {pcfg.mineru.server_url}")
     lines.append(f"  tree_builder LLM      : {cfg.parser.tree_builder.llm_enabled}")
     lines.append(f"  chunker target/max    : {cfg.parser.chunker.target_tokens}/{cfg.parser.chunker.max_tokens} tokens")
     lines.append("")
@@ -153,9 +144,6 @@ def _print_summary(path: Path, cfg: AppConfig) -> None:
         lines.append(f"  user                  : {rel.postgres.user}")
         cred = rel.postgres.password_env or "(plaintext in config)"
         lines.append(f"  password              : {cred}")
-    elif rel.backend == "mysql" and rel.mysql:
-        lines.append(f"  host                  : {rel.mysql.host}:{rel.mysql.port}/{rel.mysql.database}")
-        lines.append(f"  user                  : {rel.mysql.user}")
 
     lines.append("")
     lines.append("persistence.vector")
@@ -196,9 +184,7 @@ def _print_summary(path: Path, cfg: AppConfig) -> None:
     lines.append(f"  merge.rrf_k           : {r.merge.rrf_k}")
     lines.append(f"  sibling_expansion     : {r.merge.sibling_expansion_enabled}")
     lines.append(f"  crossref_expansion    : {r.merge.crossref_expansion_enabled}")
-    lines.append(
-        f"  rerank                : enabled={r.rerank.enabled} backend={r.rerank.backend} top_k={r.rerank.top_k}"
-    )
+    lines.append(f"  rerank                : backend={r.rerank.backend} top_k={r.rerank.top_k}")
     lines.append("")
 
     # Answering

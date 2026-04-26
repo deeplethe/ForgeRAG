@@ -1,9 +1,38 @@
 <script setup>
+// Explicit name so <KeepAlive :exclude> in App.vue can match this component.
+// `<script setup>` infers from filename in dev, but bundlers can mangle that
+// in prod — defineOptions makes it deterministic.
+defineOptions({ name: 'KnowledgeGraph' })
+
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRouter, useRoute, onBeforeRouteLeave } from 'vue-router'
 import { getGraphStats, getFullGraph, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
 import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon, ArrowsPointingOutIcon } from '@heroicons/vue/24/outline'
 import Spinner from '@/components/Spinner.vue'
+import { useTheme } from '@/composables/useTheme'
+
+// Theme-aware sigma colors. Sigma uses canvas/WebGL so CSS vars don't apply
+// directly; we read tokens once + refresh on theme change.
+const { isDark } = useTheme()
+function graphColors() {
+  return isDark.value
+    ? {
+        defaultNode: '#71717a',
+        defaultEdge: '#3f3f46',
+        label:       '#a1a1a1',
+        dimNode:     '#1f1f1f',
+        focusEdge:   '#ededed',
+        dimEdge:     '#1f1f1f',
+      }
+    : {
+        defaultNode: '#9ca3af',
+        defaultEdge: '#d1d5db',
+        label:       '#374151',
+        dimNode:     '#d0d0d0',
+        focusEdge:   '#3d3d3d',
+        dimEdge:     '#e2e2e2',
+      }
+}
 
 const router = useRouter()
 const route = useRoute()
@@ -119,7 +148,7 @@ async function loadGraph() {
     buildGraph(rawNodes, rawEdges)
   } catch (e) {
     if (e.message?.includes('404')) {
-      error.value = 'Knowledge graph not configured. Enable KG extraction in settings.'
+      error.value = 'Knowledge graph not configured. Enable retrieval.kg_extraction.enabled in forgerag.yaml and restart.'
     } else {
       error.value = e.message || 'Failed to load graph'
     }
@@ -307,7 +336,7 @@ function buildGraph(rawNodes, rawEdges) {
       weight: e.weight || 1,
       type: 'arrow',
       size: 1,
-      color: '#d1d5db',
+      color: graphColors().defaultEdge,
     })
   }
 
@@ -319,21 +348,22 @@ function buildGraph(rawNodes, rawEdges) {
 function initSigma(g) {
   if (!containerRef.value) return
 
+  const c = graphColors()
   sigma = new Sigma(g, containerRef.value, {
     // Rendering
-    defaultNodeColor: '#6b7280',
-    defaultEdgeColor: '#d1d5db',
+    defaultNodeColor: c.defaultNode,
+    defaultEdgeColor: c.defaultEdge,
     defaultEdgeType: 'arrow',
     renderEdgeLabels: false,
-    labelFont: 'Inter, system-ui, sans-serif',
+    labelFont: 'Geist, Inter, system-ui, sans-serif',
     labelSize: 11,
     labelWeight: '500',
-    labelColor: { color: '#374151' },
+    labelColor: { color: c.label },
     labelDensity: 0.8,
     labelGridCellSize: 100,
     labelRenderedSizeThreshold: 5,
     // Edges
-    edgeLabelFont: 'Inter, system-ui, sans-serif',
+    edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
     edgeLabelSize: 9,
     // Performance
     hideEdgesOnMove: false,
@@ -352,7 +382,7 @@ function initSigma(g) {
       } else if (neighborSet.has(node)) {
         res.zIndex = 1
       } else {
-        res.color = '#d0d0d0'
+        res.color = graphColors().dimNode
         res.label = null
         res.zIndex = 0
       }
@@ -371,11 +401,11 @@ function initSigma(g) {
       const src = g.source(edge)
       const tgt = g.target(edge)
       if (src === selectedId || tgt === selectedId) {
-        res.color = '#3d3d3d'
+        res.color = graphColors().focusEdge
         res.size = 2
         res.zIndex = 1
       } else {
-        res.color = '#e2e2e2'
+        res.color = graphColors().dimEdge
         res.hidden = true
       }
     }
@@ -626,12 +656,72 @@ onUnmounted(() => {
   }
   destroySigma()
 })
+
+/**
+ * Pre-leave teardown.
+ *
+ * Killing sigma's WebGL canvas during navigation produces a one-frame
+ * compositor flash (GPU layer evict before underlying paint). Previous
+ * attempts using a Vue v-if cover failed because Vue's reactivity is
+ * async — the cover never actually rendered before sigma kill.
+ *
+ * THIS approach bypasses Vue entirely:
+ *   1. Inject a raw <div> cover into the graph area via direct DOM
+ *   2. Read offsetHeight to force a synchronous layout/paint
+ *   3. Wait two animation frames so the browser commits the cover tile
+ *   4. ONLY THEN kill sigma — the canvas vanishes behind our solid div
+ *   5. Navigation continues; the entire KG component unmounts shortly
+ *      after, taking the cover with it.
+ */
+onBeforeRouteLeave(async () => {
+  const graphArea = document.querySelector('.kg-graph-area')
+  if (graphArea) {
+    const cover = document.createElement('div')
+    cover.setAttribute('data-kg-cover', '')
+    cover.style.cssText = [
+      'position:absolute',
+      'inset:0',
+      'z-index:50',
+      // Read directly from CSS variables so theme is honored
+      'background:var(--color-bg2)',
+      'pointer-events:none',
+    ].join(';')
+    graphArea.appendChild(cover)
+    // Force synchronous layout — guarantees the cover hits the layout tree
+    void cover.offsetHeight
+    // Two frames: first commits paint, second confirms compositor has it
+    await new Promise((r) => requestAnimationFrame(r))
+    await new Promise((r) => requestAnimationFrame(r))
+  }
+  if (sigma && cameraObserver) {
+    try { sigma.getCamera().removeListener('updated', cameraObserver) } catch {}
+  }
+  destroySigma()
+})
+
+/* When the user toggles light/dark, re-apply node/edge colors to every
+   element + ask sigma to repaint. Reducers already pull from graphColors()
+   on each frame, so the refresh is enough for selected/dim states. */
+watch(isDark, () => {
+  if (!sigma || !graph.value) return
+  const c = graphColors()
+  // Replace the static edge colors set at construction
+  graph.value.forEachEdge((e, attrs) => {
+    if (!attrs._customColor) {
+      graph.value.setEdgeAttribute(e, 'color', c.defaultEdge)
+    }
+  })
+  sigma.setSetting('defaultNodeColor', c.defaultNode)
+  sigma.setSetting('defaultEdgeColor', c.defaultEdge)
+  sigma.setSetting('labelColor', { color: c.label })
+  sigma.refresh()
+})
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-bg overflow-hidden">
+  <div class="h-full flex flex-col bg-bg2 overflow-hidden">
     <!-- ═══════ Top bar ═══════ -->
-    <div class="flex-none flex items-center justify-between px-5 py-3 border-b border-line bg-bg">
+    <div class="flex-none flex items-center justify-between px-5 py-3 border-b border-line bg-bg2">
       <div>
         <div class="text-[10px] text-t3 uppercase tracking-widest">Knowledge Graph</div>
         <div class="text-[10px] text-t3 mt-0.5" v-if="stats.entities">
@@ -718,13 +808,11 @@ onUnmounted(() => {
     <!-- ═══════ Main content ═══════ -->
     <div class="flex-1 flex min-h-0">
       <!-- ── Graph container ── -->
-      <div class="flex-1 relative overflow-hidden"
-        style="background: linear-gradient(135deg, #fafbfc 0%, #f4f5f7 100%);">
+      <div class="kg-graph-area flex-1 relative overflow-hidden">
 
         <!-- Loading -->
         <Transition name="fade">
-          <div v-if="loading" class="absolute inset-0 flex items-center justify-center z-10"
-            style="background: rgba(250,251,252,0.85); backdrop-filter: blur(4px);">
+          <div v-if="loading" class="kg-loading-overlay absolute inset-0 flex items-center justify-center z-10">
             <div class="flex flex-col items-center gap-2">
               <Spinner size="lg" />
               <span class="text-[11px] text-t3">Loading graph data...</span>
@@ -749,7 +837,7 @@ onUnmounted(() => {
             <div>
               <div class="text-sm text-t2 font-medium">No graph data</div>
               <div class="text-[11px] text-t3 mt-1 leading-relaxed">
-                {{ error || 'Enable KG extraction in Architecture settings and ingest documents to populate the knowledge graph.' }}
+                {{ error || 'Enable retrieval.kg_extraction.enabled in forgerag.yaml, restart the server, and ingest documents to populate the knowledge graph.' }}
               </div>
             </div>
           </div>
@@ -757,10 +845,13 @@ onUnmounted(() => {
 
         <!-- Sigma renders into this div -->
         <div ref="containerRef" class="absolute inset-0" />
+        <!-- (The pre-unload cover is injected via direct DOM in
+             onBeforeRouteLeave — bypasses Vue's async reactivity so the
+             cover is guaranteed to paint before sigma is killed.) -->
 
         <!-- Legend -->
         <div v-if="entityTypes.length"
-          class="absolute bottom-3 left-3 bg-white/85 backdrop-blur-sm border border-line rounded-lg px-3 py-2 shadow-sm z-10 pointer-events-none">
+          class="kg-legend absolute bottom-3 left-3 backdrop-blur-sm border border-line rounded-lg px-3 py-2 z-10 pointer-events-none">
           <div class="flex flex-wrap gap-x-3 gap-y-1">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
@@ -770,13 +861,13 @@ onUnmounted(() => {
         </div>
 
         <!-- Zoom -->
-        <div class="absolute bottom-3 right-3 bg-white/85 backdrop-blur-sm border border-line rounded-md px-2 py-1 shadow-sm z-10 pointer-events-none">
+        <div class="kg-overlay-pill absolute bottom-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
         <!-- Node count -->
         <div v-if="nodeCount"
-          class="absolute top-3 left-3 bg-white/85 backdrop-blur-sm border border-line rounded-md px-2.5 py-1 shadow-sm z-10 pointer-events-none">
+          class="kg-overlay-pill absolute top-3 left-3 backdrop-blur-sm border border-line rounded-md px-2.5 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3">
             <span class="font-medium text-t2">{{ nodeCount }}</span> nodes &middot;
             <span class="font-medium text-t2">{{ edgeCount }}</span> edges
@@ -986,6 +1077,34 @@ onUnmounted(() => {
 }
 .fade-enter-from, .fade-leave-to {
   opacity: 0;
+}
+
+/* ── KG-specific surfaces — token-based so they adapt to dark mode ── */
+.kg-graph-area {
+  /* Subtle gradient that respects the canvas. Using bg2 (canvas) at both
+     stops with a tiny lift towards bg3 makes the graph feel "set into" the
+     page in both light and dark. */
+  background: linear-gradient(135deg, var(--color-bg2) 0%, var(--color-bg3) 100%);
+  /* Force this entire region (including the WebGL canvas inside) onto its
+     own GPU compositor layer. Without this, the canvas's GPU layer composes
+     INDEPENDENTLY from the parent's CSS opacity transition — producing a
+     one-frame mismatch (visible flash) on route leave. translateZ(0)
+     promotes the layer atomically. */
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+.kg-loading-overlay {
+  background: color-mix(in srgb, var(--color-bg2) 88%, transparent);
+  backdrop-filter: blur(4px);
+}
+.kg-legend,
+.kg-overlay-pill {
+  background: color-mix(in srgb, var(--color-bg) 85%, transparent);
+}
+
+/* Pre-unload cover — solid canvas color, masks the WebGL canvas teardown */
+.kg-leaving-cover {
+  background: var(--color-bg2);
 }
 .line-clamp-1 {
   display: -webkit-box;

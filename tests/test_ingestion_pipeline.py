@@ -103,7 +103,7 @@ def pipeline(tmp_path):
     cfg = AppConfig()
     # Point storage at the test tmp dir
     cfg.storage.local.root = str(tmp_path / "blobs")
-    cfg.parser.backends.pymupdf.enabled = True
+    # PyMuPDF is the default parser backend; nothing to toggle.
 
     rel = Store(
         RelationalConfig(

@@ -12,8 +12,7 @@ import pytest
 from config import AppConfig
 from parser.backends.pymupdf import PyMuPDFBackend
 from parser.blob_store import LocalBlobStore, LocalStoreConfig
-from parser.pipeline import ParserPipeline
-from parser.probe import probe
+from parser.pipeline import ParserPipeline, _quick_profile
 from parser.schema import BlockType, DocFormat
 
 pytest.importorskip("fitz")
@@ -37,15 +36,10 @@ def pipeline(tmp_path) -> ParserPipeline:
 
 
 class TestPyMuPDFBackendDirect:
-    def test_available(self, blob_store):
-        cfg = AppConfig().parser.backends.pymupdf
-        be = PyMuPDFBackend(cfg, blob_store)
-        assert be.available()
-
     def test_parse_produces_blocks(self, sample_pdf, blob_store):
         cfg = AppConfig().parser.backends.pymupdf
         be = PyMuPDFBackend(cfg, blob_store)
-        profile = probe(sample_pdf, AppConfig().parser.probe)
+        profile = _quick_profile(str(sample_pdf))
         result = be.parse(str(sample_pdf), "doc_test", 1, profile)
 
         assert result.format == DocFormat.PDF
@@ -61,7 +55,7 @@ class TestPyMuPDFBackendDirect:
     def test_toc_extracted(self, sample_pdf, blob_store):
         cfg = AppConfig().parser.backends.pymupdf
         be = PyMuPDFBackend(cfg, blob_store)
-        profile = probe(sample_pdf, AppConfig().parser.probe)
+        profile = _quick_profile(str(sample_pdf))
         result = be.parse(str(sample_pdf), "doc_test", 1, profile)
         assert result.toc is not None
         titles = [e.title for e in result.toc]
@@ -70,7 +64,7 @@ class TestPyMuPDFBackendDirect:
     def test_headings_detected(self, sample_pdf, blob_store):
         cfg = AppConfig().parser.backends.pymupdf
         be = PyMuPDFBackend(cfg, blob_store)
-        profile = probe(sample_pdf, AppConfig().parser.probe)
+        profile = _quick_profile(str(sample_pdf))
         result = be.parse(str(sample_pdf), "doc_test", 1, profile)
         headings = [b for b in result.blocks if b.type == BlockType.HEADING]
         heading_texts = [b.text for b in headings]
@@ -85,7 +79,7 @@ class TestPyMuPDFBackendDirect:
         """
         cfg = AppConfig().parser.backends.pymupdf
         be = PyMuPDFBackend(cfg, blob_store)
-        profile = probe(sample_pdf, AppConfig().parser.probe)
+        profile = _quick_profile(str(sample_pdf))
         result = be.parse(str(sample_pdf), "doc_test", 1, profile)
 
         for b in result.blocks:
@@ -102,14 +96,6 @@ class TestPyMuPDFBackendDirect:
         y_center = (intro.bbox[1] + intro.bbox[3]) / 2
         assert y_center > 842 / 2, f"title should be in top half, got y={y_center}"
 
-    def test_self_check_returns_score(self, sample_pdf, blob_store):
-        cfg = AppConfig().parser.backends.pymupdf
-        be = PyMuPDFBackend(cfg, blob_store)
-        profile = probe(sample_pdf, AppConfig().parser.probe)
-        result = be.parse(str(sample_pdf), "doc_test", 1, profile)
-        score = be.self_check(result)
-        assert 0.0 <= score <= 1.0
-
 
 # ---------------------------------------------------------------------------
 # Full pipeline tests
@@ -119,8 +105,8 @@ class TestPyMuPDFBackendDirect:
 class TestFullPipeline:
     def test_parse_roundtrip(self, pipeline, sample_pdf):
         result = pipeline.parse(sample_pdf, doc_id="doc_test", parse_version=1)
-        assert result.parse_trace.final_backend == "pymupdf"
-        assert result.parse_trace.final_quality is not None
+        assert result.parse_trace.backend == "pymupdf"
+        assert result.parse_trace.duration_ms >= 0
         assert len(result.blocks) > 0
 
     def test_normalizer_marks_header(self, pipeline, sample_pdf):

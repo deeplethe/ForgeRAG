@@ -19,7 +19,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import load_config
-from config.settings_manager import apply_overrides, resolve_providers, seed_defaults
 from embedder.base import make_embedder
 from persistence.store import Store
 
@@ -36,20 +35,19 @@ def main() -> None:
     cfg_path = sys.argv[1] if len(sys.argv) > 1 else None
     cfg = load_config(cfg_path)
 
-    # Pull DB-side overrides + provider credentials the same way api/state.py does,
-    # otherwise api_key ends up empty and litellm auth fails.
+    # Each module owns its model/api_key/api_base inline — no startup
+    # indirection. We still touch the store so DB-side state can be
+    # inspected from the same process.
     store = Store(cfg.persistence.relational)
     store.connect()
     store.ensure_schema()
-    seed_defaults(cfg, store)
-    apply_overrides(cfg, store)
-    resolve_providers(cfg, store)
 
     emb_cfg = cfg.embedder
+    inner = getattr(emb_cfg, "litellm", None)
     print(f"Embedder backend : {emb_cfg.backend}")
-    print(f"Embedder model   : {getattr(emb_cfg, 'model', '-')}")
-    print(f"API base         : {getattr(emb_cfg, 'api_base', '-')}")
-    print(f"API key present  : {bool(getattr(emb_cfg, 'api_key', None))}")
+    print(f"Embedder model   : {getattr(inner, 'model', '-')}")
+    print(f"API base         : {getattr(inner, 'api_base', '-')}")
+    print(f"API key present  : {bool(getattr(inner, 'api_key', None))}")
     print()
 
     emb = make_embedder(emb_cfg)

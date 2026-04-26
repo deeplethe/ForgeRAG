@@ -57,7 +57,14 @@ class KGPath:
         self._llm_calls: list[dict] = []  # collect LLM call info for trace
         self.kg_context: KGContext = KGContext()  # synthesized context for prompt injection
 
-    def search(self, query: str) -> list[ScoredChunk]:
+    def search(
+        self,
+        query: str,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
+    ) -> list[ScoredChunk]:
         """
         Multi-level KG retrieval.
 
@@ -68,8 +75,20 @@ class KGPath:
         descriptions — synthesized knowledge that the answering layer
         injects into the LLM prompt alongside raw text chunks
         (inspired by LightRAG's dual-level context assembly).
+
+        ``allowed_doc_ids`` — when set, entities and chunks whose
+        source documents aren't in this whitelist are dropped *before*
+        the top-k truncation, and the synthesized KGContext entities/
+        relations are likewise scoped. This is a pre-filter at the
+        results-aggregation stage — graph traversal itself still scans
+        the full KG, but the final output is scope-clean.
         """
         self.kg_context = KGContext()
+        # Stash for the duration of this call so worker methods and
+        # entity-resolution helpers can apply the same path scope
+        # without plumbing a new argument through every hop.
+        self._path_prefix = path_prefix
+        self._path_prefixes_or = path_prefixes_or or []
 
         # Step 1: Extract entities and keywords from query
         entity_names, keywords = self._extract_query_entities(query)
@@ -128,12 +147,48 @@ class KGPath:
         # _eid / _rid. Local wins on ties because it's merged first.
         self.kg_context = _merge_contexts([local_ctx, global_ctx, relation_ctx])
 
+        # Cap the synthesized context to prevent hub-entity 2-hop
+        # explosion (seen on legal corpora: a "Company" query entity
+        # can pull thousands of neighbor entities + relations, none
+        # actually relevant). Caps chosen to match roughly what the
+        # generator prompt can fit inside its 40% kg-budget (~50 lines
+        # each at ~60 chars/line). Later entries are dropped — local
+        # retrieval is merged first, so the kept entries are the most
+        # directly relevant to the query's extracted entities.
+        _MAX_KG_ENTITIES = 50
+        _MAX_KG_RELATIONS = 30
+        if len(self.kg_context.entities) > _MAX_KG_ENTITIES:
+            log.debug(
+                "KG context: truncating entities %d -> %d",
+                len(self.kg_context.entities),
+                _MAX_KG_ENTITIES,
+            )
+            self.kg_context.entities = self.kg_context.entities[:_MAX_KG_ENTITIES]
+        if len(self.kg_context.relations) > _MAX_KG_RELATIONS:
+            log.debug(
+                "KG context: truncating relations %d -> %d",
+                len(self.kg_context.relations),
+                _MAX_KG_RELATIONS,
+            )
+            self.kg_context.relations = self.kg_context.relations[:_MAX_KG_RELATIONS]
+
         # Step 5: Weighted merge of chunk scores
         merged = self._merge_scores(
             local_chunks,
             global_chunks,
             relation_chunks,
         )
+
+        # Step 5.5: Path scoping — drop chunks whose doc isn't in the
+        # caller's scope BEFORE verification / truncation, so top_k
+        # reflects post-scope ranking instead of wasting slots on
+        # chunks we'd otherwise discard.
+        if allowed_doc_ids is not None and merged:
+            merged = self._scope_chunks(merged, allowed_doc_ids)
+            # Also scope the synthesized KG context (entities / relations)
+            # so the answer-generator prompt doesn't leak descriptions
+            # from outside the user's scope.
+            self._scope_kg_context(allowed_doc_ids)
 
         # Step 6: Verify chunks exist and return top-k
         verified = self._verify_chunks(merged)
@@ -169,9 +224,8 @@ class KGPath:
                 # Use kg_path config; if api_key/api_base are empty, log and skip
                 if not self.cfg.api_key and not self.cfg.api_base:
                     log.warning(
-                        "KG path: no api_key or api_base configured "
-                        "(provider_id=%s) — skipping query entity extraction",
-                        getattr(self.cfg, "provider_id", None),
+                        "KG path: no api_key or api_base configured (model=%s) — skipping query entity extraction",
+                        self.cfg.model,
                     )
                     return [], []
                 from ingestion.kg_extractor import KGExtractor
@@ -364,7 +418,12 @@ class KGPath:
             return {}
 
         top_k = getattr(self.cfg, "relation_top_k", 10)
-        matches = self.graph.search_relations_by_embedding(query_vec, top_k=top_k)
+        matches = self.graph.search_relations_by_embedding(
+            query_vec,
+            top_k=top_k,
+            path_prefix=getattr(self, "_path_prefix", None),
+            path_prefixes_or=getattr(self, "_path_prefixes_or", None),
+        )
         if not matches:
             return {}
 
@@ -416,8 +475,17 @@ class KGPath:
         unresolved_idx: list[int] = []
         unresolved_names: list[str] = []
 
+        pfx = getattr(self, "_path_prefix", None)
+        or_pfx = getattr(self, "_path_prefixes_or", None) or []
+        all_pfxs = ([pfx] if pfx else []) + list(or_pfx)
         for i, name in enumerate(entity_names):
             entity = self.graph.get_entity(entity_id_from_name(name))
+            # Exact-hash hits bypass the vector index — apply the same
+            # path scope manually so scope leakage is impossible. The
+            # OR-fallback list lets us still see entities whose Neo4j
+            # source_paths haven't caught up with a pending rename.
+            if entity is not None and all_pfxs and not any(_entity_matches_prefix(entity, p) for p in all_pfxs):
+                entity = None
             if entity is not None:
                 resolved.append(entity)
             else:
@@ -448,15 +516,27 @@ class KGPath:
 
         Returns up to ``top_k`` Entity objects, ordered by relevance.
         """
+        pfx = getattr(self, "_path_prefix", None)
+        or_pfx = getattr(self, "_path_prefixes_or", None)
         if vec:
-            hits = self.graph.search_entities_by_embedding(vec, top_k=top_k)
+            hits = self.graph.search_entities_by_embedding(
+                vec,
+                top_k=top_k,
+                path_prefix=pfx,
+                path_prefixes_or=or_pfx,
+            )
             # Filter below threshold: prevents a cold graph from returning
             # random near-orthogonal nearest neighbors.
             good = [e for e, score in hits if score >= self._EMBED_SEARCH_THRESHOLD]
             if good:
                 return good
-        # Fallback: fuzzy name (substring / fulltext).
-        return self.graph.search_entities(name, top_k=top_k)
+        # Fallback: fuzzy name (substring / fulltext). Apply path scope
+        # client-side here since the fulltext index doesn't know about
+        # source_paths — keep the scope contract consistent across hits.
+        results = self.graph.search_entities(name, top_k=top_k * 5 if pfx else top_k)
+        if pfx:
+            results = [e for e in results if _entity_matches_prefix(e, pfx)][:top_k]
+        return results
 
     def _batch_embed(self, texts: list[str]) -> list[list[float] | None]:
         """Embed a list of short texts in one API call.
@@ -513,10 +593,58 @@ class KGPath:
             if r.get("chunk_id") in chunk_scores
         ]
 
+    def _scope_chunks(
+        self,
+        chunk_scores: dict[str, float],
+        allowed_doc_ids: set[str],
+    ) -> dict[str, float]:
+        """Drop chunk_ids whose doc is outside the allowed set."""
+        if not chunk_scores:
+            return chunk_scores
+        rows = self.rel.get_chunks_by_ids(list(chunk_scores.keys()))
+        kept: dict[str, float] = {}
+        for r in rows:
+            cid = r.get("chunk_id")
+            did = r.get("doc_id")
+            if cid and did in allowed_doc_ids:
+                kept[cid] = chunk_scores[cid]
+        return kept
+
+    def _scope_kg_context(self, allowed_doc_ids: set[str]) -> None:
+        """Drop entities / relations whose source_doc_ids don't overlap
+        the allowed set. Uses the synthesized KGContext populated during
+        retrieval (it already carries source_doc_ids on each entry)."""
+
+        def _keep(e: dict) -> bool:
+            srcs = e.get("source_doc_ids")
+            if not srcs:
+                # Unknown provenance — err on the side of hiding
+                return False
+            if isinstance(srcs, (list, set, tuple)):
+                return any(s in allowed_doc_ids for s in srcs)
+            return srcs in allowed_doc_ids
+
+        self.kg_context.entities = [e for e in self.kg_context.entities if _keep(e)]
+        self.kg_context.relations = [r for r in self.kg_context.relations if _keep(r)]
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (stateless — safe to call from worker threads).
 # ---------------------------------------------------------------------------
+
+
+def _entity_matches_prefix(entity, prefix: str) -> bool:
+    """True if any ``entity.source_paths`` entry is under ``prefix``.
+
+    Segment-boundary match: ``/legal`` matches ``/legal`` and
+    ``/legal/foo`` but NOT ``/legal-extra``.
+    """
+    paths = getattr(entity, "source_paths", None)
+    if not paths:
+        return False
+    pfx = prefix.rstrip("/") or "/"
+    sep = pfx + "/"
+    return any(p == pfx or p.startswith(sep) for p in paths)
 
 
 def _collect(future, ctx: KGContext, label: str) -> tuple[dict[str, float], KGContext]:

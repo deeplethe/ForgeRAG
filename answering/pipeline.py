@@ -22,11 +22,14 @@ from uuid import uuid4
 from config import AnsweringSection
 from persistence.store import Store
 from retrieval.pipeline import RetrievalPipeline
+from retrieval.telemetry import RequestSpanCollector, get_tracer, spans_to_payload
 from retrieval.types import RetrievalResult
 
 from .generator import Generator, make_generator
 from .prompts import build_messages
 from .types import Answer
+
+_tracer = get_tracer()
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +68,42 @@ class AnsweringPipeline:
         *,
         filter: dict | None = None,
         conversation_id: str | None = None,
+        overrides=None,
+    ) -> Answer:
+        # Root span covering retrieval + generation. We extract the
+        # trace_id so the route layer can collect all child spans (LLM
+        # calls, SQL, HTTPX, retrieval phases) and ship them to the
+        # frontend as raw OTel JSON.
+        _root_cm = _tracer.start_as_current_span("forgerag.answer")
+        _root_span = _root_cm.__enter__()
+        _root_span.set_attribute("forgerag.query", (query or "")[:500])
+        if conversation_id:
+            _root_span.set_attribute("forgerag.conversation_id", conversation_id)
+        _trace_id = _root_span.get_span_context().trace_id
+        try:
+            answer = self._ask_impl(
+                query,
+                filter=filter,
+                conversation_id=conversation_id,
+                overrides=overrides,
+                _trace_id=_trace_id,
+            )
+            # Stash trace_id so the route layer can ``collector.take()`` the
+            # raw OTel spans for this request after the root span ends.
+            answer.stats["otel_trace_id_int"] = _trace_id
+            answer.stats["otel_trace_id"] = f"{_trace_id:032x}"
+            return answer
+        finally:
+            _root_cm.__exit__(None, None, None)
+
+    def _ask_impl(
+        self,
+        query: str,
+        *,
+        filter: dict | None = None,
+        conversation_id: str | None = None,
+        overrides=None,
+        _trace_id: int | None = None,
     ) -> Answer:
         stats: dict = {}
         t0 = time.time()
@@ -100,10 +139,18 @@ class AnsweringPipeline:
         _reuse = False
         _early_qu_done = False
         qp_early = None
-        qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None)
-        qu_enabled = qu_enabled and qu_enabled.enabled
+        # QueryUnderstanding has no cfg-level toggle anymore; it runs on
+        # every retrieve unless the per-request override turns it off.
+        qu_enabled = True
+        if overrides is not None and getattr(overrides, "query_understanding", None) is not None:
+            qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
-            qp_early = self.retrieval.analyze_query(query, chat_history=chat_history)
+            _allow_partial = bool(overrides is not None and getattr(overrides, "allow_partial_failure", None) is True)
+            qp_early = self.retrieval.analyze_query(
+                query,
+                chat_history=chat_history,
+                strict=not _allow_partial,
+            )
             _early_qu_done = qp_early is not None
 
             if qp_early and not qp_early.needs_retrieval and not qp_early.direct_answer and conversation_id:
@@ -126,6 +173,7 @@ class AnsweringPipeline:
                             filter=filter,
                             chat_history=chat_history,
                             precomputed_plan=qp_early,
+                            overrides=overrides,
                         )
                         retrieval_result.query_plan = qp_early
                         stats["retrieval"] = retrieval_result.stats
@@ -140,6 +188,7 @@ class AnsweringPipeline:
                 filter=filter,
                 chat_history=chat_history,
                 precomputed_plan=qp_early if _early_qu_done else None,
+                overrides=overrides,
             )
             stats["retrieval"] = retrieval_result.stats
             if conversation_id:
@@ -159,7 +208,7 @@ class AnsweringPipeline:
         # Inject conversation history into messages (multi-turn).
         # Reuse chat_history loaded earlier (no new messages since then).
         if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history)
+            messages = self._inject_history(messages, chat_history, current_query=query)
             stats["history_turns"] = len(chat_history) // 2
 
         # If no context chunks AND intent requires documents, refuse.
@@ -208,6 +257,26 @@ class AnsweringPipeline:
             conversation_id or "none",
         )
 
+        # Stash the synthesized KG context (entities + relations injected
+        # into the prompt) into stats so downstream consumers — notably
+        # the benchmark — can see the full set of material the LLM had
+        # available, not just chunk citations. Without this, LLM-judge
+        # evaluations mis-score answers grounded in KG synthesis as
+        # "hallucinated" because they're not in any citation snippet.
+        if retrieval_result.kg_context and not retrieval_result.kg_context.is_empty:
+            kg = retrieval_result.kg_context
+            stats["kg_context"] = {
+                "entities": [{"name": e.get("name", ""), "description": e.get("description", "")} for e in kg.entities],
+                "relations": [
+                    {
+                        "source": r.get("source", ""),
+                        "target": r.get("target", ""),
+                        "description": r.get("description", ""),
+                    }
+                    for r in kg.relations
+                ],
+            }
+
         answer = Answer(
             query=query,
             text=gen_result.get("text") or "",
@@ -235,6 +304,47 @@ class AnsweringPipeline:
         *,
         filter: dict | None = None,
         conversation_id: str | None = None,
+        overrides=None,
+    ):
+        # Wrap the streaming generator in the same ``forgerag.answer`` root
+        # span used by ask(). Because this is a generator, we manage the
+        # context manager manually — yielding while inside the span keeps
+        # child operations correctly parented.
+        _root_cm = _tracer.start_as_current_span("forgerag.answer")
+        _root_span = _root_cm.__enter__()
+        _root_span.set_attribute("forgerag.query", (query or "")[:500])
+        _root_span.set_attribute("forgerag.stream", True)
+        if conversation_id:
+            _root_span.set_attribute("forgerag.conversation_id", conversation_id)
+        _trace_id = _root_span.get_span_context().trace_id
+        _root_closed = False
+        try:
+            yield from self._ask_stream_impl(
+                query,
+                filter=filter,
+                conversation_id=conversation_id,
+                overrides=overrides,
+            )
+            # Close the root span BEFORE emitting the trace event so that
+            # the span itself is in the collector when we take() below.
+            _root_cm.__exit__(None, None, None)
+            _root_closed = True
+            try:
+                spans = RequestSpanCollector.singleton().take(_trace_id)
+                yield {"event": "trace", "data": spans_to_payload(spans)}
+            except Exception:
+                log.exception("failed to emit trace SSE event")
+        finally:
+            if not _root_closed:
+                _root_cm.__exit__(None, None, None)
+
+    def _ask_stream_impl(
+        self,
+        query: str,
+        *,
+        filter: dict | None = None,
+        conversation_id: str | None = None,
+        overrides=None,
     ):
         """
         Yield SSE-friendly dicts. Emits progress during retrieval,
@@ -293,9 +403,16 @@ class AnsweringPipeline:
         # ── Early QU: greeting/meta/reformulation short-circuit ──
         qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None)
         qu_enabled = qu_enabled and qu_enabled.enabled
+        if overrides is not None and getattr(overrides, "query_understanding", None) is not None:
+            qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
             yield {"event": "progress", "data": {"phase": "query_understanding", "status": "running"}}
-            qp_early = self.retrieval.analyze_query(query, chat_history=chat_history)
+            _allow_partial = bool(overrides is not None and getattr(overrides, "allow_partial_failure", None) is True)
+            qp_early = self.retrieval.analyze_query(
+                query,
+                chat_history=chat_history,
+                strict=not _allow_partial,
+            )
             _early_qu_done = qp_early is not None
 
             if qp_early and qp_early.needs_retrieval:
@@ -348,6 +465,7 @@ class AnsweringPipeline:
                             filter=filter,
                             chat_history=chat_history,
                             precomputed_plan=qp_early,
+                            overrides=overrides,
                         )
                         _reuse_result.query_plan = qp_early
                         if conversation_id:
@@ -387,6 +505,7 @@ class AnsweringPipeline:
                         progress_cb=_on_progress,
                         chat_history=chat_history,
                         precomputed_plan=_precomputed,
+                        overrides=overrides,
                     )
                 except Exception as e:
                     _retrieval_error[0] = e
@@ -440,7 +559,7 @@ class AnsweringPipeline:
 
         # Reuse chat_history loaded earlier (no new messages since then).
         if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history)
+            messages = self._inject_history(messages, chat_history, current_query=query)
 
         # Emit retrieval metadata
         yield {
@@ -663,6 +782,8 @@ class AnsweringPipeline:
         self,
         messages: list[dict],
         history: list[dict],
+        *,
+        current_query: str | None = None,
     ) -> list[dict]:
         """
         Insert conversation history between system and user messages.
@@ -670,9 +791,22 @@ class AnsweringPipeline:
 
         Layout:
             [system] → [history user/assistant pairs] → [user with context]
+
+        ``current_query`` is the user query that build_messages already
+        rendered into the trailing user message. Because callers persist
+        the user message before loading history, the newest entry is the
+        same query — drop it here so it doesn't appear twice in the prompt.
         """
         if not history:
             return messages
+
+        # Drop trailing user entries that match the current query.
+        if current_query is not None:
+            cq = current_query.strip()
+            while history and history[-1].get("role") == "user" and (history[-1].get("content") or "").strip() == cq:
+                history = history[:-1]
+            if not history:
+                return messages
 
         system = messages[0] if messages and messages[0]["role"] == "system" else None
         rest = messages[1:] if system else messages
@@ -779,12 +913,32 @@ class AnsweringPipeline:
         answer: Answer,
         retrieval_result: RetrievalResult,
     ) -> str | None:
-        """Persist trace and return trace_id (or None on failure)."""
+        """
+        Persist trace and return trace_id (or None on failure).
+
+        ``trace_json`` is a snapshot of all OTel spans produced during this
+        ``forgerag.answer`` root span, taken from the in-memory collector.
+        We peek-by-copy so the route layer can claim the same spans for
+        the live /query response payload.
+        """
         if self.store is None:
             return None
         try:
-            trace_data = retrieval_result.stats.get("trace", {})
-            # Attach generation info
+            from opentelemetry import trace as _otel_trace
+
+            cur = _otel_trace.get_current_span()
+            ctx = cur.get_span_context() if cur else None
+            otel_tid = ctx.trace_id if (ctx and ctx.is_valid) else None
+
+            trace_data: dict = {}
+            if otel_tid is not None:
+                collector = RequestSpanCollector.singleton()
+                spans = collector.take(otel_tid)
+                trace_data = spans_to_payload(spans)
+                # Put them back so the route layer can take() later.
+                for s in spans:
+                    collector.on_end(s)
+
             trace_data["generation"] = {
                 "model": answer.model,
                 "finish_reason": answer.finish_reason,
@@ -793,8 +947,6 @@ class AnsweringPipeline:
                 "context_chunks": answer.stats.get("context_chunks"),
                 "answer_length": len(answer.text),
                 "citations_used": [c.citation_id for c in answer.citations_used],
-                # Full citation objects so frontend can recover them
-                # for historical messages whose citations_json only has IDs
                 "citations_full": [
                     {
                         "citation_id": c.citation_id,
@@ -813,15 +965,17 @@ class AnsweringPipeline:
             record = {
                 "trace_id": tid,
                 "query": answer.query,
-                "total_ms": trace_data.get("total_ms", 0),
-                "total_llm_ms": trace_data.get("total_llm_ms", 0),
-                "total_llm_calls": trace_data.get("total_llm_calls", 0),
+                "total_ms": answer.stats.get("total_ms", 0),
+                "total_llm_ms": 0,  # aggregate from spans if needed later
+                "total_llm_calls": 0,
                 "answer_text": answer.text,
                 "answer_model": answer.model,
                 "finish_reason": answer.finish_reason,
                 "citations_used": [c.citation_id for c in answer.citations_used],
                 "trace_json": trace_data,
-                "metadata_json": {},
+                "metadata_json": {
+                    "otel_trace_id": f"{otel_tid:032x}" if otel_tid else None,
+                },
             }
             self.store.insert_trace(record)
             return tid

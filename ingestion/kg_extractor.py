@@ -140,6 +140,7 @@ class KGExtractor:
         text: str,
         doc_id: str,
         chunk_id: str,
+        path: str | None = None,
     ) -> tuple[list[Entity], list[Relation]]:
         """Extract entities and relations from a single chunk of text."""
         if not text or len(text.strip()) < 20:
@@ -154,7 +155,7 @@ class KGExtractor:
                 system=EXTRACTION_SYSTEM,
                 user=EXTRACTION_USER.replace("{text}", text),
             )
-            return self._parse_response(raw, doc_id, chunk_id)
+            return self._parse_response(raw, doc_id, chunk_id, path=path)
         except Exception as e:
             log.warning("KG extraction failed for chunk %s: %s", chunk_id, e)
             return [], []
@@ -177,6 +178,7 @@ class KGExtractor:
         # Build multi-passage prompt
         passages: list[str] = []
         id_map: dict[str, str] = {}  # chunk_id → content (for fallback)
+        path_map: dict[str, str | None] = {}  # chunk_id → path
         for c in chunk_group:
             cid = c["chunk_id"]
             content = c.get("content", "")
@@ -186,6 +188,7 @@ class KGExtractor:
                 content = content[:6000]
             passages.append(f"[CHUNK:{cid}]\n{content}")
             id_map[cid] = content
+            path_map[cid] = c.get("path")
 
         if not passages:
             return [], []
@@ -197,14 +200,14 @@ class KGExtractor:
                 system=BATCH_EXTRACTION_SYSTEM,
                 user=user_text,
             )
-            return self._parse_batch_response(raw, doc_id, set(id_map.keys()))
+            return self._parse_batch_response(raw, doc_id, set(id_map.keys()), path_map=path_map)
         except Exception as e:
             # Batch call failed — fall back to per-chunk
             log.warning("Batch KG extraction failed, falling back to per-chunk: %s", e)
             all_ents: list[Entity] = []
             all_rels: list[Relation] = []
             for cid, content in id_map.items():
-                ents, rels = self.extract(content, doc_id, cid)
+                ents, rels = self.extract(content, doc_id, cid, path=path_map.get(cid))
                 all_ents.extend(ents)
                 all_rels.extend(rels)
             return all_ents, all_rels
@@ -404,11 +407,12 @@ class KGExtractor:
         raw: str,
         doc_id: str,
         chunk_id: str,
+        path: str | None = None,
     ) -> tuple[list[Entity], list[Relation]]:
         """Parse single-chunk LLM JSON response."""
         data = _parse_json(raw)
-        entities = _build_entities(data, doc_id, chunk_id)
-        relations = _build_relations(data, doc_id, chunk_id)
+        entities = _build_entities(data, doc_id, chunk_id, path=path)
+        relations = _build_relations(data, doc_id, chunk_id, path=path)
         return entities, relations
 
     def _parse_batch_response(
@@ -416,6 +420,7 @@ class KGExtractor:
         raw: str,
         doc_id: str,
         expected_ids: set[str],
+        path_map: dict[str, str | None] | None = None,
     ) -> tuple[list[Entity], list[Relation]]:
         """
         Parse multi-chunk batch LLM JSON response.
@@ -425,6 +430,7 @@ class KGExtractor:
         response if array parsing fails.
         """
         parsed = _parse_json_array(raw)
+        pmap = path_map or {}
 
         all_ents: list[Entity] = []
         all_rels: list[Relation] = []
@@ -435,15 +441,15 @@ class KGExtractor:
                 if not cid:
                     # Try to use any available chunk_id
                     continue
-                ents = _build_entities(item, doc_id, cid)
-                rels = _build_relations(item, doc_id, cid)
+                ents = _build_entities(item, doc_id, cid, path=pmap.get(cid))
+                rels = _build_relations(item, doc_id, cid, path=pmap.get(cid))
                 all_ents.extend(ents)
                 all_rels.extend(rels)
         elif isinstance(parsed, dict):
             # LLM returned a single object instead of array — treat as one chunk
             cid = str(parsed.get("chunk_id", "")) or (next(iter(expected_ids)) if len(expected_ids) == 1 else "unknown")
-            all_ents = _build_entities(parsed, doc_id, cid)
-            all_rels = _build_relations(parsed, doc_id, cid)
+            all_ents = _build_entities(parsed, doc_id, cid, path=pmap.get(cid))
+            all_rels = _build_relations(parsed, doc_id, cid, path=pmap.get(cid))
 
         return all_ents, all_rels
 
@@ -490,9 +496,11 @@ def _build_entities(
     data: dict,
     doc_id: str,
     chunk_id: str,
+    path: str | None = None,
 ) -> list[Entity]:
     """Build Entity objects from parsed JSON dict."""
     entities = []
+    src_paths = {path} if path else set()
     for e in data.get("entities", []):
         name = str(e.get("name", "")).strip()
         if not name:
@@ -506,6 +514,7 @@ def _build_entities(
                 description=str(e.get("description", "")),
                 source_doc_ids={doc_id},
                 source_chunk_ids={chunk_id},
+                source_paths=set(src_paths),
             )
         )
     return entities
@@ -515,9 +524,11 @@ def _build_relations(
     data: dict,
     doc_id: str,
     chunk_id: str,
+    path: str | None = None,
 ) -> list[Relation]:
     """Build Relation objects from parsed JSON dict."""
     relations = []
+    src_paths = {path} if path else set()
     for r in data.get("relations", []):
         src = str(r.get("source", "")).strip()
         tgt = str(r.get("target", "")).strip()
@@ -538,6 +549,7 @@ def _build_relations(
                 weight=weight,
                 source_doc_ids={doc_id},
                 source_chunk_ids={chunk_id},
+                source_paths=set(src_paths),
             )
         )
     return relations
@@ -605,6 +617,7 @@ def _merge_entity(store: dict[str, Entity], entity: Entity) -> None:
             existing.description = existing.description + sep + entity.description
         existing.source_doc_ids |= entity.source_doc_ids
         existing.source_chunk_ids |= entity.source_chunk_ids
+        existing.source_paths |= entity.source_paths
     else:
         store[entity.entity_id] = entity
 
@@ -619,6 +632,7 @@ def _merge_relation(store: dict[str, Relation], relation: Relation) -> None:
             existing.description = existing.description + sep + relation.description
         existing.source_doc_ids |= relation.source_doc_ids
         existing.source_chunk_ids |= relation.source_chunk_ids
+        existing.source_paths |= relation.source_paths
     else:
         store[relation.relation_id] = relation
 

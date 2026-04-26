@@ -115,20 +115,42 @@ class TreePath:
         query: str,
         vector_doc_ids: set[str] | None = None,
         prefilter_hits: list[PreFilterHit] | None = None,
+        *,
+        allowed_doc_ids: set[str] | None = None,
     ) -> list[ScoredChunk]:
+        """
+        Navigate document trees for the query.
+
+        ``allowed_doc_ids`` — when set, restricts BOTH the internal BM25
+        prefilter and any externally-supplied vector doc_ids to the given
+        whitelist, so the LLM tree navigator never reasons about documents
+        outside the user's requested scope.
+        """
         if not self.cfg.enabled:
             return []
 
         # BM25 doc prefilter (may return empty for non-Latin queries, etc.)
-        doc_hits = self.bm25.search_docs(query, self.bm25_cfg.doc_prefilter_top_k)
+        # Pass scope through to BM25 so the prefilter itself is pre-filtered.
+        doc_hits = self.bm25.search_docs(
+            query,
+            self.bm25_cfg.doc_prefilter_top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
         bm25_doc_set = {d for d, _ in doc_hits}
 
         # Merge externally-provided doc_ids (from pipeline's BM25 + Vector)
         # so tree nav runs even when the internal BM25 prefilter misses.
         ext_ids = (vector_doc_ids or set()) - bm25_doc_set
+        if allowed_doc_ids is not None:
+            ext_ids = ext_ids & allowed_doc_ids
         if ext_ids:
             for did in ext_ids:
                 doc_hits.append((did, 0.0))  # score 0 = no BM25 signal
+
+        # Also scope the prefilter_hits so the heat-map doesn't leak
+        # other-scope chunks into the navigator's prompt.
+        if allowed_doc_ids is not None and prefilter_hits:
+            prefilter_hits = [h for h in prefilter_hits if h.doc_id in allowed_doc_ids]
 
         if not doc_hits:
             return []
@@ -188,9 +210,24 @@ class TreePath:
         results_by_doc: dict[str, list[ScoredChunk]] = {}
         t0 = time.time()
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Explicit pool + finally (not `with`) so that when early-stop
+        # triggers we don't block on the executor's implicit shutdown.
+        # The `with` form calls shutdown(wait=True) on exit, which waits
+        # for every running future to finish — including the slowest LLM
+        # call, defeating the whole point of early-stop. Here we call
+        # shutdown(wait=False, cancel_futures=True) instead:
+        #   * cancel_futures cancels anything still pending in the queue,
+        #   * wait=False returns immediately; orphaned workers (already
+        #     running LLM calls) will finish on their own and their
+        #     threads will die when their work returns.
+        # Orphaned LLM calls still cost tokens until they complete — that
+        # trade-off is acceptable because we'd otherwise be blocked on
+        # the same slow call anyway. The net is faster wall time for the
+        # caller, same LLM spend.
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tree_nav")
+        try:
             futures = {
-                executor.submit(
+                pool.submit(
                     self._nav_one_doc,
                     query,
                     doc_id,
@@ -200,8 +237,10 @@ class TreePath:
             }
 
             accumulated = 0
+            completed: set = set()
             for fut in as_completed(futures):
                 doc_id = futures[fut]
+                completed.add(fut)
                 try:
                     chunks = fut.result()
                     results_by_doc[doc_id] = chunks
@@ -211,15 +250,23 @@ class TreePath:
 
                 # --- Early stop ---
                 if accumulated >= nav_cfg.target_chunks:
+                    pending = sum(1 for f in futures if f not in completed)
+                    # Cancel pending (not-yet-scheduled) futures. Already
+                    # running ones can't be cancelled but will be
+                    # abandoned by the finally-block shutdown(wait=False).
                     for f in futures:
-                        f.cancel()
+                        if f not in completed:
+                            f.cancel()
                     log.info(
-                        "tree_path early stop: %d chunks from %d/%d docs",
+                        "tree_path early stop: %d chunks from %d/%d docs (%d pending abandoned)",
                         accumulated,
                         len(results_by_doc),
                         len(prioritized),
+                        pending,
                     )
                     break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         elapsed = int((time.time() - t0) * 1000)
         log.info(

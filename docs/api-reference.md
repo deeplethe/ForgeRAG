@@ -27,6 +27,23 @@ Ask a question and get an answer with citations.
 | `conversation_id` | string | no | Continue an existing conversation (multi-turn) |
 | `stream` | bool | no | `true` for Server-Sent Events streaming (default: `false`) |
 | `filter` | object | no | Metadata filter (e.g., `{"doc_id": "..."}`) |
+| `path_filter` | string | no | Limit retrieval to a folder subtree (e.g. `"/legal/2024"`). Trashed docs are always excluded. |
+| `overrides` | object | no | Per-request retrieval tweaks — see below. |
+
+**`overrides` (QueryOverrides)** — any field left unset falls through to the yaml default. Non-mutating: these never touch global config.
+
+| Field | Type | Effect |
+|-------|------|--------|
+| `query_understanding` | bool | Run / skip the QU LLM (intent + expansion). Skipping saves one LLM call. |
+| `kg_path` | bool | Enable / disable the knowledge-graph retrieval path. |
+| `tree_path` | bool | Enable / disable tree-navigation retrieval. |
+| `tree_llm_nav` | bool | Use LLM vs heuristic tree navigator (`true` requires yaml `tree_path.llm_nav_enabled: true` — the navigator is lazy-built at startup). |
+| `rerank` | bool | Run / skip the reranker stage. |
+| `bm25_top_k` / `vector_top_k` / `tree_top_k` / `kg_top_k` / `rerank_top_k` | int | Override the path-level top-k. |
+| `candidate_limit` | int | Cap on merged candidates passed to rerank. |
+| `descendant_expansion` / `sibling_expansion` / `crossref_expansion` | bool | Toggle tree/cross-ref context expansion after RRF merge. |
+
+**Fusion rule.** Tree + KG are the "primary reasoning" layer. When **both** are off or produced zero hits, retrieval falls back to an RRF of BM25 + vector — so `{"overrides": {"tree_path": false, "kg_path": false}}` yields a lexical/semantic hybrid search with no reasoning-LLM cost.
 
 **Normal response** (`stream: false`):
 
@@ -79,15 +96,24 @@ curl -N -X POST http://localhost:8000/api/v1/query \
 
 ## Documents
 
-### Upload and Ingest
+### Ingest (file already uploaded)
 
 ```
 POST /api/v1/documents
 ```
 
-Upload a file and queue it for ingestion.
+Queue an already-uploaded blob for ingestion. Use `POST /api/v1/files` first to get a `file_id`.
 
-**Request:** `multipart/form-data` with `file` field.
+**Request body (JSON):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file_id` | string | yes | From `/api/v1/files` |
+| `doc_id` | string | no | Override the auto-derived id |
+| `parse_version` | int | no | Default 1 |
+| `folder_path` | string | no | Destination folder, default `/` |
+| `force_reparse` | bool | no | Re-parse an existing doc at bumped `parse_version` (preserves original folder) |
+| `enrich_summary` | bool | no | Force LLM tree-summary on / off for this job (default = yaml `parser.tree_builder.llm_enabled`) |
 
 **Response** (202 Accepted):
 
@@ -95,32 +121,47 @@ Upload a file and queue it for ingestion.
 {
   "doc_id": "doc_abc123",
   "file_id": "file_xyz",
-  "status": "pending"
+  "status": "pending",
+  "message": "queued for processing"
 }
 ```
 
-The document is processed asynchronously. Poll the document detail endpoint to check status.
+Document processing is asynchronous. Poll `GET /api/v1/documents/{doc_id}` for status.
 
-### Upload and Ingest (multipart)
+### Upload and Ingest (one-shot multipart)
 
 ```
 POST /api/v1/documents/upload-and-ingest
 ```
 
-Same as above, alternative endpoint name.
+Upload the file and queue ingestion in a single request.
+
+**Request:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | yes | The document bytes |
+| `original_name` | string | no | Overrides the browser-supplied filename |
+| `mime_type` | string | no | Overrides content-type |
+| `doc_id` | string | no | Override the auto-derived id |
+| `folder_path` | string | no | Destination folder, default `/`. Collisions auto-suffix (`foo.pdf` → `foo (1).pdf`). |
+
+A non-existent `folder_path` returns `404` — the blob is not uploaded in that case, so no orphaned files.
 
 ### List Documents
 
 ```
-GET /api/v1/documents?limit=50&offset=0&search=quarterly&status=ready
+GET /api/v1/documents?limit=50&offset=0&path_filter=/legal&recursive=true
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `limit` | int | 50 | Page size |
+| `limit` | int | 50 | Page size (≤ 200) |
 | `offset` | int | 0 | Offset |
-| `search` | string | — | Search in filenames |
-| `status` | string | — | Filter by status: `pending`, `parsing`, `ready`, `error` |
+| `search` | string | — | Substring match on filename / doc_id |
+| `status` | string | — | Comma-separated statuses: `pending,parsing,ready,error` |
+| `path_filter` | string | — | Folder path to restrict to (same semantics as `/query` `path_filter`). `404` if folder doesn't exist. |
+| `recursive` | bool | `true` | With `path_filter`: `true` = entire subtree; `false` = only direct children of that folder. |
 
 **Response:**
 
@@ -387,74 +428,47 @@ GET /api/v1/settings/key/{key}
 
 Key uses dotted notation: `retrieval.vector.top_k`.
 
-### Update Setting
-
-```
-PUT /api/v1/settings/key/{key}
-```
-
-**Request body:**
-
-```json
-{
-  "value": 50
-}
-```
-
-Changes take effect immediately — no restart required.
-
-### Batch Update Settings
-
-```
-PUT /api/v1/settings
-```
-
-**Request body:**
-
-```json
-{
-  "settings": {
-    "retrieval.vector.top_k": 50,
-    "answering.generator.temperature": 0.2
-  }
-}
-```
-
-### Reset Setting to Default
-
-```
-DELETE /api/v1/settings/{key}
-```
-
-Removes the DB override; reverts to YAML config value.
-
-### Apply All Overrides
-
-```
-POST /api/v1/settings/apply
-```
-
-Re-applies all DB overrides to the running config. Useful after direct DB edits.
+> **Note — settings are read-only.** YAML is the single source of truth
+> ([configuration.md](configuration.md)); the `settings` table is a one-way
+> mirror written at server boot. Edit `forgerag.yaml` and restart to change
+> configuration. Per-query retrieval tweaks go through
+> [`QueryOverrides`](#post-apiv1query).
 
 ---
 
 ## LLM Providers
 
+Providers live under `llm_providers:` in the yaml config ([configuration.md](configuration.md)). The HTTP surface is **read-only**; edit the yaml + restart to change providers.
+
 ### List Providers
 
 ```
-GET /api/v1/llm-providers
+GET /api/v1/llm-providers?provider_type=chat
 ```
 
-Returns configured LLM providers.
+Returns providers from `cfg.llm_providers`, optionally filtered by `provider_type` (`chat`, `embedding`, `reranker`). API keys are never exposed — only a boolean `api_key_set`.
 
-### Add Provider
+### Get Provider
 
 ```
-POST /api/v1/llm-providers
+GET /api/v1/llm-providers/{provider_id}
 ```
 
-Register a new LLM provider (OpenAI, Azure, Ollama, etc.).
+### Curated Presets
+
+```
+GET /api/v1/llm-providers/presets?provider_type=embedding
+```
+
+Returns the static preset catalogue (OpenAI, Azure, Ollama, SiliconFlow, Jina, etc.) for filling in `llm_providers` in yaml.
+
+### Test Connection
+
+```
+POST /api/v1/llm-providers/{provider_id}/test
+```
+
+Non-mutating probe: fires one minimal request (`completion` / `embedding` / `rerank` depending on provider_type) and returns `{ok, latency_ms, ...}` so you can catch model/key/endpoint mistakes before running a real query. Credentials come from yaml.
 
 ---
 

@@ -51,17 +51,14 @@ class AppState:
         self.store.connect()
         self.store.ensure_schema()
 
-        # Seed + apply DB settings overrides + resolve provider_id → credentials
-        # This MUST happen before any component reads cfg.*
-        from config.settings_manager import apply_overrides, resolve_providers, seed_defaults
+        # yaml is the single source of truth; the DB carries a one-way
+        # mirror so read-only admin views can see the effective state.
+        # Each module already owns its model/api_key/api_base inline —
+        # no provider-id indirection layer to resolve.
+        from config.settings_manager import snapshot_to_db
 
-        seed_defaults(cfg, self.store)
-        applied = apply_overrides(cfg, self.store)
-        if applied:
-            log.info("applied %d DB setting overrides", applied)
-        resolved = resolve_providers(cfg, self.store)
-        if resolved:
-            log.info("resolved %d LLM providers", resolved)
+        # Mirror yaml → DB (backup only, never read back at runtime).
+        snapshot_to_db(cfg, self.store)
 
         # Blob store for figures + uploaded files
         self.blob: BlobStore = blob_store or make_blob_store(cfg.storage.to_dataclass())
@@ -100,26 +97,26 @@ class AppState:
             self.graph_store = make_graph_store(cfg.graph)
             log.info("graph store initialized: %s", cfg.graph.backend)
 
-            # Wrap with entity disambiguation if enabled
-            if cfg.graph.entity_disambiguation.enabled:
-                try:
-                    from graph.disambiguator import DisambiguatingGraphStore, EntityDisambiguator
+            # Always wrap with entity disambiguation (no cfg toggle anymore —
+            # tune via entity_disambiguation.similarity_threshold instead).
+            try:
+                from graph.disambiguator import DisambiguatingGraphStore, EntityDisambiguator
 
-                    disambiguator = EntityDisambiguator(
-                        embedder=self.embedder,
-                        threshold=cfg.graph.entity_disambiguation.similarity_threshold,
-                        candidate_top_k=cfg.graph.entity_disambiguation.candidate_top_k,
-                    )
-                    existing = self.graph_store.get_all_entities()
-                    disambiguator.load_existing(existing)
-                    self.graph_store = DisambiguatingGraphStore(self.graph_store, disambiguator)
-                    log.info(
-                        "entity disambiguation enabled (threshold=%.2f, cached=%d)",
-                        cfg.graph.entity_disambiguation.similarity_threshold,
-                        len(existing),
-                    )
-                except Exception as e:
-                    log.warning("entity disambiguation init failed: %s", e)
+                disambiguator = EntityDisambiguator(
+                    embedder=self.embedder,
+                    threshold=cfg.graph.entity_disambiguation.similarity_threshold,
+                    candidate_top_k=cfg.graph.entity_disambiguation.candidate_top_k,
+                )
+                existing = self.graph_store.get_all_entities()
+                disambiguator.load_existing(existing)
+                self.graph_store = DisambiguatingGraphStore(self.graph_store, disambiguator)
+                log.info(
+                    "entity disambiguation enabled (threshold=%.2f, cached=%d)",
+                    cfg.graph.entity_disambiguation.similarity_threshold,
+                    len(existing),
+                )
+            except Exception as e:
+                log.warning("entity disambiguation init failed: %s", e)
         except Exception as e:
             log.warning("graph store not available: %s", e, exc_info=True)
 
@@ -238,11 +235,74 @@ class AppState:
     # ------------------------------------------------------------------
     def _on_ingest_complete(self, doc_id: str, error: Exception | None) -> None:
         """Called from worker thread after each ingestion job finishes."""
-        if error is None:
+        if error is not None:
+            return
+        try:
+            self._update_bm25_for_doc(doc_id)
+        except Exception:
+            log.exception(
+                "incremental bm25 update failed for %s; falling back to full rebuild",
+                doc_id,
+            )
             try:
                 self.refresh_bm25()
             except Exception:
                 log.exception("post-ingest bm25 refresh failed")
+
+    def _update_bm25_for_doc(self, doc_id: str) -> None:
+        """
+        Add (or replace) one document's chunks in the BM25 index without
+        rescanning the rest of the corpus. ``_init_lock`` serializes index
+        mutation across worker threads.
+        """
+        if self._bm25 is None:
+            # Cold start — build the whole index once.
+            self.refresh_bm25(force_rebuild=True)
+            return
+
+        doc_row = self.store.get_document(doc_id)
+        if not doc_row:
+            # Doc was deleted between ingest_complete and now — drop stale entries.
+            with self._init_lock:
+                bm25 = self._bm25
+                if bm25 is None:
+                    return
+                bm25.remove_doc(doc_id)
+                bm25.finalize()
+                self._persist_bm25(bm25)
+            return
+
+        pv = doc_row["active_parse_version"]
+        chunks = self.store.get_chunks(doc_id, pv)
+
+        with self._init_lock:
+            bm25 = self._bm25
+            if bm25 is None:
+                # Lost the index between the early check and now (concurrent
+                # full rebuild). Skip — that rebuild already covers this doc.
+                return
+            # Replace prior chunks for this doc (re-ingest with bumped
+            # parse_version leaves the old chunk_ids stale).
+            bm25.remove_doc(doc_id)
+            for c in chunks:
+                section = " ".join(c.get("section_path") or [])
+                text = c.get("content") or ""
+                if section:
+                    text = section + "\n" + text
+                bm25.add(chunk_id=c["chunk_id"], doc_id=c["doc_id"], text=text)
+            bm25.finalize()
+            self._persist_bm25(bm25)
+            total = len(bm25)
+        log.info("bm25 incremental: doc=%s chunks=%d total=%d", doc_id, len(chunks), total)
+
+    def _persist_bm25(self, bm25) -> None:
+        cache_path = self.cfg.cache.bm25_path if self.cfg.cache.bm25_persistence else None
+        if not cache_path:
+            return
+        try:
+            bm25.save(cache_path)
+        except Exception as e:
+            log.warning("bm25 cache save failed: %s", e)
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:

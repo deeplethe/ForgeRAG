@@ -1,31 +1,27 @@
 # Configuration Reference
 
-ForgeRAG is configured via a single YAML file. This document covers every section and parameter.
+ForgeRAG is configured via a single YAML file. **YAML is the single source of truth** — there is no runtime config editing via UI. Edit the file and restart to apply.
 
 ## Config Resolution Order
 
 1. `--config <path>` CLI argument
 2. `$FORGERAG_CONFIG` environment variable
 3. `./forgerag.yaml` in the working directory
-4. Auto-generated defaults (zero-config mode)
+4. Auto-generated skeleton (written on first boot if no yaml exists; needs at minimum your LLM + embedding provider credentials filled in before queries will succeed)
 
 A fully commented example is available at [`examples/forgerag.dev.yaml`](../examples/forgerag.dev.yaml).
 
-## Runtime Overrides
+## Per-request overrides (not the same as config editing)
 
-Many settings can be changed at runtime through the **Architecture** page in the web UI or via the `/api/v1/settings` API. These overrides are stored in the database and applied on top of the YAML config. No restart required.
+A subset of retrieval knobs can be overridden **per query** via `QueryOverrides` in the `/api/v1/query` request body — handy for A/B testing and debug without mutating the global config. See [api-reference.md](api-reference.md#post-apiv1query) for the field list. These overrides never mutate YAML or the database; they apply only to the single request.
 
-Settings that **require restart** to change:
-- Database backend (sqlite/postgres/mysql)
-- Vector store backend (chromadb/pgvector/qdrant/milvus/weaviate)
-- Storage mode (local/s3/oss)
+## DB as a one-way backup mirror
 
-Settings that can be changed **at runtime**:
-- LLM provider and model
-- Embedding model and dimension
-- All retrieval parameters (top_k, RRF, expansion, rerank)
-- Answering parameters (temperature, max_tokens, prompts)
-- CORS settings
+On startup, ForgeRAG writes the resolved cfg into the `settings` and `llm_providers` tables as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot.
+
+## Changing configuration — the only way
+
+Edit `forgerag.yaml` (or `myconfig.yaml` via `--config`) and restart the backend. This applies to every setting: infrastructure (persistence/storage/graph backends), LLM providers, retrieval parameters, prompts, everything.
 
 ---
 
@@ -509,24 +505,37 @@ The `api_key_env` / `password_env` pattern throughout the config refers to envir
 
 ## Example: Minimal Config
 
+Set `$OPENAI_API_KEY`, then:
+
 ```yaml
-# forgerag.yaml — zero-config defaults
-# Just set OPENAI_API_KEY and run. Everything else auto-configures.
+# forgerag.yaml — minimum viable
+# Providers live in a top-level list; each component points at one by id.
+
 embedder:
-  backend: litellm
+  provider_id: openai_embed
   dimension: 1536
-  litellm:
-    model: openai/text-embedding-3-small
-    api_key_env: OPENAI_API_KEY
 
 answering:
   generator:
-    backend: litellm
-    model: openai/gpt-4o-mini
+    provider_id: openai_chat
+
+llm_providers:
+  - id: openai_embed
+    name: OpenAI Embedding
+    provider_type: embedding
+    model_name: openai/text-embedding-3-small
+    api_key_env: OPENAI_API_KEY
+
+  - id: openai_chat
+    name: OpenAI GPT-4o-mini
+    provider_type: chat
+    model_name: openai/gpt-4o-mini
     api_key_env: OPENAI_API_KEY
 ```
 
-## Example: Production Config (PostgreSQL + pgvector)
+Remaining roles (`retrieval.query_understanding.provider_id`, `retrieval.tree_path.nav.provider_id`, …) fall back to whichever provider you reference in their section; omit them to disable the feature.
+
+## Example: Production Config (PostgreSQL + pgvector + S3 + dedicated reranker)
 
 ```yaml
 persistence:
@@ -554,23 +563,34 @@ storage:
     secret_key_env: AWS_SECRET_ACCESS_KEY
 
 embedder:
-  backend: litellm
+  provider_id: openai_embed_large
   dimension: 1536
-  litellm:
-    model: openai/text-embedding-3-large
-    api_key_env: OPENAI_API_KEY
 
 retrieval:
   rerank:
     enabled: true
-    backend: litellm
-    model: openai/gpt-4o-mini
+    provider_id: cohere_rerank
     top_k: 10
 
 answering:
   generator:
-    backend: litellm
-    model: openai/gpt-4o
+    provider_id: openai_gpt4o
+
+llm_providers:
+  - id: openai_embed_large
+    name: OpenAI text-embedding-3-large
+    provider_type: embedding
+    model_name: openai/text-embedding-3-large
+    api_key_env: OPENAI_API_KEY
+  - id: cohere_rerank
+    name: Cohere rerank-v3
+    provider_type: reranker
+    model_name: cohere/rerank-english-v3.0
+    api_key_env: COHERE_API_KEY
+  - id: openai_gpt4o
+    name: OpenAI GPT-4o
+    provider_type: chat
+    model_name: openai/gpt-4o
     api_key_env: OPENAI_API_KEY
 
 cors:

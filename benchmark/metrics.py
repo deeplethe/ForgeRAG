@@ -93,15 +93,44 @@ def score_items(
     cancel: threading.Event | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
 ):
-    """Score each BenchmarkItem in-place with three metrics."""
+    """Score each BenchmarkItem in-place with three metrics.
+
+    Prefer the dedicated benchmark judge LLM (cfg.benchmark) if a
+    separate judge provider was configured — this avoids the model
+    scoring its own answers (self-preference bias). Falls back to the
+    answer generator with a log warning so users know the scores may
+    be biased.
+    """
+    bench_cfg = getattr(cfg, "benchmark", None)
     gen_cfg = cfg.answering.generator
-    model = gen_cfg.model
-    api_key = resolve_api_key(
-        api_key=gen_cfg.api_key,
-        api_key_env=gen_cfg.api_key_env,
-        context="benchmark_scoring",
-    )
-    api_base = gen_cfg.api_base
+    # An independent judge is configured when benchmark.model is non-empty
+    # AND it isn't the same model as the generator. Anything else falls
+    # back to the generator with a self-preference-bias warning.
+    use_independent_judge = bool(bench_cfg and bench_cfg.model and bench_cfg.model != gen_cfg.model)
+
+    if use_independent_judge:
+        model = bench_cfg.model
+        api_key = resolve_api_key(
+            api_key=bench_cfg.api_key,
+            api_key_env=bench_cfg.api_key_env,
+            context="benchmark_scoring",
+            required=False,
+        )
+        api_base = bench_cfg.api_base
+        log.info("benchmark: using independent judge model=%s", model)
+    else:
+        model = gen_cfg.model
+        api_key = resolve_api_key(
+            api_key=gen_cfg.api_key,
+            api_key_env=gen_cfg.api_key_env,
+            context="benchmark_scoring",
+        )
+        api_base = gen_cfg.api_base
+        log.warning(
+            "benchmark: no independent judge configured — reusing the Answer LLM "
+            "for scoring, which introduces self-preference bias. Set benchmark.model "
+            "(and api_base / api_key_env) to a different model for rigorous scoring."
+        )
 
     import litellm
 
@@ -114,7 +143,26 @@ def score_items(
                 progress_cb(i + 1, total)
             continue
 
-        context_str = "\n---\n".join(item.contexts[:10]) if item.contexts else "(no context retrieved)"
+        # Pack context lines into an 8k-char budget. Under the old
+        # `contexts[:10]` + `context[:5000]` combo, the first 10 slots
+        # were all raw chunk snippets and the appended KG synthesized
+        # context (entities / relations) never reached the judge —
+        # faithfulness / context_precision were under-reported for
+        # answers that cited KG material.
+        #
+        # item.contexts is structured as [chunks..., KG lines...], so
+        # a char-budget scan preserves that priority: chunks come
+        # first, KG lines fill whatever budget remains.
+        _JUDGE_CTX_BUDGET = 8000
+        _parts: list[str] = []
+        _used = 0
+        for _line in item.contexts or []:
+            ln = len(_line)
+            if _used + ln + 4 > _JUDGE_CTX_BUDGET:  # +4 accounts for the "\n---\n" separator
+                break
+            _parts.append(_line)
+            _used += ln + 4
+        context_str = "\n---\n".join(_parts) if _parts else "(no context retrieved)"
 
         # Run three scoring prompts
         try:
@@ -125,7 +173,7 @@ def score_items(
                 api_base,
                 _FAITHFULNESS_PROMPT.format(
                     question=item.question,
-                    context=context_str[:5000],
+                    context=context_str,
                     answer=item.answer[:2000],
                 ),
             )
@@ -157,7 +205,7 @@ def score_items(
                 _CONTEXT_PRECISION_PROMPT.format(
                     question=item.question,
                     ground_truth=item.ground_truth[:1000],
-                    context=context_str[:5000],
+                    context=context_str,
                 ),
             )
         except Exception as e:

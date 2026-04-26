@@ -77,7 +77,10 @@ class IngestionPipeline:
         self.embedder = embedder
         self.graph_store = graph_store
         self.kg_extraction_cfg = kg_extraction_cfg
-        self._doc_locks: dict[str, threading.Lock] = {}
+        # Per-doc serialization with refcount: popping after release would
+        # let a third concurrent caller arriving between pop and the second
+        # waiter's acquire create a fresh lock and bypass serialization.
+        self._doc_locks: dict[str, list] = {}  # doc_id → [Lock, refcount]
         self._lock_lock = threading.Lock()
 
     def _assert_not_deleted(self, doc_id: str) -> None:
@@ -124,19 +127,24 @@ class IngestionPipeline:
         if doc_id is None:
             doc_id = f"doc_{file_id[:12]}"
 
-        # Ensure document placeholder exists (may already be created by API route)
+        # Ensure document placeholder exists (may already be created by API route).
+        # FileStore guarantees display_name is always populated.
+        display_name = file_row["display_name"]
         self.rel.create_document_placeholder(
             doc_id=doc_id,
             file_id=file_id,
-            filename=file_row.get("display_name") or file_row.get("original_name", ""),
-            format=Path(file_row.get("display_name", "")).suffix.lstrip(".") or "bin",
+            filename=display_name,
+            format=Path(display_name).suffix.lstrip(".") or "bin",
             status="pending",
         )
 
         with self._lock_lock:
-            if doc_id not in self._doc_locks:
-                self._doc_locks[doc_id] = threading.Lock()
-            doc_lock = self._doc_locks[doc_id]
+            entry = self._doc_locks.get(doc_id)
+            if entry is None:
+                entry = [threading.Lock(), 0]
+                self._doc_locks[doc_id] = entry
+            entry[1] += 1
+            doc_lock = entry[0]
         doc_lock.acquire()
         try:
             return self._ingest_inner(
@@ -150,7 +158,11 @@ class IngestionPipeline:
         finally:
             doc_lock.release()
             with self._lock_lock:
-                self._doc_locks.pop(doc_id, None)
+                entry = self._doc_locks.get(doc_id)
+                if entry is not None:
+                    entry[1] -= 1
+                    if entry[1] <= 0:
+                        self._doc_locks.pop(doc_id, None)
 
     def _ingest_inner(
         self,
@@ -263,7 +275,9 @@ class IngestionPipeline:
             summary_count = 0
             tree_has_summaries = tree.generation_method == "page_groups"
             if do_summary:
-                enrich_provider_id = getattr(self.parser.cfg.image_enrichment, "provider_id", None)
+                # provider_id audit column kept for legacy rows; new ingests
+                # only record the model id (each module owns its own).
+                enrich_provider_id = None
                 enrich_model = getattr(self.parser.cfg.image_enrichment, "model", None)
                 self.rel.update_document_status(doc_id, enrich_status="running", enrich_started_at=datetime.utcnow())
                 image_count = self._enrich_images(parsed)
@@ -298,138 +312,12 @@ class IngestionPipeline:
 
             self._assert_not_deleted(doc_id)
 
-            # ── Phase 5: Knowledge Graph extraction ──
-            # Clean up old graph data for this document first (re-ingest safety)
-            if self.graph_store is not None:
-                try:
-                    removed = self.graph_store.delete_by_doc(doc_id)
-                    if removed:
-                        log.info("cleaned up %d old graph entries for doc %s", removed, doc_id)
-                except Exception as e:
-                    log.warning("graph cleanup failed for %s: %s", doc_id, e)
-
-            kg_cfg = self.kg_extraction_cfg
-            if kg_cfg and kg_cfg.enabled and self.graph_store is not None:
-                self.rel.update_document_status(
-                    doc_id,
-                    kg_status="running",
-                    kg_started_at=datetime.utcnow(),
-                )
-                log.info(
-                    "KG extraction starting: model=%s api_base=%s api_key=%s provider_id=%s",
-                    kg_cfg.model,
-                    kg_cfg.api_base,
-                    ("***" + kg_cfg.api_key[-4:]) if kg_cfg.api_key else "NONE",
-                    getattr(kg_cfg, "provider_id", None),
-                )
-                try:
-                    from ingestion.kg_extractor import KGExtractor
-
-                    extractor = KGExtractor(
-                        model=kg_cfg.model,
-                        api_key=kg_cfg.api_key,
-                        api_key_env=kg_cfg.api_key_env,
-                        api_base=kg_cfg.api_base,
-                        timeout=kg_cfg.timeout,
-                    )
-                    # Build chunk dicts for batch extraction
-                    chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content} for c in chunks]
-                    entities, relations = extractor.extract_batch(
-                        chunk_dicts,
-                        doc_id,
-                        max_workers=kg_cfg.max_workers,
-                    )
-
-                    # Consolidate fragmented descriptions via LLM
-                    frag_thresh = getattr(kg_cfg, "merge_description_threshold", 6)
-                    char_thresh = getattr(kg_cfg, "merge_description_max_chars", 2000)
-                    if frag_thresh > 0:
-                        from ingestion.kg_extractor import consolidate_descriptions
-
-                        ent_m, rel_m = consolidate_descriptions(
-                            entities,
-                            relations,
-                            model=kg_cfg.model,
-                            api_key=kg_cfg.api_key,
-                            api_base=kg_cfg.api_base,
-                            timeout=kg_cfg.timeout,
-                            fragment_threshold=frag_thresh,
-                            char_threshold=char_thresh,
-                            max_workers=kg_cfg.max_workers,
-                        )
-                        if ent_m or rel_m:
-                            log.info(
-                                "KG description merge: %d entities, %d relations consolidated",
-                                ent_m,
-                                rel_m,
-                            )
-
-                    # Embed entity names for disambiguation (if enabled)
-                    if getattr(kg_cfg, "embed_entity_names", False) and self.embedder is not None:
-                        ents_to_embed = [e for e in entities if not e.name_embedding]
-                        if ents_to_embed:
-                            try:
-                                embs = self.embedder.embed_texts([e.name for e in ents_to_embed])
-                                for e, emb in zip(ents_to_embed, embs, strict=False):
-                                    e.name_embedding = emb
-                            except Exception:
-                                log.warning("Entity name embedding failed for %s", doc_id)
-
-                    # Embed relation descriptions for semantic search (if enabled)
-                    if getattr(kg_cfg, "embed_relations", False) and self.embedder is not None:
-                        rels_to_embed = [r for r in relations if r.description and not r.description_embedding]
-                        if rels_to_embed:
-                            try:
-                                embs = self.embedder.embed_texts([r.description for r in rels_to_embed])
-                                for r, emb in zip(rels_to_embed, embs, strict=False):
-                                    r.description_embedding = emb
-                            except Exception:
-                                log.warning("Relation embedding failed for %s", doc_id)
-
-                    self._assert_not_deleted(doc_id)
-                    for e in entities:
-                        self.graph_store.upsert_entity(e)
-                    for r in relations:
-                        self.graph_store.upsert_relation(r)
-
-                    # Cross-document consolidation: after upsert, some entities
-                    # in the graph store may have accumulated very long descriptions
-                    # from previous documents + this one.  Re-read and consolidate.
-                    if frag_thresh > 0:
-                        self._consolidate_graph_descriptions(
-                            entities,
-                            kg_cfg,
-                            frag_thresh=frag_thresh,
-                            char_thresh=char_thresh,
-                        )
-
-                    self.rel.update_document_status(
-                        doc_id,
-                        kg_status="done",
-                        kg_entity_count=len(entities),
-                        kg_relation_count=len(relations),
-                        kg_completed_at=datetime.utcnow(),
-                        kg_provider_id=getattr(kg_cfg, "provider_id", None),
-                        kg_model=kg_cfg.model,
-                    )
-                    log.info(
-                        "KG extraction done doc_id=%s entities=%d relations=%d",
-                        doc_id,
-                        len(entities),
-                        len(relations),
-                    )
-                except _DocumentDeleted:
-                    raise
-                except Exception as e:
-                    log.warning("KG extraction failed for %s: %s", doc_id, e)
-                    self.rel.update_document_status(doc_id, kg_status="error")
-            else:
-                self.rel.update_document_status(doc_id, kg_status="skipped")
-
-            self._assert_not_deleted(doc_id)
-
-            # ── Phase 6: Write relational + embed ──
-            embed_provider_id = getattr(self.parser.cfg.embedder, "provider_id", None)
+            # ── Phase 5: Write relational + embed ──
+            # Chunks must be persisted BEFORE KG extraction so the graph
+            # store never references chunk_ids that don't exist in the
+            # relational store. IngestionWriter wraps blocks/tree/chunks
+            # in a single relational transaction.
+            embed_provider_id = None
             embed_model = getattr(getattr(self.parser.cfg.embedder, "litellm", None), "model", None)
             self.rel.update_document_status(
                 doc_id, status="embedding", embed_status="running", embed_started_at=datetime.utcnow()
@@ -446,6 +334,13 @@ class IngestionPipeline:
                 embed_model=embed_model,
                 embed_at=datetime.utcnow(),
             )
+
+            # ── Phase 6: Knowledge Graph extraction ──
+            # Runs AFTER chunks are committed so the graph never references
+            # chunk_ids that don't exist in the relational store. Failure
+            # leaves the doc queryable via BM25/vector/tree with
+            # kg_status="error" so the user can retry KG only.
+            self._run_kg_extraction(doc_id, chunks)
 
             log.info(
                 "phase-B ingest done doc_id=%s file_id=%s blocks=%d chunks=%d summaries=%d",
@@ -502,7 +397,7 @@ class IngestionPipeline:
         Store a converted PDF as a new file in the FileStore.
         Returns the new file_id for the PDF.
         """
-        orig_name = original_file_row.get("display_name", "document")
+        orig_name = original_file_row["display_name"]
         stem = Path(orig_name).stem
         pdf_name = f"{stem}.pdf"
         record = self.files.store(
@@ -517,6 +412,162 @@ class IngestionPipeline:
             pdf_name,
         )
         return record["file_id"]
+
+    def _run_kg_extraction(self, doc_id: str, chunks: list) -> None:
+        """
+        Extract and persist KG entities/relations for *doc_id* against the
+        already-committed chunks.
+
+        Best-effort: any failure (extraction, embedding, graph upsert,
+        deletion mid-flight) is captured into kg_status="error" with a
+        short error_message, and any partially-written graph entries for
+        this doc are rolled back via delete_by_doc(). The doc remains
+        queryable through BM25/vector/tree paths.
+        """
+        if self.graph_store is None:
+            return
+
+        kg_cfg = self.kg_extraction_cfg
+        if kg_cfg is None:
+            # No KG extraction config wired in (e.g. test environment).
+            self.rel.update_document_status(doc_id, kg_status="skipped")
+            return
+
+        # Re-ingest safety: clean up old graph entries for this doc.
+        try:
+            removed = self.graph_store.delete_by_doc(doc_id)
+            if removed:
+                log.info("cleaned up %d old graph entries for doc %s", removed, doc_id)
+        except Exception as e:
+            log.warning("graph cleanup failed for %s: %s", doc_id, e)
+
+        from datetime import datetime
+
+        self.rel.update_document_status(
+            doc_id,
+            kg_status="running",
+            kg_started_at=datetime.utcnow(),
+        )
+        log.info(
+            "KG extraction starting: model=%s api_base=%s api_key=%s",
+            kg_cfg.model,
+            kg_cfg.api_base,
+            ("***" + kg_cfg.api_key[-4:]) if kg_cfg.api_key else "NONE",
+        )
+
+        try:
+            from ingestion.kg_extractor import KGExtractor
+
+            extractor = KGExtractor(
+                model=kg_cfg.model,
+                api_key=kg_cfg.api_key,
+                api_key_env=kg_cfg.api_key_env,
+                api_base=kg_cfg.api_base,
+                timeout=kg_cfg.timeout,
+            )
+            # Threading the owning document's path into each chunk dict
+            # lets the extractor denormalize path onto Entity/Relation.source_paths.
+            doc_row = self.rel.get_document(doc_id) or {}
+            doc_path = doc_row.get("path") or "/"
+            chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content, "path": doc_path} for c in chunks]
+            entities, relations = extractor.extract_batch(
+                chunk_dicts,
+                doc_id,
+                max_workers=kg_cfg.max_workers,
+            )
+
+            frag_thresh = getattr(kg_cfg, "merge_description_threshold", 6)
+            char_thresh = getattr(kg_cfg, "merge_description_max_chars", 2000)
+            if frag_thresh > 0:
+                from ingestion.kg_extractor import consolidate_descriptions
+
+                ent_m, rel_m = consolidate_descriptions(
+                    entities,
+                    relations,
+                    model=kg_cfg.model,
+                    api_key=kg_cfg.api_key,
+                    api_base=kg_cfg.api_base,
+                    timeout=kg_cfg.timeout,
+                    fragment_threshold=frag_thresh,
+                    char_threshold=char_thresh,
+                    max_workers=kg_cfg.max_workers,
+                )
+                if ent_m or rel_m:
+                    log.info(
+                        "KG description merge: %d entities, %d relations consolidated",
+                        ent_m,
+                        rel_m,
+                    )
+
+            # Always embed entity names + relation descriptions when an
+            # embedder is available — the dependent retrieval features
+            # (entity_disambiguation, KGPath relation-semantic search)
+            # silently degrade without these vectors.
+            if self.embedder is not None:
+                ents_to_embed = [e for e in entities if not e.name_embedding]
+                if ents_to_embed:
+                    try:
+                        embs = self.embedder.embed_texts([e.name for e in ents_to_embed])
+                        for e, emb in zip(ents_to_embed, embs, strict=False):
+                            e.name_embedding = emb
+                    except Exception:
+                        log.warning("Entity name embedding failed for %s", doc_id)
+
+                rels_to_embed = [r for r in relations if r.description and not r.description_embedding]
+                if rels_to_embed:
+                    try:
+                        embs = self.embedder.embed_texts([r.description for r in rels_to_embed])
+                        for r, emb in zip(rels_to_embed, embs, strict=False):
+                            r.description_embedding = emb
+                    except Exception:
+                        log.warning("Relation embedding failed for %s", doc_id)
+
+            self._assert_not_deleted(doc_id)
+            for e in entities:
+                self.graph_store.upsert_entity(e)
+            for r in relations:
+                self.graph_store.upsert_relation(r)
+
+            if frag_thresh > 0:
+                self._consolidate_graph_descriptions(
+                    entities,
+                    kg_cfg,
+                    frag_thresh=frag_thresh,
+                    char_thresh=char_thresh,
+                )
+
+            self.rel.update_document_status(
+                doc_id,
+                kg_status="done",
+                kg_entity_count=len(entities),
+                kg_relation_count=len(relations),
+                kg_completed_at=datetime.utcnow(),
+                kg_provider_id=None,
+                kg_model=kg_cfg.model,
+            )
+            log.info(
+                "KG extraction done doc_id=%s entities=%d relations=%d",
+                doc_id,
+                len(entities),
+                len(relations),
+            )
+        except _DocumentDeleted:
+            # Doc deleted mid-extraction — purge any partial graph state.
+            with contextlib.suppress(Exception):
+                self.graph_store.delete_by_doc(doc_id)
+            raise
+        except Exception as e:
+            log.warning("KG extraction failed for %s: %s", doc_id, e, exc_info=True)
+            # Rollback partial entities/relations so a future retry starts clean.
+            with contextlib.suppress(Exception):
+                self.graph_store.delete_by_doc(doc_id)
+            err_msg = str(e)[:500] if str(e) else type(e).__name__
+            with contextlib.suppress(Exception):
+                self.rel.update_document_status(
+                    doc_id,
+                    kg_status="error",
+                    error_message=f"KG: {err_msg}",
+                )
 
     def _consolidate_graph_descriptions(
         self,

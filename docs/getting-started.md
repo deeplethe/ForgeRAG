@@ -85,13 +85,14 @@ cp .env.example .env
 python main.py
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in your browser. ForgeRAG auto-generates a default `forgerag.yaml` config on first run with zero-config defaults:
+Open [http://localhost:8000](http://localhost:8000) in your browser.
 
-- **Database:** SQLite (`./storage/forgerag.db`)
-- **Vector store:** ChromaDB (`./storage/chroma`)
-- **Blob storage:** Local filesystem (`./storage/blobs`)
-- **Embedder:** `text-embedding-3-small` via OpenAI
-- **LLM:** `gpt-4o-mini` via OpenAI
+On first boot, if no `forgerag.yaml` exists, ForgeRAG writes a skeleton you must finish filling in:
+
+- **Infrastructure defaults**: PostgreSQL, ChromaDB, local blob storage (paths under `./storage/`)
+- **LLM providers**: **empty** — add at least one `chat` and one `embedding` entry under `llm_providers:` and point `embedder.provider_id` / `answering.generator.provider_id` at them. Put real credentials in environment variables referenced by `api_key_env` (never in yaml). See the [minimal config example](configuration.md#example-minimal-config).
+
+The server will boot without providers, but any retrieval call (embedding, LLM answer) will fail explicitly until you configure them.
 
 ## CLI Options
 

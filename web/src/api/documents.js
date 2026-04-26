@@ -47,12 +47,14 @@ export const ingestDocument = ({
  * @param {File} file
  * @param {object} [options]
  * @param {string} [options.docId]
+ * @param {string} [options.folderPath] 目标文件夹路径 (如 '/legal/2024')，默认 '/'
  * @returns {Promise<{ file_id: string, doc_id: string, status: string, message: string }>}
  */
 export function uploadAndIngest(file, options = {}) {
   const form = new FormData()
   form.append('file', file)
   if (options.docId) form.append('doc_id', options.docId)
+  if (options.folderPath) form.append('folder_path', options.folderPath)
   return request('/api/v1/documents/upload-and-ingest', {
     method: 'POST',
     body: form,
@@ -62,11 +64,14 @@ export function uploadAndIngest(file, options = {}) {
 /**
  * 文档列表
  * @param {object} [params]
- * @param {number} [params.limit=50]
+ * @param {number} [params.limit=50]           分页大小 (≤ 200)
  * @param {number} [params.offset=0]
- * @param {string} [params.search] - 按 filename 模糊搜索
+ * @param {string} [params.search]             按 filename / doc_id 模糊搜索
+ * @param {string} [params.status]             按 status 过滤，逗号分隔可多值
+ * @param {string} [params.path_filter]        folder 路径过滤，如 '/legal/2024'
+ * @param {boolean} [params.recursive=true]    path_filter 生效时：true=子树，false=仅直接子项
  * @returns {Promise<{
- *   items: DocumentOut[],  // 每项含 num_blocks, num_chunks, file_name, file_size_bytes
+ *   items: DocumentOut[],
  *   total: number, limit: number, offset: number
  * }>}
  */

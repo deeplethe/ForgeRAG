@@ -21,9 +21,11 @@ Security:
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
 import os
 import re
+import socket
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,58 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 log = logging.getLogger(__name__)
+
+
+# RFC1918 + loopback + link-local + cloud metadata ranges. Resolved hostnames
+# falling into any of these are rejected unless ``allow_private_hosts=True``
+# (operator must opt in to fetch from internal services).
+_PRIVATE_NETS = [
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8",  # "this network"
+        "10.0.0.0/8",  # RFC1918
+        "100.64.0.0/10",  # CGNAT
+        "127.0.0.0/8",  # loopback
+        "169.254.0.0/16",  # link-local (incl. AWS/Azure/GCP metadata 169.254.169.254)
+        "172.16.0.0/12",  # RFC1918
+        "192.0.0.0/24",  # IETF protocol assignments
+        "192.168.0.0/16",  # RFC1918
+        "198.18.0.0/15",  # benchmarking
+        "224.0.0.0/4",  # multicast
+        "240.0.0.0/4",  # reserved
+        "::1/128",  # ipv6 loopback
+        "fc00::/7",  # ipv6 unique-local
+        "fe80::/10",  # ipv6 link-local
+    )
+]
+
+
+def _is_private_address(host: str) -> bool:
+    """True if *host* resolves to (or already is) a private/loopback/metadata address.
+
+    Resolves all A/AAAA records — a hostname pointing partly at a public IP
+    and partly at a private one is still rejected (DNS rebinding defence).
+    """
+    try:
+        # Direct IP literal — no resolution needed
+        addr = ipaddress.ip_address(host)
+        return any(addr in net for net in _PRIVATE_NETS)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Hostname doesn't resolve — let urlopen surface the real error
+        return False
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if any(addr in net for net in _PRIVATE_NETS):
+            return True
+    return False
 
 
 @dataclass
@@ -45,8 +99,13 @@ class FetcherConfig:
     max_bytes: int = 500 * 1024 * 1024  # 500 MiB
     chunk_size: int = 1 << 20  # 1 MiB
     http_timeout: float = 60.0
-    # Optional HTTP(S) host allowlist. Empty = allow all.
+    # Optional HTTP(S) host allowlist. Empty = no per-host restriction beyond
+    # the SSRF check below.
     allowed_hosts: tuple[str, ...] = ()
+    # SSRF defence: when False (default), HTTP(S) requests targeting private
+    # / loopback / link-local / cloud-metadata addresses are rejected. Set
+    # True only if the operator intentionally needs to reach internal hosts.
+    allow_private_hosts: bool = False
     # Credentials for s3:// and oss:// are read from env, mirroring
     # the BlobStore convention (S3_ACCESS_KEY / OSS_ACCESS_KEY).
     s3_endpoint: str | None = None
@@ -84,8 +143,15 @@ class UrlFetcher:
 
     def _fetch_http(self, url: str, parsed) -> FetchResult:
         host = (parsed.hostname or "").lower()
+        if not host:
+            raise ValueError("URL has no host")
         if self.cfg.allowed_hosts and host not in self.cfg.allowed_hosts:
             raise ValueError(f"host not allowed: {host}")
+        if not self.cfg.allow_private_hosts and _is_private_address(host):
+            raise ValueError(
+                f"host {host!r} resolves to a private/loopback/metadata address; "
+                "set FetcherConfig.allow_private_hosts=True to permit"
+            )
 
         req = Request(url, headers={"User-Agent": "ForgeRAG/1.0"})
         tmp = _tempfile(suffix=_suffix_from_path(parsed.path))

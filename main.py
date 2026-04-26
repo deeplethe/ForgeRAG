@@ -32,6 +32,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Force UTF-8 on stdout/stderr so warnings containing characters like
+# ``—`` or ``→`` render correctly on Windows consoles where the default
+# codepage is GBK. Without this, those bytes show up as ``��``.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 # Ensure repo root is on sys.path so `import config` etc. work when
 # the user invokes `python main.py` directly.
 _ROOT = Path(__file__).resolve().parent
@@ -188,6 +198,37 @@ def _preflight(cfg_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Worker safety: detect single-process backends
+# ---------------------------------------------------------------------------
+
+
+def _single_worker_reasons(cfg: Any) -> list[str]:
+    """Return human-readable reasons why this config can't run > 1 uvicorn
+    worker safely. Empty list = config is multi-worker safe.
+
+    Single-process backends (each worker would corrupt shared state):
+      * SQLite — concurrent writers from multiple processes either
+        serialise (best case) or corrupt the WAL (worst case).
+      * NetworkX KG — JSON-dump per process; workers race on the file.
+      * ChromaDB persistent mode — file-locked DuckDB; multi-process
+        access trips the file lock.
+    """
+    reasons: list[str] = []
+    rel = getattr(cfg.persistence, "relational", None)
+    if rel and getattr(rel, "backend", None) == "sqlite":
+        reasons.append("relational=sqlite")
+    vec = getattr(cfg.persistence, "vector", None)
+    if vec and getattr(vec, "backend", None) == "chromadb":
+        cdb = getattr(vec, "chromadb", None)
+        if cdb and getattr(cdb, "mode", None) == "persistent":
+            reasons.append("vector=chromadb (persistent)")
+    graph = getattr(cfg, "graph", None)
+    if graph and getattr(graph, "backend", None) == "networkx":
+        reasons.append("graph=networkx")
+    return reasons
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -228,8 +269,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--workers",
         type=int,
-        default=4,
-        help="Uvicorn worker count (default: 4). Ignored when --reload is set.",
+        default=1,
+        help=(
+            "Uvicorn worker count (default: 1). Ignored when --reload is set. "
+            "Values > 1 require multi-process-safe backends (postgres + neo4j + "
+            "chromadb-http or pgvector); startup aborts otherwise."
+        ),
     )
     p.add_argument(
         "--log-level",
@@ -264,6 +309,7 @@ def main() -> int:
 
     # Initialise logging early so preflight and all downstream modules
     # write to the daily-rotated log file under logs/.
+    _early_cfg: Any = None
     try:
         from config import load_config as _load_cfg
         from config.logging import setup_logging
@@ -280,6 +326,28 @@ def main() -> int:
             "Failed to initialise structured logging, using basicConfig: %s",
             _log_err,
         )
+
+    # Worker safety check BEFORE the preflight banner — single-process
+    # backends + --workers > 1 is a hard error, so don't print the banner
+    # only to immediately bail out with an error below it.
+    if not args.reload and args.workers > 1:
+        reasons = _single_worker_reasons(_early_cfg) if _early_cfg is not None else []
+        if reasons:
+            print(
+                f"error: --workers={args.workers} is incompatible with the configured backends:",
+                file=sys.stderr,
+            )
+            for r in reasons:
+                print(f"  - {r}  (single-process only)", file=sys.stderr)
+            print(
+                "\nfix: either pass --workers 1, or switch to multi-process-"
+                "safe backends:\n"
+                "  - relational: postgres\n"
+                "  - graph:      neo4j\n"
+                "  - vector:     chromadb-http / qdrant / weaviate / milvus / pgvector",
+                file=sys.stderr,
+            )
+            return 2
 
     _preflight(cfg_path)
 

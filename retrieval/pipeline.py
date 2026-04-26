@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from config import RetrievalSection
 from embedder.base import Embedder
@@ -36,18 +35,63 @@ from persistence.vector.base import VectorStore
 
 from .bm25 import InMemoryBM25Index
 from .citations import build_citations
-from .merge import (
-    expand_crossrefs,
-    expand_descendants,
-    expand_siblings,
-    finalize_merged,
-    rehydrate,
-    rrf_merge,
-)
 from .rerank import Reranker, make_reranker
-from .trace import RetrievalTrace
-from .tree_path import TreeNavigator, TreePath
+from .telemetry import get_tracer
+from .tree_path import TreeNavigator
 from .types import RetrievalResult, ScoredChunk
+
+_tracer = get_tracer()
+
+
+def _doc_id_from_chunk_id(chunk_id: str) -> str:
+    """Extract doc_id from a ``{doc_id}:{parse_version}:c{seq}`` chunk_id.
+
+    Falls back to the full id if the format is unexpected.
+    """
+    parts = chunk_id.rsplit(":", 2)
+    return parts[0] if len(parts) == 3 else chunk_id
+
+
+def _propagate_ctx(fn):
+    """
+    Decorator: capture the current OTel context when the wrapped function
+    is CREATED, re-attach it when the function RUNS. Use this on worker
+    closures before handing them to a ThreadPoolExecutor so child spans
+    are correctly parented to the current retrieval root span instead of
+    becoming orphaned trace-less spans.
+    """
+    from opentelemetry.context import attach, detach, get_current
+
+    parent_ctx = get_current()
+
+    def wrapper(*args, **kwargs):
+        token = attach(parent_ctx)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            detach(token)
+
+    return wrapper
+
+
+class RetrievalError(RuntimeError):
+    """
+    Infrastructure failure during retrieval — an LLM call, embedding API,
+    KG store, or reranker endpoint errored out.
+
+    By default a single path failure aborts the whole query and surfaces
+    here; callers that prefer the legacy "log + zero hits + carry on"
+    behaviour can set ``QueryOverrides.allow_partial_failure = True``.
+
+    ``path`` identifies which component failed (``"bm25"`` / ``"vector"``
+    / ``"tree"`` / ``"kg"`` / ``"query_understanding"`` / ``"rerank"``).
+    ``__cause__`` carries the original exception.
+    """
+
+    def __init__(self, path: str, cause: BaseException):
+        self.path = path
+        super().__init__(f"{path} path failed: {type(cause).__name__}: {cause}")
+
 
 log = logging.getLogger(__name__)
 
@@ -75,17 +119,155 @@ class RetrievalPipeline:
         self.graph_store = graph_store
         self._expander = None
 
+        # ── Composable retrieval components ─────────────────────────────
+        # Each owns its slice of the pipeline; this class is now primarily
+        # an orchestrator that wires them together with the right concurrency,
+        # overrides, and error policy. SDK users can instantiate any subset
+        # directly from ``forgerag.retrieval.components`` and assemble their
+        # own chain.
+        from .components import (
+            BM25Retriever,
+            ContextExpander,
+            KGRetriever,
+            PathScopeResolver,
+            RerankComponent,
+            RRFFusion,
+            TreeRetriever,
+            VectorRetriever,
+        )
+
+        self.c_path_scope = PathScopeResolver(self.rel)
+        self.c_bm25 = BM25Retriever(cfg.bm25, self.bm25)
+        self.c_vector = VectorRetriever(cfg.vector, embedder=self.embedder, vector_store=self.vector)
+        self.c_tree = TreeRetriever(
+            cfg.tree_path,
+            bm25_cfg=cfg.bm25,
+            bm25_index=self.bm25,
+            rel=self.rel,
+            navigator=self.navigator,
+        )
+        self.c_kg = KGRetriever(
+            cfg.kg_path,
+            graph_store=self.graph_store,
+            rel=self.rel,
+            embedder=self.embedder,
+        )
+        self.c_fusion = RRFFusion(k=cfg.merge.rrf_k)
+        self.c_expand = ContextExpander(cfg.merge, rel=self.rel)
+        self.c_rerank = RerankComponent(cfg.rerank, reranker=self.reranker)
+
+    # ------------------------------------------------------------------
+    # Path scoping
+    # ------------------------------------------------------------------
+
+    def _resolve_path_scope(self, filter: dict | None) -> tuple[str | None, set[str] | None]:
+        """
+        Resolve the API-level path_filter into:
+          1. A path prefix string for backends that support native
+             path-prefix filtering (pgvector, Chroma, Neo4j). None means
+             "no user-visible scope — match anything except trash".
+          2. A doc_id snapshot set for backends that don't store path
+             (Python BM25 index, in-memory tree nav). The snapshot is
+             resolved once per query from the documents table so all
+             retrieval paths see a consistent scope even if a concurrent
+             rename commits mid-query.
+
+        Trashed documents are ALWAYS excluded, regardless of path_filter:
+        ``_trashed_doc_ids`` is populated as a side effect and used by
+        the minimal post-filter step that follows merge.
+        """
+        from sqlalchemy import select
+
+        from persistence.folder_service import TRASH_PATH
+        from persistence.models import Document
+        from persistence.pending_ops import or_fallback_prefixes
+
+        raw = (filter or {}).get("_path_filter") if filter else None
+        path_prefix: str | None = None
+        if raw and raw != "/":
+            path_prefix = raw.rstrip("/")
+
+        with self.rel.transaction() as sess:
+            # Snapshot doc_ids inside scope (only for BM25/Tree; skip
+            # entirely when no path_filter — they'll work on the full set).
+            allowed_doc_ids: set[str] | None = None
+            if path_prefix is not None:
+                allowed_doc_ids = set(
+                    sess.execute(
+                        select(Document.doc_id).where(
+                            (Document.path == path_prefix) | (Document.path.like(path_prefix + "/%"))
+                        )
+                    ).scalars()
+                )
+
+            # Trashed doc_ids — always excluded from all paths
+            trashed = set(sess.execute(select(Document.doc_id).where(Document.path.like(TRASH_PATH + "/%"))).scalars())
+
+            # Pending rename OR-fallback: when a big rename is still
+            # draining through pending_folder_ops, Chroma/Neo4j haven't
+            # seen the rewrite yet, so an incoming query scoped to the
+            # NEW path would miss chunks whose denormalised metadata
+            # still carries the OLD path. These are the prefixes we
+            # tell the stores to ALSO match.
+            or_prefixes = or_fallback_prefixes(sess, path_prefix)
+
+        self._trashed_doc_ids = trashed
+        if allowed_doc_ids is not None:
+            allowed_doc_ids -= trashed
+        # Stash for worker closures that can't easily plumb a new
+        # argument (kg_path, chroma metadata builder).
+        self._or_fallback_prefixes = or_prefixes
+        return path_prefix, allowed_doc_ids
+
+    def _drop_trashed_hits(self, hits):
+        """
+        Drop hits whose chunk lives in a trashed document. Used as a
+        post-filter safety net on top of the backend-native path_prefix
+        pre-filter. In practice the trashed set is tiny (items waiting
+        for nightly purge), so this is cheap even at high QPS.
+        """
+        trashed = getattr(self, "_trashed_doc_ids", set()) or set()
+        if not trashed or not hits:
+            return hits
+        # Collect chunk_ids that still need doc_id resolution.
+        need_lookup = [
+            getattr(h, "chunk_id", "")
+            for h in hits
+            if getattr(h, "doc_id", None) is None and getattr(h, "chunk_id", None)
+        ]
+        doc_id_by_chunk: dict[str, str] = {}
+        if need_lookup:
+            try:
+                for row in self.rel.get_chunks_by_ids(need_lookup):
+                    doc_id_by_chunk[row["chunk_id"]] = row.get("doc_id", "")
+            except Exception:
+                pass
+        out = []
+        for h in hits:
+            did = getattr(h, "doc_id", None)
+            if did is None:
+                did = doc_id_by_chunk.get(getattr(h, "chunk_id", ""))
+            if did is not None and did in trashed:
+                continue
+            out.append(h)
+        return out
+
     # ------------------------------------------------------------------
     def analyze_query(
         self,
         query: str,
         *,
         chat_history: list[dict] | None = None,
+        strict: bool = True,
     ):
-        """Run query understanding only (no retrieval). Returns QueryPlan or None."""
+        """Run query understanding only (no retrieval).
+
+        Returns a ``QueryPlan`` on success. By default (``strict=True``)
+        any exception from the underlying LLM call bubbles up wrapped in
+        ``RetrievalError``; pass ``strict=False`` for the legacy
+        "log + return None" behaviour.
+        """
         qu_cfg = self.cfg.query_understanding
-        if not qu_cfg.enabled:
-            return None
         try:
             from .query_understanding import QueryUnderstanding
 
@@ -102,7 +284,9 @@ class RetrievalPipeline:
                 )
             return self._expander.analyze(query, chat_history=chat_history)
         except Exception as e:
-            log.warning("analyze_query failed: %s", e)
+            if strict:
+                raise RetrievalError("query_understanding", e) from e
+            log.warning("analyze_query failed (strict=False): %s", e)
             return None
 
     # ------------------------------------------------------------------
@@ -114,10 +298,135 @@ class RetrievalPipeline:
         progress_cb=None,
         chat_history: list[dict] | None = None,
         precomputed_plan=None,
+        overrides=None,
     ) -> RetrievalResult:
-        trace = RetrievalTrace(query)
+        # Root span for the whole retrieval. All child spans (phase spans
+        # via components, LiteLLM auto-spans inside the workers, SQL
+        # spans, HTTPX spans) parent to this one automatically via OTel
+        # context. Span lifetime is managed with a manual __enter__ /
+        # __exit__ pair so we don't re-indent the whole function body.
+        _root_cm = _tracer.start_as_current_span("forgerag.retrieve")
+        _root_span = _root_cm.__enter__()
+        _root_span.set_attribute("forgerag.query", (query or "")[:500])
+        if filter and "_path_filter" in filter:
+            _root_span.set_attribute("forgerag.path_filter", filter["_path_filter"])
+        if overrides is not None:
+            # Record any explicitly-set overrides so the trace shows user intent.
+            for ov_name in (
+                "query_understanding",
+                "kg_path",
+                "tree_path",
+                "tree_llm_nav",
+                "rerank",
+                "bm25_top_k",
+                "vector_top_k",
+                "tree_top_k",
+                "kg_top_k",
+                "rerank_top_k",
+                "candidate_limit",
+                "descendant_expansion",
+                "sibling_expansion",
+                "crossref_expansion",
+                "allow_partial_failure",
+            ):
+                _v = getattr(overrides, ov_name, None)
+                if _v is not None:
+                    _root_span.set_attribute(f"forgerag.overrides.{ov_name}", _v)
+        try:
+            return self._retrieve_impl(
+                query,
+                filter=filter,
+                progress_cb=progress_cb,
+                chat_history=chat_history,
+                precomputed_plan=precomputed_plan,
+                overrides=overrides,
+            )
+        finally:
+            _root_cm.__exit__(None, None, None)
+
+    def _retrieve_impl(
+        self,
+        query: str,
+        *,
+        filter: dict | None = None,
+        progress_cb=None,
+        chat_history: list[dict] | None = None,
+        precomputed_plan=None,
+        overrides=None,
+    ) -> RetrievalResult:
+        _t_started = time.time()
         stats: dict = {}
         _pcb = progress_cb or (lambda *a, **k: None)
+
+        # ── Per-request overrides: any field left as None falls through
+        #    to cfg. Effective values are used throughout this function
+        #    instead of raw self.cfg.* reads.
+        def _ov(attr: str, default):
+            if overrides is None:
+                return default
+            v = getattr(overrides, attr, None)
+            return default if v is None else v
+
+        # query_understanding / kg_path / rerank no longer have a cfg-level
+        # ``enabled`` toggle: when their dependencies are configured (LLM
+        # creds, graph_store) they always run. Per-query opt-out is via
+        # ``QueryOverrides.{query_understanding,kg_path,rerank} = False``.
+        eff_qu_on = _ov("query_understanding", True)
+        eff_kg_on = _ov("kg_path", True)
+        eff_tree_on = _ov("tree_path", self.cfg.tree_path.enabled)
+        eff_tree_llm_nav = _ov("tree_llm_nav", self.cfg.tree_path.llm_nav_enabled)
+        eff_rerank_on = _ov("rerank", True)
+
+        eff_bm25_top_k = _ov("bm25_top_k", self.cfg.bm25.top_k)
+        eff_vector_top_k = _ov("vector_top_k", self.cfg.vector.top_k)
+        eff_tree_top_k = _ov("tree_top_k", self.cfg.tree_path.top_k)
+        eff_kg_top_k = _ov("kg_top_k", self.cfg.kg_path.top_k)
+        eff_rerank_top_k = _ov("rerank_top_k", self.cfg.rerank.top_k)
+
+        eff_candidate_limit = _ov("candidate_limit", self.cfg.merge.candidate_limit)
+        eff_desc_expand = _ov("descendant_expansion", self.cfg.merge.descendant_expansion_enabled)
+        eff_sib_expand = _ov("sibling_expansion", self.cfg.merge.sibling_expansion_enabled)
+        eff_xref_expand = _ov("crossref_expansion", self.cfg.merge.crossref_expansion_enabled)
+
+        # Failure policy: default = fail loud (raise RetrievalError); opt in
+        # via overrides.allow_partial_failure to swallow and continue.
+        eff_allow_partial = _ov("allow_partial_failure", False)
+
+        # Override asks for LLM tree navigation but the navigator wasn't
+        # built at startup. Fail loud only if the client EXPLICITLY set
+        # this via overrides — silently downgrading would violate the
+        # explicit request. yaml defaults (no override) keep the original
+        # warn-and-fallback behaviour so existing deployments don't break
+        # when LLMTreeNavigator wiring is absent.
+        if eff_tree_llm_nav and self.navigator is None:
+            override_set = overrides is not None and getattr(overrides, "tree_llm_nav", None) is True
+            if override_set and not eff_allow_partial:
+                raise RetrievalError(
+                    "tree_llm_nav",
+                    RuntimeError(
+                        "overrides.tree_llm_nav=true but LLMTreeNavigator is not "
+                        "initialised (yaml retrieval.tree_path.llm_nav_enabled=false). "
+                        "Set overrides.allow_partial_failure=true to fall back to heuristic."
+                    ),
+                )
+            log.warning("tree_llm_nav requested but LLMTreeNavigator is not initialised; falling back to heuristic")
+            eff_tree_llm_nav = False
+
+        # Resolve path-scoping into two complementary representations:
+        #   - path_prefix  → passed to SQL/metadata-indexed backends
+        #     (pgvector, Chroma, Neo4j) for native prefix filtering.
+        #   - allowed_doc_ids → snapshot whitelist for Python backends
+        #     (BM25 in-memory index, Tree nav) that don't store path.
+        _scope = self.c_path_scope.run(filter)
+        path_prefix = _scope.path_prefix
+        allowed_doc_ids = _scope.allowed_doc_ids
+        # Stash trashed set + or-fallback prefixes for post-filter + Chroma/Neo4j
+        self._trashed_doc_ids = _scope.trashed_doc_ids
+        self._or_fallback_prefixes = _scope.or_fallback_prefixes
+        if filter and "_path_filter" in filter:
+            stats["path_filter"] = filter["_path_filter"]
+        if allowed_doc_ids is not None:
+            stats["path_scope_size"] = len(allowed_doc_ids)
 
         # ============================================================
         # Phase 0: Query Understanding (intent + routing + expansion)
@@ -127,92 +436,62 @@ class RetrievalPipeline:
         _skip_paths: set[str] = set()
 
         if precomputed_plan is not None:
-            # QU already ran upstream — use its results directly
+            # QU already ran upstream — just record its outcome on a span.
             queries = precomputed_plan.expanded_queries or [query]
             _skip_paths = set(precomputed_plan.skip_paths)
-            trace.begin_phase("query_understanding")
-            if precomputed_plan.latency_ms:
-                trace.record_llm_call(
-                    model=precomputed_plan.model or "unknown",
-                    purpose="query_understanding",
-                    output_preview=(
-                        f"intent={precomputed_plan.intent} "
-                        f"retrieval={precomputed_plan.needs_retrieval} "
-                        f"skip={precomputed_plan.skip_paths}"
-                    ),
-                    latency_ms=precomputed_plan.latency_ms,
+            with _tracer.start_as_current_span("forgerag.query_understanding") as span:
+                span.set_attributes(
+                    {
+                        "forgerag.intent": precomputed_plan.intent or "",
+                        "forgerag.needs_retrieval": bool(precomputed_plan.needs_retrieval),
+                        "forgerag.expanded_count": len(queries),
+                        "forgerag.precomputed": True,
+                    }
                 )
-            trace.add_detail(
-                intent=precomputed_plan.intent,
-                needs_retrieval=precomputed_plan.needs_retrieval,
-                skip_paths=precomputed_plan.skip_paths,
-                hint=precomputed_plan.hint,
-                variants=queries[1:],
-                total_queries=len(queries),
-                precomputed=True,
-            )
-            trace.end_phase(
-                intent=precomputed_plan.intent,
-                expanded_count=len(queries),
-                fallback=False,
-            )
-            # The QU LLM call already happened upstream, before this pipeline
-            # was invoked. The begin_phase/end_phase sandwich above ran in
-            # ~0ms because it's just metadata bookkeeping. Override the
-            # recorded duration so the trace reflects the real upstream work
-            # (matches how the parallel paths post-fix their timings).
-            if precomputed_plan.latency_ms:
-                trace.phases[-1]["duration_ms"] = precomputed_plan.latency_ms
+                if precomputed_plan.skip_paths:
+                    span.set_attribute("forgerag.skip_paths", list(precomputed_plan.skip_paths))
+                if precomputed_plan.latency_ms:
+                    span.set_attribute("forgerag.llm.latency_ms", int(precomputed_plan.latency_ms))
+                    span.set_attribute("gen_ai.request.model", precomputed_plan.model or "unknown")
 
         qu_cfg = self.cfg.query_understanding
-        if qu_cfg.enabled and precomputed_plan is None:
+        if eff_qu_on and precomputed_plan is None:
             _pcb(phase="query_understanding", status="running")
-            trace.begin_phase("query_understanding")
-            try:
-                from .query_understanding import QueryUnderstanding
+            with _tracer.start_as_current_span("forgerag.query_understanding") as span:
+                try:
+                    from .query_understanding import QueryUnderstanding
 
-                if self._expander is None:
-                    self._expander = QueryUnderstanding(
-                        model=qu_cfg.model,
-                        api_key=qu_cfg.api_key,
-                        api_key_env=qu_cfg.api_key_env,
-                        api_base=qu_cfg.api_base,
-                        max_expansions=qu_cfg.max_expansions,
-                        timeout=qu_cfg.timeout,
-                        system_prompt=qu_cfg.system_prompt,
-                        user_prompt_template=qu_cfg.user_prompt_template,
+                    if self._expander is None:
+                        self._expander = QueryUnderstanding(
+                            model=qu_cfg.model,
+                            api_key=qu_cfg.api_key,
+                            api_key_env=qu_cfg.api_key_env,
+                            api_base=qu_cfg.api_base,
+                            max_expansions=qu_cfg.max_expansions,
+                            timeout=qu_cfg.timeout,
+                            system_prompt=qu_cfg.system_prompt,
+                            user_prompt_template=qu_cfg.user_prompt_template,
+                        )
+                    query_plan = self._expander.analyze(query, chat_history=chat_history)
+                    queries = query_plan.expanded_queries or [query]
+                    _skip_paths = set(query_plan.skip_paths)
+                    span.set_attributes(
+                        {
+                            "forgerag.intent": query_plan.intent or "",
+                            "forgerag.needs_retrieval": bool(query_plan.needs_retrieval),
+                            "forgerag.expanded_count": len(queries),
+                        }
                     )
-                query_plan = self._expander.analyze(query, chat_history=chat_history)
-                queries = query_plan.expanded_queries or [query]
-                _skip_paths = set(query_plan.skip_paths)
-                trace.record_llm_call(
-                    model=qu_cfg.model,
-                    purpose="query_understanding",
-                    output_preview=(
-                        f"intent={query_plan.intent} "
-                        f"retrieval={query_plan.needs_retrieval} "
-                        f"skip={query_plan.skip_paths}"
-                    ),
-                    latency_ms=query_plan.latency_ms,
-                )
-                trace.add_detail(
-                    intent=query_plan.intent,
-                    needs_retrieval=query_plan.needs_retrieval,
-                    skip_paths=query_plan.skip_paths,
-                    hint=query_plan.hint,
-                    variants=queries[1:],
-                    total_queries=len(queries),
-                    direct_answer=query_plan.direct_answer,
-                )
-            except Exception as e:
-                log.warning("query understanding failed: %s", e)
-                trace.add_detail(error=str(e))
+                    if query_plan.skip_paths:
+                        span.set_attribute("forgerag.skip_paths", list(query_plan.skip_paths))
+                    if query_plan.latency_ms:
+                        span.set_attribute("forgerag.llm.latency_ms", int(query_plan.latency_ms))
+                except Exception as e:
+                    span.set_attribute("forgerag.error", str(e))
+                    if not eff_allow_partial:
+                        raise RetrievalError("query_understanding", e) from e
+                    log.warning("query understanding failed (allow_partial_failure=True): %s", e)
             _qu_ok = query_plan is not None
-            trace.end_phase(
-                intent=query_plan.intent if query_plan else "unknown",
-                expanded_count=len(queries),
-                fallback=not _qu_ok,
-            )
             _pcb(
                 phase="query_understanding",
                 status="done",
@@ -222,50 +501,12 @@ class RetrievalPipeline:
                     else "skipped (timeout), using original query"
                 ),
             )
-        elif self.cfg.query_expansion.enabled and precomputed_plan is None:
-            # Legacy fallback: old-style query expansion only
-            _pcb(phase="query_expansion", status="running")
-            trace.begin_phase("query_expansion")
-            try:
-                from .query_expansion import QueryExpander
-
-                qe_cfg = self.cfg.query_expansion
-                if self._expander is None:
-                    self._expander = QueryExpander(
-                        model=qe_cfg.model,
-                        api_key=qe_cfg.api_key,
-                        api_key_env=qe_cfg.api_key_env,
-                        api_base=qe_cfg.api_base,
-                        max_expansions=qe_cfg.max_expansions,
-                        timeout=qe_cfg.timeout,
-                    )
-                t_qe = time.time()
-                queries = self._expander.expand(query)
-                qe_ms = int((time.time() - t_qe) * 1000)
-                trace.record_llm_call(
-                    model=qe_cfg.model,
-                    purpose="query_expansion",
-                    output_preview=str(queries[1:]),
-                    latency_ms=qe_ms,
-                )
-                trace.add_detail(
-                    original=query,
-                    variants=queries[1:],
-                    total_queries=len(queries),
-                )
-            except Exception as e:
-                log.warning("query expansion failed: %s", e)
-                trace.add_detail(error=str(e))
-            trace.end_phase(expanded_count=len(queries))
-            _pcb(phase="query_expansion", status="done", detail=f"{len(queries)} queries")
-
         stats["expanded_queries"] = queries
 
         # ── Short-circuit: no retrieval needed ──
         if query_plan and not query_plan.needs_retrieval:
             log.info("query understanding: skipping retrieval (intent=%s)", query_plan.intent)
-            stats["trace"] = trace.to_dict()
-            stats["total_ms"] = stats["trace"]["total_ms"]
+            stats["total_ms"] = int((time.time() - _t_started) * 1000)
             stats["skipped"] = True
             return RetrievalResult(
                 query=query,
@@ -283,163 +524,111 @@ class RetrievalPipeline:
         # ============================================================
         from concurrent.futures import ThreadPoolExecutor
 
-        # Timing containers for parallel phases (written from worker threads)
-        _timings: dict[str, dict] = {}
-
         def _run_bm25() -> tuple[list[ScoredChunk], set[str]]:
-            t0b = time.time()
             _pcb(phase="bm25_path", status="running")
             if not self.cfg.bm25.enabled or "bm25_path" in _skip_paths:
-                _timings["bm25"] = {"start": t0b, "end": t0b, "llm_calls": []}
                 _pcb(phase="bm25_path", status="done", detail="skipped" if "bm25_path" in _skip_paths else "disabled")
                 return [], set()
-            bm25_all: list[ScoredChunk] = []
-            for q in queries:
-                for cid, score in self.bm25.search_chunks(q, self.cfg.bm25.top_k):
-                    bm25_all.append(ScoredChunk(chunk_id=cid, score=score, source="bm25"))
-            bm25_best: dict[str, ScoredChunk] = {}
-            for sc in bm25_all:
-                if sc.chunk_id not in bm25_best or sc.score > bm25_best[sc.chunk_id].score:
-                    bm25_best[sc.chunk_id] = sc
-            hits = sorted(bm25_best.values(), key=lambda s: -s.score)
-            # Doc prefilter for Tree path
-            doc_ids: set[str] = set()
-            for q in queries:
-                for doc_id, _ in self.bm25.search_docs(q, self.cfg.bm25.doc_prefilter_top_k):
-                    doc_ids.add(doc_id)
-            _timings["bm25"] = {"start": t0b, "end": time.time(), "llm_calls": []}
-            _pcb(phase="bm25_path", status="done", detail=f"{len(hits)} hits")
-            return hits, doc_ids
+            result = self.c_bm25.run(
+                queries,
+                top_k=eff_bm25_top_k,
+                allowed_doc_ids=allowed_doc_ids,
+            )
+            _pcb(phase="bm25_path", status="done", detail=f"{len(result.hits)} hits")
+            return result.hits, result.expanded_doc_ids
 
         def _run_vector() -> tuple[list[ScoredChunk], list]:
-            all_vec: list[ScoredChunk] = []
-            all_raw = []
-            t0v = time.time()
             _pcb(phase="vector_path", status="running")
             if not self.cfg.vector.enabled or "vector_path" in _skip_paths:
-                _timings["vector"] = {"start": t0v, "end": t0v, "llm_calls": []}
                 _pcb(
                     phase="vector_path", status="done", detail="skipped" if "vector_path" in _skip_paths else "disabled"
                 )
                 return [], []
-            # Embedding API call (often the most expensive IO operation)
-            t_embed = time.time()
-            q_vecs = self.embedder.embed_texts(queries)
-            embed_ms = int((time.time() - t_embed) * 1000)
-            # Resolve embedder model name for trace
-            _emb_model = (
-                getattr(getattr(self.embedder, "inner", None), "model", None)
-                or getattr(getattr(self.embedder, "inner", None), "model_name", None)
-                or getattr(self.embedder, "backend", "unknown")
+            result = self.c_vector.run(
+                queries,
+                top_k=eff_vector_top_k,
+                filter=filter,
+                path_prefix=path_prefix,
+                or_fallback_prefixes=getattr(self, "_or_fallback_prefixes", None),
             )
-            _embed_call = dict(
-                model=str(_emb_model),
-                purpose="embedding",
-                latency_ms=embed_ms,
-                output_preview=f"{len(queries)} queries -> {len(q_vecs)} vectors",
-            )
-            for q_vec in q_vecs:
-                hits = self.vector.search(
-                    q_vec,
-                    top_k=self.cfg.vector.top_k,
-                    filter=filter or self.cfg.vector.default_filter,
-                )
-                all_raw.extend(hits)
-                all_vec.extend([ScoredChunk(chunk_id=h.chunk_id, score=h.score, source="vector") for h in hits])
-            # Dedup
-            best_v: dict[str, ScoredChunk] = {}
-            for sc in all_vec:
-                if sc.chunk_id not in best_v or sc.score > best_v[sc.chunk_id].score:
-                    best_v[sc.chunk_id] = sc
-            deduped = sorted(best_v.values(), key=lambda s: -s.score)
-            raw_d: dict[str, Any] = {}
-            for h in all_raw:
-                if h.chunk_id not in raw_d:
-                    raw_d[h.chunk_id] = h
-            _timings["vector"] = {
-                "start": t0v,
-                "end": time.time(),
-                "llm_calls": [_embed_call],
-            }
-            _pcb(phase="vector_path", status="done", detail=f"{len(deduped)} hits")
-            return deduped, list(raw_d.values())
+            _pcb(phase="vector_path", status="done", detail=f"{len(result.hits)} hits")
+            return result.hits, result.raw_hits
 
         def _run_tree(
             bm25_doc_ids: set[str],
             vector_doc_ids: set[str],
             prefilter_hits: list | None = None,
         ) -> list[ScoredChunk]:
-            t0t = time.time()
             _pcb(phase="tree_path", status="running")
-            if not self.cfg.tree_path.enabled or "tree_path" in _skip_paths:
-                _timings["tree"] = {"start": t0t, "end": t0t, "llm_calls": []}
+            if not eff_tree_on or "tree_path" in _skip_paths:
                 _pcb(phase="tree_path", status="done", detail="skipped" if "tree_path" in _skip_paths else "disabled")
                 return []
-            doc_ids = bm25_doc_ids | vector_doc_ids
-            tp = TreePath(
-                self.cfg.tree_path,
-                self.cfg.bm25,
-                self.bm25,
-                self.rel,
-                navigator=self.navigator,
-            )
-            result = tp.search(
+            result = self.c_tree.run(
                 query,
-                vector_doc_ids=doc_ids,
+                bm25_doc_ids=bm25_doc_ids,
+                vector_doc_ids=vector_doc_ids,
                 prefilter_hits=prefilter_hits,
+                allowed_doc_ids=allowed_doc_ids,
+                top_k=eff_tree_top_k,
+                llm_nav_enabled=eff_tree_llm_nav,
             )
-            _timings["tree"] = {
-                "start": t0t,
-                "end": time.time(),
-                "llm_calls": getattr(tp, "_llm_calls", []),
-            }
             _pcb(phase="tree_path", status="done", detail=f"{len(result)} hits")
             return result
 
         _kg_context = [None]  # mutable container for thread result
 
         def _run_kg() -> list[ScoredChunk]:
-            t0k = time.time()
             _pcb(phase="kg_path", status="running")
-            if not (self.cfg.kg_path.enabled and self.graph_store is not None) or "kg_path" in _skip_paths:
-                _timings["kg"] = {"start": t0k, "end": t0k, "llm_calls": []}
+            if not (eff_kg_on and self.graph_store is not None) or "kg_path" in _skip_paths:
                 _pcb(phase="kg_path", status="done", detail="skipped" if "kg_path" in _skip_paths else "disabled")
                 return []
-            from .kg_path import KGPath
+            result = self.c_kg.run(
+                query,
+                top_k=eff_kg_top_k,
+                allowed_doc_ids=allowed_doc_ids,
+                path_prefix=path_prefix,
+                path_prefixes_or=getattr(self, "_or_fallback_prefixes", None),
+            )
+            _kg_context[0] = result.kg_context
+            _pcb(phase="kg_path", status="done", detail=f"{len(result.hits)} hits")
+            return result.hits
 
-            kp = KGPath(self.cfg.kg_path, self.graph_store, self.rel, embedder=self.embedder)
-            result = kp.search(query)
-            _kg_context[0] = kp.kg_context  # capture synthesized KG context
-            _timings["kg"] = {
-                "start": t0k,
-                "end": time.time(),
-                "llm_calls": getattr(kp, "_llm_calls", []),
-            }
-            _pcb(phase="kg_path", status="done", detail=f"{len(result)} hits")
-            return result
-
-        # Phase 1: Launch BM25 + Vector + KG in parallel
+        # Phase 1: Launch BM25 + Vector + KG in parallel. Workers run in
+        # ThreadPoolExecutor threads which don't inherit OTel context by
+        # default — wrap them so LiteLLM's auto-emitted spans (tokens / cost)
+        # correctly parent to our retrieval trace_id.
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval") as _pool:
-            bm25_future = _pool.submit(_run_bm25)
-            vec_future = _pool.submit(_run_vector)
-            kg_future = _pool.submit(_run_kg)
+            bm25_future = _pool.submit(_propagate_ctx(_run_bm25))
+            vec_future = _pool.submit(_propagate_ctx(_run_vector))
+            kg_future = _pool.submit(_propagate_ctx(_run_kg))
 
             # Wait for BM25 (fast, <5ms) and Vector (~1s)
             try:
                 bm25_hits, expanded_bm25_docs = bm25_future.result(timeout=10)
             except Exception as e:
-                log.warning("BM25 path failed: %s", e, exc_info=True)
-                bm25_hits, expanded_bm25_docs = [], set()
                 _pcb(phase="bm25_path", status="done", detail=f"error: {type(e).__name__}")
-                _timings.setdefault("bm25", {"start": time.time(), "end": time.time(), "llm_calls": []})
+                if not eff_allow_partial:
+                    raise RetrievalError("bm25", e) from e
+                log.warning("BM25 path failed (allow_partial_failure=True): %s", e, exc_info=True)
+                bm25_hits, expanded_bm25_docs = [], set()
 
             try:
                 vector_hits, raw_vector_hits = vec_future.result(timeout=30)
             except Exception as e:
-                log.warning("Vector path failed: %s", e, exc_info=True)
-                vector_hits, raw_vector_hits = [], []
                 _pcb(phase="vector_path", status="done", detail=f"error: {type(e).__name__}")
-                _timings.setdefault("vector", {"start": time.time(), "end": time.time(), "llm_calls": []})
+                if not eff_allow_partial:
+                    raise RetrievalError("vector", e) from e
+                log.warning("Vector path failed (allow_partial_failure=True): %s", e, exc_info=True)
+                vector_hits, raw_vector_hits = [], []
+
+            # Trashed-doc safety net: BM25 and vector search don't know
+            # about /__trash__. Pre-filtering via path_prefix already
+            # blocks trash when a non-trash scope is set, but the
+            # unscoped case still needs this post-filter pass. It's O(N)
+            # over hits, not over the corpus.
+            bm25_hits = self._drop_trashed_hits(bm25_hits)
+            vector_hits = self._drop_trashed_hits(vector_hits)
+            raw_vector_hits = self._drop_trashed_hits(raw_vector_hits)
 
             # Phase 2: Tree navigation — uses combined doc_ids from
             # BM25 + Vector for cross-validated document routing.
@@ -450,11 +639,15 @@ class RetrievalPipeline:
             from .tree_path import PreFilterHit
 
             prefilter_hits: list[PreFilterHit] = []
-            # Resolve chunk metadata for heat map (node_id, doc_id, snippet)
-            _prefilter_chunk_ids = [s.chunk_id for s in bm25_hits + vector_hits]
+            # Resolve chunk metadata for heat map (node_id, doc_id, snippet).
+            # Take top-50 from each path so a deep BM25 list doesn't crowd
+            # out the vector signal — the tree navigator wants both as hints.
+            _bm25_pf = [s.chunk_id for s in bm25_hits[:50]]
+            _vec_pf = [s.chunk_id for s in vector_hits[:50]]
+            _prefilter_chunk_ids = list(dict.fromkeys(_bm25_pf + _vec_pf))  # dedup, preserve order
             _prefilter_rows = {}
             if _prefilter_chunk_ids:
-                for row in self.rel.get_chunks_by_ids(_prefilter_chunk_ids[:100]):
+                for row in self.rel.get_chunks_by_ids(_prefilter_chunk_ids):
                     _prefilter_rows[row["chunk_id"]] = row
             for sc in bm25_hits:
                 row = _prefilter_rows.get(sc.chunk_id)
@@ -483,132 +676,99 @@ class RetrievalPipeline:
                         )
                     )
 
-            tree_future = _pool.submit(_run_tree, expanded_bm25_docs, vector_doc_ids, prefilter_hits)
+            tree_future = _pool.submit(
+                _propagate_ctx(_run_tree),
+                expanded_bm25_docs,
+                vector_doc_ids,
+                prefilter_hits,
+            )
 
             try:
                 tree_hits = tree_future.result(timeout=60)
             except Exception as e:
-                log.warning("Tree path failed: %s", e, exc_info=True)
-                tree_hits = []
                 _pcb(phase="tree_path", status="done", detail=f"error: {type(e).__name__}")
-                _timings.setdefault("tree", {"start": time.time(), "end": time.time(), "llm_calls": []})
+                if not eff_allow_partial:
+                    raise RetrievalError("tree", e) from e
+                log.warning("Tree path failed (allow_partial_failure=True): %s", e, exc_info=True)
+                tree_hits = []
 
             # Collect KG results (may already be done by now)
             try:
                 kg_hits = kg_future.result(timeout=30)
             except Exception as e:
-                log.warning("KG path failed: %s", e, exc_info=True)
-                kg_hits = []
                 _pcb(phase="kg_path", status="done", detail=f"error: {type(e).__name__}")
-                _timings.setdefault("kg", {"start": time.time(), "end": time.time(), "llm_calls": []})
+                if not eff_allow_partial:
+                    raise RetrievalError("kg", e) from e
+                log.warning("KG path failed (allow_partial_failure=True): %s", e, exc_info=True)
+                kg_hits = []
 
-        # ── Record traces for all parallel paths with real timings ──
-        # Order: BM25 → Vector → KG → Tree (reflects actual start order)
-        _trace_started = trace.started_at  # retrieval epoch
+            # Tree/KG are already pre-filtered by allowed_doc_ids (passed
+            # into their search()); here we only need to drop trashed
+            # chunks that slipped through in the unscoped case.
+            tree_hits = self._drop_trashed_hits(tree_hits)
+            kg_hits = self._drop_trashed_hits(kg_hits)
 
-        # BM25
-        trace.begin_phase("bm25_path")
-        trace.set_inputs(
-            enabled=self.cfg.bm25.enabled,
-            query=query,
-            top_k=self.cfg.bm25.top_k,
-        )
-        trace.record_chunks("bm25_results", [s.chunk_id for s in bm25_hits], "bm25")
-        bt = _timings.get("bm25")
-        if bt:
-            trace._current["started_at"] = bt["start"]
-            for lc in bt.get("llm_calls", []):
-                trace.record_llm_call(**lc)
-        trace.end_phase(
-            total_hits=len(bm25_hits),
-            unique_docs=len(expanded_bm25_docs),
-        )
-        if bt:
-            trace.phases[-1]["duration_ms"] = int((bt["end"] - bt["start"]) * 1000)
-            trace.phases[-1]["started_at_ms"] = int((bt["start"] - _trace_started) * 1000)
+        # Component spans (forgerag.bm25_path / vector_path / tree_path /
+        # kg_path) are already emitted from inside the workers via OTel; we
+        # only populate the flat stats dict here for answering.pipeline /
+        # benchmark consumers that expect counts + top-id previews.
         stats["bm25_hits"] = len(bm25_hits)
-
-        # Vector
-        trace.begin_phase("vector_path")
-        trace.set_inputs(
-            enabled=self.cfg.vector.enabled,
-            queries=queries,
-            top_k=self.cfg.vector.top_k,
-        )
-        trace.record_chunks("vector_results", [s.chunk_id for s in vector_hits], "vector")
-        vt = _timings.get("vector")
-        if vt:
-            trace._current["started_at"] = vt["start"]
-            for lc in vt.get("llm_calls", []):
-                trace.record_llm_call(**lc)
-        trace.end_phase(
-            total_hits=len(vector_hits),
-            unique_docs=len({h.doc_id for h in raw_vector_hits if h.doc_id}),
-            top_scores=[round(s.score, 3) for s in vector_hits[:5]],
-        )
-        if vt:
-            trace.phases[-1]["duration_ms"] = int((vt["end"] - vt["start"]) * 1000)
-            trace.phases[-1]["started_at_ms"] = int((vt["start"] - _trace_started) * 1000)
+        stats["bm25_top_ids"] = [s.chunk_id for s in bm25_hits[:5]]
         stats["vector_hits"] = len(vector_hits)
-
-        # KG
-        trace.begin_phase("kg_path")
-        trace.record_chunks("kg_results", [s.chunk_id for s in kg_hits], "kg")
-        kt = _timings.get("kg")
-        if kt:
-            trace._current["started_at"] = kt["start"]
-            for lc in kt.get("llm_calls", []):
-                trace.record_llm_call(**lc)
-        trace.end_phase(total_hits=len(kg_hits))
-        if kt:
-            trace.phases[-1]["duration_ms"] = int((kt["end"] - kt["start"]) * 1000)
-            trace.phases[-1]["started_at_ms"] = int((kt["start"] - _trace_started) * 1000)
+        stats["vector_top_ids"] = [s.chunk_id for s in vector_hits[:5]]
         stats["kg_hits"] = len(kg_hits)
-
-        # Tree (runs after BM25 + Vector, so recorded last)
-        trace.begin_phase("tree_path")
-        trace.set_inputs(
-            query=query,
-            vector_doc_ids=len(vector_doc_ids),
-            expanded_bm25_docs=len(expanded_bm25_docs),
-            llm_nav_enabled=self.cfg.tree_path.llm_nav_enabled,
-        )
-        trace.record_chunks("tree_results", [s.chunk_id for s in tree_hits], "tree")
-        tt = _timings.get("tree")
-        if tt:
-            trace._current["started_at"] = tt["start"]
-            for lc in tt.get("llm_calls", []):
-                trace.record_llm_call(**lc)
-        trace.end_phase(total_hits=len(tree_hits))
-        if tt:
-            trace.phases[-1]["duration_ms"] = int((tt["end"] - tt["start"]) * 1000)
-            trace.phases[-1]["started_at_ms"] = int((tt["start"] - _trace_started) * 1000)
+        stats["kg_top_ids"] = [s.chunk_id for s in kg_hits[:5]]
         stats["tree_hits"] = len(tree_hits)
+        stats["tree_top_ids"] = [s.chunk_id for s in tree_hits[:5]]
         stats["vector_doc_ids"] = len(vector_doc_ids)
 
         # ============================================================
         # Phase 3: RRF merge
         # ============================================================
-        # New architecture: BM25/vector are pre-filters for tree navigation.
-        # RRF only fuses: tree + KG + vector_fallback (for non-navigable docs).
-        # If tree path produced no results, BM25/vector hits enter RRF
-        # as fallback so retrieval still works without tree navigation.
+        # Default architecture: tree + KG are the "reasoning" primary layer;
+        # BM25/vector are their pre-filters. RRF fuses whichever primary
+        # paths produced hits.
+        #
+        # Fallback rule: when BOTH tree and KG are absent (either disabled
+        # via cfg/overrides, or enabled but produced zero hits), switch
+        # straight to an RRF of BM25 + vector. This makes "plain" retrieval
+        # a first-class citizen — per-request `overrides.tree_path=false` +
+        # `overrides.kg_path=false` gives you a lexical/semantic hybrid
+        # search without any reasoning LLM calls.
+        # ── Compose RRF inputs based on primary / fallback policy ────
         _pcb(phase="rrf_merge", status="running")
-        trace.begin_phase("rrf_merge")
-
         rrf_inputs: list[list[ScoredChunk]] = []
         active_paths: list[str] = []
-
-        # Primary reasoning paths
-        if self.cfg.tree_path.enabled and tree_hits:
-            rrf_inputs.append(tree_hits)
-            active_paths.append("tree")
-        if self.cfg.kg_path.enabled and kg_hits:
-            rrf_inputs.append(kg_hits)
-            active_paths.append("kg")
-
-        # Fallback: if tree produced nothing, include BM25/vector directly
-        if not tree_hits:
+        primary_has_hits = bool((eff_tree_on and tree_hits) or (eff_kg_on and kg_hits))
+        if primary_has_hits:
+            covered_doc_ids: set[str] = set()
+            if eff_tree_on and tree_hits:
+                rrf_inputs.append(tree_hits)
+                active_paths.append("tree")
+                covered_doc_ids |= {_doc_id_from_chunk_id(s.chunk_id) for s in tree_hits}
+            if eff_kg_on and kg_hits:
+                rrf_inputs.append(kg_hits)
+                active_paths.append("kg")
+                covered_doc_ids |= {_doc_id_from_chunk_id(s.chunk_id) for s in kg_hits}
+            # Per-doc supplement: docs that BM25 / vector found but tree/KG
+            # didn't visit (e.g. tree_navigable=False, low quality, or just
+            # not selected). Without this they'd silently drop out of the
+            # answer even though pre-filter saw them.
+            if eff_tree_on and tree_hits:
+                if self.cfg.vector.enabled and vector_hits:
+                    vec_extra = [s for s in vector_hits if _doc_id_from_chunk_id(s.chunk_id) not in covered_doc_ids]
+                    if vec_extra:
+                        rrf_inputs.append(vec_extra)
+                        active_paths.append("vector_supplement")
+                if self.cfg.bm25.enabled and bm25_hits:
+                    bm25_extra = [s for s in bm25_hits if _doc_id_from_chunk_id(s.chunk_id) not in covered_doc_ids]
+                    if bm25_extra:
+                        rrf_inputs.append(bm25_extra)
+                        active_paths.append("bm25_supplement")
+        else:
+            # No primary path — fuse BM25 + vector directly. (BM25 / vector
+            # are always-on infrastructure paths; no per-request override
+            # exposed for them today, so reading cfg directly is correct.)
             if self.cfg.vector.enabled and vector_hits:
                 rrf_inputs.append(vector_hits)
                 active_paths.append("vector_fallback")
@@ -616,97 +776,73 @@ class RetrievalPipeline:
                 rrf_inputs.append(bm25_hits)
                 active_paths.append("bm25_fallback")
 
-        trace.set_inputs(
-            active_paths=active_paths,
-            vector_count=len(vector_hits),
-            bm25_count=len(bm25_hits),
-            tree_count=len(tree_hits),
-            kg_count=len(kg_hits),
-            rrf_k=self.cfg.merge.rrf_k,
-        )
+        # ── Fusion ─────────────────────────────────────────────────────
+        merged = self.c_fusion.run(rrf_inputs, labels=active_paths) if rrf_inputs else []
+        _pcb(phase="rrf_merge", status="done", detail=f"{len(merged)} merged")
 
-        merged = rrf_merge(rrf_inputs, k=self.cfg.merge.rrf_k)
-        pre_expand = len(merged)
-        trace.add_detail(post_rrf=pre_expand)
-        trace.end_phase(merged_count=pre_expand)
-        _pcb(phase="rrf_merge", status="done", detail=f"{pre_expand} merged")
-
-        # ============================================================
-        # Phase 4: Context expansion
-        # ============================================================
+        # ── Context expansion ──────────────────────────────────────────
         _pcb(phase="expansion", status="running")
-        trace.begin_phase("expansion")
-        trace.set_inputs(
-            descendant=self.cfg.merge.descendant_expansion_enabled,
-            sibling=self.cfg.merge.sibling_expansion_enabled,
-            crossref=self.cfg.merge.crossref_expansion_enabled,
-        )
-
-        expand_descendants(merged, self.rel, self.cfg.merge)
-        post_desc = len(merged)
-        expand_siblings(merged, self.rel, self.cfg.merge)
-        post_sib = len(merged)
-        expand_crossrefs(merged, self.rel, self.cfg.merge)
-        post_xref = len(merged)
-        rehydrate(merged, self.rel)
-
-        finalized = finalize_merged(
+        finalized = self.c_expand.run(
             merged,
-            base_top_k=self.cfg.vector.top_k,
-            cfg=self.cfg.merge,
+            base_top_k=eff_vector_top_k,
+            descendant=eff_desc_expand,
+            sibling=eff_sib_expand,
+            crossref=eff_xref_expand,
+            candidate_limit=eff_candidate_limit,
         )
-
-        trace.add_detail(
-            added_by_descendant=post_desc - pre_expand,
-            added_by_sibling=post_sib - post_desc,
-            added_by_crossref=post_xref - post_sib,
-            after_budget_cap=len(finalized),
-        )
-        trace.end_phase(final_candidates=len(finalized))
         _pcb(phase="expansion", status="done", detail=f"{len(finalized)} candidates")
         stats["merged_count"] = len(finalized)
 
-        # ============================================================
-        # Phase 5: Rerank
-        # ============================================================
+        # ── Rerank ─────────────────────────────────────────────────────
         _pcb(phase="rerank", status="running")
-        trace.begin_phase("rerank")
-        trace.set_inputs(
-            enabled=self.cfg.rerank.enabled,
-            top_k=self.cfg.rerank.top_k,
-            candidates=len(finalized),
+        picked, rerank_error = self.c_rerank.run(
+            query,
+            finalized,
+            top_k=eff_rerank_top_k,
+            enabled=eff_rerank_on,
         )
-        if self.cfg.rerank.enabled:
-            picked = self.reranker.rerank(query, finalized, top_k=self.cfg.rerank.top_k)
-        else:
-            picked = finalized[: self.cfg.rerank.top_k]
-        trace.end_phase(output_count=len(picked))
-        _pcb(phase="rerank", status="done", detail=f"{len(picked)} selected")
+        if rerank_error and not eff_allow_partial:
+            # Component returns (slice, err); orchestrator decides failure policy.
+            raise RetrievalError("rerank", Exception(rerank_error))
+        if rerank_error:
+            log.warning(
+                "rerank phase failed (allow_partial_failure=True) — falling back to RRF order: %s",
+                rerank_error,
+            )
+        _pcb(
+            phase="rerank",
+            status="error" if rerank_error else "done",
+            detail=rerank_error or f"{len(picked)} selected",
+        )
         stats["reranked_count"] = len(picked)
+        if rerank_error:
+            stats["rerank_error"] = rerank_error
 
         # ============================================================
         # Phase 6: Citations
         # ============================================================
         _pcb(phase="citations", status="running")
-        trace.begin_phase("citations")
-        citations = build_citations(picked, self.rel, self.cfg.citations)
-        trace.record_chunks(
-            "cited_chunks",
-            [c.citation_id for c in citations],
-            "citation_builder",
-        )
-        trace.end_phase(count=len(citations))
+        with _tracer.start_as_current_span("forgerag.citations") as span:
+            citations = build_citations(picked, self.rel, self.cfg.citations)
+            span.set_attribute("forgerag.citation_count", len(citations))
+            span.add_event(
+                "chunks_recorded",
+                {
+                    "forgerag.chunks.source": "citation_builder",
+                    "forgerag.chunks.count": len(citations),
+                    "forgerag.chunks.ids": [c.citation_id for c in citations[:50]],
+                },
+            )
         _pcb(phase="citations", status="done", detail=f"{len(citations)} citations")
         stats["citations_count"] = len(citations)
 
         # ============================================================
         # Finalize
         # ============================================================
-        stats["trace"] = trace.to_dict()
-        stats["total_ms"] = stats["trace"]["total_ms"]
+        stats["total_ms"] = int((time.time() - _t_started) * 1000)
 
         log.info(
-            "retrieve q=%r vec=%d bm25=%d tree=%d kg=%d merged=%d rerank=%d cites=%d llm_calls=%d total=%dms",
+            "retrieve q=%r vec=%d bm25=%d tree=%d kg=%d merged=%d rerank=%d cites=%d total=%dms",
             query[:50],
             len(vector_hits),
             len(bm25_hits),
@@ -715,7 +851,6 @@ class RetrievalPipeline:
             len(finalized),
             len(picked),
             len(citations),
-            stats["trace"]["total_llm_calls"],
             stats["total_ms"],
         )
 

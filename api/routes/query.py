@@ -49,16 +49,56 @@ def query(req: QueryRequest, state: AppState = Depends(get_state)):
 # ---------------------------------------------------------------------------
 
 
+def _inject_path_filter(req: QueryRequest) -> dict | None:
+    """
+    Merge path_filter into the retrieval filter dict under the
+    reserved key '_path_filter'. RetrievalPipeline reads it to
+    build a doc_id whitelist.
+    """
+    if not req.path_filter:
+        return req.filter
+    merged = dict(req.filter or {})
+    merged["_path_filter"] = req.path_filter
+    return merged
+
+
 def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
+    from retrieval.pipeline import RetrievalError
+    from retrieval.telemetry import RequestSpanCollector, spans_to_payload
+
     try:
         answer = state.answering.ask(
             req.query,
-            filter=req.filter,
+            filter=_inject_path_filter(req),
             conversation_id=req.conversation_id,
+            overrides=req.overrides,
+        )
+    except RetrievalError as e:
+        # Upstream dependency failed (LLM / embedder / KG store / reranker).
+        # 502 = "gateway got a bad response from something it relies on",
+        # distinguishing infra faults from our own 500s.
+        log.warning("retrieval path %r failed: %s", e.path, e)
+        raise HTTPException(
+            502,
+            detail={"error": "retrieval_failed", "path": e.path, "message": str(e)},
         )
     except Exception as e:
         log.exception("query failed")
         raise HTTPException(500, f"query failed: {e}")
+
+    # Pull OTel spans collected during this request; ship as raw JSON for
+    # the frontend trace viewer. The root ``forgerag.answer`` span has
+    # already ended by the time we get here, so the collector holds the
+    # complete tree.
+    trace_payload = None
+    _tid = answer.stats.pop("otel_trace_id_int", None)
+    if _tid:
+        try:
+            spans = RequestSpanCollector.singleton().take(_tid)
+            trace_payload = spans_to_payload(spans)
+        except Exception:
+            log.exception("failed to collect OTel trace spans")
+
     return QueryResponse(
         query=answer.query,
         text=answer.text,
@@ -67,7 +107,7 @@ def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
         model=answer.model,
         finish_reason=answer.finish_reason,
         stats=answer.stats,
-        trace=answer.stats.get("retrieval", {}).get("trace"),
+        trace=trace_payload,
     )
 
 
@@ -94,19 +134,35 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
         // see below for fetch-based approach since POST isn't supported by EventSource
     """
 
+    from retrieval.pipeline import RetrievalError
+
     def _generate():
         try:
             for event in state.answering.ask_stream(
                 req.query,
-                filter=req.filter,
+                filter=_inject_path_filter(req),
                 conversation_id=req.conversation_id,
+                overrides=req.overrides,
             ):
                 event_type = event.get("event", "delta")
                 data = json.dumps(event.get("data", {}), ensure_ascii=False, default=str)
                 yield f"event: {event_type}\ndata: {data}\n\n"
+        except RetrievalError as e:
+            # SSE can't change HTTP status mid-stream, so we emit a
+            # structured error event and let the client decide. The
+            # ``path`` field tells the UI which component died.
+            log.warning("stream retrieval path %r failed: %s", e.path, e)
+            error_data = json.dumps(
+                {
+                    "error": "retrieval_failed",
+                    "path": e.path,
+                    "message": str(e),
+                }
+            )
+            yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
             log.exception("stream query failed")
-            error_data = json.dumps({"error": str(e)})
+            error_data = json.dumps({"error": "internal", "message": str(e)})
             yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(

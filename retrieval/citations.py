@@ -120,26 +120,10 @@ def build_citations(
 
 
 def _load_blocks(relational: RelationalStore, block_ids: Iterable[str]) -> list[dict]:
-    """
-    Load blocks by id. Uses bulk get_blocks_by_ids if available,
-    otherwise falls back to one-at-a-time fetching.
-    """
     bid_list = list(block_ids)
     if not bid_list:
         return []
-
-    # Prefer batch method if the store exposes it
-    batch_fn = getattr(relational, "get_blocks_by_ids", None)
-    if callable(batch_fn):
-        return list(batch_fn(bid_list))
-
-    # TODO: add get_blocks_by_ids to RelationalStore to eliminate N+1 queries
-    rows: list[dict] = []
-    for bid in bid_list:
-        row = relational.get_block(bid)
-        if row is not None:
-            rows.append(row)
-    return rows
+    return list(relational.get_blocks_by_ids(bid_list))
 
 
 def _make_snippet(content: str, max_chars: int) -> str:

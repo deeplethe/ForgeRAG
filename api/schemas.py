@@ -57,6 +57,13 @@ class IngestRequest(BaseModel):
     parse_version: int = 1
     enrich_summary: bool | None = None
     force_reparse: bool = False
+    folder_path: str | None = Field(
+        None,
+        description=(
+            "Destination folder, e.g. '/legal/2024'. Default = '/'. Ignored "
+            "on force_reparse (the existing doc's folder is preserved)."
+        ),
+    )
 
 
 class DocumentOut(BaseModel):
@@ -71,6 +78,11 @@ class DocumentOut(BaseModel):
     metadata_json: dict | None = None
     created_at: Any = None
     updated_at: Any = None
+    # Folder membership (denormalised from folder tree; kept in sync by
+    # FolderService on rename/move. ``path`` is the carrier used by
+    # retrieval path_filter + workspace UI navigation.)
+    folder_id: str | None = None
+    path: str | None = None
     # Processing status
     status: str = "pending"
     error_message: str | None = None
@@ -207,9 +219,82 @@ class TreeOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class QueryOverrides(BaseModel):
+    """
+    Per-request overrides of retrieval-pipeline yaml defaults. Every field is
+    ``None`` by default — meaning "use the cfg value". Set a field to take
+    effect only for this single query; the global yaml is untouched.
+
+    Notes:
+      * Turning a path OFF always works. Turning a path ON that yaml has OFF
+        works for lazily-initialised collaborators (query_understanding,
+        rerank, kg). ``tree_llm_nav`` can only be overridden ON if yaml's
+        ``retrieval.tree_path.llm_nav_enabled`` is also true — the navigator
+        is constructed at startup.
+    """
+
+    # Path switches (None = yaml default)
+    query_understanding: bool | None = Field(
+        None,
+        description="Skip query understanding / expansion when false. Saves the QU LLM call.",
+    )
+    kg_path: bool | None = None
+    tree_path: bool | None = None
+    tree_llm_nav: bool | None = Field(
+        None,
+        description="LLM tree navigation (vs heuristic). Can only be enabled if yaml has tree_path.llm_nav_enabled = true.",
+    )
+    rerank: bool | None = None
+
+    # Top-k overrides (None = yaml)
+    bm25_top_k: int | None = Field(None, ge=1, le=500)
+    vector_top_k: int | None = Field(None, ge=1, le=500)
+    tree_top_k: int | None = Field(None, ge=1, le=500)
+    kg_top_k: int | None = Field(None, ge=1, le=500)
+    rerank_top_k: int | None = Field(None, ge=1, le=500)
+
+    # Fusion / expansion
+    candidate_limit: int | None = Field(
+        None,
+        ge=1,
+        le=500,
+        description="Cap on merged candidates passed to rerank / downstream.",
+    )
+    descendant_expansion: bool | None = None
+    sibling_expansion: bool | None = None
+    crossref_expansion: bool | None = None
+
+    # Failure-handling escape hatch
+    allow_partial_failure: bool | None = Field(
+        None,
+        description=(
+            "Default false = a single path (BM25/vector/tree/KG/rerank/QU) "
+            "that raises an exception aborts the whole query with a "
+            "RetrievalError (HTTP 502). Set true to fall back to the "
+            "legacy 'log + zero hits, continue' behaviour — useful for "
+            "batch jobs where one bad query shouldn't kill the rest."
+        ),
+    )
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=8192)
     filter: dict[str, Any] | None = None
+    # Path scoping: when set, retrieval is limited to documents whose path
+    # starts with this prefix (e.g. "/legal/2024"). Trashed documents are
+    # always excluded regardless of this filter.
+    path_filter: str | None = Field(
+        None,
+        description=(
+            "Limit retrieval to documents under this folder path. "
+            "Matches by path prefix (e.g. '/legal' matches '/legal/2024/x.pdf'). "
+            "Trashed documents are always excluded."
+        ),
+    )
+    overrides: QueryOverrides | None = Field(
+        None,
+        description="Per-request overrides of retrieval yaml defaults. Unset fields fall through to cfg.",
+    )
     conversation_id: str | None = Field(
         None,
         description=(
@@ -298,70 +383,6 @@ class TraceDetailOut(TraceSummaryOut):
     answer_text: str | None = None
     trace_json: dict[str, Any]
     metadata_json: dict[str, Any]
-
-
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
-
-class SettingOut(BaseModel):
-    key: str
-    value_json: Any
-    group_name: str
-    label: str
-    description: str | None = None
-    value_type: str
-    enum_options: list | None = None
-    default_value: str | None = None
-    updated_at: Any = None
-
-
-class SettingUpdate(BaseModel):
-    value_json: Any
-
-
-class SettingsBatchUpdate(BaseModel):
-    settings: list[dict[str, Any]]
-
-
-class SettingsGrouped(BaseModel):
-    groups: dict[str, list[SettingOut]]
-
-
-# ---------------------------------------------------------------------------
-# LLM Providers
-# ---------------------------------------------------------------------------
-
-
-class LLMProviderCreate(BaseModel):
-    name: str
-    provider_type: str = Field(description="chat / embedding / reranker")
-    api_base: str | None = None
-    model_name: str = Field(description="litellm model string, e.g. openai/gpt-4o")
-    api_key: str | None = None
-    is_default: bool = False
-
-
-class LLMProviderUpdate(BaseModel):
-    name: str | None = None
-    provider_type: str | None = None
-    api_base: str | None = None
-    model_name: str | None = None
-    api_key: str | None = None
-    is_default: bool | None = None
-
-
-class LLMProviderOut(BaseModel):
-    id: str
-    name: str
-    provider_type: str
-    api_base: str | None = None
-    model_name: str
-    api_key_set: bool = Field(description="True if an API key is configured (key itself not exposed)")
-    is_default: bool = False
-    created_at: Any = None
-    updated_at: Any = None
 
 
 # ---------------------------------------------------------------------------

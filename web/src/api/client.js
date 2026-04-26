@@ -12,6 +12,19 @@
  */
 
 const BASE = import.meta.env.VITE_API_BASE || ''
+
+// Auth session cookie is HttpOnly — we can't read it from JS, but we
+// MUST send it on every request. `credentials: 'include'` handles that
+// for cross-origin; for same-origin 'same-origin' (browser default) is
+// fine, but 'include' also works. We pick 'include' so the frontend
+// works behind a reverse proxy mapping /api/ → different origin.
+const DEFAULT_CREDENTIALS = 'include'
+
+// 401 callback — installed by the app (router guard / pinia / etc.).
+// The client.js module stays unaware of Vue; it just calls back.
+let _on_unauthorized = null
+export function onUnauthorized(cb) { _on_unauthorized = cb }
+
 /**
  * Generic fetch wrapper.
  * @param {string} path    - e.g. '/api/v1/health'
@@ -21,6 +34,7 @@ const BASE = import.meta.env.VITE_API_BASE || ''
 export async function request(path, options = {}) {
   const url = `${BASE}${path}`
   const headers = { ...(options.headers || {}) }
+  const credentials = options.credentials || DEFAULT_CREDENTIALS
 
   // Auto-set JSON content-type unless it's FormData
   if (options.body && !(options.body instanceof FormData)) {
@@ -30,10 +44,17 @@ export async function request(path, options = {}) {
     }
   }
 
-  const res = await fetch(url, { ...options, headers })
+  const res = await fetch(url, { ...options, headers, credentials })
 
   // For streaming responses, return raw Response
   if (options.stream) return res
+
+  if (res.status === 401) {
+    // Centralised auth-expired handling. The callback decides whether
+    // to redirect to /login, show a modal, etc. Callers still see an
+    // Error raised for non-login pages that need to react.
+    try { _on_unauthorized?.(path) } catch {}
+  }
 
   if (!res.ok) {
     let detail = res.statusText
@@ -41,7 +62,9 @@ export async function request(path, options = {}) {
       const err = await res.json()
       detail = err.detail || JSON.stringify(err)
     } catch {}
-    throw new Error(`${res.status}: ${detail}`)
+    const error = new Error(`${res.status}: ${detail}`)
+    error.status = res.status
+    throw error
   }
 
   // 204 No Content
@@ -72,5 +95,16 @@ export const put = (path, body) =>
 export const patch = (path, body) =>
   request(path, { method: 'PATCH', body })
 
-export const del = (path) =>
-  request(path, { method: 'DELETE' })
+export const del = (path, params, options = {}) => {
+  // Support optional query-string `params` and optional `body` via `options.body`
+  let url = path
+  if (params) {
+    const clean = Object.fromEntries(
+      Object.entries(params).filter(([, v]) => v != null),
+    )
+    if (Object.keys(clean).length) {
+      url += '?' + new URLSearchParams(clean).toString()
+    }
+  }
+  return request(url, { method: 'DELETE', ...options })
+}

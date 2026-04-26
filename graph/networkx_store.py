@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+def _match_any_prefix(paths: set[str], prefix: str) -> bool:
+    """True if any member of *paths* is equal to ``prefix`` or sits under it.
+
+    A prefix of ``/legal`` matches ``/legal`` itself, ``/legal/foo``
+    and ``/legal/foo/bar``, but NOT ``/legal-extra`` — we only match
+    on full segment boundaries.
+    """
+    if not paths:
+        return False
+    pfx = prefix.rstrip("/") or "/"
+    sep = pfx + "/"
+    return any(p == pfx or p.startswith(sep) for p in paths)
+
+
+# ---------------------------------------------------------------------------
 # Serialisation helpers
 # ---------------------------------------------------------------------------
 
@@ -36,6 +55,7 @@ def _entity_to_dict(e: Entity) -> dict[str, Any]:
         "description": e.description,
         "source_doc_ids": sorted(e.source_doc_ids),
         "source_chunk_ids": sorted(e.source_chunk_ids),
+        "source_paths": sorted(e.source_paths),
     }
     if e.name_embedding:
         d["name_embedding"] = e.name_embedding
@@ -50,6 +70,7 @@ def _entity_from_dict(d: dict[str, Any]) -> Entity:
         description=d.get("description", ""),
         source_doc_ids=set(d.get("source_doc_ids", [])),
         source_chunk_ids=set(d.get("source_chunk_ids", [])),
+        source_paths=set(d.get("source_paths", [])),
         name_embedding=d.get("name_embedding", []),
     )
 
@@ -64,6 +85,7 @@ def _relation_to_dict(r: Relation) -> dict[str, Any]:
         "weight": r.weight,
         "source_doc_ids": sorted(r.source_doc_ids),
         "source_chunk_ids": sorted(r.source_chunk_ids),
+        "source_paths": sorted(r.source_paths),
     }
     if r.description_embedding:
         d["description_embedding"] = r.description_embedding
@@ -80,6 +102,7 @@ def _relation_from_dict(d: dict[str, Any]) -> Relation:
         weight=d.get("weight", 1.0),
         source_doc_ids=set(d.get("source_doc_ids", [])),
         source_chunk_ids=set(d.get("source_chunk_ids", [])),
+        source_paths=set(d.get("source_paths", [])),
         description_embedding=d.get("description_embedding", []),
     )
 
@@ -196,6 +219,7 @@ class NetworkXGraphStore(GraphStore):
                 # Union sources
                 existing.source_doc_ids |= entity.source_doc_ids
                 existing.source_chunk_ids |= entity.source_chunk_ids
+                existing.source_paths |= entity.source_paths
                 # Track type counts, keep most common
                 tc[entity.entity_type] += 1
                 existing.entity_type = tc.most_common(1)[0][0]
@@ -235,6 +259,7 @@ class NetworkXGraphStore(GraphStore):
                         entity_type="UNKNOWN",
                         source_doc_ids=relation.source_doc_ids.copy(),
                         source_chunk_ids=relation.source_chunk_ids.copy(),
+                        source_paths=relation.source_paths.copy(),
                     )
                     self._graph.add_node(
                         eid,
@@ -248,6 +273,7 @@ class NetworkXGraphStore(GraphStore):
                 existing.weight += relation.weight
                 existing.source_doc_ids |= relation.source_doc_ids
                 existing.source_chunk_ids |= relation.source_chunk_ids
+                existing.source_paths |= relation.source_paths
                 if relation.keywords and relation.keywords not in existing.keywords:
                     existing.keywords = f"{existing.keywords}, {relation.keywords}".strip(", ")
                 # Update embedding if provided and not already set
@@ -406,22 +432,38 @@ class NetworkXGraphStore(GraphStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine-similarity search over entity name embeddings.
 
         Powers cross-lingual entity lookup when the embedder is
         multilingual: a query vector derived from "蜜蜂" will land
         close to the stored "bee" name vector.
+
+        With *path_prefix*, over-fetches 5× and post-filters on
+        ``source_paths`` before trimming to *top_k*.
         """
         with self._lock:
             if not query_embedding:
                 return []
-            hits = self._entity_idx.search(query_embedding, top_k)
+            prefixes: list[str] = []
+            if path_prefix:
+                prefixes.append(path_prefix)
+            if path_prefixes_or:
+                prefixes.extend(path_prefixes_or)
+            fetch_k = top_k * 5 if prefixes else top_k
+            hits = self._entity_idx.search(query_embedding, fetch_k)
             results: list[tuple[Entity, float]] = []
             for eid, score in hits:
-                if eid in self._graph:
-                    ent: Entity = self._graph.nodes[eid]["entity"]
-                    results.append((ent, score))
+                if eid not in self._graph:
+                    continue
+                ent: Entity = self._graph.nodes[eid]["entity"]
+                if prefixes and not any(_match_any_prefix(ent.source_paths, p) for p in prefixes):
+                    continue
+                results.append((ent, score))
+                if len(results) >= top_k:
+                    break
             return results
 
     # -- relation semantic search -------------------------------------------
@@ -430,17 +472,65 @@ class NetworkXGraphStore(GraphStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         with self._lock:
             if not query_embedding:
                 return []
-            hits = self._relation_idx.search(query_embedding, top_k)
+            prefixes: list[str] = []
+            if path_prefix:
+                prefixes.append(path_prefix)
+            if path_prefixes_or:
+                prefixes.extend(path_prefixes_or)
+            fetch_k = top_k * 5 if prefixes else top_k
+            hits = self._relation_idx.search(query_embedding, fetch_k)
             results: list[tuple[Relation, float]] = []
             for rid, score in hits:
                 rel = self._rel_cache.get(rid)
-                if rel is not None:
-                    results.append((rel, score))
+                if rel is None:
+                    continue
+                if prefixes and not any(_match_any_prefix(rel.source_paths, p) for p in prefixes):
+                    continue
+                results.append((rel, score))
+                if len(results) >= top_k:
+                    break
             return results
+
+    # -- path-prefix rewrite (folder rename / move) -------------------------
+
+    def update_paths(self, old_prefix: str, new_prefix: str) -> int:
+        """Rewrite every ``source_paths`` entry that starts with *old_prefix*.
+
+        Called by FolderService when <2000 chunks are affected; the
+        nightly maintenance script uses the same hook for deferred ops.
+        Returns the count of (entities + relations) touched.
+        """
+        if not old_prefix or old_prefix == new_prefix:
+            return 0
+        touched = 0
+        with self._lock:
+            for nid in self._graph.nodes:
+                ent: Entity = self._graph.nodes[nid]["entity"]
+                new_set = {
+                    (new_prefix + p[len(old_prefix) :]) if p == old_prefix or p.startswith(old_prefix + "/") else p
+                    for p in ent.source_paths
+                }
+                if new_set != ent.source_paths:
+                    ent.source_paths = new_set
+                    touched += 1
+            for u, v in self._graph.edges:
+                rel: Relation = self._graph.edges[u, v]["relation"]
+                new_set = {
+                    (new_prefix + p[len(old_prefix) :]) if p == old_prefix or p.startswith(old_prefix + "/") else p
+                    for p in rel.source_paths
+                }
+                if new_set != rel.source_paths:
+                    rel.source_paths = new_set
+                    touched += 1
+            if touched:
+                self._save()
+        return touched
 
     # -- deletion -----------------------------------------------------------
 

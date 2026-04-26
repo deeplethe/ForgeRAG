@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import TreeBuilderConfig
+from config.auth import resolve_api_key
 
 from .schema import (
     Block,
@@ -454,7 +455,7 @@ class _BuildContext:
         Falls back to flat if the LLM call fails or returns bad JSON.
         """
         cfg = self.cfg
-        if cfg is None or not cfg.llm_model:
+        if cfg is None or not cfg.model:
             log.warning("LLM tree: no model configured; using flat fallback")
             return self.flat_fallback()
 
@@ -525,7 +526,7 @@ class _BuildContext:
         assert cfg is not None
 
         kwargs: dict = {
-            "model": cfg.llm_model,
+            "model": cfg.model,
             "messages": [
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
@@ -534,12 +535,13 @@ class _BuildContext:
             "max_tokens": 4096,
             "timeout": 120,  # 2 min hard ceiling
         }
-        if cfg.llm_api_key:
-            kwargs["api_key"] = cfg.llm_api_key
-        if cfg.llm_api_base:
-            kwargs["api_base"] = cfg.llm_api_base
+        api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
+        if api_key:
+            kwargs["api_key"] = api_key
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
 
-        log.info("tree builder LLM call: model=%s", cfg.llm_model)
+        log.info("tree builder LLM call: model=%s", cfg.model)
         response = litellm.completion(**kwargs)
         log.info("tree builder LLM call done")
         return response.choices[0].message.content.strip()
@@ -644,7 +646,7 @@ class _BuildContext:
         This produces a tree with summaries in a single step.
         """
         cfg = self.cfg
-        if cfg is None or not cfg.llm_model:
+        if cfg is None or not cfg.model:
             log.warning("page_groups: no LLM model configured; using flat fallback")
             return self.flat_fallback()
 
@@ -776,7 +778,7 @@ class _BuildContext:
             return self._page_group_batched_call(group_excerpts, groups, last_page)
 
         kwargs: dict = {
-            "model": cfg.llm_model,
+            "model": cfg.model,
             "messages": [
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
@@ -785,12 +787,13 @@ class _BuildContext:
             "max_tokens": 4096,
             "timeout": 120,
         }
-        if cfg.llm_api_key:
-            kwargs["api_key"] = cfg.llm_api_key
-        if cfg.llm_api_base:
-            kwargs["api_base"] = cfg.llm_api_base
+        api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
+        if api_key:
+            kwargs["api_key"] = api_key
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
 
-        log.info("page_group LLM call: model=%s groups=%d", cfg.llm_model, len(groups))
+        log.info("page_group LLM call: model=%s groups=%d", cfg.model, len(groups))
         response = litellm.completion(**kwargs)
         raw = response.choices[0].message.content.strip()
         return self._parse_page_group_response(raw, len(groups))
@@ -851,7 +854,7 @@ class _BuildContext:
             user_msg = context + "\n\n".join(batch)
 
             kwargs: dict = {
-                "model": cfg.llm_model,
+                "model": cfg.model,
                 "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
@@ -860,10 +863,11 @@ class _BuildContext:
                 "max_tokens": 4096,
                 "timeout": 120,
             }
-            if cfg.llm_api_key:
-                kwargs["api_key"] = cfg.llm_api_key
-            if cfg.llm_api_base:
-                kwargs["api_base"] = cfg.llm_api_base
+            api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
+            if api_key:
+                kwargs["api_key"] = api_key
+            if cfg.api_base:
+                kwargs["api_base"] = cfg.api_base
 
             response = litellm.completion(**kwargs)
             raw = response.choices[0].message.content.strip()

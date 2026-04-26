@@ -8,7 +8,7 @@ ForgeRAG is built around three core pipelines — **Ingestion**, **Retrieval**, 
 
 2. **Dual-reasoning retrieval** — BM25 and vector search provide fast pre-filtering; LLM tree navigation and knowledge graph inference perform deep reasoning on the pre-filtered results. Results are fused via Reciprocal Rank Fusion.
 
-3. **Full customizability** — Every pipeline stage, every retrieval path, every LLM call is independently configurable. Enable or disable any component, swap models, tune parameters, inject custom prompts — all at runtime via the web UI.
+3. **Full customizability** — Every pipeline stage, every retrieval path, every LLM call is independently configurable via YAML. Per-request retrieval overrides (`QueryOverrides` on `/api/v1/query`) let callers toggle paths or bump top-ks without mutating global config — convenient for A/B and SDK clients.
 
 ## System Overview
 
@@ -552,7 +552,7 @@ flowchart TB
     subgraph Relational ["Relational Store (persistence/store.py)"]
         direction TB
         Engine["SQLAlchemy Engine<br/>make_engine(cfg)"]
-        Engine --> SQLite["SQLite<br/>WAL mode, zero-config"]
+        Engine --> SQLite["SQLite<br/>(pytest fixture only;<br/>refused in production)"]
         Engine --> PG["PostgreSQL<br/>pool_size, connect_timeout"]
         Engine --> MySQL["MySQL<br/>pymysql driver"]
 
@@ -718,58 +718,52 @@ erDiagram
 | Any | Milvus | Scalable, GPU-accelerated |
 | Any | Weaviate | Multi-modal, GraphQL API |
 | MySQL | ChromaDB | Good for Chroma-only deployments |
-| SQLite | ChromaDB | Zero-config development |
+| SQLite | ChromaDB | **Test-only** (pytest fixture; rejected in production) |
 
 ---
 
 ## Configuration System
 
-ForgeRAG uses a two-layer configuration approach: YAML for infrastructure (restart required), database for runtime (hot-reload via web UI).
+**YAML is the single source of truth.** The DB holds a one-way mirror (`settings` + `llm_providers` tables) written at startup so admin tools can read a snapshot of the effective config, but the runtime never reads it back.
 
 ```mermaid
 flowchart TB
     subgraph Startup ["Application Startup"]
-        YAML["forgerag.yaml<br/>(or auto-generated defaults)"]
-        YAML -->|"parse + validate"| AppCfg["AppConfig<br/>(Pydantic root model)"]
+        YAML["forgerag.yaml<br/>(+ myconfig.yaml for deployment secrets)"]
+        YAML -->|"parse + validate"| AppCfg["AppConfig<br/>(Pydantic root model,<br/>incl. llm_providers list)"]
 
-        AppCfg -->|"read cfg values by dotted path<br/>e.g. retrieval.vector.top_k"| Seed["seed_defaults()<br/>populate Setting rows<br/>for all EDITABLE_SETTINGS<br/>(100+ keys)"]
-        Seed -->|"INSERT IF NOT EXISTS"| DB[("Settings Table<br/>key, value_json,<br/>group_name, value_type")]
+        AppCfg -->|"resolve provider_id → model/key/base<br/>on each component (in-memory only)"| Resolved["Resolved AppConfig"]
 
-        DB -->|"read all overrides"| Apply["apply_overrides()<br/>_set_dotted(cfg, key, value)<br/>patches AppConfig in-place"]
-        Apply -->|"patched AppConfig"| Resolve
+        Resolved -->|"snapshot_to_db()<br/>overwrite every key"| DB[("settings table<br/>read-only mirror")]
+        Resolved -->|"snapshot_providers_to_db()<br/>overwrite providers"| ProvDB[("llm_providers table<br/>read-only mirror")]
 
-        ProvDB[("LLMProvider Table<br/>id, name, type,<br/>api_base, model, key")]
-        Resolve["resolve_providers()<br/>for each component with provider_id:<br/>lookup LLMProvider row →<br/>fill model, api_key, api_base"]
-        ProvDB -->|"provider credentials"| Resolve
-
-        Resolve -->|"fully resolved AppConfig"| State["AppState<br/>wire all components"]
+        Resolved -->|"wire pipelines"| State["AppState<br/>components read cfg.* directly,<br/>never touch the DB tables"]
     end
 
-    subgraph Runtime ["Runtime Hot-Reload"]
-        WebUI["Web UI Architecture Page<br/>or PUT /api/v1/settings/key/{key}"]
-        WebUI -->|"update value_json"| DB
-        WebUI -->|"re-apply overrides<br/>+ resolve providers"| Apply
+    subgraph PerRequest ["Per-request tweaks (non-mutating)"]
+        Req["POST /api/v1/query<br/>with QueryOverrides"]
+        Req -->|"shadow cfg reads<br/>for this request only"| State
     end
 
     style YAML fill:#fff3e0
-    style WebUI fill:#e8f5e9
     style DB fill:#e3f2fd
     style ProvDB fill:#e3f2fd
+    style Req fill:#e8f5e9
 ```
 
-**Layer 1 — YAML file** (`forgerag.yaml`): Infrastructure settings (database backends, storage paths). Requires restart to change.
+**To change configuration**: edit yaml, restart the backend. This applies to every setting — infrastructure, LLM providers, retrieval knobs, prompts, all of it.
 
-**Layer 2 — Database overrides** (Settings table): Runtime settings (LLM models, retrieval parameters, temperatures). Changed via the web UI or API — no restart needed.
+**Per-request overrides**: `QueryOverrides` on the `/query` request body can toggle retrieval paths, bump top-ks, swap rerank on/off etc. for a single query. These never mutate the global cfg. See [api-reference.md](api-reference.md#post-apiv1query) for the field list.
 
 ## Web UI
 
-The frontend (Vue 3 + TailwindCSS) provides four main pages:
+The frontend (Vue 3 + TailwindCSS) provides these pages:
 
 | Page | Description |
 |------|-------------|
 | **Chat** | Q&A interface with streaming progress, inline citations, PDF viewer with bbox highlights, trace inspection |
-| **Architecture** | Live configuration editor — view and edit all pipeline settings in real time, no restart needed |
-| **Repository** | Unified document management — upload, browse tree structure, view chunks, track ingestion pipeline, retry/delete |
+| **Workspace** | Folder-centric file manager (tree sidebar + grid/list view) — upload into a specific folder, rename, move, trash/restore |
+| **Repository** | Flat document list — upload, browse tree structure, view chunks, track ingestion pipeline, retry/delete |
 | **Knowledge Graph** | Visual graph exploration with Sigma.js — entities, relations, subgraph queries |
 
 See [Configuration Reference](configuration.md) for all available options.

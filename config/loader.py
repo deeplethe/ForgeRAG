@@ -1,8 +1,11 @@
 """
 Configuration loader.
 
-Reads a YAML file into AppConfig. Missing file -> all defaults,
-which lets dev work run with zero configuration.
+Reads a YAML file into AppConfig. Missing file -> pydantic defaults
+for every section. Each module that calls an LLM (answering.generator,
+embedder, retrieval.rerank, etc.) carries its own ``model``,
+``api_key`` / ``api_key_env``, and ``api_base`` fields — fill them in
+inline per module before that module will function.
 """
 
 from __future__ import annotations

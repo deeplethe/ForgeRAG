@@ -65,6 +65,14 @@ class Store:
             expire_on_commit=False,
             future=True,
         )
+        # Mount OTel SQL instrumentation if observability is enabled.
+        # Safe no-op if the tracer provider is the default (tests).
+        try:
+            from config.observability import instrument_sqlalchemy
+
+            instrument_sqlalchemy(self._engine)
+        except Exception as e:
+            log.debug("SQLAlchemy OTel instrumentation skipped: %s", e)
         log.info("Store connected (backend=%s)", self.backend)
 
     def close(self) -> None:
@@ -85,6 +93,61 @@ class Store:
         assert self._engine is not None
         Base.metadata.create_all(self._engine)
         self._migrate_add_columns()
+        self._seed_system_folders()
+
+    def _seed_system_folders(self) -> None:
+        """
+        Ensure the two system folders (__root__, __trash__) exist.
+        Both the alembic migration and the test-mode Base.metadata.create_all()
+        rely on this — the migration runs this SQL explicitly, but tests use
+        create_all() which doesn't execute data seeds.
+        """
+        from sqlalchemy import text
+
+        assert self._engine is not None
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folders (folder_id, path, path_lower, parent_id,
+                                         name, is_system, metadata_json)
+                    SELECT '__root__', '/', '/', NULL, 'Root', :tt, '{}'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folders WHERE folder_id = '__root__'
+                    )
+                    """
+                ),
+                {"tt": True},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folders (folder_id, path, path_lower, parent_id,
+                                         name, is_system, metadata_json)
+                    SELECT '__trash__', '/__trash__', '/__trash__', '__root__',
+                           'Trash', :tt, '{}'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folders WHERE folder_id = '__trash__'
+                    )
+                    """
+                ),
+                {"tt": True},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO folder_grants (grant_id, folder_id, principal_id,
+                                               principal_type, permission,
+                                               inherit, granted_by)
+                    SELECT '__bootstrap__', '__root__', 'local', 'user',
+                           'admin', :inh, 'system'
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM folder_grants WHERE grant_id = '__bootstrap__'
+                    )
+                    """
+                ),
+                {"inh": True},
+            )
 
     # Column renames: (table_name, old_col, new_col)
     _COLUMN_RENAMES: list[tuple[str, str, str]] = [
@@ -300,11 +363,17 @@ class Store:
         filename: str,
         format: str,
         status: str = "pending",
+        folder_id: str = "__root__",
+        path: str = "/",
     ) -> None:
         """
         Create a minimal document row so the frontend can see it
         immediately after upload, before ingestion starts.
         If the document already exists this is a no-op.
+
+        ``folder_id`` + ``path`` place the new doc under a specific folder
+        (caller should pre-compute a collision-free path via
+        ``folder_service.unique_document_path``).
         """
         with self._session() as s:
             existing = s.get(Document, doc_id)
@@ -318,6 +387,8 @@ class Store:
                 active_parse_version=1,
                 metadata_json={},
                 status=status,
+                folder_id=folder_id,
+                path=path,
             )
             s.add(row)
 
@@ -403,6 +474,18 @@ class Store:
             row = s.get(ParsedBlock, block_id)
             return _block_to_dict(row) if row else None
 
+    def get_blocks_by_ids(self, block_ids: list[str]) -> list[dict]:
+        """Bulk lookup; mirrors the get_chunks_by_ids batching strategy."""
+        if not block_ids:
+            return []
+        results: list[dict] = []
+        with self._session() as s:
+            for i in range(0, len(block_ids), 500):
+                batch = block_ids[i : i + 500]
+                rows = s.execute(select(ParsedBlock).where(ParsedBlock.block_id.in_(batch))).scalars().all()
+                results.extend(_block_to_dict(r) for r in rows)
+        return results
+
     # =======================================================================
     # Trees
     # =======================================================================
@@ -456,8 +539,30 @@ class Store:
     # =======================================================================
 
     def insert_chunks(self, rows: list[dict]) -> None:
+        """
+        Insert chunk rows. The ``path`` column is denormalized from
+        the owning ``documents.path`` at write time — callers don't need
+        to know or supply it. This keeps ingestion code path-agnostic
+        while letting retrieval queries filter natively on chunks.path.
+        """
         if not rows:
             return
+        # Auto-fill chunks.path from documents.path for any row that
+        # didn't supply one. Callers that already know the path (bulk
+        # rename, restoration, etc.) can pass it explicitly to skip
+        # the lookup.
+        need_path = [r for r in rows if not r.get("path")]
+        if need_path:
+            from sqlalchemy import select as _sel
+
+            doc_ids = list({r["doc_id"] for r in need_path if r.get("doc_id")})
+            path_by_doc: dict[str, str] = {}
+            if doc_ids:
+                with self._session() as s:
+                    for did, p in s.execute(_sel(Document.doc_id, Document.path).where(Document.doc_id.in_(doc_ids))):
+                        path_by_doc[did] = p or "/"
+            for r in need_path:
+                r["path"] = path_by_doc.get(r.get("doc_id", ""), "/")
         with self._session() as s:
             s.execute(insert(ChunkRow), rows)
 
@@ -489,25 +594,50 @@ class Store:
         return results
 
     def find_chunk_by_block_id(self, doc_id: str, parse_version: int, block_id: str) -> dict | None:
-        """Find the chunk that contains a given block_id (JSONB @> query)."""
-        from sqlalchemy import type_coerce
-        from sqlalchemy.dialects.postgresql import JSONB
+        """Find the chunk that contains a given block_id.
 
+        Postgres path: ``JSONB @> [block_id]`` containment, indexed.
+        Other dialects (SQLite): fetch the doc's chunks and Python-filter.
+        Per-doc chunks are bounded (typically <500), so the linear scan
+        is fine; SQLite deployments are usually single-process anyway.
+        """
+        if self.backend == "postgres":
+            from sqlalchemy import type_coerce
+            from sqlalchemy.dialects.postgresql import JSONB
+
+            with self._session() as s:
+                row = (
+                    s.execute(
+                        select(ChunkRow)
+                        .where(
+                            ChunkRow.doc_id == doc_id,
+                            ChunkRow.parse_version == parse_version,
+                            type_coerce(ChunkRow.block_ids, JSONB).contains([block_id]),
+                        )
+                        .limit(1)
+                    )
+                    .scalars()
+                    .first()
+                )
+                return _chunk_to_dict(row) if row else None
+
+        # Portable fallback — used by SQLite and any future dialect that
+        # lacks JSONB containment.
         with self._session() as s:
-            row = (
+            rows = (
                 s.execute(
-                    select(ChunkRow)
-                    .where(
+                    select(ChunkRow).where(
                         ChunkRow.doc_id == doc_id,
                         ChunkRow.parse_version == parse_version,
-                        type_coerce(ChunkRow.block_ids, JSONB).contains([block_id]),
                     )
-                    .limit(1)
                 )
                 .scalars()
-                .first()
+                .all()
             )
-            return _chunk_to_dict(row) if row else None
+        for r in rows:
+            if r.block_ids and block_id in r.block_ids:
+                return _chunk_to_dict(r)
+        return None
 
     def get_chunks_by_node_ids(self, node_ids: list[str]) -> list[dict]:
         if not node_ids:
@@ -729,8 +859,21 @@ class Store:
     # =======================================================================
 
     def list_documents(
-        self, *, limit: int = 50, offset: int = 0, search: str | None = None, status: str | None = None
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        status: str | None = None,
+        folder_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[dict]:
+        """
+        ``folder_id`` and ``path_prefix`` are mutually exclusive: pass the
+        former for exact-folder (direct-children) match using the folder_id
+        index, or the latter for subtree prefix match on ``Document.path``.
+        The route layer picks one based on the caller's ``recursive`` flag.
+        """
         with self._session() as s:
             from sqlalchemy import or_
 
@@ -747,10 +890,26 @@ class Store:
                     q = q.where(Document.status.in_([st.strip() for st in status.split(",")]))
                 else:
                     q = q.where(Document.status == status)
+            if folder_id is not None:
+                q = q.where(Document.folder_id == folder_id)
+            if path_prefix is not None:
+                p = path_prefix.rstrip("/") or "/"
+                if p == "/":
+                    # Root subtree = everything (no filter needed); skip
+                    pass
+                else:
+                    q = q.where(or_(Document.path == p, Document.path.like(p + "/%")))
             rows = s.execute(q.limit(limit).offset(offset)).scalars().all()
             return [_doc_to_dict(r) for r in rows]
 
-    def count_documents(self, *, status: str | None = None, search: str | None = None) -> int:
+    def count_documents(
+        self,
+        *,
+        status: str | None = None,
+        search: str | None = None,
+        folder_id: str | None = None,
+        path_prefix: str | None = None,
+    ) -> int:
         with self._session() as s:
             from sqlalchemy import func as sa_func
             from sqlalchemy import or_
@@ -768,6 +927,12 @@ class Store:
                     q = q.where(Document.status.in_([st.strip() for st in status.split(",")]))
                 else:
                     q = q.where(Document.status == status)
+            if folder_id is not None:
+                q = q.where(Document.folder_id == folder_id)
+            if path_prefix is not None:
+                p = path_prefix.rstrip("/") or "/"
+                if p != "/":
+                    q = q.where(or_(Document.path == p, Document.path.like(p + "/%")))
             return s.execute(q).scalar() or 0
 
     def get_blocks_paginated(self, doc_id: str, parse_version: int, *, limit: int = 100, offset: int = 0) -> list[dict]:
@@ -960,6 +1125,9 @@ def _doc_to_dict(row: Document) -> dict:
         "pages_json": row.pages_json,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        # Folder membership — needed by workspace UI + retrieval path_filter
+        "folder_id": getattr(row, "folder_id", None),
+        "path": getattr(row, "path", None),
     }
 
 

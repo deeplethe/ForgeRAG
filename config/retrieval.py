@@ -37,7 +37,6 @@ class VectorSearchConfig(BaseModel):
 class TreeNavConfig(BaseModel):
     """LLM tree navigator config (PageIndex-style)."""
 
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
     api_key_env: str | None = None
@@ -58,8 +57,10 @@ class TreePathConfig(BaseModel):
     # When False, falls back to BM25 top chunks within prefiltered docs.
     llm_nav_enabled: bool = True
     nav: TreeNavConfig = Field(default_factory=TreeNavConfig)
-    # Max chunks to return from the tree path
-    top_k: int = 30
+    # Max chunks to return from the tree path. Default 20 balances recall
+    # with rerank latency — Run 5 bench showed 20 feeds the reranker enough
+    # candidates without wasting time on obvious long-tail chunks.
+    top_k: int = 20
 
 
 class MergeConfig(BaseModel):
@@ -93,9 +94,17 @@ class MergeConfig(BaseModel):
 
 
 class RerankConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
-    enabled: bool = False
-    backend: Literal["passthrough", "litellm"] = "passthrough"
+    # No ``enabled`` toggle: rerank is part of the pipeline. Per-query opt-out
+    # via ``QueryOverrides.rerank=False`` (e.g. for benchmark A/B). Default
+    # backend is ``llm_as_reranker`` (reuses generator credentials);
+    # production deployments with a dedicated rerank API can switch to
+    # ``rerank_api``; ``passthrough`` is the no-op baseline.
+    backend: Literal["passthrough", "rerank_api", "llm_as_reranker"] = "llm_as_reranker"
+    # on_failure="strict" raises the error so the UI lights up red on the
+    # architecture graph; "passthrough" silently returns top_k by RRF order
+    # (the legacy behaviour that hid bugs). Default is strict so users
+    # discover misconfiguration immediately.
+    on_failure: Literal["strict", "passthrough"] = "strict"
     model: str = "openai/gpt-4o-mini"
     top_k: int = 10
     api_key: str | None = None
@@ -114,24 +123,13 @@ class CitationsConfig(BaseModel):
     open_url_template: str = "/viewer/{doc_id}?page={page_no}&hl={citation_id}"
 
 
-class QueryExpansionConfig(BaseModel):
-    """Legacy — kept for backward compat. Use QueryUnderstandingConfig."""
-
-    provider_id: str | None = None
-    enabled: bool = False
-    model: str = "openai/gpt-4o-mini"
-    api_key: str | None = None
-    api_key_env: str | None = None
-    api_base: str | None = None
-    max_expansions: int = 3
-    timeout: float = 15.0
-
-
 class QueryUnderstandingConfig(BaseModel):
-    """Unified query understanding: intent + routing + expansion."""
+    """Unified query understanding: intent + routing + expansion.
 
-    provider_id: str | None = None
-    enabled: bool = False
+    No ``enabled`` toggle: QU runs on every retrieve(). Per-query opt-out
+    via ``QueryOverrides.query_understanding=False``.
+    """
+
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
     api_key_env: str | None = None
@@ -143,18 +141,23 @@ class QueryUnderstandingConfig(BaseModel):
 
 
 class KGExtractionConfig(BaseModel):
-    """Ingestion-time entity/relation extraction settings."""
+    """Ingestion-time entity/relation extraction settings.
 
-    enabled: bool = False
-    provider_id: str | None = None
+    No ``enabled`` toggle: when ``graph_store`` is configured (i.e.
+    Neo4j credentials are set), every ingest runs KG extraction.
+    To opt out entirely, leave the graph store unconfigured.
+    Entity-name and relation-description embeddings are likewise
+    always computed because both downstream paths
+    (``EntityDisambiguation``, ``KGPath.relation_weight`` semantic
+    search) silently degrade without them.
+    """
+
     model: str = "openai/gpt-4o-mini"
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None
     max_workers: int = 5
     timeout: float = 120.0
-    embed_relations: bool = False
-    embed_entity_names: bool = False
     # Description merge: LLM-consolidate fragmented entity/relation descriptions.
     # When an entity accumulates many description fragments (from multiple chunks
     # or documents), an LLM call synthesizes them into one concise description.
@@ -163,16 +166,22 @@ class KGExtractionConfig(BaseModel):
 
 
 class KGPathConfig(BaseModel):
-    """Knowledge graph retrieval path settings."""
+    """Knowledge graph retrieval path settings.
 
-    enabled: bool = False
-    provider_id: str | None = None  # LLM for extracting entities from query
-    model: str = "openai/gpt-4o-mini"
+    No ``enabled`` toggle: when ``graph_store`` is configured the
+    KG path participates in retrieval. Per-query opt-out via
+    ``QueryOverrides.kg_path=False``.
+    """
+
+    model: str = "openai/gpt-4o-mini"  # LLM for extracting entities from query
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None
     top_k: int = 30
-    max_hops: int = 2
+    # max_hops default 1: 2-hop expansion from hub entities (e.g. "Company"
+    # in legal corpora) can explode to 3000+ nodes. Users who want deeper
+    # traversal can raise this, but 1-hop is the safe default.
+    max_hops: int = 1
     local_weight: float = 0.5
     global_weight: float = 0.2
     # Relation semantic search
@@ -181,7 +190,6 @@ class KGPathConfig(BaseModel):
 
 
 class RetrievalSection(BaseModel):
-    query_expansion: QueryExpansionConfig = Field(default_factory=QueryExpansionConfig)
     query_understanding: QueryUnderstandingConfig = Field(default_factory=QueryUnderstandingConfig)
     bm25: BM25Config = Field(default_factory=BM25Config)
     vector: VectorSearchConfig = Field(default_factory=VectorSearchConfig)

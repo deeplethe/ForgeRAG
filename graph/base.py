@@ -40,6 +40,13 @@ class Entity:
     description: str = ""
     source_doc_ids: set[str] = field(default_factory=set)
     source_chunk_ids: set[str] = field(default_factory=set)
+    # Denormalized from the owning documents' path. Lets KG retrieval do
+    # native scope-filtering (e.g. Cypher
+    # ``WHERE any(p IN e.source_paths WHERE p STARTS WITH $pfx)``) without
+    # a cross-database join with Postgres. Kept in sync by FolderService
+    # sync renames (< 2000 chunks) or the nightly maintenance script
+    # (deferred renames).
+    source_paths: set[str] = field(default_factory=set)
     entity_id: str = ""
     name_embedding: list[float] = field(default_factory=list)
 
@@ -59,6 +66,8 @@ class Relation:
     weight: float = 1.0
     source_doc_ids: set[str] = field(default_factory=set)
     source_chunk_ids: set[str] = field(default_factory=set)
+    # See Entity.source_paths — same denormalization contract.
+    source_paths: set[str] = field(default_factory=set)
     relation_id: str = ""
     description_embedding: list[float] = field(default_factory=list)
 
@@ -173,6 +182,8 @@ class GraphStore(ABC):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Entity, float]]:
         """Cosine-similarity search over entity name embeddings.
 
@@ -180,6 +191,10 @@ class GraphStore(ABC):
         empty list (the retrieval path will fall back to name-based
         lookup). NetworkX and other backends that do persist entity
         name vectors override this with a real index.
+
+        When *path_prefix* is given, only entities whose ``source_paths``
+        contain at least one member equal to or under that prefix are
+        returned — this is how KG retrieval honours folder scope.
 
         Returns list of (entity, score) tuples sorted by score desc.
         """
@@ -191,12 +206,31 @@ class GraphStore(ABC):
         self,
         query_embedding: list[float],
         top_k: int = 10,
+        path_prefix: str | None = None,
+        path_prefixes_or: list[str] | None = None,
     ) -> list[tuple[Relation, float]]:
         """Cosine-similarity search over relation description embeddings.
+
+        *path_prefix* filters by ``source_paths`` prefix (see
+        ``search_entities_by_embedding``).
 
         Returns list of (relation, score) tuples sorted by score desc.
         """
         return []
+
+    # -- path-prefix rewrite (folder rename / move) -------------------------
+
+    def update_paths(self, old_prefix: str, new_prefix: str) -> int:
+        """Rewrite source_paths on entities and relations that start with
+        ``old_prefix`` → ``new_prefix``. Returns the number of items
+        touched.
+
+        Called by FolderService for synchronous sub-threshold renames
+        and by ``scripts/nightly_maintenance.py`` for deferred ones.
+        Default implementation is a no-op safe fallback; concrete
+        backends override.
+        """
+        return 0
 
     # -- deletion -----------------------------------------------------------
 

@@ -12,20 +12,13 @@ class TestDefaults:
     def test_empty_load_returns_defaults(self):
         cfg = load_config(None)
         assert isinstance(cfg, AppConfig)
-        assert cfg.parser.backends.pymupdf.enabled is True
-        assert cfg.parser.backends.mineru.enabled is False
+        # Default parser backend is the no-extra-deps one.
+        assert cfg.parser.backend == "pymupdf"
         assert cfg.storage.mode == "local"
 
     def test_missing_file_returns_defaults(self, tmp_path):
         cfg = load_config(tmp_path / "does_not_exist.yaml")
         assert cfg.storage.mode == "local"
-
-    def test_probe_thresholds_have_sane_defaults(self):
-        cfg = AppConfig()
-        p = cfg.parser.probe
-        assert 0 < p.scanned_ratio_threshold < 1
-        assert p.text_density_min > 0
-        assert p.medium_page_count < p.complex_page_count
 
 
 class TestYamlLoading:
@@ -34,10 +27,9 @@ class TestYamlLoading:
         yml.write_text(
             """
 parser:
+  backend: mineru
   backends:
     mineru:
-      enabled: true
-      backend: pipeline
       device: cpu
 storage:
   mode: local
@@ -47,18 +39,16 @@ storage:
             encoding="utf-8",
         )
         cfg = load_config(yml)
-        assert cfg.parser.backends.mineru.enabled is True
+        assert cfg.parser.backend == "mineru"
         assert cfg.parser.backends.mineru.device == "cpu"
         assert cfg.storage.local.root == "/tmp/hi"
 
-    def test_load_invalid_backend_raises(self, tmp_path):
+    def test_load_invalid_parser_backend_raises(self, tmp_path):
         yml = tmp_path / "cfg.yaml"
         yml.write_text(
             """
 parser:
-  backends:
-    mineru:
-      backend: not-a-real-backend
+  backend: not-a-real-backend
 """,
             encoding="utf-8",
         )

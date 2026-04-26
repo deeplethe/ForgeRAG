@@ -1,29 +1,37 @@
 """
 Persistence configuration.
 
-Two orthogonal choices:
+Two relational backends, both fully supported by the unified SQLAlchemy
+2.0 store layer:
 
-    relational.backend:  "postgres" | "mysql" | "sqlite"
-    vector.backend:      "pgvector" | "chromadb" | "qdrant" | "milvus" | "weaviate"
+  * **postgres** — production default. Multi-worker safe, full SQL
+                   feature set, eligible for pgvector co-location.
+  * **sqlite**   — single-process WAL-mode SQLite. Good for dev / demo /
+                   the test suite. Multi-worker uvicorn deployments
+                   should prefer postgres because SQLite serialises all
+                   writes (WAL helps reads but writers still queue).
+                   Incompatible with ``vector.backend=pgvector`` —
+                   pgvector lives inside postgres.
 
-Valid combinations:
-    postgres + pgvector   -- single-DB deployment (recommended)
-    postgres + chromadb   -- metadata in PG, vectors in Chroma
-    any      + qdrant     -- standalone Qdrant vector DB
-    any      + milvus     -- standalone Milvus vector DB
-    any      + weaviate   -- standalone Weaviate vector DB
-    mysql    + chromadb   -- MySQL shops; vectors in Chroma
-    mysql    + pgvector   -- INVALID (MySQL has no pgvector equivalent)
-
-Credentials: prefer {driver}.password_env over plaintext password.
+Credentials: prefer postgres.password_env over plaintext password.
 The store factory reads the env var at connect time.
+
+MySQL support was removed.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+log = logging.getLogger(__name__)
+
+# Module-level flag so we warn at most once per process. Without this
+# every config reload (and every uvicorn worker re-import) re-emits the
+# same banner — turning the startup log into noise.
+_sqlite_warned = False
 
 # ---------------------------------------------------------------------------
 # Relational
@@ -51,22 +59,15 @@ class SQLiteConfig(BaseModel):
     synchronous: Literal["off", "normal", "full"] = "normal"
 
 
-class MySQLConfig(BaseModel):
-    host: str = "localhost"
-    port: int = 3306
-    database: str = "forgerag"
-    user: str = "forgerag"
-    password: str = ""
-    password_env: str | None = None
-    pool_size: int = 5
-    connect_timeout: int = 10
-    charset: str = "utf8mb4"
-
-
 class RelationalConfig(BaseModel):
-    backend: Literal["postgres", "mysql", "sqlite"] = "postgres"
+    """
+    Postgres for multi-worker production; SQLite for single-process
+    deployments / dev / tests. The ``Store`` (SQLAlchemy 2.0) speaks
+    to both with the same code path.
+    """
+
+    backend: Literal["postgres", "sqlite"] = "postgres"
     postgres: PostgresConfig | None = Field(default_factory=PostgresConfig)
-    mysql: MySQLConfig | None = None
     sqlite: SQLiteConfig | None = None
     schema_auto_init: bool = True
 
@@ -74,10 +75,18 @@ class RelationalConfig(BaseModel):
     def _check_section(self) -> RelationalConfig:
         if self.backend == "postgres" and self.postgres is None:
             self.postgres = PostgresConfig()
-        if self.backend == "mysql" and self.mysql is None:
-            raise ValueError("relational.backend=mysql but relational.mysql section missing")
-        if self.backend == "sqlite" and self.sqlite is None:
-            self.sqlite = SQLiteConfig()
+        if self.backend == "sqlite":
+            if self.sqlite is None:
+                self.sqlite = SQLiteConfig()
+            global _sqlite_warned
+            if not _sqlite_warned:
+                _sqlite_warned = True
+                log.warning(
+                    "relational.backend=sqlite selected. SQLite serialises all "
+                    "writes - running uvicorn with --workers > 1 will queue writers "
+                    "behind one another. Switch to PostgreSQL for multi-worker "
+                    "production deployments."
+                )
         return self
 
 

@@ -53,7 +53,6 @@ class SentenceTransformersConfig(BaseModel):
 
 
 class EmbedderConfig(BaseModel):
-    provider_id: str | None = None  # resolved at startup from llm_providers table
     backend: Literal["litellm", "sentence_transformers"] = "litellm"
     litellm: LiteLLMEmbedderConfig | None = Field(default_factory=LiteLLMEmbedderConfig)
     sentence_transformers: SentenceTransformersConfig | None = None

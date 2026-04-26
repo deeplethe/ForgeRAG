@@ -67,7 +67,7 @@ We evaluate against [LightRAG](https://github.com/HKUDS/LightRAG) using the **Ul
 
 <p align="center"><img src="docs/images/chat_demo.gif" alt="ForgeRAG Demo" width="700"></p>
 
-Compared to heavier platforms like RAGFlow, ForgeRAG focuses on **core pipeline design** — a lean retrieval-answering chain you can deploy **out of the box**.
+Compared to heavier platforms like RAGFlow, ForgeRAG focuses on **core pipeline design** — a lean retrieval-answering chain with composable building blocks.
 
 🔍 **Dual-reasoning retrieval** · BM25 + vector pre-filter → LLM tree nav + KG, fused via RRF
 
@@ -79,7 +79,9 @@ Compared to heavier platforms like RAGFlow, ForgeRAG focuses on **core pipeline 
 
 📄 **Multi-format ingestion** · PDF, DOCX, PPTX, XLSX, HTML, Markdown, TXT
 
-🔌 **Pluggable & web config** · Swap any backend via Web UI, apply & restart in one click
+⚙️ **YAML-first config** · One file, one restart — no hidden runtime state
+
+🎛️ **Per-request overrides** · Toggle retrieval paths / top-ks / rerank per query via `QueryOverrides` (great for SDK + A/B)
 
 🏆 **Outperforms LightRAG** · 55.48% overall win rate on UltraDomain benchmark
 
@@ -116,18 +118,21 @@ Compared to heavier platforms like RAGFlow, ForgeRAG focuses on **core pipeline 
 git clone https://github.com/deeplethe/ForgeRAG.git
 cd ForgeRAG
 
-# Python dependencies
+# 1. Core Python dependencies (small — the heavy backend packages are
+#    installed lazily in step 3 based on what your config actually picks).
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Frontend
+# 2. Frontend
 cd web && npm install && npm run build && cd ..
 
-# Configure (interactive wizard: pick provider, set keys, done)
+# 3. Configure: interactive wizard generates forgerag.yaml AND auto-pip-installs
+#    the backend-specific deps your choices need (e.g. chromadb, neo4j, mineru).
+#    To re-sync deps after a manual yaml edit: python scripts/setup.py --sync-deps forgerag.yaml
 python scripts/setup.py
 
-# Run (use multiple workers for responsive UI during ingestion)
+# 4. Run (use multiple workers for responsive UI during ingestion)
 python main.py --workers 4
 ```
 
@@ -185,11 +190,12 @@ Key endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/v1/query` | Ask a question (streaming SSE or sync) |
-| `POST /api/v1/documents` | Upload and ingest a document |
-| `GET /api/v1/documents/{id}/tree` | Document hierarchical structure |
-| `GET /api/v1/graph` | Knowledge graph visualization |
-| `PUT /api/v1/settings/key/{key}` | Update config at runtime |
+| `POST /api/v1/query` | Ask a question (streaming SSE or sync) — accepts `path_filter` + `overrides` for per-request tuning |
+| `POST /api/v1/documents/upload-and-ingest` | Upload into a folder (multipart; `folder_path` form field) |
+| `GET  /api/v1/documents?path_filter=…&recursive=…` | List docs under a folder |
+| `GET  /api/v1/documents/{id}/tree` | Document hierarchical structure |
+| `GET  /api/v1/graph` | Knowledge graph visualization |
+| `GET  /api/v1/settings` | Read-only snapshot of effective cfg (yaml is authoritative) |
 
 ## Documentation
 
@@ -199,6 +205,7 @@ Key endpoints:
 - **[API Reference](docs/api-reference.md)** — REST API endpoints, request/response formats, SSE streaming
 - **[Deployment Guide](docs/deployment.md)** — Docker deploy, production checklist, Nginx, Ollama
 - **[Development Guide](docs/development.md)** — Dev setup, testing, adding new backends
+- **[Auth & Sessions](docs/auth.md)** — Single-admin password + SK tokens, web management UI, CLI playbook
 
 ## Project Structure
 

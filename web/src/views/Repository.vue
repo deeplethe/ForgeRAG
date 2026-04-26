@@ -7,6 +7,22 @@ import Spinner from '@/components/Spinner.vue'
 import TreeNode from '@/components/TreeNode.vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 
+/**
+ * `inline=true` is the "embedded-in-Workspace" mode:
+ * - hides the left document list column
+ * - hides upload / drag-drop / status tabs (Workspace owns uploads now)
+ * - receives the focused doc via `initialDocId` prop
+ * - emits `close` when user clicks the back arrow
+ *
+ * `inline=false` keeps the original standalone Repository page layout for
+ * backwards compatibility with any direct /repository links.
+ */
+const props = defineProps({
+  inline: { type: Boolean, default: false },
+  initialDocId: { type: String, default: '' },
+})
+const emit = defineEmits(['close'])
+
 const router = useRouter()
 const route = useRoute()
 
@@ -772,13 +788,24 @@ let pollTimer = null
 function startPoll() {
   if (pollTimer) return
   pollTimer = setInterval(async () => {
-    await loadDocs({ silent: true })
-    loadCounts()
+    if (!props.inline) {
+      await loadDocs({ silent: true })
+      loadCounts()
+    }
     if (selDoc.value) await refreshDetail()
-    const hasActive = docs.value.some(d =>
-      d.status && !['ready', 'error'].includes(d.status)
-    )
-    if (!hasActive) { clearInterval(pollTimer); pollTimer = null }
+    // Terminate condition differs: inline only cares about the selected doc's
+    // status; standalone looks at the whole list.
+    if (props.inline) {
+      const st = selDoc.value?.status
+      if (!st || ['ready', 'error'].includes(st)) {
+        clearInterval(pollTimer); pollTimer = null
+      }
+    } else {
+      const hasActive = docs.value.some(d =>
+        d.status && !['ready', 'error'].includes(d.status)
+      )
+      if (!hasActive) { clearInterval(pollTimer); pollTimer = null }
+    }
   }, 3000)
 }
 
@@ -786,6 +813,12 @@ watch(docs, (list) => {
   const hasActive = list.some(d => d.status && !['ready', 'error'].includes(d.status))
   if (hasActive) startPoll()
 }, { immediate: true })
+
+// In inline mode, start polling when we pick a doc that isn't yet terminal.
+watch(() => selDoc.value?.status, (st) => {
+  if (!props.inline || !st) return
+  if (!['ready', 'error'].includes(st)) startPoll()
+})
 
 // Auto-switch from pipeline to chunks when processing completes
 watch(() => selDoc.value?.status, (st, prev) => {
@@ -805,9 +838,30 @@ onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null 
 onMounted(async () => {
   const q = route.query
   if (q.pdf === '0') showPdf.value = false
-  if (q.tab && STATUS_FILTERS[q.tab] !== undefined) activeTab.value = q.tab
   if (q.pipeline === '1') showPipeline.value = true
 
+  if (props.inline) {
+    // Embedded in Workspace: no doc-list, select by prop directly.
+    const docId = props.initialDocId || q.doc
+    if (docId) {
+      try {
+        const d = await getDocument(docId)
+        if (d) await selectDoc(d)
+        if (q.pipeline === '1') showPipeline.value = true
+        if (q.node && tree.value?.nodes?.[q.node]) onClickTreeNode(q.node)
+        if (q.chunk) {
+          const c = chunks.value.find(c => c.chunk_id === q.chunk)
+          if (c) onClickChunk(c)
+        }
+      } catch (e) {
+        error.value = e?.message || 'Failed to load document'
+      }
+    }
+    return
+  }
+
+  // Standalone mode — load full doc list + tabs
+  if (q.tab && STATUS_FILTERS[q.tab] !== undefined) activeTab.value = q.tab
   await loadDocs()
   loadCounts()
 
@@ -815,7 +869,6 @@ onMounted(async () => {
     const doc = docs.value.find(d => d.doc_id === q.doc)
     if (doc) {
       await selectDoc(doc)
-      // Override auto-pipeline decision if URL says otherwise
       if (q.pipeline === '1') showPipeline.value = true
       if (q.node && tree.value?.nodes?.[q.node]) onClickTreeNode(q.node)
       if (q.chunk) {
@@ -823,6 +876,19 @@ onMounted(async () => {
         if (c) onClickChunk(c)
       }
     }
+  }
+})
+
+// React to initialDocId changing while embedded (e.g., user clicks a
+// different doc in Workspace without navigating away).
+watch(() => props.initialDocId, async (docId) => {
+  if (!props.inline || !docId) return
+  if (selDoc.value?.doc_id === docId) return
+  try {
+    const d = await getDocument(docId)
+    if (d) await selectDoc(d)
+  } catch (e) {
+    error.value = e?.message || 'Failed to load document'
   }
 })
 
@@ -948,15 +1014,17 @@ const totalDuration = computed(() => {
 </script>
 
 <template>
-  <div class="h-full flex bg-bg relative"
-    @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
+  <div class="h-full flex bg-bg2 relative"
+    @dragover="inline ? null : onDragOver($event)"
+    @dragleave="inline ? null : onDragLeave($event)"
+    @drop="inline ? null : onDrop($event)">
 
-    <!-- Hidden file input -->
-    <input ref="fileInput" type="file" :accept="ACCEPT_STR" multiple class="hidden" @change="onFileSelected" />
+    <!-- Hidden file input (standalone-only) -->
+    <input v-if="!inline" ref="fileInput" type="file" :accept="ACCEPT_STR" multiple class="hidden" @change="onFileSelected" />
 
-    <!-- Drag overlay -->
+    <!-- Drag overlay (standalone-only; inline mode uses Workspace's upload) -->
     <Transition name="fade">
-      <div v-if="dragging" class="absolute inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm border-2 border-dashed border-brand rounded-lg pointer-events-none">
+      <div v-if="!inline && dragging" class="absolute inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm border-2 border-dashed border-brand rounded-lg pointer-events-none">
         <div class="flex flex-col items-center gap-2">
           <ArrowUpTrayIcon class="w-8 h-8 text-brand" />
           <span class="text-sm text-brand font-medium">Drop files to upload</span>
@@ -965,8 +1033,8 @@ const totalDuration = computed(() => {
       </div>
     </Transition>
 
-    <!-- Upload tasks toast -->
-    <div v-if="uploadTasks.length" class="absolute top-3 right-3 z-40 space-y-1.5">
+    <!-- Upload tasks toast (standalone-only; inline mode uses global upload panel) -->
+    <div v-if="!inline && uploadTasks.length" class="absolute top-3 right-3 z-40 space-y-1.5">
       <div v-for="t in uploadTasks" :key="t.id"
         class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[10px] shadow-sm border border-line bg-bg">
         <Spinner v-if="t.s === 'run'" size="xs" />
@@ -978,15 +1046,16 @@ const totalDuration = computed(() => {
     </div>
 
     <!-- Error banner -->
-    <div v-if="error" class="text-xs text-red-500 px-4 py-2 absolute top-0 left-0 right-0 z-30 bg-red-50 flex items-center justify-between">
+    <div v-if="error" class="text-xs px-4 py-2 absolute top-0 left-0 right-0 z-30 flex items-center justify-between"
+         style="color: var(--color-err-fg); background: var(--color-err-bg);">
       <span>{{ error }}</span>
-      <button @click="error = ''" class="text-red-400 hover:text-red-600 ml-2">&#x2715;</button>
+      <button @click="error = ''" class="ml-2 opacity-70 hover:opacity-100">&#x2715;</button>
     </div>
 
     <!-- ═══════════════════════════════════
-         COL 1: Document list
+         COL 1: Document list (hidden in inline mode — Workspace is the list)
          ═══════════════════════════════════ -->
-    <div class="shrink-0 flex flex-col border-r border-line transition-[width] duration-200"
+    <div v-if="!inline" class="shrink-0 flex flex-col border-r border-line transition-[width] duration-200"
          :class="selDoc && showPdf && isPdf ? 'w-48' : 'w-64'">
       <div class="px-3 pt-4 pb-2">
         <div class="flex items-center justify-between mb-2">
@@ -1051,9 +1120,12 @@ const totalDuration = computed(() => {
     </div>
 
     <!-- ═══════════════════════════════════
-         Empty state
+         Empty state (inline: small spinner only; standalone: upload prompt)
          ═══════════════════════════════════ -->
-    <div v-if="!selDoc" class="flex-1 flex items-center justify-center pl-12">
+    <div v-if="inline && !selDoc" class="flex-1 flex items-center justify-center">
+      <div class="text-[11px] text-t3 flex items-center gap-2"><Spinner size="md" /> Loading document…</div>
+    </div>
+    <div v-else-if="!selDoc" class="flex-1 flex items-center justify-center pl-12">
       <div class="flex flex-col items-center gap-3 text-center select-none">
         <button
           @click="openFilePicker"
@@ -1112,8 +1184,14 @@ const totalDuration = computed(() => {
       <!-- Header: breadcrumb + stats + toggles -->
       <div class="px-4 pt-3 pb-2 border-b border-line">
         <div class="flex items-center justify-between mb-1">
-          <!-- Breadcrumb -->
-          <div class="flex items-center gap-0.5 text-[10px] min-h-[18px] overflow-hidden flex-1 min-w-0">
+          <!-- Breadcrumb (with back arrow in inline mode) -->
+          <div class="flex items-center gap-1 text-[10px] min-h-[18px] overflow-hidden flex-1 min-w-0">
+            <button
+              v-if="inline"
+              @click="emit('close')"
+              class="shrink-0 text-t3 hover:text-t1 transition-colors text-[12px] leading-none mr-1"
+              title="Back to browser"
+            >←</button>
             <template v-for="(seg, i) in breadcrumb" :key="i">
               <span v-if="i > 0" class="text-t3 mx-0.5 shrink-0">/</span>
               <button
@@ -1226,7 +1304,7 @@ const totalDuration = computed(() => {
                            'bg-t1': step.status === 'done',
                            'bg-bg3': step.status === 'pending' || step.status === 'skipped',
                            'border-2 border-t2': step.status === 'running',
-                           'bg-red-500': step.status === 'error',
+                           'bg-[var(--color-err-fg)]': step.status === 'error',
                          }">
                       <CheckIcon v-if="step.status === 'done'" class="w-3 h-3 text-white" />
                       <Spinner v-else-if="step.status === 'running'" size="sm" />
@@ -1259,7 +1337,7 @@ const totalDuration = computed(() => {
                            'bg-t1': step.status === 'done',
                            'bg-bg3': step.status === 'pending' || step.status === 'skipped',
                            'border-2 border-t2': step.status === 'running',
-                           'bg-red-500': step.status === 'error',
+                           'bg-[var(--color-err-fg)]': step.status === 'error',
                          }">
                       <CheckIcon v-if="step.status === 'done'" class="w-3 h-3 text-white" />
                       <Spinner v-else-if="step.status === 'running'" size="sm" />
@@ -1281,7 +1359,7 @@ const totalDuration = computed(() => {
                                'bg-t1': child.status === 'done',
                                'bg-bg3': child.status === 'pending' || child.status === 'skipped',
                                'border-[1.5px] border-t2': child.status === 'running',
-                               'bg-red-500': child.status === 'error',
+                               'bg-[var(--color-err-fg)]': child.status === 'error',
                              }">
                           <CheckIcon v-if="child.status === 'done'" class="w-2 h-2 text-white" />
                           <Spinner v-else-if="child.status === 'running'" size="xs" />
