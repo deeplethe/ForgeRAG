@@ -503,38 +503,6 @@ class RetrievalPipeline:
                     if _qu_ok else "skipped (timeout), using original query"
                 ),
             )
-        elif eff_qu_on and self.cfg.query_expansion.enabled and precomputed_plan is None:
-            # Legacy fallback: old-style query expansion only
-            _pcb(phase="query_expansion", status="running")
-            with _tracer.start_as_current_span("forgerag.query_expansion") as span:
-                try:
-                    from .query_expansion import QueryExpander
-
-                    qe_cfg = self.cfg.query_expansion
-                    if self._expander is None:
-                        self._expander = QueryExpander(
-                            model=qe_cfg.model,
-                            api_key=qe_cfg.api_key,
-                            api_key_env=qe_cfg.api_key_env,
-                            api_base=qe_cfg.api_base,
-                            max_expansions=qe_cfg.max_expansions,
-                            timeout=qe_cfg.timeout,
-                        )
-                    t_qe = time.time()
-                    queries = self._expander.expand(query)
-                    qe_ms = int((time.time() - t_qe) * 1000)
-                    span.set_attributes({
-                        "forgerag.expanded_count": len(queries),
-                        "forgerag.llm.latency_ms": qe_ms,
-                        "gen_ai.request.model": qe_cfg.model,
-                    })
-                except Exception as e:
-                    span.set_attribute("forgerag.error", str(e))
-                    if not eff_allow_partial:
-                        raise RetrievalError("query_understanding", e) from e
-                    log.warning("query expansion failed (allow_partial_failure=True): %s", e)
-            _pcb(phase="query_expansion", status="done", detail=f"{len(queries)} queries")
-
         stats["expanded_queries"] = queries
 
         # ── Short-circuit: no retrieval needed ──

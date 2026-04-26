@@ -119,18 +119,6 @@ class CitationsConfig(BaseModel):
     open_url_template: str = "/viewer/{doc_id}?page={page_no}&hl={citation_id}"
 
 
-class QueryExpansionConfig(BaseModel):
-    """Legacy — kept for backward compat. Use QueryUnderstandingConfig."""
-
-    enabled: bool = False
-    model: str = "openai/gpt-4o-mini"
-    api_key: str | None = None
-    api_key_env: str | None = None
-    api_base: str | None = None
-    max_expansions: int = 3
-    timeout: float = 15.0
-
-
 class QueryUnderstandingConfig(BaseModel):
     """Unified query understanding: intent + routing + expansion."""
 
@@ -185,7 +173,6 @@ class KGPathConfig(BaseModel):
 
 
 class RetrievalSection(BaseModel):
-    query_expansion: QueryExpansionConfig = Field(default_factory=QueryExpansionConfig)
     query_understanding: QueryUnderstandingConfig = Field(default_factory=QueryUnderstandingConfig)
     bm25: BM25Config = Field(default_factory=BM25Config)
     vector: VectorSearchConfig = Field(default_factory=VectorSearchConfig)
