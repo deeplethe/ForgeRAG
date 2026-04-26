@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -508,6 +509,35 @@ def ask_int(question: str, default: int, *, min_: int = 1) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Input sanitisers
+# ---------------------------------------------------------------------------
+
+
+_TRAILING_PARENS_RE = re.compile(r"\s*\(.*\)\s*$")
+
+
+def _sanitize_model_name(s: str) -> str:
+    """Strip stuff users sometimes accidentally copy from the example
+    hints alongside the model id:
+
+      * "openai/bge-m3 (1024)"             → "openai/bge-m3"
+      * "openai/gpt-4o-mini # OpenAI"      → "openai/gpt-4o-mini"
+      * "openai/X  + api_base=https://..." → "openai/X"
+      * surrounding whitespace
+    """
+    s = s.strip()
+    # Comment after '#'
+    if "#" in s:
+        s = s.split("#", 1)[0].rstrip()
+    # "+ api_base=..." trailing annotation
+    if "+" in s:
+        s = s.split("+", 1)[0].rstrip()
+    # Trailing parenthetical e.g. "(1024-dim)"
+    s = _TRAILING_PARENS_RE.sub("", s).strip()
+    return s
+
+
+# ---------------------------------------------------------------------------
 # Profiles (preset defaults)
 # ---------------------------------------------------------------------------
 
@@ -919,26 +949,26 @@ def _step_embedder(answers: dict, defaults: dict) -> None:
             "  向量嵌入模型把文本转换为向量。常见模型：",
         ), "dim"))
         print(_c(_t(
-            "    OpenAI:      openai/text-embedding-3-small (1536)",
-            "    OpenAI:      openai/text-embedding-3-small (1536)",
+            "    openai/text-embedding-3-small        # OpenAI, 1536-dim",
+            "    openai/text-embedding-3-small        # OpenAI, 1536-dim",
         ), "dim"))
         print(_c(_t(
-            "                 openai/text-embedding-3-large (3072)",
-            "                 openai/text-embedding-3-large (3072)",
+            "    openai/text-embedding-3-large        # OpenAI, 3072-dim",
+            "    openai/text-embedding-3-large        # OpenAI, 3072-dim",
         ), "dim"))
         print(_c(_t(
-            "    SiliconFlow: openai/BAAI/bge-m3 (1024)  + api_base=https://api.siliconflow.cn/v1",
-            "    SiliconFlow: openai/BAAI/bge-m3 (1024)  + api_base=https://api.siliconflow.cn/v1",
+            "    openai/BAAI/bge-m3                   # SiliconFlow, 1024-dim  (set api_base below)",
+            "    openai/BAAI/bge-m3                   # SiliconFlow, 1024-dim （下一步设置 api_base）",
         ), "dim"))
         print(_c(_t(
-            "    Local:       ollama/bge-m3 (1024)        + api_base=http://localhost:11434",
-            "    本地 Ollama: ollama/bge-m3 (1024)        + api_base=http://localhost:11434",
+            "    ollama/bge-m3                        # local Ollama, 1024-dim  (set api_base below)",
+            "    ollama/bge-m3                        # 本地 Ollama, 1024-dim （下一步设置 api_base）",
         ), "dim"))
-        answers["embedder_model"] = ask(
+        answers["embedder_model"] = _sanitize_model_name(ask(
             _t("Embedding model (litellm format)", "嵌入模型 (litellm 格式)"),
             default=answers.get("embedder_model")
                 or defaults.get("embedder_model", "openai/text-embedding-3-small"),
-        )
+        ))
         api_key_env, api_key_plain, api_base = _ask_credentials(
             "Embedder", "嵌入模型", defaults, "embedder_api_key_env", ""
         )
@@ -989,26 +1019,26 @@ def _step_llm(answers: dict, defaults: dict) -> None:
             "  答案生成大模型负责输出最终的回答文本。常见模型：",
         ), "dim"))
         print(_c(_t(
-            "    OpenAI:      openai/gpt-4o-mini",
-            "    OpenAI:      openai/gpt-4o-mini",
+            "    openai/gpt-4o-mini                       # OpenAI",
+            "    openai/gpt-4o-mini                       # OpenAI",
         ), "dim"))
         print(_c(_t(
-            "    Anthropic:   anthropic/claude-3-5-sonnet-latest",
-            "    Anthropic:   anthropic/claude-3-5-sonnet-latest",
+            "    anthropic/claude-3-5-sonnet-latest       # Anthropic",
+            "    anthropic/claude-3-5-sonnet-latest       # Anthropic",
         ), "dim"))
         print(_c(_t(
-            "    SiliconFlow: openai/deepseek-ai/DeepSeek-V3  + api_base=https://api.siliconflow.cn/v1",
-            "    SiliconFlow: openai/deepseek-ai/DeepSeek-V3  + api_base=https://api.siliconflow.cn/v1",
+            "    openai/deepseek-ai/DeepSeek-V3           # SiliconFlow  (set api_base below)",
+            "    openai/deepseek-ai/DeepSeek-V3           # SiliconFlow （下一步设置 api_base）",
         ), "dim"))
         print(_c(_t(
-            "    Local:       ollama/qwen2.5                  + api_base=http://localhost:11434",
-            "    本地 Ollama: ollama/qwen2.5                  + api_base=http://localhost:11434",
+            "    ollama/qwen2.5                           # local Ollama  (set api_base below)",
+            "    ollama/qwen2.5                           # 本地 Ollama （下一步设置 api_base）",
         ), "dim"))
-        answers["llm_model"] = ask(
+        answers["llm_model"] = _sanitize_model_name(ask(
             _t("Generator model (litellm format)", "生成模型 (litellm 格式)"),
             default=answers.get("llm_model")
                 or defaults.get("llm_model", "openai/gpt-4o-mini"),
-        )
+        ))
         api_key_env, api_key_plain, api_base = _ask_credentials(
             "LLM", "大模型", defaults, "llm_api_key_env", ""
         )
@@ -1116,18 +1146,18 @@ def _step_image_enrichment(answers: dict, defaults: dict) -> None:
         "  视觉大模型常见示例：",
     ), "dim"))
     print(_c(_t(
-        "    OpenAI:      openai/gpt-4o-mini",
-        "    OpenAI:      openai/gpt-4o-mini",
+        "    openai/gpt-4o-mini                          # OpenAI",
+        "    openai/gpt-4o-mini                          # OpenAI",
     ), "dim"))
     print(_c(_t(
-        "    SiliconFlow: openai/Qwen/Qwen2-VL-72B-Instruct  + api_base=https://api.siliconflow.cn/v1",
-        "    SiliconFlow: openai/Qwen/Qwen2-VL-72B-Instruct  + api_base=https://api.siliconflow.cn/v1",
+        "    openai/Qwen/Qwen2-VL-72B-Instruct           # SiliconFlow  (set api_base below)",
+        "    openai/Qwen/Qwen2-VL-72B-Instruct           # SiliconFlow （下一步设置 api_base）",
     ), "dim"))
-    answers["image_enrichment_model"] = ask(
+    answers["image_enrichment_model"] = _sanitize_model_name(ask(
         _t("Vision LLM model (must be vision-capable)",
            "视觉大模型 (需要支持视觉输入)"),
         default=answers.get("llm_model") or "openai/gpt-4o-mini",
-    )
+    ))
 
 
 # ---------------------------------------------------------------------------
