@@ -801,26 +801,45 @@ def _step_blob(answers: dict, defaults: dict) -> None:
 def _ask_credentials(
     prefix_en: str, prefix_zh: str, defaults: dict, key_env: str, base_default: str
 ) -> tuple[str, str, str]:
-    """Common credential subform for embedder + LLM steps."""
+    """Common credential subform for embedder + LLM steps.
+
+    Default flow optimised for the most common case (user has a key,
+    wants to paste it):
+
+      1. "API key" — paste it; saved plaintext into yaml. Done.
+      2. If left blank, fall through to "Env var name" — useful when
+         the operator already exported a key into the shell or wants
+         to keep the secret out of the yaml file.
+    """
     print(_c(_t(f"  {prefix_en} authentication", f"  {prefix_zh} 认证"), "dim"))
-    api_key_env = ask(
-        _t("Env var containing the API key", "存放 API key 的环境变量名"),
-        default=defaults.get(key_env, "OPENAI_API_KEY"),
-        allow_empty=True,
-    )
-    api_key_plain = ""
-    if api_key_env and not os.environ.get(api_key_env):
-        print(_c(_t(
-            f"  ! env var {api_key_env!r} is currently unset.",
-            f"  ! 环境变量 {api_key_env!r} 当前未设置。",
-        ), "yellow"))
-        if ask_bool(
-            _t("Paste the key now (saved as plaintext in yaml)?",
-               "现在直接粘贴 key？(将以明文写入 yaml)"),
-            default=False,
-        ):
-            api_key_plain = ask(_t("API key", "API key"), allow_empty=False)
-            api_key_env = ""
+
+    default_env = defaults.get(key_env, "OPENAI_API_KEY")
+    env_already_set = bool(os.environ.get(default_env)) if default_env else False
+    if env_already_set:
+        key_prompt = _t(
+            f"API key (paste it, or leave blank to use {default_env} env var — currently set)",
+            f"API key (直接粘贴；留空则使用环境变量 {default_env} — 当前已设置)",
+        )
+    else:
+        key_prompt = _t(
+            "API key (paste it, or leave blank to use an env var instead)",
+            "API key (直接粘贴；留空则改用环境变量)",
+        )
+
+    api_key_plain = ask(key_prompt, allow_empty=True)
+    api_key_env = ""
+    if not api_key_plain:
+        api_key_env = ask(
+            _t("Env var name holding the API key", "存放 API key 的环境变量名"),
+            default=default_env,
+            allow_empty=True,
+        )
+        if api_key_env and not os.environ.get(api_key_env):
+            print(_c(_t(
+                f"  ! env var {api_key_env!r} is currently unset — set it before running the server.",
+                f"  ! 环境变量 {api_key_env!r} 当前未设置 — 启动服务前需要设置。",
+            ), "yellow"))
+
     api_base = ask(
         _t(
             "Custom api_base (e.g. https://api.siliconflow.cn/v1 — leave blank for OpenAI)",
