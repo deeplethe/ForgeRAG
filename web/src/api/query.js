@@ -46,8 +46,10 @@ export const askQuery = ({ query, filter, conversationId }) =>
 /**
  * 流式查询 (SSE)
  *
- * 返回一个 async generator,yield 三种事件:
+ * 返回一个 async generator,yield 多种事件:
+ *   { event: 'progress',  data: { phase, status } }         // 阶段切换
  *   { event: 'retrieval', data: { vector_hits, bm25_hits, tree_hits, context_chunks, citations_all } }
+ *   { event: 'thinking',  data: { text: '...' } }           // 推理模型 (V4-Pro / o1) 的内部思考
  *   { event: 'delta',     data: { text: '...' } }          // 逐 token 追加
  *   { event: 'done',      data: { text, citations_used, stats, finish_reason } }
  *

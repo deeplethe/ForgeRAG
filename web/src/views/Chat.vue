@@ -10,6 +10,9 @@ export default { name: 'ChatView' }
 const _msgs = ref([])
 const _streaming = ref(false)
 const _streamText = ref('')
+const _streamThinking = ref('')   // reasoning content from V4-Pro / o1 / deepseek-reasoner
+const _streamThinkingCollapsed = ref(false)   // default expanded
+const _thinkingCollapsed = ref({})   // {msgIndex: boolean} — default expanded for all
 const _retInfo = ref(null)
 const _livePhases = ref({})
 const _liveElapsed = ref({})
@@ -62,6 +65,9 @@ function clearPathFilter() {
 const msgs = _msgs
 const streaming = _streaming
 const streamText = _streamText
+const streamThinking = _streamThinking
+const streamThinkingCollapsed = _streamThinkingCollapsed
+const thinkingCollapsed = _thinkingCollapsed
 const retInfo = _retInfo
 const livePhases = _livePhases
 const liveElapsed = _liveElapsed
@@ -352,7 +358,7 @@ async function send(text) {
     return
   }
 
-  streaming.value = true; streamText.value = ''; retInfo.value = null
+  streaming.value = true; streamText.value = ''; streamThinking.value = ''; retInfo.value = null
   livePhases.value = {}; liveElapsed.value = {}; progressExpanded.value = false
   startTimer(); scroll()
 
@@ -375,6 +381,7 @@ async function send(text) {
         }
         scroll()
       } else if (event === 'retrieval') { retInfo.value = data }
+      else if (event === 'thinking') { streamThinking.value += data.text; scroll() }
       else if (event === 'delta') { streamText.value += data.text; scroll() }
       else if (event === 'trace') { traceSpans = data }   // OTel {spans: [...]}
       else if (event === 'error') {
@@ -391,12 +398,14 @@ async function send(text) {
       msgs.value.push({
         role: 'assistant',
         content: fin.text,
+        thinking: streamThinking.value || (fin.stats?.reasoning_text || ''),
         citations: fin.citations_used,
         stats: fin.stats,
         trace: traceSpans,
         traceId: fin.trace_id || null,
       })
       streamText.value = ''
+      streamThinking.value = ''
     }
   } catch (e) {
     // AbortError from user clicking stop — not an error
@@ -653,6 +662,18 @@ function onTraceClick(m) {
               </div>
               <!-- Assistant -->
               <div v-else class="group mb-2">
+                <!-- Thinking pane (reasoning models like V4-Pro / o1) — default expanded -->
+                <div v-if="m.thinking" class="mb-3 border-l-2 border-line pl-3 max-w-[90%]">
+                  <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
+                    @click="thinkingCollapsed[i] = !thinkingCollapsed[i]">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                      class="transition-transform" :class="thinkingCollapsed[i] ? '-rotate-90' : ''">
+                      <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                    Thinking
+                  </button>
+                  <div v-if="!thinkingCollapsed[i]" class="text-[12px] text-t3 leading-6 whitespace-pre-wrap">{{ m.thinking }}</div>
+                </div>
                 <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
                   v-html="renderMsg(m.content, m.citations)"
                   @click="onMsgClick($event, m.citations)">
@@ -727,6 +748,20 @@ function onTraceClick(m) {
                     </div>
                   </div>
                 </template>
+              </div>
+
+              <!-- Live thinking pane (reasoning models stream this before content) -->
+              <div v-if="streamThinking" class="mb-3 border-l-2 border-line pl-3">
+                <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
+                  @click="streamThinkingCollapsed = !streamThinkingCollapsed">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                    class="transition-transform" :class="streamThinkingCollapsed ? '-rotate-90' : ''">
+                    <path d="M6 9l6 6 6-6"/>
+                  </svg>
+                  Thinking
+                  <span v-if="!streamText" class="text-t3/50 ml-1 inline-flex items-center gap-1"><Spinner size="xs" /></span>
+                </button>
+                <div v-if="!streamThinkingCollapsed" class="text-[12px] text-t3 leading-6 whitespace-pre-wrap">{{ streamThinking }}</div>
               </div>
 
               <!-- Streaming text -->

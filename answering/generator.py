@@ -168,13 +168,22 @@ class LiteLLMGenerator:
             kwargs["api_base"] = self.cfg.api_base
 
         full_text = ""
+        full_thinking = ""
         try:
             resp = litellm.completion(**kwargs)
             finish_reason = "stop"
             for chunk in resp:
                 delta = ""
+                # Reasoning models (DeepSeek V4-Pro thinking mode,
+                # deepseek-reasoner, OpenAI o1, etc.) stream the model's
+                # internal reasoning under ``delta.reasoning_content``
+                # alongside the user-visible ``delta.content``. We
+                # forward both so the UI can show "Thinking… ▾" panes.
+                thinking = ""
                 with contextlib.suppress(AttributeError, IndexError):
                     delta = chunk.choices[0].delta.content or ""
+                with contextlib.suppress(AttributeError, IndexError):
+                    thinking = chunk.choices[0].delta.reasoning_content or ""
                 fr = (
                     getattr(chunk.choices[0], "finish_reason", None)
                     if getattr(chunk, "choices", None) and len(chunk.choices) > 0
@@ -182,6 +191,13 @@ class LiteLLMGenerator:
                 )
                 if fr:
                     finish_reason = fr
+                if thinking:
+                    full_thinking += thinking
+                    yield {
+                        "type": "thinking",
+                        "delta": thinking,
+                        "model": self.cfg.model,
+                    }
                 if delta:
                     full_text += delta
                     yield {
@@ -194,6 +210,7 @@ class LiteLLMGenerator:
             yield {
                 "type": "done",
                 "text": full_text,
+                "thinking": full_thinking,
                 "finish_reason": finish_reason,
                 "usage": None,
                 "model": self.cfg.model,

@@ -625,18 +625,31 @@ class AnsweringPipeline:
         _finish_reason = "incomplete"
         _cited_ids: set = set()
 
+        full_thinking = ""
         try:
             for chunk in self.generator.generate_stream(messages):
                 if chunk["type"] == "delta":
                     full_text += chunk["delta"]
                     yield {"event": "delta", "data": {"text": chunk["delta"]}}
+                elif chunk["type"] == "thinking":
+                    # Reasoning content (V4-Pro thinking mode etc.). Stream
+                    # to the UI so the user sees what the model is
+                    # considering during long generation.
+                    full_thinking += chunk["delta"]
+                    yield {"event": "thinking", "data": {"text": chunk["delta"]}}
                 elif chunk["type"] == "done":
                     full_text = chunk.get("text", full_text)
+                    full_thinking = chunk.get("thinking", full_thinking)
                     _cited_ids = set(chunk.get("cited_ids") or [])
                     _gen_model = chunk.get("model", _gen_model)
                     _finish_reason = chunk.get("finish_reason", "stop")
                     citations_used = [c for c in used_in_prompt if c.citation_id in _cited_ids]
                     stats["generate_ms"] = int((time.time() - t0) * 1000)
+                    if full_thinking:
+                        # Land the model's reasoning text in the trace so
+                        # it's available for the trace viewer / debug
+                        # endpoints alongside the final answer.
+                        stats["reasoning_text"] = full_thinking
 
                     # Persist
                     answer = Answer(
