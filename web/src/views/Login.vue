@@ -1,6 +1,9 @@
 <template>
   <div class="flex items-center justify-center min-h-screen bg-bg2">
-    <form @submit.prevent="onSubmit" class="w-80 p-6 rounded-lg border border-line bg-bg shadow-sm">
+    <!-- Hide the form while we probe ``/auth/me`` to decide whether
+         auth is actually required; otherwise the form flashes for a
+         tick before the redirect when auth is disabled. -->
+    <form v-if="!probing" @submit.prevent="onSubmit" class="w-80 p-6 rounded-lg border border-line bg-bg shadow-sm">
       <div class="flex justify-center mb-6">
         <span class="wordmark text-[20px]">ForgeRAG</span>
       </div>
@@ -31,7 +34,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { login as apiLogin } from '@/api/auth'
+import { login as apiLogin, getMe } from '@/api/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -41,8 +44,24 @@ const password = ref('')
 const loading = ref(false)
 const error = ref('')
 const userInput = ref(null)
+const probing = ref(true)        // true until we know whether to show the form
 
-onMounted(() => {
+onMounted(async () => {
+  // If auth is disabled on the server (or the user is already logged in),
+  // ``/auth/me`` succeeds — in that case skip the login form entirely
+  // and forward the user to the destination. Only show the form when
+  // we know auth is actually required.
+  try {
+    const me = await getMe()
+    if (me) {
+      const dest = route.query.redirect || '/chat'
+      window.location.href = dest
+      return
+    }
+  } catch {
+    // 401 → user is genuinely logged out, fall through to show form.
+  }
+  probing.value = false
   // Focus password if username is prefilled (common single-user case),
   // else focus username.
   if (username.value) {
