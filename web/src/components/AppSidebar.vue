@@ -137,7 +137,7 @@ function isTabActive(t) {
 
     <!-- Footer -->
     <div class="px-4 py-3 flex items-center justify-between gap-1">
-      <div class="text-[11px] text-t3">v0.1.0</div>
+      <div class="text-[11px] text-t3">v0.2.1</div>
       <div class="flex items-center gap-0.5">
         <button
           @click="toggleTheme"

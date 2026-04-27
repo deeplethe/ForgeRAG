@@ -141,6 +141,13 @@ async function renderPage(pageNum) {
   const textLayerDiv = document.createElement('div')
   textLayerDiv.className = 'pdf-text-layer'
   textLayerDiv.style.cssText = `position:absolute;inset:0;overflow:hidden;line-height:1;`
+  // pdfjs-dist 4.x+ ``TextLayer`` positions every text span via the
+  // ``--scale-factor`` CSS variable on the container. Without it, text
+  // is laid out at the default scale 1.0 and drifts away from the
+  // canvas as soon as the viewport scale isn't 1 (which it never is
+  // — we always fit-to-width). Set it to the current viewport scale
+  // before rendering so the text layer tracks the canvas exactly.
+  textLayerDiv.style.setProperty('--scale-factor', String(viewport.scale))
   wrapper.insertBefore(textLayerDiv, overlay)
 
   const ctx = canvas.getContext('2d')
