@@ -345,14 +345,31 @@ defineExpose({ scrollToPage: (p) => { applyHighlightsAndScroll() } })
 </template>
 
 <style>
+/* Mirrors the rules from pdfjs-dist's official ``pdf_viewer.css``
+   (.textLayer + .textLayer :is(span,br)) — pdfjs's TextLayer applies
+   ``transform: scaleX(...) scale(...) rotate(...)`` per span based on
+   canvas-measured text width; without ``transform-origin: 0% 0%`` the
+   transform pivots around the span centre and the text drifts away
+   from the canvas glyph it's meant to overlay. */
 .pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
   opacity: 0.25;
   line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
 }
-.pdf-text-layer span {
+.pdf-text-layer :is(span, br) {
+  color: transparent;
   position: absolute;
   white-space: pre;
-  color: transparent;
+  cursor: text;
+  transform-origin: 0% 0%;
 }
 .pdf-text-layer span::selection {
   background: rgba(120, 120, 120, 0.35);
