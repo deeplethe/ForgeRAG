@@ -77,6 +77,15 @@ const progressExpanded = _progressExpanded
 // Per-instance state (OK to reset on remount)
 const input = ref('')
 const chatEl = ref(null)
+const thinkingStreamEl = ref(null)   // live thinking pane element — auto-scrolls to bottom
+
+// Keep the live thinking pane scrolled to its latest content while
+// reasoning streams in. ``flush: 'post'`` runs after Vue has applied
+// the new ``streamThinking`` text to the DOM.
+watch(_streamThinking, () => {
+  if (!thinkingStreamEl.value) return
+  thinkingStreamEl.value.scrollTop = thinkingStreamEl.value.scrollHeight
+}, { flush: 'post' })
 const pdf = reactive({ show: false, url: '', page: 1, highlights: [], cite: null, downloadUrl: '', sourceDownloadUrl: '', sourceLabel: '' })
 const trace = reactive({ show: false, data: null })
 const empty = computed(() => !msgs.value.length && !streaming.value)
@@ -662,7 +671,10 @@ function onTraceClick(m) {
               </div>
               <!-- Assistant -->
               <div v-else class="group mb-2">
-                <!-- Thinking pane (reasoning models like V4-Pro / o1) — default expanded -->
+                <!-- Thinking pane (reasoning models like V4-Pro / o1).
+                     Half-expanded by default: capped at ~140px, scrolls
+                     internally; the LLM's reasoning text can run thousands
+                     of chunks long — fully inlining drowns the answer. -->
                 <div v-if="m.thinking" class="mb-3 border-l-2 border-line pl-3 max-w-[90%]">
                   <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
                     @click="thinkingCollapsed[i] = !thinkingCollapsed[i]">
@@ -672,7 +684,8 @@ function onTraceClick(m) {
                     </svg>
                     Thinking
                   </button>
-                  <div v-if="!thinkingCollapsed[i]" class="text-[12px] text-t3 leading-6 whitespace-pre-wrap">{{ m.thinking }}</div>
+                  <div v-if="!thinkingCollapsed[i]"
+                    class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ m.thinking }}</div>
                 </div>
                 <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
                   v-html="renderMsg(m.content, m.citations)"
@@ -750,7 +763,9 @@ function onTraceClick(m) {
                 </template>
               </div>
 
-              <!-- Live thinking pane (reasoning models stream this before content) -->
+              <!-- Live thinking pane (reasoning models stream this before content).
+                   Capped at ~140px with internal auto-scroll so the user sees the
+                   model's latest reasoning without the pane drowning the page. -->
               <div v-if="streamThinking" class="mb-3 border-l-2 border-line pl-3">
                 <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
                   @click="streamThinkingCollapsed = !streamThinkingCollapsed">
@@ -761,7 +776,9 @@ function onTraceClick(m) {
                   Thinking
                   <span v-if="!streamText" class="text-t3/50 ml-1 inline-flex items-center gap-1"><Spinner size="xs" /></span>
                 </button>
-                <div v-if="!streamThinkingCollapsed" class="text-[12px] text-t3 leading-6 whitespace-pre-wrap">{{ streamThinking }}</div>
+                <div v-if="!streamThinkingCollapsed"
+                  ref="thinkingStreamEl"
+                  class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ streamThinking }}</div>
               </div>
 
               <!-- Streaming text -->
