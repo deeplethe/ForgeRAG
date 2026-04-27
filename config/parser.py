@@ -159,10 +159,11 @@ class ParserSection(BaseModel):
         ),
     )
     kg_max_workers: int = Field(
-        default=3,
+        default=10,
         description=(
             "Max concurrent KG extraction workers. Long-running jobs (minutes "
-            "per doc) — kept small so they don't starve the parse pool when "
-            "many docs ingest concurrently."
+            "per doc), runs on its own thread pool so it can't starve the "
+            "parse/embed pool. Default 10 matches ``ingest_max_workers``; "
+            "lower if your LLM provider rate-limits below this concurrency."
         ),
     )
