@@ -329,6 +329,7 @@ class MessageOut(BaseModel):
     content: str
     trace_id: str | None = None
     citations_json: list | None = None
+    thinking: str | None = None
     created_at: Any = None
 
 

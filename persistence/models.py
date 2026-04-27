@@ -262,6 +262,11 @@ class Message(Base):
     # For assistant messages: link back to the trace + citations
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Reasoning content from thinking-mode LLMs (DeepSeek V4-Pro / o1 /
+    # deepseek-reasoner). Persisted on the message row so the Thinking
+    # pane survives conversation switches; without this the reasoning
+    # text only lives on the in-flight stream and is lost on reload.
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

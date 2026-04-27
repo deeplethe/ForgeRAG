@@ -170,6 +170,7 @@ async function _loadAndPoll(id) {
       role: m.role,
       content: m.content,
       citations: normalizeCitations(m.citations_json),
+      thinking: m.thinking || null,
       traceId: m.trace_id || null,
     }))
   }

@@ -230,7 +230,7 @@ class AnsweringPipeline:
                 finish_reason="no_context",
                 stats=stats,
             )
-            tid = self._persist_trace(answer, retrieval_result)
+            tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
             if conversation_id:
                 self._save_turn(conversation_id, query, answer, trace_id=tid)
             return answer
@@ -288,7 +288,7 @@ class AnsweringPipeline:
         )
 
         # Persist trace + conversation turn
-        tid = self._persist_trace(answer, retrieval_result)
+        tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
         if conversation_id:
             self._save_turn(conversation_id, query, answer, trace_id=tid)
 
@@ -324,6 +324,7 @@ class AnsweringPipeline:
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
+                _trace_id=_trace_id,
             )
             # Close the root span BEFORE emitting the trace event so that
             # the span itself is in the collector when we take() below.
@@ -345,6 +346,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        _trace_id: int | None = None,
     ):
         """
         Yield SSE-friendly dicts. Emits progress during retrieval,
@@ -602,7 +604,7 @@ class AnsweringPipeline:
                 finish_reason="no_context",
                 stats=stats,
             )
-            tid = self._persist_trace(answer, retrieval_result)
+            tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
             if conversation_id:
                 self._save_turn(conversation_id, query, answer, trace_id=tid)
             yield {
@@ -661,7 +663,7 @@ class AnsweringPipeline:
                         finish_reason=_finish_reason,
                         stats=stats,
                     )
-                    tid = self._persist_trace(answer, retrieval_result)
+                    tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
                     if conversation_id:
                         self._save_turn(conversation_id, query, answer, trace_id=tid)
                     _persisted = True
@@ -718,7 +720,7 @@ class AnsweringPipeline:
                         finish_reason=_finish_reason,
                         stats=stats,
                     )
-                    tid = self._persist_trace(answer, retrieval_result)
+                    tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
                     if conversation_id:
                         self._save_turn(
                             conversation_id,
@@ -910,6 +912,9 @@ class AnsweringPipeline:
                     "content": answer.text,
                     "trace_id": trace_id,
                     "citations_json": cites_full,
+                    # Persist the model's reasoning text so the Thinking
+                    # pane survives conversation switches.
+                    "thinking": answer.stats.get("reasoning_text") or None,
                 }
             )
 
@@ -927,6 +932,8 @@ class AnsweringPipeline:
         self,
         answer: Answer,
         retrieval_result: RetrievalResult,
+        *,
+        trace_id: int | None = None,
     ) -> str | None:
         """
         Persist trace and return trace_id (or None on failure).
@@ -935,15 +942,24 @@ class AnsweringPipeline:
         ``forgerag.answer`` root span, taken from the in-memory collector.
         We peek-by-copy so the route layer can claim the same spans for
         the live /query response payload.
+
+        ``trace_id`` may be passed explicitly by callers running inside a
+        sync generator (the streaming path), where ``yield`` causes
+        StreamingResponse to resume on a worker thread that has lost the
+        OTel context — ``get_current_span`` then returns NoOp and we'd
+        ``take(0)`` an empty buffer. Non-streaming callers can rely on
+        the ambient context.
         """
         if self.store is None:
             return None
         try:
             from opentelemetry import trace as _otel_trace
 
-            cur = _otel_trace.get_current_span()
-            ctx = cur.get_span_context() if cur else None
-            otel_tid = ctx.trace_id if (ctx and ctx.is_valid) else None
+            otel_tid = trace_id
+            if otel_tid is None:
+                cur = _otel_trace.get_current_span()
+                ctx = cur.get_span_context() if cur else None
+                otel_tid = ctx.trace_id if (ctx and ctx.is_valid) else None
 
             trace_data: dict = {}
             if otel_tid is not None:
