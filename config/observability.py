@@ -27,19 +27,22 @@ log = logging.getLogger(__name__)
 class ObservabilityConfig(BaseModel):
     enabled: bool = True
     service_name: str = "forgerag"
-    exporter: Literal["stdout", "stdout_json", "otlp", "none"] = Field(
-        "stdout",
+    exporter: Literal["stdout_compact", "stdout", "otlp", "none"] = Field(
+        "stdout_compact",
         description=(
-            "Where to send finished spans. ``stdout`` (default) prints one "
-            "compact line per span (``[12ms] GET /api/v1/folders OK``); "
-            "noisy framework spans (httpcore TCP/TLS handshakes, individual "
-            "SQL prepare/cursor steps) are filtered out. ``stdout_json`` "
-            "prints every span as full JSON — useful only for piping to a "
-            "JSON parser. ``otlp`` sends via OTLP/HTTP to ``otlp_endpoint`` "
-            "(point at Langfuse / Jaeger / Phoenix / etc.) for real "
-            "observability dashboards. ``none`` disables external export "
-            "entirely; the per-request collector still feeds the frontend "
-            "trace viewer either way."
+            "Where to send finished spans. ``stdout_compact`` (default) "
+            "prints one filtered, condensed line per span "
+            "(``[12ms] GET /api/v1/folders OK``); framework noise "
+            "(httpcore TCP/TLS handshakes, sub-ms SQL internals) is "
+            "dropped. ``stdout`` is the OpenTelemetry standard "
+            "ConsoleSpanExporter — full multi-line JSON dump per span "
+            "(very verbose; useful for piping to a JSON parser or "
+            "deep-debugging a single trace). ``otlp`` sends via "
+            "OTLP/HTTP to ``otlp_endpoint`` (Langfuse / Jaeger / "
+            "Phoenix / etc.) for real observability dashboards. "
+            "``none`` disables external export entirely; the per-"
+            "request collector still feeds the frontend trace viewer "
+            "either way."
         ),
     )
     otlp_endpoint: str | None = Field(
@@ -194,12 +197,12 @@ def bootstrap(cfg: ObservabilityConfig) -> None:
     )
 
     # ── External exporter ──
-    if cfg.exporter == "stdout":
+    if cfg.exporter == "stdout_compact":
         provider.add_span_processor(BatchSpanProcessor(_CompactSpanExporter()))
-        log.info("observability: stdout exporter active (compact mode)")
-    elif cfg.exporter == "stdout_json":
+        log.info("observability: stdout_compact exporter active")
+    elif cfg.exporter == "stdout":
         provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-        log.info("observability: stdout exporter active (JSON mode)")
+        log.info("observability: stdout exporter active (full JSON)")
     elif cfg.exporter == "otlp":
         if not cfg.otlp_endpoint:
             raise ValueError("observability.exporter=otlp requires otlp_endpoint")
