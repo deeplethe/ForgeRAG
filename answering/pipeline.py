@@ -15,6 +15,7 @@ Statistics from both retrieval and generation are merged into
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
 import time
 from uuid import uuid4
@@ -111,8 +112,6 @@ class AnsweringPipeline:
         # Persist user message immediately so it's never lost
         if conversation_id and self.store:
             try:
-                from uuid import uuid4
-
                 conv = self.store.get_conversation(conversation_id)
                 if not conv:
                     self.store.create_conversation(
@@ -317,19 +316,76 @@ class AnsweringPipeline:
         if conversation_id:
             _root_span.set_attribute("forgerag.conversation_id", conversation_id)
         _trace_id = _root_span.get_span_context().trace_id
+
+        # Snapshot the OTel context with the root span attached, so we can
+        # re-attach it on every generator resume. ``StreamingResponse``
+        # iterates sync generators on a thread pool — each ``next()`` may
+        # land on a different worker thread whose ``contextvars`` is empty,
+        # so without an explicit re-attach the LLM / retrieval / SQL spans
+        # produced between yields end up parented to nothing (each gets a
+        # fresh trace_id) and ``collector.take(_trace_id)`` returns nothing.
+        from opentelemetry.context import attach, detach, get_current
+        _parent_ctx = get_current()
+
         _root_closed = False
+        # Filled by ``_ask_stream_impl`` when its done handler fires;
+        # the actual persist happens *after* we close the root span so
+        # the persisted trace_json captures the root + every nested
+        # span (LiteLLM completion, retrieval phases, etc.) instead of
+        # only the SQL writes ``_persist_trace`` itself produces.
+        pending_persist: dict = {}
+
+        def _reattach_each_resume(inner_gen):
+            """Re-attach ``_parent_ctx`` on every ``next()`` call into the
+            inner generator so the OTel context survives the thread hops
+            ``StreamingResponse`` does between yields."""
+            while True:
+                token = attach(_parent_ctx)
+                try:
+                    try:
+                        value = next(inner_gen)
+                    except StopIteration:
+                        return
+                finally:
+                    # ``detach`` raises ValueError if a yield in the
+                    # generator caused this token to land in a different
+                    # context. Either way the contextvar gets re-attached
+                    # on the next iteration, so the failure is benign.
+                    with contextlib.suppress(Exception):
+                        detach(token)
+                yield value
+
         try:
-            yield from self._ask_stream_impl(
+            inner = self._ask_stream_impl(
                 query,
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
                 _trace_id=_trace_id,
+                _pending_persist=pending_persist,
             )
-            # Close the root span BEFORE emitting the trace event so that
-            # the span itself is in the collector when we take() below.
+            yield from _reattach_each_resume(inner)
+            # Close the root span BEFORE persist + emit so the root + every
+            # in-flight LiteLLM/HTTPX/SQLAlchemy span is committed to the
+            # collector and we can claim them.
             _root_cm.__exit__(None, None, None)
             _root_closed = True
+            if pending_persist:
+                with contextlib.suppress(Exception):
+                    self._persist_trace(
+                        pending_persist["answer"],
+                        pending_persist["retrieval"],
+                        trace_id=_trace_id,
+                        record_id=pending_persist["tid"],
+                    )
+                if pending_persist.get("conversation_id"):
+                    with contextlib.suppress(Exception):
+                        self._save_turn(
+                            pending_persist["conversation_id"],
+                            pending_persist["query"],
+                            pending_persist["answer"],
+                            trace_id=pending_persist["tid"],
+                        )
             try:
                 spans = RequestSpanCollector.singleton().take(_trace_id)
                 yield {"event": "trace", "data": spans_to_payload(spans)}
@@ -347,6 +403,7 @@ class AnsweringPipeline:
         conversation_id: str | None = None,
         overrides=None,
         _trace_id: int | None = None,
+        _pending_persist: dict | None = None,
     ):
         """
         Yield SSE-friendly dicts. Emits progress during retrieval,
@@ -369,8 +426,6 @@ class AnsweringPipeline:
         _user_msg_id = None
         if conversation_id and self.store:
             try:
-                from uuid import uuid4
-
                 conv = self.store.get_conversation(conversation_id)
                 if not conv:
                     self.store.create_conversation(
@@ -653,7 +708,11 @@ class AnsweringPipeline:
                         # endpoints alongside the final answer.
                         stats["reasoning_text"] = full_thinking
 
-                    # Persist
+                    # Pre-allocate the trace UUID so it can flow into the
+                    # done event the client sees, but defer the actual
+                    # ``_persist_trace`` + ``_save_turn`` writes to ``ask_stream``
+                    # — done after the root span closes, so the persisted
+                    # trace_json captures every nested span.
                     answer = Answer(
                         query=query,
                         text=full_text,
@@ -663,9 +722,15 @@ class AnsweringPipeline:
                         finish_reason=_finish_reason,
                         stats=stats,
                     )
-                    tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
-                    if conversation_id:
-                        self._save_turn(conversation_id, query, answer, trace_id=tid)
+                    tid = uuid4().hex
+                    if _pending_persist is not None:
+                        _pending_persist.update({
+                            "tid": tid,
+                            "answer": answer,
+                            "retrieval": retrieval_result,
+                            "conversation_id": conversation_id,
+                            "query": query,
+                        })
                     _persisted = True
 
                     yield {
@@ -875,8 +940,6 @@ class AnsweringPipeline:
         if not self.store:
             return
         try:
-            from uuid import uuid4
-
             # Ensure conversation exists (for sync `ask()` path)
             conv = self.store.get_conversation(conversation_id)
             if not conv:
@@ -934,6 +997,7 @@ class AnsweringPipeline:
         retrieval_result: RetrievalResult,
         *,
         trace_id: int | None = None,
+        record_id: str | None = None,
     ) -> str | None:
         """
         Persist trace and return trace_id (or None on failure).
@@ -992,7 +1056,7 @@ class AnsweringPipeline:
                     for c in answer.citations_used
                 ],
             }
-            tid = uuid4().hex
+            tid = record_id or uuid4().hex
             record = {
                 "trace_id": tid,
                 "query": answer.query,

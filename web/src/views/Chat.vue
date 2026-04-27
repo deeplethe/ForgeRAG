@@ -37,11 +37,16 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 </script>
 
 <script setup>
-import { ref, reactive, nextTick, computed, inject, watch, onMounted } from 'vue'
+import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { askQueryStream, createConversation, addMessage, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
 import { renderMarkdown } from '@/utils/renderMarkdown'
-import PdfViewer from '@/components/PdfViewer.vue'
+// Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
+// clicks a citation. Without this the whole library + worker JS sit in
+// the Chat.vue bundle, slowing the first chat load AND making the panel
+// slide-in animation stutter when pdfjs-dist's main-thread init runs in
+// parallel with the CSS transition.
+const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'))
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 
@@ -87,6 +92,20 @@ watch(_streamThinking, () => {
   thinkingStreamEl.value.scrollTop = thinkingStreamEl.value.scrollHeight
 }, { flush: 'post' })
 const pdf = reactive({ show: false, url: '', page: 1, highlights: [], cite: null, downloadUrl: '', sourceDownloadUrl: '', sourceLabel: '' })
+// Deferred PDF mount: the slide-in animation gets to play smoothly
+// before pdfjs-dist starts parsing. Toggled by ``watch(pdf.show, ...)``
+// below — true after a short timeout once the panel is shown.
+const pdfMounted = ref(false)
+watch(() => pdf.show, (v) => {
+  if (v) {
+    pdfMounted.value = false
+    // CSS transition is ~250ms; wait for it to finish before doing the
+    // heavy pdfjs init so the slide is GPU-clean.
+    setTimeout(() => { pdfMounted.value = true }, 280)
+  } else {
+    pdfMounted.value = false
+  }
+})
 const trace = reactive({ show: false, data: null })
 const empty = computed(() => !msgs.value.length && !streaming.value)
 
@@ -672,16 +691,10 @@ function onTraceClick(m) {
               </div>
               <!-- Assistant -->
               <div v-else class="group mb-2">
-                <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
-                  v-html="renderMsg(m.content, m.citations)"
-                  @click="onMsgClick($event, m.citations)">
-                </div>
-                <!-- Thinking pane (reasoning models like V4-Pro / o1).
-                     Rendered below the answer as a "show my work" footer:
-                     answer is the primary content, reasoning is supplementary.
-                     Capped at ~140px with internal scroll because the
-                     reasoning text can run thousands of chunks long. -->
-                <div v-if="m.thinking" class="mt-3 border-l-2 border-line pl-3 max-w-[90%]">
+                <!-- Thinking pane (reasoning models like V4-Pro / o1)
+                     above the answer — chronological order, reasoning
+                     came first. Capped at ~140px with internal scroll. -->
+                <div v-if="m.thinking" class="mb-3 border-l-2 border-line pl-3 max-w-[90%]">
                   <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
                     @click="thinkingCollapsed[i] = !thinkingCollapsed[i]">
                     <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
@@ -695,6 +708,10 @@ function onTraceClick(m) {
                   </button>
                   <div v-if="!thinkingCollapsed[i]"
                     class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ m.thinking }}</div>
+                </div>
+                <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
+                  v-html="renderMsg(m.content, m.citations)"
+                  @click="onMsgClick($event, m.citations)">
                 </div>
                 <div v-if="m.citations?.length" class="flex flex-wrap gap-1.5 mt-3">
                   <button v-for="(c, ci) in m.citations" :key="ci"
@@ -835,9 +852,11 @@ function onTraceClick(m) {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
-        <PdfViewer :url="pdf.url" :page="pdf.page" :highlight-blocks="pdf.highlights"
+        <PdfViewer v-if="pdfMounted"
+          :url="pdf.url" :page="pdf.page" :highlight-blocks="pdf.highlights"
           :downloadUrl="pdf.downloadUrl" :sourceDownloadUrl="pdf.sourceDownloadUrl" :sourceLabel="pdf.sourceLabel"
           class="flex-1" />
+        <div v-else class="flex-1 flex items-center justify-center"><Spinner /></div>
       </div>
     </Transition>
   </div>
