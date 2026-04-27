@@ -127,7 +127,17 @@ def login(
     state: AppState = Depends(get_state),
 ):
     if not state.cfg.auth.enabled:
-        raise HTTPException(400, "auth disabled on this server")
+        # Auth is off — every request already runs as the synthetic
+        # "local" admin principal (see AuthMiddleware). Returning 200
+        # here lets the frontend's standard login flow succeed without
+        # special-casing this server mode; no session cookie is set
+        # because the middleware grants access unconditionally.
+        return {
+            "user_id": "local",
+            "username": "local",
+            "role": "admin",
+            "must_change_password": False,
+        }
 
     with state.store.transaction() as sess:
         user = sess.execute(select(AuthUser).where(AuthUser.username == body.username)).scalar_one_or_none()
