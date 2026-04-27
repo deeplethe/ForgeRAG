@@ -556,20 +556,39 @@ class AnsweringPipeline:
             # Pass early QU result to avoid duplicate QU call inside retrieve
             _precomputed = qp_early if _early_qu_done else None
 
+            # Capture the OTel context here (still on the iterate_in_threadpool
+            # worker thread, with our root span attached by ``_reattach_each_resume``)
+            # so the retrieval thread can re-attach it. Without this the retrieval
+            # thread starts with empty contextvars, opens its own ``forgerag.retrieve``
+            # root span with a fresh trace_id, and every nested LiteLLM / HTTPX /
+            # SQL span ends up in an orphan trace — the persisted trace_json then
+            # only has our top-level ``forgerag.answer`` plus the SQL writes
+            # ``_persist_trace`` itself produces.
+            from opentelemetry.context import attach as _otel_attach
+            from opentelemetry.context import detach as _otel_detach
+            from opentelemetry.context import get_current as _otel_get_current
+
+            _retrieval_ctx = _otel_get_current()
+
             def _do_retrieval():
+                _tok = _otel_attach(_retrieval_ctx)
                 try:
-                    _retrieval_result[0] = self.retrieval.retrieve(
-                        retrieval_query,
-                        filter=filter,
-                        progress_cb=_on_progress,
-                        chat_history=chat_history,
-                        precomputed_plan=_precomputed,
-                        overrides=overrides,
-                    )
-                except Exception as e:
-                    _retrieval_error[0] = e
+                    try:
+                        _retrieval_result[0] = self.retrieval.retrieve(
+                            retrieval_query,
+                            filter=filter,
+                            progress_cb=_on_progress,
+                            chat_history=chat_history,
+                            precomputed_plan=_precomputed,
+                            overrides=overrides,
+                        )
+                    except Exception as e:
+                        _retrieval_error[0] = e
+                    finally:
+                        progress_q.put(None)  # sentinel
                 finally:
-                    progress_q.put(None)  # sentinel
+                    with contextlib.suppress(Exception):
+                        _otel_detach(_tok)
 
             t = threading.Thread(target=_do_retrieval, daemon=True)
             t.start()
