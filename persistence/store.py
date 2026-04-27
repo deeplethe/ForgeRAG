@@ -222,6 +222,34 @@ class Store:
         except Exception:
             log.warning("_fix_stale_statuses failed", exc_info=True)
 
+    def recover_stuck_kg(self) -> list[str]:
+        """
+        On startup, reset documents whose KG extraction was in flight or
+        merely queued back to ``kg_status='pending'`` so the caller can
+        re-submit them to the KG worker pool. The document's top-level
+        ``status='ready'`` is preserved — the doc remains queryable via
+        BM25/vector/tree paths while KG re-runs in the background.
+
+        Returns the list of recovered ``doc_id`` strings.
+        """
+        from sqlalchemy import text
+
+        stuck = ("queued", "running")
+        placeholders = ", ".join(f"'{s}'" for s in stuck)
+        sql = f"UPDATE documents SET kg_status = 'pending' WHERE kg_status IN ({placeholders})"
+        try:
+            with self._engine.begin() as conn:
+                result = conn.execute(text(sql))
+                if not result.rowcount:
+                    return []
+                log.info("recovered %d stuck KG job(s) → pending", result.rowcount)
+            with self._session() as s:
+                rows = s.execute(select(Document.doc_id).where(Document.kg_status == "pending")).all()
+                return [r.doc_id for r in rows]
+        except Exception:
+            log.warning("recover_stuck_kg failed", exc_info=True)
+            return []
+
     def recover_stuck_documents(self) -> list[dict]:
         """
         On startup, reset documents stuck in intermediate states back to

@@ -25,6 +25,7 @@ import contextlib
 import logging
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,20 @@ class _DocumentDeleted(Exception):
     """Raised when document is deleted mid-pipeline to abort cleanly."""
 
 
+@dataclass
+class _ChunkView:
+    """Duck-typed minimal chunk shape for ``_run_kg_extraction``.
+
+    The KG extractor only reads ``chunk_id`` + ``content`` from chunk
+    objects. ``run_kg_for_doc`` reloads chunks from the store as dict
+    rows, then wraps each in this lightweight container so the existing
+    extraction code path doesn't have to branch on input shape.
+    """
+
+    chunk_id: str
+    content: str
+
+
 class IngestionPipeline:
     def __init__(
         self,
@@ -67,6 +82,7 @@ class IngestionPipeline:
         embedder: Embedder | None = None,
         graph_store=None,  # Optional[GraphStore]
         kg_extraction_cfg=None,  # Optional[KGExtractionConfig]
+        kg_submit: Callable[[str], None] | None = None,
     ):
         self.files = file_store
         self.parser = parser
@@ -77,6 +93,11 @@ class IngestionPipeline:
         self.embedder = embedder
         self.graph_store = graph_store
         self.kg_extraction_cfg = kg_extraction_cfg
+        # Submit a doc_id to the dedicated KG-extraction worker pool.
+        # When set, ``ingest()`` returns immediately after the embed phase
+        # commits and the KG step runs asynchronously on the kg pool. When
+        # None (e.g. tests), KG runs inline on the calling thread.
+        self.kg_submit = kg_submit
         # Per-doc serialization with refcount: popping after release would
         # let a third concurrent caller arriving between pop and the second
         # waiter's acquire create a fresh lock and bypass serialization.
@@ -340,7 +361,22 @@ class IngestionPipeline:
             # chunk_ids that don't exist in the relational store. Failure
             # leaves the doc queryable via BM25/vector/tree with
             # kg_status="error" so the user can retry KG only.
-            self._run_kg_extraction(doc_id, chunks)
+            #
+            # When a dedicated KG worker pool is wired in (production path
+            # via api.state), we hand off the doc_id to that pool and the
+            # current ``ingest`` worker returns immediately — keeping the
+            # parse/embed pool latency-bounded under concurrent uploads.
+            # Without ``kg_submit`` (tests / single-process callers) KG
+            # runs inline on the calling thread for backward compatibility.
+            if self.kg_submit is not None:
+                # Mark queued so polling clients can distinguish "embed
+                # done, KG pending in queue" from "embed done, KG never
+                # configured (skipped)".
+                with contextlib.suppress(Exception):
+                    self.rel.update_document_status(doc_id, kg_status="queued")
+                self.kg_submit(doc_id)
+            else:
+                self._run_kg_extraction(doc_id, chunks)
 
             log.info(
                 "phase-B ingest done doc_id=%s file_id=%s blocks=%d chunks=%d summaries=%d",
@@ -412,6 +448,29 @@ class IngestionPipeline:
             pdf_name,
         )
         return record["file_id"]
+
+    def run_kg_for_doc(self, doc_id: str) -> None:
+        """KG worker entry point.
+
+        Reloads chunks for *doc_id* from the relational store (they were
+        committed during the embed phase) and runs KG extraction +
+        consolidation against them. This is called from the dedicated
+        KG worker pool, not the parse/embed pool.
+
+        Failures are captured into ``kg_status="error"`` with a short
+        ``error_message``; the doc remains fully queryable via the
+        non-KG retrieval paths in the meantime.
+        """
+        doc = self.rel.get_document(doc_id)
+        if doc is None:
+            log.warning("KG worker: doc %s not found (deleted?)", doc_id)
+            return
+        parse_version = doc.get("active_parse_version") or 1
+        rows = self.rel.get_chunks(doc_id, parse_version)
+        # Duck-typed view: ``_run_kg_extraction`` only reads ``.chunk_id``
+        # and ``.content`` from each chunk.
+        chunks = [_ChunkView(r["chunk_id"], r.get("content") or "") for r in rows]
+        self._run_kg_extraction(doc_id, chunks)
 
     def _run_kg_extraction(self, doc_id: str, chunks: list) -> None:
         """
@@ -523,18 +582,27 @@ class IngestionPipeline:
                         log.warning("Relation embedding failed for %s", doc_id)
 
             self._assert_not_deleted(doc_id)
-            for e in entities:
-                self.graph_store.upsert_entity(e)
-            for r in relations:
-                self.graph_store.upsert_relation(r)
+            # Wrap all graph mutations for this doc in a single batch so
+            # file-backed backends (NetworkX) defer the on-disk JSON
+            # rewrite to one atomic dump at the end instead of N dumps
+            # per upsert. For 169-chunk docs that's ~3000 fewer full-graph
+            # writes — the dominant cost saving in this commit.
+            self.graph_store.begin_batch()
+            try:
+                for e in entities:
+                    self.graph_store.upsert_entity(e)
+                for r in relations:
+                    self.graph_store.upsert_relation(r)
 
-            if frag_thresh > 0:
-                self._consolidate_graph_descriptions(
-                    entities,
-                    kg_cfg,
-                    frag_thresh=frag_thresh,
-                    char_thresh=char_thresh,
-                )
+                if frag_thresh > 0:
+                    self._consolidate_graph_descriptions(
+                        entities,
+                        kg_cfg,
+                        frag_thresh=frag_thresh,
+                        char_thresh=char_thresh,
+                    )
+            finally:
+                self.graph_store.end_batch()
 
             self.rel.update_document_status(
                 doc_id,

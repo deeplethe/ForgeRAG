@@ -19,6 +19,7 @@ from answering.pipeline import AnsweringPipeline
 from config import AppConfig
 from embedder.base import Embedder, make_embedder
 from ingestion import IngestionPipeline
+from ingestion.kg_queue import KGQueue
 from ingestion.queue import IngestionQueue
 from parser.blob_store import BlobStore, make_blob_store
 from parser.chunker import Chunker
@@ -120,7 +121,8 @@ class AppState:
         except Exception as e:
             log.warning("graph store not available: %s", e, exc_info=True)
 
-        # Ingestion orchestrator
+        # Ingestion orchestrator. ``kg_submit`` is wired below after we
+        # construct the dedicated KG worker pool.
         self.ingestion = IngestionPipeline(
             file_store=self.file_store,
             parser=self.parser,
@@ -133,7 +135,18 @@ class AppState:
             kg_extraction_cfg=cfg.retrieval.kg_extraction,
         )
 
-        # Background ingestion queue
+        # KG-extraction worker pool — separate from the parse/embed pool
+        # so long-running KG jobs (minutes per doc) can't starve incoming
+        # parse jobs. Created before ingest_queue so we can wire its
+        # submit callback into the pipeline.
+        self.kg_queue = KGQueue(
+            self.ingestion.run_kg_for_doc,
+            max_workers=cfg.parser.kg_max_workers,
+        )
+        self.kg_queue.start()
+        self.ingestion.kg_submit = self.kg_queue.submit
+
+        # Background parse/embed queue
         self.ingest_queue = IngestionQueue(
             self.ingestion,
             max_workers=cfg.parser.ingest_max_workers,
@@ -144,6 +157,18 @@ class AppState:
         # Re-queue documents that were stuck mid-ingestion when the
         # process last exited (crash, restart, worker recycled by uvicorn).
         self.ingest_queue.recover_stuck(self.store)
+
+        # Same for KG jobs that were in flight or merely queued — those
+        # also can't survive a process restart but their docs already
+        # passed parse+embed so we resubmit only to the KG pool.
+        try:
+            kg_recovered = self.store.recover_stuck_kg()
+            for doc_id in kg_recovered:
+                self.kg_queue.submit(doc_id)
+            if kg_recovered:
+                log.info("re-queued %d stuck KG job(s)", len(kg_recovered))
+        except Exception:
+            log.exception("KG recovery failed")
 
         # BM25 index is lazy -- built on first /ask
         self._init_lock = threading.RLock()
@@ -306,11 +331,17 @@ class AppState:
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
-        # Stop ingestion queue
+        # Stop the parse/embed queue first — this prevents new KG jobs
+        # from being submitted while we drain the KG queue below.
         try:
             self.ingest_queue.shutdown()
         except Exception:
             log.exception("ingestion queue shutdown failed")
+        # Stop KG queue (long-running jobs; longer drain timeout).
+        try:
+            self.kg_queue.shutdown(timeout=60.0)
+        except Exception:
+            log.exception("KG queue shutdown failed")
         # Save embedding cache
         if hasattr(self.embedder, "save"):
             with contextlib.suppress(Exception):
