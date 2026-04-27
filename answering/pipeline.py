@@ -401,8 +401,10 @@ class AnsweringPipeline:
         qp_early = None
 
         # ── Early QU: greeting/meta/reformulation short-circuit ──
-        qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None)
-        qu_enabled = qu_enabled and qu_enabled.enabled
+        # Query understanding has no ``enabled`` toggle in v0.2.0 — it
+        # always runs when the retrieval section configures it. Per-query
+        # opt-out goes through ``QueryOverrides.query_understanding=False``.
+        qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None) is not None
         if overrides is not None and getattr(overrides, "query_understanding", None) is not None:
             qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
