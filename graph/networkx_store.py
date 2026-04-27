@@ -643,7 +643,6 @@ class NetworkXGraphStore(GraphStore):
         return {
             "entities": self._graph.number_of_nodes(),
             "relations": self._graph.number_of_edges(),
-            "communities": len(self._communities),
         }
 
     # -- lifecycle ----------------------------------------------------------
