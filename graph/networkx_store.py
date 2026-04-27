@@ -124,6 +124,12 @@ class NetworkXGraphStore(GraphStore):
         self._entity_idx = VectorIndex()
         # relation_id → Relation quick-lookup cache (avoids O(n) scan per search)
         self._rel_cache: dict[str, Relation] = {}
+        # Batch-mode: when > 0, ``_save()`` becomes a no-op and the dirty
+        # bit is set; the deferred dump is forced by ``end_batch``. Counter
+        # rather than bool so concurrent batches (one per doc-in-flight)
+        # nest correctly — only the outermost ``end_batch`` flushes.
+        self._batch_depth = 0
+        self._batch_dirty = False
         self._load()
 
     # -- persistence --------------------------------------------------------
@@ -156,19 +162,49 @@ class NetworkXGraphStore(GraphStore):
             logger.exception("Failed to load KG from %s", self._path)
 
     def _save(self) -> None:
+        # In batch mode, defer the on-disk write until end_batch(). The
+        # in-memory graph stays consistent for in-process readers; only
+        # the JSON file lags. This eliminates the O(N) full-graph rewrite
+        # that would otherwise fire on every upsert (thousands of rewrites
+        # per ingested document, dominating wall-clock time at scale).
         with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            nodes = [_entity_to_dict(self._graph.nodes[n]["entity"]) for n in self._graph.nodes]
-            edges = [_relation_to_dict(self._graph.edges[u, v]["relation"]) for u, v in self._graph.edges]
-            tmp = self._path.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(
-                    {"nodes": nodes, "edges": edges},
-                    fh,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            tmp.replace(self._path)
+            if self._batch_depth > 0:
+                self._batch_dirty = True
+                return
+            self._save_locked()
+
+    def _save_locked(self) -> None:
+        """Force-write the on-disk JSON. Caller must hold ``self._lock``."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        nodes = [_entity_to_dict(self._graph.nodes[n]["entity"]) for n in self._graph.nodes]
+        edges = [_relation_to_dict(self._graph.edges[u, v]["relation"]) for u, v in self._graph.edges]
+        tmp = self._path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"nodes": nodes, "edges": edges},
+                fh,
+                ensure_ascii=False,
+                indent=2,
+            )
+        tmp.replace(self._path)
+
+    def begin_batch(self) -> None:
+        """Open a write batch — defers JSON dumps until ``end_batch``.
+        Counter-based so nested batches collapse into a single outer flush.
+        """
+        with self._lock:
+            self._batch_depth += 1
+
+    def end_batch(self) -> None:
+        """Close a write batch. Outermost end_batch forces the deferred
+        JSON dump if any mutation happened during the batch."""
+        with self._lock:
+            if self._batch_depth == 0:
+                return
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._batch_dirty:
+                self._batch_dirty = False
+                self._save_locked()
 
     # -- index rebuilders ---------------------------------------------------
 
