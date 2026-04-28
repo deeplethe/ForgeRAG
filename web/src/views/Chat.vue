@@ -815,16 +815,21 @@ function onTraceClick(m) {
                 </template>
 
                 <template v-else>
-                  <!-- Summary line (always visible): "Searching... 3.2s ▾" -->
+                  <!-- Summary line (always visible): "Searching... 3.2s ▾".
+                       The old "Thinking:" prefix collided with the actual
+                       Thinking pane below — they looked identical despite
+                       meaning different things ("model is in Generating
+                       phase" vs "the model's reasoning_content"). Drop
+                       the prefix, the phase name + spinner are enough. -->
                   <span v-if="progressSummary && !progressSummary.done" class="text-t2">
-                    <span class="text-t3">Thinking:</span> {{ progressSummary.text }}...
+                    {{ progressSummary.text }}...
                     <span class="text-t3 text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
                   </span>
                   <span v-else-if="progressSummary && progressSummary.done" class="text-t3">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" class="inline -mt-px mr-0.5 text-t1">
                       <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <span class="text-t3/60">Thinking:</span> {{ progressSummary.text }}
+                    {{ progressSummary.text }}
                     <span class="text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
                   </span>
 

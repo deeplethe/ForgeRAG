@@ -283,12 +283,19 @@ def _apply_gen_overrides(kwargs: dict, overrides: Any) -> None:
         return
 
     if "thinking" in data:
-        # Boolean toggle. Route both via DeepSeek's extra_body channel
-        # (the only way to actually disable on V4-Pro) AND via LiteLLM's
-        # ``reasoning_effort`` (covers Anthropic / Gemini "off" semantics,
-        # ignored by providers that don't recognize it). For "On" we
-        # only set extra_body — intensity is up to ``reasoning_effort``
-        # below, so we don't overwrite a user-picked level.
+        # Boolean toggle. Routes via DeepSeek's ``extra_body.thinking``
+        # channel (the only working "disable" knob on V4-Pro) AND, for
+        # non-DeepSeek providers, via LiteLLM's ``reasoning_effort``
+        # (Anthropic / Gemini understand it as "off"; OpenAI o-series
+        # ignore it since their thinking is model-bound).
+        #
+        # **Critical**: do NOT set ``reasoning_effort=disable`` on
+        # DeepSeek. LiteLLM's DeepSeek transformation interprets ANY
+        # non-"none" effort as "enable thinking", so passing "disable"
+        # there silently re-enables thinking and clobbers our extra_body
+        # (observed live: thinking pane kept streaming after the user
+        # toggled Off; extra_body said disabled, reasoning_effort=disable
+        # re-set thinking={type:enabled} via the DeepSeek route).
         on = bool(data["thinking"])
         eb = dict(kwargs.get("extra_body") or {})
         eb_thinking = dict(eb.get("thinking") or {})
@@ -296,9 +303,9 @@ def _apply_gen_overrides(kwargs: dict, overrides: Any) -> None:
         eb["thinking"] = eb_thinking
         kwargs["extra_body"] = eb
         if not on:
-            # Belt-and-suspenders: providers that ignore extra_body
-            # respect ``reasoning_effort: disable`` to skip thinking.
-            kwargs["reasoning_effort"] = "disable"
+            model_lower = (kwargs.get("model") or "").lower()
+            if "deepseek" not in model_lower:
+                kwargs["reasoning_effort"] = "disable"
     if "reasoning_effort" in data:
         # User-set intensity wins over the disable we may have set above
         # (since they're explicitly asking for thinking ON at level X).
