@@ -109,30 +109,36 @@ class AnsweringPipeline:
         stats: dict = {}
         t0 = time.time()
 
-        # Persist user message immediately so it's never lost
-        if conversation_id and self.store:
-            try:
-                conv = self.store.get_conversation(conversation_id)
-                if not conv:
-                    self.store.create_conversation(
+        # ── Setup phase: persist user msg + load chat history ──
+        # Same pattern as ``_ask_stream_impl``: bundle DB bootstrap into
+        # one span so it shows up as a phase on the root rather than a gap.
+        with _tracer.start_as_current_span("forgerag.setup") as _setup_span:
+            _setup_span.set_attribute("forgerag.has_conversation", bool(conversation_id))
+            # Persist user message immediately so it's never lost
+            if conversation_id and self.store:
+                try:
+                    conv = self.store.get_conversation(conversation_id)
+                    if not conv:
+                        self.store.create_conversation(
+                            {
+                                "conversation_id": conversation_id,
+                                "title": query[:100],
+                            }
+                        )
+                    self.store.add_message(
                         {
+                            "message_id": uuid4().hex,
                             "conversation_id": conversation_id,
-                            "title": query[:100],
+                            "role": "user",
+                            "content": query,
                         }
                     )
-                self.store.add_message(
-                    {
-                        "message_id": uuid4().hex,
-                        "conversation_id": conversation_id,
-                        "role": "user",
-                        "content": query,
-                    }
-                )
-            except Exception as e:
-                log.warning("failed to persist user message early: %s", e)
+                except Exception as e:
+                    log.warning("failed to persist user message early: %s", e)
 
-        # Load conversation history for context-aware QU
-        chat_history = self._load_history(conversation_id) if conversation_id else []
+            # Load conversation history for context-aware QU
+            chat_history = self._load_history(conversation_id) if conversation_id else []
+            _setup_span.set_attribute("forgerag.history_turns", len(chat_history) // 2)
 
         # ── Early QU: greeting/meta/reformulation short-circuit ──
         _reuse = False
@@ -193,22 +199,29 @@ class AnsweringPipeline:
             if conversation_id:
                 self._cache_put(conversation_id, retrieval_result)
 
-        messages, used_in_prompt = build_messages(
-            query=query,
-            merged=retrieval_result.merged,
-            citations=retrieval_result.citations,
-            cfg=self.cfg.generator,
-            include_expanded_chunks=self.cfg.include_expanded_chunks,
-            max_chunks=self.cfg.max_chunks,
-            kg_context=retrieval_result.kg_context,
-        )
-        stats["context_chunks"] = len(used_in_prompt)
+        # ── Prompt build phase ──
+        # Same span pattern as ``_ask_stream_impl`` — group context
+        # assembly + history injection so it's attributed.
+        with _tracer.start_as_current_span("forgerag.prompt_build") as _pb_span:
+            messages, used_in_prompt = build_messages(
+                query=query,
+                merged=retrieval_result.merged,
+                citations=retrieval_result.citations,
+                cfg=self.cfg.generator,
+                include_expanded_chunks=self.cfg.include_expanded_chunks,
+                max_chunks=self.cfg.max_chunks,
+                kg_context=retrieval_result.kg_context,
+            )
+            stats["context_chunks"] = len(used_in_prompt)
 
-        # Inject conversation history into messages (multi-turn).
-        # Reuse chat_history loaded earlier (no new messages since then).
-        if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history, current_query=query)
-            stats["history_turns"] = len(chat_history) // 2
+            # Inject conversation history into messages (multi-turn).
+            # Reuse chat_history loaded earlier (no new messages since then).
+            if conversation_id and chat_history:
+                messages = self._inject_history(messages, chat_history, current_query=query)
+                stats["history_turns"] = len(chat_history) // 2
+            _pb_span.set_attribute("forgerag.context_chunks", len(used_in_prompt))
+            _pb_span.set_attribute("forgerag.history_turns", len(chat_history) // 2 if chat_history else 0)
+            _pb_span.set_attribute("forgerag.message_count", len(messages))
 
         # If no context chunks AND intent requires documents, refuse.
         # But for greeting/meta/reformulation, let the generator respond freely.
@@ -505,33 +518,40 @@ class AnsweringPipeline:
             except GeneratorExit:
                 pass
 
-        # Persist user message immediately so it's never lost,
-        # even if the client disconnects mid-retrieval.
-        _user_msg_id = None
-        if conversation_id and self.store:
-            try:
-                conv = self.store.get_conversation(conversation_id)
-                if not conv:
-                    self.store.create_conversation(
+        # ── Setup phase ──
+        # Persist the user message + load chat history under one span so
+        # the time spent on conversation bootstrapping (DB writes / reads)
+        # is attributed to a real phase rather than a gap on the root.
+        with _tracer.start_as_current_span("forgerag.setup") as _setup_span:
+            _setup_span.set_attribute("forgerag.has_conversation", bool(conversation_id))
+            # Persist user message immediately so it's never lost,
+            # even if the client disconnects mid-retrieval.
+            _user_msg_id = None
+            if conversation_id and self.store:
+                try:
+                    conv = self.store.get_conversation(conversation_id)
+                    if not conv:
+                        self.store.create_conversation(
+                            {
+                                "conversation_id": conversation_id,
+                                "title": query[:100],
+                            }
+                        )
+                    _user_msg_id = uuid4().hex
+                    self.store.add_message(
                         {
+                            "message_id": _user_msg_id,
                             "conversation_id": conversation_id,
-                            "title": query[:100],
+                            "role": "user",
+                            "content": query,
                         }
                     )
-                _user_msg_id = uuid4().hex
-                self.store.add_message(
-                    {
-                        "message_id": _user_msg_id,
-                        "conversation_id": conversation_id,
-                        "role": "user",
-                        "content": query,
-                    }
-                )
-            except Exception as e:
-                log.warning("failed to persist user message early: %s", e)
+                except Exception as e:
+                    log.warning("failed to persist user message early: %s", e)
 
-        # Load conversation history for context-aware QU
-        chat_history = self._load_history(conversation_id) if conversation_id else []
+            # Load conversation history for context-aware QU
+            chat_history = self._load_history(conversation_id) if conversation_id else []
+            _setup_span.set_attribute("forgerag.history_turns", len(chat_history) // 2)
 
         # ── Early QU check: can we skip retrieval entirely? ──
         # For reformulation queries ("用中文回答", "简短一点") we reuse
@@ -706,26 +726,35 @@ class AnsweringPipeline:
 
         qp = retrieval_result.query_plan
 
-        messages, used_in_prompt = build_messages(
-            query=query,
-            merged=retrieval_result.merged,
-            citations=retrieval_result.citations,
-            cfg=self.cfg.generator,
-            include_expanded_chunks=self.cfg.include_expanded_chunks,
-            max_chunks=self.cfg.max_chunks,
-            kg_context=retrieval_result.kg_context,
-        )
-        stats["context_chunks"] = len(used_in_prompt)
+        # ── Prompt build phase ──
+        # Wrap message assembly so the time spent slicing chunks into the
+        # context window + injecting history is attributed to a real
+        # phase. Cheap on small queries but can hit ~50 ms with long
+        # histories or large KG context blobs.
+        with _tracer.start_as_current_span("forgerag.prompt_build") as _pb_span:
+            messages, used_in_prompt = build_messages(
+                query=query,
+                merged=retrieval_result.merged,
+                citations=retrieval_result.citations,
+                cfg=self.cfg.generator,
+                include_expanded_chunks=self.cfg.include_expanded_chunks,
+                max_chunks=self.cfg.max_chunks,
+                kg_context=retrieval_result.kg_context,
+            )
+            stats["context_chunks"] = len(used_in_prompt)
 
-        # Inject generation hint from query understanding
-        if qp and qp.hint and messages:
-            sys_msg = messages[0]
-            if sys_msg.get("role") == "system":
-                sys_msg["content"] += f"\n\nNote: {qp.hint}"
+            # Inject generation hint from query understanding
+            if qp and qp.hint and messages:
+                sys_msg = messages[0]
+                if sys_msg.get("role") == "system":
+                    sys_msg["content"] += f"\n\nNote: {qp.hint}"
 
-        # Reuse chat_history loaded earlier (no new messages since then).
-        if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history, current_query=query)
+            # Reuse chat_history loaded earlier (no new messages since then).
+            if conversation_id and chat_history:
+                messages = self._inject_history(messages, chat_history, current_query=query)
+            _pb_span.set_attribute("forgerag.context_chunks", len(used_in_prompt))
+            _pb_span.set_attribute("forgerag.history_turns", len(chat_history) // 2 if chat_history else 0)
+            _pb_span.set_attribute("forgerag.message_count", len(messages))
 
         # Emit retrieval metadata
         yield {
