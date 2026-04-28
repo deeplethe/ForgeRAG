@@ -218,8 +218,9 @@ class FakeGenerator:
         self.finish = finish
         self.last_messages = None
 
-    def generate(self, messages):
+    def generate(self, messages, *, overrides=None):
         self.last_messages = messages
+        self.last_overrides = overrides
         from answering.prompts import extract_cited_ids
 
         return {

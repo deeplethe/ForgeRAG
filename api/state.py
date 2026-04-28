@@ -72,8 +72,7 @@ def _backfill_chroma_paths_from_sql(rel, vec) -> None:
     chunk_to_path: dict[str, str] = {}
     with rel.transaction() as sess:
         rows = sess.execute(
-            select(ChunkRow.chunk_id, Document.path)
-            .join(Document, Document.doc_id == ChunkRow.doc_id)
+            select(ChunkRow.chunk_id, Document.path).join(Document, Document.doc_id == ChunkRow.doc_id)
         ).all()
         for r in rows:
             if r.path:

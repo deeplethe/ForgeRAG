@@ -310,9 +310,7 @@ class GenerationOverrides(BaseModel):
     # Intensity dial — orthogonal to ``thinking``. ``low``/``medium``/
     # ``high`` are universally meaningful; ``disable``/``none`` are
     # better expressed via ``thinking=False`` above.
-    reasoning_effort: Literal[
-        "low", "medium", "high"
-    ] | None = Field(None)
+    reasoning_effort: Literal["low", "medium", "high"] | None = Field(None)
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(None, ge=1, le=128000)
 

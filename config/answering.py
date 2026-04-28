@@ -28,6 +28,7 @@ class GeneratorConfig(BaseModel):
     who want to pin "always temperature 0.7" should send it on every
     request, not bake it into yaml.
     """
+
     backend: Literal["litellm"] = "litellm"
     model: str = "openai/gpt-4o-mini"
     timeout: float = 60.0

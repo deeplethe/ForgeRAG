@@ -106,8 +106,8 @@ class ChromaStore:
                 log.info("Chroma: migrated %d chunks to list-encoded path metadata", n)
         except Exception as e:
             log.warning(
-                "Chroma: path-to-list backfill failed; scoped queries may "
-                "miss legacy chunks: %s", e,
+                "Chroma: path-to-list backfill failed; scoped queries may miss legacy chunks: %s",
+                e,
             )
 
     def _ensure_collection(self):
@@ -188,7 +188,7 @@ class ChromaStore:
             metas = res.get("metadatas") or []
             up_ids: list[str] = []
             up_metas: list[dict] = []
-            for cid, meta in zip(ids, metas):
+            for cid, meta in zip(ids, metas, strict=False):
                 if not isinstance(meta, dict):
                     continue
                 p = meta.get("path")

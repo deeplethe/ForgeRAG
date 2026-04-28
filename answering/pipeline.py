@@ -352,6 +352,7 @@ class AnsweringPipeline:
         # produced between yields end up parented to nothing (each gets a
         # fresh trace_id) and ``collector.take(_trace_id)`` returns nothing.
         from opentelemetry.context import attach, detach, get_current
+
         _parent_ctx = get_current()
 
         _root_closed = False
@@ -483,9 +484,7 @@ class AnsweringPipeline:
                 stats["generate_ms"] = int((time.time() - t0) * 1000)
                 stats["error"] = error_msg
                 _err_retrieval = retrieval_result
-                _err_citations_all = (
-                    list(_err_retrieval.citations) if _err_retrieval is not None else []
-                )
+                _err_citations_all = list(_err_retrieval.citations) if _err_retrieval is not None else []
                 _err_answer = Answer(
                     query=query,
                     text=error_text,
@@ -719,9 +718,7 @@ class AnsweringPipeline:
                 yield from _emit_failure(_retrieval_error[0])
                 return
             if _retrieval_result[0] is None:
-                yield from _emit_failure(
-                    RuntimeError("Retrieval returned no result (timeout or internal error)")
-                )
+                yield from _emit_failure(RuntimeError("Retrieval returned no result (timeout or internal error)"))
                 return
             retrieval_result = _retrieval_result[0]
             stats["retrieval"] = retrieval_result.stats
@@ -880,13 +877,15 @@ class AnsweringPipeline:
                         )
                         tid = uuid4().hex
                         if _pending_persist is not None:
-                            _pending_persist.update({
-                                "tid": tid,
-                                "answer": answer,
-                                "retrieval": retrieval_result,
-                                "conversation_id": conversation_id,
-                                "query": query,
-                            })
+                            _pending_persist.update(
+                                {
+                                    "tid": tid,
+                                    "answer": answer,
+                                    "retrieval": retrieval_result,
+                                    "conversation_id": conversation_id,
+                                    "query": query,
+                                }
+                            )
                         _persisted = True
 
                         yield {
