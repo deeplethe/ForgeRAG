@@ -8,11 +8,18 @@
   Trigger button shows current scope ("全部" / "📁 /agriculture" /
   "📄 /agriculture/00_b_eekeeping.md"). Clicking opens a popup above
   the trigger with a search box, breadcrumb-back, and a list of the
-  current directory's subfolders + direct files. Choices:
-    • Click a folder row → navigate into it.
-    • Click "选中此目录" header button → scope on current dir.
-    • Click a file row → scope on that file (and close).
-    • Click "全部文档" at the root list → clear scope.
+  current directory's subfolders + direct files. Behavior:
+    • Click a folder row → scope on that folder AND navigate into it.
+      So as you drill the scope follows you to the deepest folder
+      you've clicked. The panel stays open so you can keep diving
+      (or pick a file inside).
+    • Click a file row → scope on that file and close (terminal).
+    • The breadcrumb's "选中此目录" button is a sugar shortcut:
+      "I'm done picking, close the panel." It also re-asserts the
+      current dir as scope (handy if you went UP via the arrow,
+      since the arrow only navigates and leaves scope alone).
+    • Up arrow → navigate up only; doesn't change scope.
+    • Click "全部文档" at the root list → clear scope and close.
 
   Search box is server-side: when non-empty we call ``listDocuments``
   with ``recursive=true`` rooted at the current directory and ``search``
@@ -81,8 +88,8 @@
           <button
             v-if="currentDir !== '/'"
             class="px-1.5 py-0.5 rounded text-brand hover:bg-brand/10 text-[10px] font-medium"
-            title="Use this folder as scope"
-            @click="selectFolder(currentDir)"
+            title="Confirm and close (also re-asserts this folder as scope)"
+            @click="confirmCurrent"
           >选中此目录</button>
         </div>
 
@@ -118,25 +125,26 @@
           </div>
 
           <template v-else>
-            <!-- Folders -->
+            <!-- Folders: single click = scope + drill in (don't close
+                 the panel — user can keep diving or pick a file inside). -->
             <button
               v-for="f in folders"
               :key="'f:' + f.path"
               type="button"
               class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t1 hover:bg-bg3"
-              :title="`进入 ${f.path}`"
-              @click="navigateInto(f)"
+              :class="{ 'text-brand bg-brand/5': modelValue === f.path }"
+              :title="`选中并进入 ${f.path}`"
+              @click="pickFolder(f)"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                class="text-t2 shrink-0">
+                class="shrink-0" :class="modelValue === f.path ? 'text-brand' : 'text-t2'">
                 <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
               </svg>
               <span class="flex-1 text-left truncate">{{ f.name || leaf(f.path) }}</span>
-              <button
-                class="p-0.5 rounded text-brand hover:bg-brand/10 text-[10px]"
-                title="Scope this folder"
-                @click.stop="selectFolder(f.path)"
-              >选中</button>
+              <svg v-if="modelValue === f.path" width="10" height="10" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" stroke-width="3" class="text-brand shrink-0">
+                <path d="M20 6L9 17l-5-5"/>
+              </svg>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                 class="text-t3 shrink-0">
                 <path d="M9 6l6 6-6 6"/>
@@ -290,18 +298,30 @@ watch(currentDir, () => { if (open.value) loadCurrent() })
 watch(open, (v) => { if (v) loadCurrent() })
 
 // ── Navigation ───────────────────────────────────────────────────────
-function navigateInto(folder) {
-  currentDir.value = folder.path
-  search.value = ''
-}
 function navigateUp() {
+  // Pure navigation — does NOT change scope. Use the breadcrumb's
+  // "选中此目录" button (or click another row) to commit to a new dir.
   currentDir.value = parentDir(currentDir.value) || '/'
   search.value = ''
 }
 
 // ── Selection ────────────────────────────────────────────────────────
+// Click a folder row: scope on it AND dive in. Don't close — user may
+// want to keep narrowing (or pick a file inside).
+function pickFolder(folder) {
+  emit('update:modelValue', folder.path)
+  currentDir.value = folder.path
+  search.value = ''
+}
+// Sugar: explicit "I'm done" button. Scope on the current dir (a no-op
+// if already there) and close the panel.
+function confirmCurrent() {
+  if (currentDir.value && currentDir.value !== '/') {
+    emit('update:modelValue', currentDir.value)
+  }
+  close()
+}
 function selectRoot() { emit('update:modelValue', ''); close() }
-function selectFolder(path) { emit('update:modelValue', path); close() }
 function selectFile(doc) { emit('update:modelValue', doc.path); close() }
 
 // ── Click-outside ────────────────────────────────────────────────────
