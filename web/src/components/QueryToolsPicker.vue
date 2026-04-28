@@ -79,32 +79,41 @@
           </div>
         </div>
 
-        <!-- Temperature: slider -->
+        <!-- Temperature: Default chip + slider, mutually exclusive.
+             Click ``Default`` → slider greys out, backend gets null
+             (use cfg default). Move slider → Default deselects, the
+             chosen number is sent. -->
         <div class="px-3 py-1.5">
-          <div class="flex items-center justify-between mb-1.5">
-            <span class="text-[12px] text-t1">{{ t('tools.temperature') }}</span>
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <div class="flex items-center gap-2">
+              <span class="text-[12px] text-t1">{{ t('tools.temperature') }}</span>
+              <button
+                type="button"
+                class="px-1.5 py-0.5 rounded text-[10px] transition-colors"
+                :class="temperature == null
+                  ? 'bg-bg3 text-t1'
+                  : 'text-t3 hover:text-t2 border border-line'"
+                @click="temperature = null"
+              >{{ t('tools.temperature_default') }}</button>
+            </div>
             <span class="text-[11px] text-t3 tabular-nums">
-              {{ temperature == null ? t('tools.temperature_default') : temperature.toFixed(1) }}
+              {{ temperature == null ? '—' : temperature.toFixed(1) }}
             </span>
           </div>
           <input
             type="range"
             min="0" max="2" step="0.1"
-            :value="temperature ?? 0.1"
+            :value="temperature ?? 1.0"
             @input="onTemperatureInput"
-            class="w-full h-1 bg-bg3 rounded-full appearance-none cursor-pointer
+            class="w-full h-1 bg-bg3 rounded-full appearance-none cursor-pointer transition-opacity
                    [&::-webkit-slider-thumb]:appearance-none
                    [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
                    [&::-webkit-slider-thumb]:rounded-full
                    [&::-webkit-slider-thumb]:bg-t1
                    [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-line"
+            :class="{ 'opacity-40': temperature == null }"
           />
           <div class="text-[10px] text-t3 mt-0.5">{{ t('tools.temperature_hint') }}</div>
-          <button
-            v-if="temperature != null"
-            class="mt-1 text-[10px] text-t3 hover:text-t1"
-            @click="temperature = null"
-          >{{ t('tools.temperature_default') }}</button>
         </div>
 
         <!-- Web search: placeholder, disabled -->
