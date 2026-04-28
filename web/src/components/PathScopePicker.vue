@@ -32,7 +32,7 @@
       type="button"
       class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line text-[11px] text-t2 hover:bg-bg3 transition-colors"
       :class="{ 'border-brand/50 text-brand': scoped, 'bg-bg3': open }"
-      :title="scoped ? `Chat scoped to: ${modelValue}` : 'Click to scope this chat to a folder or file'"
+      :title="scoped ? t('scope.tooltip_scoped_to', { path: modelValue }) : t('scope.tooltip_idle')"
       @click="toggle"
     >
       <component :is="scopeIcon" class="w-3.5 h-3.5" />
@@ -59,14 +59,14 @@
               ref="searchEl"
               v-model="search"
               type="text"
-              placeholder="搜索文件夹/文件..."
+              :placeholder="t('scope.search_placeholder')"
               class="flex-1 bg-transparent border-none outline-none text-t1 placeholder:text-t3"
               @keydown.escape="close"
             />
             <button
               v-if="search"
               class="text-t3 hover:text-t1 text-[10px]"
-              title="Clear"
+              :title="t('common.close')"
               @click="search = ''"
             >✕</button>
           </div>
@@ -77,7 +77,7 @@
           <button
             class="p-0.5 rounded hover:bg-bg3 disabled:opacity-30 disabled:cursor-default"
             :disabled="currentDir === '/'"
-            title="Up one level"
+            :title="t('scope.tooltip_up')"
             @click="navigateUp"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -88,9 +88,9 @@
           <button
             v-if="currentDir !== '/'"
             class="px-1.5 py-0.5 rounded text-brand hover:bg-brand/10 text-[10px] font-medium"
-            title="Confirm and close (also re-asserts this folder as scope)"
+            :title="t('scope.tooltip_confirm_close')"
             @click="confirmCurrent"
-          >选中此目录</button>
+          >{{ t('scope.select_this_folder') }}</button>
         </div>
 
         <!-- List -->
@@ -106,7 +106,7 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
             </svg>
-            <span class="flex-1 text-left">全部文档</span>
+            <span class="flex-1 text-left">{{ t('scope.all_documents') }}</span>
             <svg v-if="!modelValue || modelValue === '/'" width="10" height="10" viewBox="0 0 24 24"
               fill="none" stroke="currentColor" stroke-width="3">
               <path d="M20 6L9 17l-5-5"/>
@@ -115,13 +115,13 @@
 
           <!-- Loading state -->
           <div v-if="loading" class="flex items-center justify-center py-6 text-[11px] text-t3 gap-2">
-            <Spinner size="sm" /> Loading...
+            <Spinner size="sm" /> {{ t('common.loading') }}
           </div>
 
           <!-- Empty state -->
           <div v-else-if="!folders.length && !docs.length" class="py-6 text-center text-[11px] text-t3">
-            <span v-if="search">没有匹配 "{{ search }}" 的文件</span>
-            <span v-else>这个目录是空的</span>
+            <span v-if="search">{{ t('scope.no_match', { query: search }) }}</span>
+            <span v-else>{{ t('scope.empty_dir') }}</span>
           </div>
 
           <template v-else>
@@ -133,7 +133,7 @@
               type="button"
               class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t1 hover:bg-bg3"
               :class="{ 'text-brand bg-brand/5': modelValue === f.path }"
-              :title="`选中并进入 ${f.path}`"
+              :title="t('scope.tooltip_pick_and_dive', { path: f.path })"
               @click="pickFolder(f)"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -182,8 +182,11 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, h } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { listDocuments, getFolderTree } from '@/api'
 import Spinner from './Spinner.vue'
+
+const { t } = useI18n()
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -204,7 +207,7 @@ const scoped = computed(() => !!props.modelValue && props.modelValue !== '/')
 const isFile = computed(() => /\.[a-z0-9]+$/i.test(props.modelValue || ''))
 
 const displayLabel = computed(() => {
-  if (!scoped.value) return '全部文档'
+  if (!scoped.value) return t('scope.all_documents')
   // Show the leaf for compactness; tooltip carries the full path.
   return leaf(props.modelValue)
 })

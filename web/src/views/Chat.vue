@@ -39,7 +39,10 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 <script setup>
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { askQueryStream, createConversation, addMessage, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
+
+const { t } = useI18n()
 import { renderMarkdown } from '@/utils/renderMarkdown'
 // Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
 // clicks a citation. Without this the whole library + worker JS sit in
@@ -689,7 +692,7 @@ function onTraceClick(m) {
               <PathScopePicker v-model="pathFilter" />
             </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
-              <textarea v-model="input" @keydown="onKey" placeholder="Ask a question..." rows="2"
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 40px; max-height: 120px" autofocus />
               <button @click="send()" :disabled="!input.trim()"
@@ -698,7 +701,7 @@ function onTraceClick(m) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>
-            <div class="text-center mt-2 text-[10px] text-t3">ForgeRAG may make mistakes. Verify important information.</div>
+            <div class="text-center mt-2 text-[10px] text-t3">{{ t('chat.may_make_mistakes') }}</div>
           </div>
         </div>
       </div>
@@ -849,14 +852,14 @@ function onTraceClick(m) {
               <PathScopePicker v-model="pathFilter" />
             </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
-              <textarea v-model="input" @keydown="onKey" placeholder="Ask a follow-up..." rows="1"
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
                 @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />
               <!-- Stop button while streaming -->
               <button v-if="streaming" @click="stopGeneration()"
                 class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-bg3 hover:bg-bg3/80 text-t1 transition-colors"
-                title="Stop generation">
+                :title="t('chat.stop_generation')">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
               </button>
               <!-- Send button -->
