@@ -892,13 +892,6 @@ function onTraceClick(m) {
 @keyframes fadein { from { opacity: 0; transform: translateY(4px) } }
 
 /* ── Markdown body styles ── */
-/* Localize each message's reflow scope so the panel's width
-   transition doesn't trigger O(N) chat-tree relayout per frame.
-   ``contain: layout style`` tells the browser this subtree's
-   internal layout/style cannot affect ancestors or siblings — so a
-   parent width change only triggers reflow within each .msg-body
-   independently, not the whole scroll list as one big tree. */
-.msg-body { contain: layout style; }
 .msg-body :deep(p) { margin: 0.4em 0; }
 .msg-body :deep(p:first-child) { margin-top: 0; }
 .msg-body :deep(p:last-child) { margin-bottom: 0; }
@@ -962,24 +955,22 @@ function onTraceClick(m) {
 .phase-in { animation: phaseIn .15s ease; }
 @keyframes phaseIn { from { opacity: 0; } to { opacity: 1; } }
 
-/* Slide panels animate ``width`` so the chat shrinks/grows
-   *gradually* alongside the panel sliding in/out. The earlier
-   ``transform`` version was buttery-smooth on the panel itself, but
-   the chat snapped from 100% → 55% the instant the panel entered
-   flex space — a jarring step right at the start (and again at end
-   on close). Animating width keeps both sides synchronized.
+/* Slide panels animate ``transform`` (compositor, no per-frame reflow)
+   instead of ``width`` (main-thread layout × 12+ frames at 60fps).
+   The chat still reflows once when the panel enters/leaves flex space
+   (v-if true/false), but the slide itself runs on the GPU. With
+   ``width`` animation, every frame of the 200ms slide forced full
+   chat reflow → the markdown body + cite chips + code blocks made it
+   stutter visibly.
 
-   The per-frame reflow cost is bounded by:
-   – ``@after-enter`` defers PdfViewer mount until after slide-in,
-     so pdfjs-dist isn't instantiating mid-animation.
-   – ``contain: layout style`` on each ``.msg-body`` (defined above)
-     keeps each message's reflow scope local — a width tick on the
-     chat container only re-lays-out individual messages, not the
-     entire scroll list as one giant subtree. */
+   Note: ``will-change: transform`` hints the browser to promote the
+   panel to its own layer up-front; without it the first frame of the
+   slide stutters as a layer is created on demand. */
 .slide-trace-enter-active, .slide-trace-leave-active,
 .slide-pdf-enter-active,   .slide-pdf-leave-active {
-  transition: width .2s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+  transition: transform .2s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+  will-change: transform;
 }
-.slide-trace-enter-from, .slide-trace-leave-to { width: 0 !important; opacity: 0; }
-.slide-pdf-enter-from,   .slide-pdf-leave-to   { width: 0 !important; opacity: 0; }
+.slide-trace-enter-from, .slide-trace-leave-to { transform: translateX(-100%); opacity: 0; }
+.slide-pdf-enter-from,   .slide-pdf-leave-to   { transform: translateX(100%);  opacity: 0; }
 </style>
