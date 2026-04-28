@@ -13,12 +13,13 @@
 -->
 <template>
   <div ref="rootEl" class="relative">
-    <!-- Trigger card (always visible at sidebar bottom) -->
+    <!-- Trigger card: defined card-look at rest (border + bg), so it
+         reads as a tappable surface even before hover. -->
     <button
       v-if="me"
       type="button"
-      class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md transition-colors"
-      :class="open ? 'bg-bg3' : 'hover:bg-bg3'"
+      class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border border-line bg-bg hover:bg-bg3 transition-colors"
+      :class="{ '!bg-bg3': open }"
       @click="toggle"
     >
       <span
@@ -38,17 +39,16 @@
       </svg>
     </button>
 
-    <!-- Popup panel: card-style sections separated by gap (no dividers).
-         GitHub + version live in the sidebar wordmark area now, since
-         they're product-identity info and don't belong with the
-         user's own settings. -->
+    <!-- Popup panel: original divider style — sections separated by
+         border-b lines, single flat bg. (GitHub + version live in
+         the sidebar wordmark row now, so they're not in here.) -->
     <Transition name="popup">
       <div
         v-if="open"
-        class="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-line bg-bg shadow-lg p-1.5 space-y-1.5 z-30"
+        class="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-line bg-bg shadow-lg overflow-hidden z-30"
       >
-        <!-- ── Card: Language ──────────────────────────────────────── -->
-        <div class="rounded-lg bg-bg3/60 px-2.5 pt-2 pb-2">
+        <!-- ── Section: Language ───────────────────────────────────── -->
+        <div class="px-3 pt-2.5 pb-2 border-b border-line">
           <div class="text-[10px] uppercase tracking-wider text-t3 mb-1.5">{{ t('user_menu.language') }}</div>
           <div class="flex gap-1">
             <button
@@ -58,14 +58,14 @@
               class="flex-1 px-2 py-1 rounded text-[12px] transition-colors"
               :class="currentLocale === loc.code
                 ? 'bg-brand text-white'
-                : 'bg-bg text-t2 hover:bg-bg2'"
+                : 'text-t2 hover:bg-bg3 border border-line'"
               @click="onSetLocale(loc.code)"
             >{{ loc.label }}</button>
           </div>
         </div>
 
-        <!-- ── Card: Theme ─────────────────────────────────────────── -->
-        <div class="rounded-lg bg-bg3/60 px-2.5 pt-2 pb-2">
+        <!-- ── Section: Theme ──────────────────────────────────────── -->
+        <div class="px-3 py-2 border-b border-line">
           <div class="text-[10px] uppercase tracking-wider text-t3 mb-1.5">{{ t('user_menu.theme') }}</div>
           <div class="flex gap-1">
             <button
@@ -73,7 +73,7 @@
               class="flex-1 px-2 py-1 rounded text-[12px] flex items-center justify-center gap-1.5 transition-colors"
               :class="!isDark
                 ? 'bg-brand text-white'
-                : 'bg-bg text-t2 hover:bg-bg2'"
+                : 'text-t2 hover:bg-bg3 border border-line'"
               @click="onSetTheme('light')"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -87,7 +87,7 @@
               class="flex-1 px-2 py-1 rounded text-[12px] flex items-center justify-center gap-1.5 transition-colors"
               :class="isDark
                 ? 'bg-brand text-white'
-                : 'bg-bg text-t2 hover:bg-bg2'"
+                : 'text-t2 hover:bg-bg3 border border-line'"
               @click="onSetTheme('dark')"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -98,10 +98,10 @@
           </div>
         </div>
 
-        <!-- ── Card: Sign out ──────────────────────────────────────── -->
+        <!-- ── Section: Sign out ───────────────────────────────────── -->
         <button
           type="button"
-          class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg bg-bg3/60 text-[12px] text-t2 hover:bg-bg3 transition-colors"
+          class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t2 hover:bg-bg3 transition-colors"
           @click="onLogout"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
