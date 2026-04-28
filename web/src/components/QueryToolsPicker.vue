@@ -1,9 +1,15 @@
 <!--
   QueryToolsPicker — sets per-query overrides (Tools panel).
-  Phase 1 controls:
-    • Reasoning effort: Default / Low / Medium / High / Off
-    • Temperature: Default + slider (0 - 2)
+  UI exposes only the toggles a casual user actually flips:
+    • Thinking: Default / Off / On
     • Web search: placeholder ("coming soon")
+
+  ``reasoning_effort`` / ``temperature`` / ``max_tokens`` are still
+  accepted by the backend schema (``api/schemas.py:GenerationOverrides``)
+  and forwarded to LiteLLM, so power-user paths — direct API calls,
+  yaml ``cfg.reasoning_effort`` / ``cfg.temperature``, scripts —
+  continue to work. They're just not part of the chat UI to keep
+  the popup focused on the two switches users actually toggle.
 
   Mirrors PathScopePicker's structure: a borderless badge trigger +
   popup that floats up. The trigger label flips to the active i18n
@@ -48,7 +54,7 @@
     <Transition name="popup">
       <div
         v-if="open"
-        class="absolute bottom-full left-0 mb-1.5 w-[300px] rounded-xl border border-line bg-bg shadow-lg py-1.5 z-20"
+        class="absolute bottom-full left-0 mb-1.5 w-[260px] rounded-xl border border-line bg-bg shadow-lg py-1.5 z-20"
       >
         <!-- Thinking: explicit on/off/default toggle -->
         <div class="px-3 py-1.5" :title="t('tools.thinking_hint')">
@@ -67,62 +73,6 @@
               @click="thinking = opt.value"
             >{{ opt.label }}</button>
           </div>
-        </div>
-
-        <!-- Reasoning effort (intensity dial — orthogonal to thinking on/off) -->
-        <div class="px-3 py-1.5" :title="t('tools.effort_hint')">
-          <div class="flex items-center justify-between mb-1.5">
-            <span class="text-[12px] text-t1">{{ t('tools.reasoning_effort') }}</span>
-          </div>
-          <div class="grid grid-cols-4 gap-0.5 p-0.5 rounded-md border border-line">
-            <button
-              v-for="opt in effortOptions"
-              :key="opt.value ?? 'default'"
-              type="button"
-              class="px-1 py-0.5 rounded text-[11px] transition-colors"
-              :class="effort === opt.value
-                ? 'bg-bg3 text-t1'
-                : 'text-t3 hover:text-t2'"
-              @click="effort = opt.value"
-            >{{ opt.label }}</button>
-          </div>
-        </div>
-
-        <!-- Temperature: Default chip + slider, mutually exclusive.
-             Click ``Default`` → slider greys out, backend gets null
-             (use cfg default). Move slider → Default deselects, the
-             chosen number is sent. -->
-        <div class="px-3 py-1.5">
-          <div class="flex items-center justify-between gap-2 mb-1.5">
-            <div class="flex items-center gap-2">
-              <span class="text-[12px] text-t1">{{ t('tools.temperature') }}</span>
-              <button
-                type="button"
-                class="px-1.5 py-0.5 rounded text-[10px] transition-colors"
-                :class="temperature == null
-                  ? 'bg-bg3 text-t1'
-                  : 'text-t3 hover:text-t2 border border-line'"
-                @click="temperature = null"
-              >{{ t('tools.temperature_default') }}</button>
-            </div>
-            <span class="text-[11px] text-t3 tabular-nums">
-              {{ temperature == null ? '—' : temperature.toFixed(1) }}
-            </span>
-          </div>
-          <input
-            type="range"
-            min="0" max="2" step="0.1"
-            :value="temperature ?? 1.0"
-            @input="onTemperatureInput"
-            class="w-full h-1 bg-bg3 rounded-full appearance-none cursor-pointer transition-opacity
-                   [&::-webkit-slider-thumb]:appearance-none
-                   [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
-                   [&::-webkit-slider-thumb]:rounded-full
-                   [&::-webkit-slider-thumb]:bg-t1
-                   [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-line"
-            :class="{ 'opacity-40': temperature == null }"
-          />
-          <div class="text-[10px] text-t3 mt-0.5">{{ t('tools.temperature_hint') }}</div>
         </div>
 
         <!-- Web search: placeholder, disabled -->
@@ -151,55 +101,41 @@ const emit = defineEmits(['update:modelValue'])
 const open = ref(false)
 const rootEl = ref(null)
 
-// Local state — synced TO/FROM modelValue.
-// ``thinking`` is tri-state: null (default) / true (on) / false (off).
+// Local state — only the toggles the UI exposes. Other override
+// fields (reasoning_effort, temperature, max_tokens) flow through
+// ``modelValue`` if a caller sets them, but the popup doesn't show
+// them; they're controllable via API / yaml only.
 const thinking = ref(typeof props.modelValue?.thinking === 'boolean' ? props.modelValue.thinking : null)
-const effort = ref(props.modelValue?.reasoning_effort ?? null)
-const temperature = ref(
-  typeof props.modelValue?.temperature === 'number' ? props.modelValue.temperature : null,
-)
 
 const thinkingOptions = computed(() => [
   { value: null,  label: t('tools.thinking_default') },
   { value: false, label: t('tools.thinking_off') },
   { value: true,  label: t('tools.thinking_on') },
 ])
-const effortOptions = computed(() => [
-  { value: null,     label: t('tools.effort_default') },
-  { value: 'low',    label: t('tools.effort_low') },
-  { value: 'medium', label: t('tools.effort_medium') },
-  { value: 'high',   label: t('tools.effort_high') },
-])
 
-// Trigger highlights when any field is non-default
-const isCustom = computed(() =>
-  thinking.value != null || effort.value != null || temperature.value != null,
-)
+// Trigger highlights when any UI-exposed field is non-default.
+// (Other override fields can also be set programmatically — they
+// don't light the icon since the user has no UI for them anyway.)
+const isCustom = computed(() => thinking.value != null)
 
-// Emit aggregated overrides ({} → null so API layer can omit the field).
-watch([thinking, effort, temperature], () => {
-  const out = {}
+// Emit: preserve any non-UI fields the parent set (so API callers
+// can ship reasoning_effort + temperature alongside thinking) while
+// updating the bits we own.
+watch(thinking, () => {
+  const passthrough = { ...(props.modelValue || {}) }
+  delete passthrough.thinking
+  const out = { ...passthrough }
   if (thinking.value != null) out.thinking = thinking.value
-  if (effort.value != null) out.reasoning_effort = effort.value
-  if (temperature.value != null) out.temperature = temperature.value
   emit('update:modelValue', Object.keys(out).length ? out : null)
-}, { deep: false })
+})
 
-// External resets (e.g. parent clearing) sync back to local.
+// External resets sync back.
 watch(() => props.modelValue, (v) => {
   thinking.value = typeof v?.thinking === 'boolean' ? v.thinking : null
-  effort.value = v?.reasoning_effort ?? null
-  temperature.value = typeof v?.temperature === 'number' ? v.temperature : null
 })
 
 function toggle() { open.value = !open.value }
 function close() { open.value = false }
-
-function onTemperatureInput(e) {
-  // Slider always emits a number, but we want to allow "null" (default)
-  // by tapping the reset button. Here we just record the value.
-  temperature.value = parseFloat(e.target.value)
-}
 
 // Click-outside
 function onDocClick(e) {
