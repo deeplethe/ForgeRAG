@@ -446,9 +446,7 @@ class Store:
         if not doc_ids:
             return []
         with self._session() as s:
-            rows = s.execute(
-                select(Document).where(Document.doc_id.in_(list(doc_ids)))
-            ).scalars().all()
+            rows = s.execute(select(Document).where(Document.doc_id.in_(list(doc_ids)))).scalars().all()
             by_id = {r.doc_id: _doc_to_dict(r) for r in rows}
             return [by_id[d] for d in doc_ids if d in by_id]
 
