@@ -20,11 +20,12 @@
     <!-- Icon-only trigger: ``Tools`` label + chevron would duplicate
          the path picker's anatomy without adding info (the label
          "Tools" doesn't carry data the way "/legal/2024" does for
-         the path picker). Tooltip carries discoverability; the brand
-         dot signals "you have non-default settings". -->
+         the path picker). Tooltip carries discoverability; the
+         icon turns brand-colored when ANY override is set, so the
+         non-default state is glanceable without a separate dot. -->
     <button
       type="button"
-      class="relative flex items-center justify-center w-7 h-7 rounded-md bg-bg3/70 text-t2 hover:bg-bg3 transition-colors"
+      class="flex items-center justify-center w-7 h-7 rounded-md bg-bg3/70 text-t2 hover:bg-bg3 transition-colors"
       :class="{ 'text-brand': isCustom, '!bg-bg3': open }"
       :title="t('tools.tooltip')"
       :aria-label="t('tools.label')"
@@ -42,10 +43,6 @@
         <line x1="9"  y1="8"  x2="15" y2="8"/>
         <line x1="17" y1="16" x2="23" y2="16"/>
       </svg>
-      <span
-        v-if="isCustom"
-        class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-brand"
-      />
     </button>
 
     <Transition name="popup">
@@ -135,15 +132,6 @@
             <span class="text-[10px] text-t3 italic">{{ t('tools.web_search_coming_soon') }}</span>
           </div>
         </div>
-
-        <!-- Reset all -->
-        <div v-if="isCustom" class="px-3 py-1.5 border-t border-line">
-          <button
-            type="button"
-            class="w-full text-[11px] text-t2 hover:text-t1 text-center py-1 rounded hover:bg-bg3 transition-colors"
-            @click="resetAll"
-          >{{ t('tools.reset') }}</button>
-        </div>
       </div>
     </Transition>
   </div>
@@ -211,12 +199,6 @@ function onTemperatureInput(e) {
   // Slider always emits a number, but we want to allow "null" (default)
   // by tapping the reset button. Here we just record the value.
   temperature.value = parseFloat(e.target.value)
-}
-
-function resetAll() {
-  thinking.value = null
-  effort.value = null
-  temperature.value = null
 }
 
 // Click-outside
