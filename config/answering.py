@@ -29,45 +29,41 @@ class GeneratorConfig(BaseModel):
     max_tokens: int | None = None
     timeout: float = 60.0
 
-    # ── Provider-specific reasoning / thinking-mode controls ──────
-    # Passed through verbatim to ``litellm.completion`` as kwargs.
-    # ``extra_body`` (when present) is deep-merged with any existing
-    # value rather than replaced. Examples per provider:
+    # ── Reasoning / thinking-mode (LiteLLM cross-provider abstractions) ──
+    # LiteLLM ≥1.83 already routes these per provider, so we just expose
+    # them as typed fields and let LiteLLM translate. No per-provider
+    # logic here.
     #
-    #   # DeepSeek V4-Pro (hybrid) — TURN OFF thinking for fast path:
-    #   reasoning:
+    #   reasoning_effort: low / medium / high (and "disable" for Gemini,
+    #     "none" for Anthropic). DeepSeek treats any value as "enabled"
+    #     and ignores intensity. OpenAI o-series and xAI accept it
+    #     natively. ``None`` (default) = don't pass → each provider's
+    #     default behaviour.
+    #
+    #   thinking: ``{"type": "enabled", "budget_tokens": 16000}``-shape
+    #     dict. Anthropic accepts the full shape; DeepSeek accepts only
+    #     ``{"type": "enabled"}`` and ignores budget_tokens; other
+    #     providers ignore it entirely. ``None`` (default) = don't pass.
+    #
+    # Examples:
+    #   reasoning_effort: high                              # any provider
+    #   thinking: {type: enabled, budget_tokens: 16000}     # Anthropic
+    #
+    # Edge case: DeepSeek's LiteLLM route doesn't surface "disable".
+    # To turn DeepSeek thinking OFF, fall back to ``extra_kwargs``:
+    #   extra_kwargs:
     #     extra_body:
-    #       thinking:
-    #         type: disabled
-    #
-    #   # DeepSeek V4-Pro — explicit thinking ON with high effort:
-    #   reasoning:
-    #     reasoning_effort: high
-    #     extra_body:
-    #       thinking:
-    #         type: enabled
-    #
-    #   # Anthropic Claude (3.7+ / 4) — extended thinking with budget:
-    #   reasoning:
-    #     thinking:
-    #       type: enabled
-    #       budget_tokens: 16000
-    #
-    #   # OpenAI o-series / xAI Grok — three-step effort dial:
-    #   reasoning:
-    #     reasoning_effort: high
-    #
-    #   # Gemini 2.5 — explicit thinking budget + expose thoughts:
-    #   reasoning:
-    #     thinking_config:
-    #       thinking_budget: 8000
-    #       include_thoughts: true
-    #
-    # Default ``{}`` = forward nothing → each provider's own default
-    # behaviour applies. Note: DeepSeek-Reasoner (R1) ignores the
-    # toggle and always thinks; switch to ``deepseek-v4-pro`` (hybrid)
-    # or ``deepseek-chat`` (non-thinking) if you need control.
-    reasoning: dict[str, Any] = Field(default_factory=dict)
+    #       thinking: {type: disabled}
+    reasoning_effort: Literal[
+        "none", "minimal", "low", "medium", "high", "xhigh", "default", "disable"
+    ] | None = None
+    thinking: dict[str, Any] | None = None
+
+    # Escape hatch for any other LiteLLM kwarg: ``top_p`` /
+    # ``frequency_penalty`` / ``presence_penalty`` / ``extra_body`` /
+    # ``mock_response`` / ``fallbacks`` / etc. Applied LAST so it can
+    # override anything above. Default ``{}`` = forward nothing.
+    extra_kwargs: dict[str, Any] = Field(default_factory=dict)
     # Authentication: use ONE of api_key (plaintext in yaml) or
     # api_key_env (name of an env var). api_key takes precedence.
     api_key: str | None = None

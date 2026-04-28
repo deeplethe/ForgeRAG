@@ -114,11 +114,16 @@ class LiteLLMGenerator:
         if self._api_key:
             kwargs["api_key"] = self._api_key
 
-        # Splat per-provider reasoning kwargs verbatim (e.g.
-        # reasoning_effort, thinking, extra_body, enable_thinking).
-        # Empty dict (default) → forward nothing, provider's own default.
-        if self.cfg.reasoning:
-            _merge_reasoning_kwargs(kwargs, self.cfg.reasoning)
+        # Reasoning controls — LiteLLM handles the per-provider routing,
+        # so we just forward the typed fields verbatim and let it translate.
+        if self.cfg.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+        if self.cfg.thinking is not None:
+            kwargs["thinking"] = self.cfg.thinking
+        # Escape hatch for everything else (top_p, extra_body, ...).
+        # Applied last so it can override the typed fields above.
+        if self.cfg.extra_kwargs:
+            kwargs.update(self.cfg.extra_kwargs)
 
         max_retries = getattr(self.cfg, "max_retries", 3)
         retry_delay = getattr(self.cfg, "retry_base_delay", 1.0)
@@ -179,8 +184,13 @@ class LiteLLMGenerator:
             kwargs["api_key"] = self._api_key
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
-        if self.cfg.reasoning:
-            _merge_reasoning_kwargs(kwargs, self.cfg.reasoning)
+        # Reasoning controls — see ``generate`` for explanation.
+        if self.cfg.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+        if self.cfg.thinking is not None:
+            kwargs["thinking"] = self.cfg.thinking
+        if self.cfg.extra_kwargs:
+            kwargs.update(self.cfg.extra_kwargs)
 
         full_text = ""
         full_thinking = ""
@@ -242,37 +252,6 @@ class LiteLLMGenerator:
                 "cited_ids": extract_cited_ids(full_text),
                 "error": str(e),
             }
-
-
-# ---------------------------------------------------------------------------
-# Reasoning kwargs merge
-# ---------------------------------------------------------------------------
-
-
-def _merge_reasoning_kwargs(kwargs: dict, reasoning: dict) -> None:
-    """Splat per-provider reasoning controls onto the LiteLLM kwargs.
-
-    Most fields go through as top-level kwargs (``reasoning_effort``,
-    ``thinking``, ``thinking_config``, ``enable_thinking``, etc.).
-
-    ``extra_body`` is special: providers like DeepSeek tunnel
-    custom controls under it (``extra_body={"thinking": {...}}``),
-    and it can already exist in ``kwargs`` from an earlier code
-    path. Deep-merge instead of overwriting so multiple sources
-    coexist.
-    """
-    for k, v in reasoning.items():
-        if k == "extra_body" and isinstance(v, dict):
-            existing = kwargs.get("extra_body")
-            if isinstance(existing, dict):
-                merged = {**existing}
-                for ek, ev in v.items():
-                    merged[ek] = ev
-                kwargs["extra_body"] = merged
-            else:
-                kwargs["extra_body"] = dict(v)
-        else:
-            kwargs[k] = v
 
 
 # ---------------------------------------------------------------------------
