@@ -235,7 +235,17 @@ class AnsweringPipeline:
             return answer
 
         t1 = time.time()
-        gen_result = self.generator.generate(messages)
+        with _tracer.start_as_current_span("forgerag.generation") as _gen_span:
+            _gen_span.set_attribute("forgerag.model", self.cfg.generator.model)
+            _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
+            _gen_span.set_attribute("forgerag.stream", False)
+            gen_result = self.generator.generate(messages)
+            if gen_result.get("usage"):
+                for _k, _v in gen_result["usage"].items():
+                    if isinstance(_v, (int, float, str, bool)):
+                        _gen_span.set_attribute(f"forgerag.usage.{_k}", _v)
+            if gen_result.get("finish_reason"):
+                _gen_span.set_attribute("forgerag.finish_reason", gen_result["finish_reason"])
         t2 = time.time()
         stats["generate_ms"] = int((t2 - t1) * 1000)
         stats["total_ms"] = int((t2 - t0) * 1000)
@@ -781,82 +791,104 @@ class AnsweringPipeline:
 
         full_thinking = ""
         try:
-            for chunk in self.generator.generate_stream(messages):
-                if chunk["type"] == "delta":
-                    full_text += chunk["delta"]
-                    yield {"event": "delta", "data": {"text": chunk["delta"]}}
-                elif chunk["type"] == "thinking":
-                    # Reasoning content (V4-Pro thinking mode etc.). Stream
-                    # to the UI so the user sees what the model is
-                    # considering during long generation.
-                    full_thinking += chunk["delta"]
-                    yield {"event": "thinking", "data": {"text": chunk["delta"]}}
-                elif chunk["type"] == "done":
-                    full_text = chunk.get("text", full_text)
-                    full_thinking = chunk.get("thinking", full_thinking)
-                    _cited_ids = set(chunk.get("cited_ids") or [])
-                    _gen_model = chunk.get("model", _gen_model)
-                    _finish_reason = chunk.get("finish_reason", "stop")
-                    citations_used = [c for c in used_in_prompt if c.citation_id in _cited_ids]
-                    stats["generate_ms"] = int((time.time() - t0) * 1000)
-                    if full_thinking:
-                        # Land the model's reasoning text in the trace so
-                        # it's available for the trace viewer / debug
-                        # endpoints alongside the final answer.
-                        stats["reasoning_text"] = full_thinking
+            # Wrap the streaming loop in a ``forgerag.generation`` span so
+            # the trace viewer attributes the LLM stream's wall time to
+            # this phase. Without this, only the LiteLLM HTTP POST (a few
+            # hundred ms for the request handshake) was instrumented —
+            # the long tail of streamed-token reading (often the bulk of
+            # the request) showed up as untraced gap on the root span.
+            # The span survives generator yields: contextvars persist
+            # across ``yield`` within a single generator, and any thread
+            # hop only affects child-span parenting, not the parent's
+            # measured duration (start/end use a monotonic clock).
+            with _tracer.start_as_current_span("forgerag.generation") as _gen_span:
+                _gen_span.set_attribute("forgerag.model", _gen_model)
+                _gen_span.set_attribute("forgerag.stream", True)
+                _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
+                for chunk in self.generator.generate_stream(messages):
+                    if chunk["type"] == "delta":
+                        full_text += chunk["delta"]
+                        yield {"event": "delta", "data": {"text": chunk["delta"]}}
+                    elif chunk["type"] == "thinking":
+                        # Reasoning content (V4-Pro thinking mode etc.).
+                        # Stream to the UI so the user sees what the model
+                        # is considering during long generation.
+                        full_thinking += chunk["delta"]
+                        yield {"event": "thinking", "data": {"text": chunk["delta"]}}
+                    elif chunk["type"] == "done":
+                        full_text = chunk.get("text", full_text)
+                        full_thinking = chunk.get("thinking", full_thinking)
+                        _cited_ids = set(chunk.get("cited_ids") or [])
+                        _gen_model = chunk.get("model", _gen_model)
+                        _finish_reason = chunk.get("finish_reason", "stop")
+                        citations_used = [c for c in used_in_prompt if c.citation_id in _cited_ids]
+                        stats["generate_ms"] = int((time.time() - t0) * 1000)
+                        if full_thinking:
+                            # Land the model's reasoning text in the trace so
+                            # it's available for the trace viewer / debug
+                            # endpoints alongside the final answer.
+                            stats["reasoning_text"] = full_thinking
 
-                    # Pre-allocate the trace UUID so it can flow into the
-                    # done event the client sees, but defer the actual
-                    # ``_persist_trace`` + ``_save_turn`` writes to ``ask_stream``
-                    # — done after the root span closes, so the persisted
-                    # trace_json captures every nested span.
-                    answer = Answer(
-                        query=query,
-                        text=full_text,
-                        citations_used=citations_used,
-                        citations_all=retrieval_result.citations,
-                        model=_gen_model,
-                        finish_reason=_finish_reason,
-                        stats=stats,
-                    )
-                    tid = uuid4().hex
-                    if _pending_persist is not None:
-                        _pending_persist.update({
-                            "tid": tid,
-                            "answer": answer,
-                            "retrieval": retrieval_result,
-                            "conversation_id": conversation_id,
-                            "query": query,
-                        })
-                    _persisted = True
+                        # Pre-allocate the trace UUID so it can flow into the
+                        # done event the client sees, but defer the actual
+                        # ``_persist_trace`` + ``_save_turn`` writes to ``ask_stream``
+                        # — done after the root span closes, so the persisted
+                        # trace_json captures every nested span.
+                        answer = Answer(
+                            query=query,
+                            text=full_text,
+                            citations_used=citations_used,
+                            citations_all=retrieval_result.citations,
+                            model=_gen_model,
+                            finish_reason=_finish_reason,
+                            stats=stats,
+                        )
+                        tid = uuid4().hex
+                        if _pending_persist is not None:
+                            _pending_persist.update({
+                                "tid": tid,
+                                "answer": answer,
+                                "retrieval": retrieval_result,
+                                "conversation_id": conversation_id,
+                                "query": query,
+                            })
+                        _persisted = True
 
-                    yield {
-                        "event": "done",
-                        "data": {
-                            "text": full_text,
-                            "finish_reason": _finish_reason,
-                            "model": _gen_model,
-                            "trace_id": tid,
-                            "citations_used": [
-                                {
-                                    "citation_id": c.citation_id,
-                                    "chunk_id": getattr(c, "chunk_id", ""),
-                                    "doc_id": c.doc_id,
-                                    "file_id": c.file_id,
-                                    "source_file_id": getattr(c, "source_file_id", None),
-                                    "source_format": getattr(c, "source_format", ""),
-                                    "page_no": c.page_no,
-                                    "snippet": c.snippet,
-                                    "score": c.score,
-                                    "highlights": [
-                                        {"page_no": h.page_no, "bbox": list(h.bbox)} for h in (c.highlights or [])
-                                    ],
-                                }
-                                for c in citations_used
-                            ],
-                            "stats": stats,
-                        },
-                    }
+                        yield {
+                            "event": "done",
+                            "data": {
+                                "text": full_text,
+                                "finish_reason": _finish_reason,
+                                "model": _gen_model,
+                                "trace_id": tid,
+                                "citations_used": [
+                                    {
+                                        "citation_id": c.citation_id,
+                                        "chunk_id": getattr(c, "chunk_id", ""),
+                                        "doc_id": c.doc_id,
+                                        "file_id": c.file_id,
+                                        "source_file_id": getattr(c, "source_file_id", None),
+                                        "source_format": getattr(c, "source_format", ""),
+                                        "page_no": c.page_no,
+                                        "snippet": c.snippet,
+                                        "score": c.score,
+                                        "highlights": [
+                                            {"page_no": h.page_no, "bbox": list(h.bbox)} for h in (c.highlights or [])
+                                        ],
+                                    }
+                                    for c in citations_used
+                                ],
+                                "stats": stats,
+                            },
+                        }
+                # Loop completed naturally — record final attributes on the
+                # generation span. Skipped on GeneratorExit / Exception, in
+                # which case the span still captures the truncated wall time
+                # (start/end use a monotonic clock).
+                _gen_span.set_attribute("forgerag.finish_reason", _finish_reason)
+                _gen_span.set_attribute("forgerag.text_chars", len(full_text))
+                if full_thinking:
+                    _gen_span.set_attribute("forgerag.reasoning_chars", len(full_thinking))
         except GeneratorExit:
             # Client disconnected mid-stream — fall through to finally
             log.info("ask_stream: client disconnected during generation")
