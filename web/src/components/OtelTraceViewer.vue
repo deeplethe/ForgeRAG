@@ -425,15 +425,14 @@ const cursorMs = ref(0)
 const scrollTop = ref(0)
 const visibleHeight = ref(0)
 
-const tooltipOffsetY = computed(() => {
-  // Tooltip is positioned within ``cursor-guide`` whose top = scrollTop;
-  // so its local offset = cursorY - scrollTop, but clamped to stay
-  // inside the visible viewport (so the tooltip never disappears off
-  // an edge when the cursor is near top / bottom).
-  const local = cursorY.value - scrollTop.value
-  const max = Math.max(0, visibleHeight.value - 18)
-  return Math.min(Math.max(0, local + 8), max)
-})
+// Tooltip sits at the TOP of the visible viewport (Chrome DevTools
+// Performance pattern) — never overlaps the row the cursor's on. Just
+// 2px in from the top so it doesn't kiss the panel border. The X
+// follows the cursor; only Y is fixed.
+//
+// (We tried "follow cursor Y" — turned out to actively block whatever
+// row the user was reading. Top-pin is calmer and more standard.)
+const tooltipOffsetY = computed(() => 2)
 
 function syncScroll() {
   if (!bodyEl.value) return
