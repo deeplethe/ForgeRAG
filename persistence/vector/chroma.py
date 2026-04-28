@@ -88,12 +88,10 @@ class ChromaStore:
             m = dict(it.metadata)
             m.setdefault("doc_id", it.doc_id)
             m.setdefault("parse_version", it.parse_version)
-            # Denormalize path into metadata so Chroma can filter on it
-            # natively. Subtree match uses ``$or`` of ``{$eq scope}`` +
-            # ``{$contains "<scope>/"}`` (see ``_build_chroma_where``);
-            # FolderService rename keeps this in sync (small ops sync,
-            # large ops via nightly maintenance + OR-fallback at query
-            # time).
+            # Denormalize path into metadata so Chroma can filter
+            # natively via {"path": {"$startswith": "/legal/"}}. FolderService
+            # rename keeps this in sync (small ops synchronously, large ops
+            # via the nightly maintenance queue + OR-fallback at query time).
             if "path" not in m:
                 m["path"] = it.metadata.get("path", "/")
             metadatas.append(m)
@@ -177,21 +175,10 @@ def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
 
     Supported keys:
       - doc_id, parse_version, node_id, content_type, path : exact match
-      - path_prefix : matches a folder subtree OR an exact-path file
-      - path_prefix_or : list of prefixes, OR-combined (deferred-rename
-        fallback: match new_path OR old_path so queries don't lose hits
-        while Chroma lags behind Postgres on a folder rename)
-
-    Path-prefix encoding (Chroma 1.5+ removed ``$startswith``, leaving
-    only ``$contains``/``$not_contains`` plus eq / in / etc.):
-
-        ``$or`` of two clauses against the existing ``path`` metadata —
-            { "$eq":       "/legal" }              # single-doc scope
-            { "$contains": "/legal/" }             # subtree scope
-
-        Trailing slash anchors the substring at a path-component
-        boundary, so ``/leg`` doesn't false-match ``/legal/x.md`` and
-        ``/legal/x`` doesn't false-match ``/legal/x_other``.
+      - path_prefix : emits ``{"path": {"$startswith": pfx}}``
+      - path_prefix_or : a list of prefixes, combined with $or
+        (used by the deferred-rename OR-fallback: match new_path OR old_path
+        so queries don't lose hits while Chroma lags behind Postgres)
 
     Unknown keys are silently dropped to stay forward-compatible with
     the generic pipeline filter shape.
@@ -199,27 +186,18 @@ def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
     if not filter:
         return None
 
-    def _path_subtree(scope: str) -> dict:
-        """``$or`` clause matching either the exact file at ``scope`` or
-        any descendant under ``<scope>/``."""
-        s = scope.rstrip("/")
-        return {"$or": [
-            {"path": {"$eq": s}},
-            {"path": {"$contains": s + "/"}},
-        ]}
-
     clauses: list[dict] = []
     for k, v in filter.items():
         if k == "path_prefix":
             if isinstance(v, str) and v not in ("", "/"):
-                clauses.append(_path_subtree(v))
+                clauses.append({"path": {"$startswith": v.rstrip("/") + "/"}})
             # Root / empty prefix: no constraint (match everything).
             continue
         if k == "path_prefix_or":
             sub = []
             for pfx in v or []:
                 if isinstance(pfx, str) and pfx not in ("", "/"):
-                    sub.append(_path_subtree(pfx))
+                    sub.append({"path": {"$startswith": pfx.rstrip("/") + "/"}})
             if sub:
                 clauses.append({"$or": sub} if len(sub) > 1 else sub[0])
             continue

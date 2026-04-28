@@ -44,7 +44,7 @@ class VectorRetriever:
         filter: dict | None = None,
         path_prefix: str | None = None,
         or_fallback_prefixes: list[str] | None = None,
-        allowed_doc_ids: set[str] | None = None,   # noqa: ARG002 — kept for API stability
+        allowed_doc_ids: set[str] | None = None,
     ) -> VectorResult:
         top_k = top_k if top_k is not None else self.cfg.top_k
 
@@ -55,17 +55,35 @@ class VectorRetriever:
             # Single batched embedding call for all variants
             q_vecs = self.embedder.embed_texts(queries)
 
-            # Compose backend filter. ``path_prefix`` flows through to the
-            # vector store as a denormalised path scope; ``_build_chroma_where``
-            # translates it into a Chroma 1.5-compatible
-            # ``path_index $contains "|<prefix>|"`` query that matches at
-            # path-component boundaries (so ``/leg`` won't false-match
-            # ``/legal/...``). See ``persistence/vector/chroma.py``.
+            # Compose backend filter:
+            #   - base filter (default_filter or user-supplied, minus our reserved key)
+            #   - When the path scope was resolved into a concrete
+            #     ``allowed_doc_ids`` set (which it always is when
+            #     ``path_filter`` is set), prefer ``doc_id IN <set>`` over
+            #     ``path_prefix``. Reasons:
+            #       1. Universal compatibility — every vector backend
+            #          (Chroma, pgvector, qdrant, weaviate, milvus) supports
+            #          ``IN`` over a metadata field; not all support
+            #          string-prefix matchers (Chroma ≥1.5 dropped
+            #          ``$startswith``, leaving only ``$contains``).
+            #       2. Cheaper at search time — IN filters can prune
+            #          embeddings before distance computation; substring
+            #          matches typically can't.
+            #     Fall back to ``path_prefix`` only when no allowed_doc_ids
+            #     is supplied (legacy callers / no path scope).
             vector_filter: dict[str, Any] = {}
             base = filter or self.cfg.default_filter
             if base:
                 vector_filter = {k: v for k, v in base.items() if k != "_path_filter"}
-            if path_prefix:
+            if allowed_doc_ids is not None:
+                # An explicit empty set means "scope resolved to no docs"
+                # (e.g. a folder that's been emptied). Surface as no hits.
+                if not allowed_doc_ids:
+                    span.set_attribute("forgerag.scope.empty", True)
+                    return VectorResult(hits=[], raw_hits=[])
+                vector_filter["doc_id"] = list(allowed_doc_ids)
+                span.set_attribute("forgerag.scope.doc_count", len(allowed_doc_ids))
+            elif path_prefix:
                 vector_filter["path_prefix"] = path_prefix
                 if or_fallback_prefixes:
                     vector_filter["path_prefix_or"] = list(or_fallback_prefixes)
