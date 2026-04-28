@@ -421,6 +421,80 @@ class AnsweringPipeline:
         stats: dict = {}
         t0 = time.time()
 
+        # ── Failure-handling state (must be valid when ``_emit_failure`` ──
+        # fires, even if retrieval throws before generation begins). The
+        # generation loop further down may reassign these as work progresses.
+        _persisted = False
+        _gen_model = self.cfg.generator.model
+        _finish_reason = "incomplete"
+        _cited_ids: set = set()
+        full_text = ""
+        full_thinking = ""
+        used_in_prompt: list = []
+        # Pre-declare so ``_emit_failure`` can ``nonlocal`` it — bound below
+        # by the retrieval branch when retrieval succeeds.
+        retrieval_result = None
+
+        def _emit_failure(e):
+            """Generator helper: emit ``error`` + ``done`` SSE events and
+            populate ``_pending_persist`` so ``ask_stream`` saves a failure
+            trace + ``[Error] …`` assistant message.
+
+            Used at every inline retrieval/prompt-build raise point AND in
+            the catch-all ``except Exception`` at the bottom — without this,
+            retrieval failures bubbled up to the route layer with only an
+            ``error`` event (no matching ``done``, no persisted trace, no
+            assistant entry → conversation hung with the user's question).
+            """
+            nonlocal _persisted
+            error_msg = str(e) or type(e).__name__
+            error_text = f"[Error] {error_msg}"
+            tid = None
+            try:
+                stats["generate_ms"] = int((time.time() - t0) * 1000)
+                stats["error"] = error_msg
+                _err_retrieval = retrieval_result
+                _err_citations_all = (
+                    list(_err_retrieval.citations) if _err_retrieval is not None else []
+                )
+                _err_answer = Answer(
+                    query=query,
+                    text=error_text,
+                    citations_used=[],
+                    citations_all=_err_citations_all,
+                    model=_gen_model,
+                    finish_reason="error",
+                    stats=stats,
+                )
+                tid = uuid4().hex
+                if _pending_persist is not None:
+                    _pending_persist.update(
+                        {
+                            "tid": tid,
+                            "answer": _err_answer,
+                            "retrieval": _err_retrieval,
+                            "conversation_id": conversation_id,
+                            "query": query,
+                        }
+                    )
+                _persisted = True
+            except Exception as inner_ex:
+                log.warning("failed to populate failure trace: %s", inner_ex)
+            try:
+                yield {"event": "error", "data": error_msg}
+                yield {
+                    "event": "done",
+                    "data": {
+                        "text": error_text,
+                        "finish_reason": "error",
+                        "error": error_msg,
+                        "trace_id": tid,
+                        "model": _gen_model,
+                    },
+                }
+            except GeneratorExit:
+                pass
+
         # Persist user message immediately so it's never lost,
         # even if the client disconnects mid-retrieval.
         _user_msg_id = None
@@ -606,9 +680,13 @@ class AnsweringPipeline:
             t.join(timeout=300)
 
             if _retrieval_error[0] is not None:
-                raise _retrieval_error[0]
+                yield from _emit_failure(_retrieval_error[0])
+                return
             if _retrieval_result[0] is None:
-                raise RuntimeError("Retrieval returned no result (timeout or internal error)")
+                yield from _emit_failure(
+                    RuntimeError("Retrieval returned no result (timeout or internal error)")
+                )
+                return
             retrieval_result = _retrieval_result[0]
             stats["retrieval"] = retrieval_result.stats
 
@@ -783,14 +861,12 @@ class AnsweringPipeline:
             # Client disconnected mid-stream — fall through to finally
             log.info("ask_stream: client disconnected during generation")
         except Exception as e:
-            log.error("ask_stream failed: %s", e)
-            try:
-                yield {"event": "error", "data": str(e)}
-                yield {"event": "done", "data": {"text": "", "finish_reason": "error", "error": str(e)}}
-            except GeneratorExit:
-                pass
+            log.exception("ask_stream failed: %s", e)
+            yield from _emit_failure(e)
         finally:
-            # Persist even if client disconnected, so the answer isn't lost
+            # Persist even if client disconnected, so the answer isn't lost.
+            # Only fires for successful-but-interrupted generation; failure
+            # paths populate ``_pending_persist`` directly in ``except``.
             if not _persisted and full_text.strip():
                 try:
                     stats["generate_ms"] = int((time.time() - t0) * 1000)
