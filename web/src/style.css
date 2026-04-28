@@ -58,8 +58,12 @@
      pure black. Same token names, same semantics, every theme. */
   --color-bg:  #ffffff;           /* card / panel surface */
   --color-bg2: #fafafa;           /* page canvas / sidebar */
-  --color-bg3: #f4f4f5;           /* hover / selected */
+  --color-bg3: #f4f4f5;           /* hover */
   --color-bg-hover: #f4f4f5;      /* bwd-compat alias for bg3 */
+  /* Selected row — one notch darker than bg3 so "active" reads as
+     stronger than "hovering". Only used where contrast between hover
+     and selected was previously too subtle (sidebar tabs, etc.). */
+  --color-bg-selected: #e8e8eb;
 
   --color-line:  #eaeaea;         /* default 1px border */
   --color-line2: #d4d4d8;         /* stronger border (hover / focus) */
@@ -131,8 +135,11 @@
      numerical lightness from light mode but identical semantics. */
   --color-bg:  #0a0a0a;           /* card surface (slightly lifted) */
   --color-bg2: #000000;           /* page canvas (pure black) */
-  --color-bg3: #1f1f1f;           /* hover / selected */
+  --color-bg3: #1f1f1f;           /* hover */
   --color-bg-hover: #1f1f1f;
+  /* Dark-mode "selected" lifts even higher than hover (lighter shade)
+     so the active row pops out of the dark canvas. */
+  --color-bg-selected: #2a2a2a;
 
   /* Dark borders — Vercel keeps the BASE border subtle (line ≈ surface
      lightness, so cards are suggested not boxed). The line2 variant
@@ -357,8 +364,39 @@ code, pre, .font-mono {
 /* ============================================================
    Pre-existing app-specific utilities (kept intact)
    ============================================================ */
-.cite-tag { @apply inline-block px-1.5 py-0.5 rounded text-[10px] cursor-pointer bg-brand-bg text-brand font-medium transition-colors; }
-.cite-tag:hover { @apply bg-brand text-white; }
+/* Citation reference — academic / paper-style.
+   Renders as a small superscript ``[N]`` in brand colour, NOT a chip.
+   The chip-pill style we had before (filled brand-bg with ``[c_1]``)
+   was too loud in body text — it broke reading flow. This treatment:
+     • lifts the number to ~0.35em above baseline (real superscript)
+     • brand colour signals interactivity without a fill
+     • underline appears on hover or when its source chunk is active
+   The chat renderer wraps ONLY the digit in .cite-tag; the ``[`` and
+   ``]`` brackets are added via ::before/::after so the user reads
+   ``[1]`` but the source text in the DOM is just ``1``. */
+.cite-tag {
+  display: inline;
+  position: relative;
+  top: -0.35em;
+  margin: 0 0.5px 0 1px;
+  padding: 0 0.5px;
+  font-size: 0.72em;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-brand);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.1s, text-decoration-color 0.1s;
+}
+.cite-tag::before { content: '['; }
+.cite-tag::after  { content: ']'; }
+.cite-tag:hover,
+.cite-tag.cite-active {
+  color: var(--color-brand-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
 
 .popover { @apply fixed z-20 bg-bg border border-line rounded-lg; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); }
 

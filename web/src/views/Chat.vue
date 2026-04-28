@@ -48,6 +48,7 @@ import { askQueryStream, createConversation, addMessage, getMessages, filePrevie
 
 const { t } = useI18n()
 import { renderMarkdown } from '@/utils/renderMarkdown'
+import { useDocCache } from '@/composables/useDocCache'
 // Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
 // clicks a citation. Without this the whole library + worker JS sit in
 // the Chat.vue bundle, slowing the first chat load AND making the panel
@@ -66,6 +67,19 @@ const loadConvs = inject('loadConvs')
 // User can clear the chip via the Chat UI.
 const route = useRoute()
 const router = useRouter()
+
+// Per-SPA doc-name cache. Citations carry doc_id only; we resolve the
+// current filename here so renames / re-ingests are reflected without
+// having to re-query. ``ensure`` fires the fetch lazily; ``docName``
+// returns whatever we have right now (re-renders when fetch lands).
+const { ensure: ensureDocName, getFilename: docName } = useDocCache()
+// Combined: kick off the fetch (idempotent) and return the current
+// best name. Gives us a one-call expression for templates.
+function docNameFor(c) {
+  if (!c?.doc_id) return ''
+  ensureDocName(c.doc_id)
+  return docName(c.doc_id)
+}
 const pathFilter = ref(route.query.path_filter || '')
 // URL → local: keep in sync when user navigates to /chat?path_filter=...
 watch(() => route.query.path_filter, v => { pathFilter.value = v || '' })
@@ -568,6 +582,46 @@ function onCiteClick(c) {
  * so event delegation can handle clicks.
  * Active state is NOT baked in — a watcher on activeCiteId toggles .cite-active via DOM.
  */
+/**
+ * Build the c_N → academic display number map by scanning the answer
+ * text in order. First citation to appear gets [1], second gets [2], etc.
+ * This eliminates gaps that arise when retrieval produces c_1..c_N but
+ * the LLM only references a non-contiguous subset (e.g. c_1, c_3, c_4).
+ */
+function buildCiteDisplayMap(text, cites) {
+  if (!cites?.length || !text) return {}
+  const cidSet = new Set(cites.map(c => c?.citation_id).filter(Boolean))
+  const map = {}
+  let next = 1
+  const re = /\[(c_\d+(?:\s*,\s*c_\d+)*)\]/g
+  let m
+  while ((m = re.exec(text)) !== null) {
+    for (const cid of m[1].split(/\s*,\s*/).map(s => s.trim())) {
+      if (cidSet.has(cid) && !(cid in map)) {
+        map[cid] = next++
+      }
+    }
+  }
+  return map
+}
+
+/**
+ * Citation card list, sorted to match the inline display map (so the
+ * card reads top-to-bottom as [1] [2] [3] ...). Falls back to the
+ * original retrieval order for any cite the LLM declared but the
+ * regex didn't surface (shouldn't happen, but harmless).
+ */
+function orderedCitations(m) {
+  const cites = m?.citations
+  if (!cites?.length) return []
+  const map = buildCiteDisplayMap(m.content || '', cites)
+  return [...cites].sort((a, b) => {
+    const pa = map[a.citation_id] ?? 999_999
+    const pb = map[b.citation_id] ?? 999_999
+    return pa - pb
+  })
+}
+
 function renderMsg(text, cites) {
   if (!text) return ''
 
@@ -582,7 +636,14 @@ function renderMsg(text, cites) {
     const citeMap = {}
     cites.forEach((c, i) => { if (c?.citation_id) citeMap[c.citation_id] = i })
 
-    // Handle both [c_1] and [c_1, c_3, c_5] formats
+    // Academic-style sequential numbering: scan the text, assign 1,2,3,...
+    // by first-appearance order. ``c_2`` skipped by the LLM no longer
+    // creates a [1][3][4] gap — instead we get [1][2][3].
+    const displayMap = buildCiteDisplayMap(text, cites)
+
+    // Handle both [c_1] and [c_1, c_3, c_5] formats. Display number
+    // comes from displayMap; data-cite-id keeps the original c_N so
+    // click handlers + chunk-active highlighting still work.
     processed = text.replace(/\[(c_\d+(?:\s*,\s*c_\d+)*)\]/g, (match, inner) => {
       // Split "c_1, c_3, c_5" into individual citations
       const cids = inner.split(/\s*,\s*/)
@@ -591,10 +652,15 @@ function renderMsg(text, cites) {
         const idx = citeMap[cid]
         if (idx != null) {
           const chunkId = cites[idx]?.chunk_id || ''
-          citePH.push({ idx, cid, chunkId, label: `[${cid}]` })
+          // Sequential display number from first-appearance map; fall
+          // back to the raw N if for some reason the cid isn't mapped
+          // (should never happen since cidSet drives the map).
+          const displayNum = displayMap[cid] ?? cid.replace(/^c_/, '')
+          citePH.push({ idx, cid, chunkId, label: String(displayNum) })
           parts.push(`<!--CITE:${citePH.length - 1}-->`)
         } else {
-          // Unknown citation — keep as plain text
+          // Unknown citation — keep as plain text (with c_ prefix so
+          // it's obvious something's missing from the citation map)
           parts.push(`[${cid}]`)
         }
       }
@@ -786,15 +852,26 @@ function onTraceClick(m) {
                   @click="onMsgClick($event, m.citations)">
                 </div>
                 <div v-if="m.citations?.length" class="flex flex-wrap gap-1.5 mt-3">
-                  <button v-for="(c, ci) in m.citations" :key="ci"
+                  <!-- Citation card: paper-style reference list under the
+                       answer. Sorted to match the inline ``[1][2][3]``
+                       order in the body text (first-appearance, no
+                       gaps). Display label is just ``[N]``; data layer
+                       still references the original c_N via the click
+                       handler. The filename column is resolved live
+                       from useDocCache (keyed by doc_id) so renames
+                       reflect immediately and persisted citations
+                       never carry stale names. -->
+                  <button v-for="(c, ci) in orderedCitations(m)" :key="c.citation_id || ci"
                     class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] transition-colors"
                     :class="activeChunkId === c.chunk_id
                       ? 'border-brand bg-brand/10 text-brand'
                       : 'border-line text-t2 hover:bg-bg3'"
                     @click="onCiteClick(c)">
-                    <span class="font-medium" :class="activeChunkId === c.chunk_id ? '' : 'text-brand'">{{ c.citation_id }}</span>
+                    <span class="font-medium" :class="activeChunkId === c.chunk_id ? '' : 'text-brand'">[{{ ci + 1 }}]</span>
                     <span v-if="c.page_no" class="text-t3">p{{ c.page_no }}</span>
-                    <span v-if="c.chunk_id" class="text-t3 font-mono truncate max-w-48">{{ c.chunk_id }}</span>
+                    <span v-if="c.doc_id" class="text-t2 truncate max-w-64">
+                      {{ docNameFor(c) || t('chat.citation_untitled') }}
+                    </span>
                   </button>
                 </div>
                 <button v-if="m.role === 'assistant' && (m.trace || m.traceId)"

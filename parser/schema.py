@@ -382,3 +382,7 @@ class Citation:
     source_file_id: str | None = None  # original file_id (only if converted, for download)
     source_format: str = ""  # original format, e.g. "docx" (empty if native PDF)
     open_url: str | None = None  # e.g. /viewer/{doc_id}?page=14&hl=c_12
+    # NOTE: filename is intentionally NOT stored here. ``doc_id`` is the
+    # stable identity; the display name is mutable (rename, reorganize)
+    # and is resolved at render-time via /api/v1/documents/{doc_id} —
+    # otherwise persisted citations would carry stale names forever.

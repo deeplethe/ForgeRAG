@@ -55,7 +55,8 @@
     "may_make_mistakes": "ForgeRAG may make mistakes. Verify important information.",
     "stop_generation": "Stop generation",
     "thinking": "Thinking",
-    "trace": "Trace"
+    "trace": "Trace",
+    "citation_untitled": "(untitled)"
   },
   "tools": {
     "label": "Tools",
