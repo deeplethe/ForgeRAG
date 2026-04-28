@@ -785,15 +785,13 @@ function onTraceClick(m) {
                 </template>
               </div>
 
-              <!-- Streaming text -->
-              <div v-if="streamText" class="msg-body text-sm leading-7 text-t1">
-                <span v-html="renderStream(streamText)"></span><span class="inline-block w-0.5 h-4 ml-0.5 bg-brand animate-pulse rounded-sm"></span>
-              </div>
-
               <!-- Live thinking pane (reasoning models stream this).
-                   Rendered below the answer to mirror history layout —
-                   "show my work" footer, supplementary to the answer. -->
-              <div v-if="streamThinking" class="mt-3 border-l-2 border-line pl-3">
+                   Rendered ABOVE the answer to match the persisted layout
+                   below — otherwise the pane jumps from below-answer (live)
+                   to above-answer (history) the moment the SSE ``done``
+                   event flips the message into ``msgs[]``. Chronological
+                   order anyway: the model thinks first, then answers. -->
+              <div v-if="streamThinking" class="mb-3 border-l-2 border-line pl-3">
                 <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
                   @click="streamThinkingCollapsed = !streamThinkingCollapsed">
                   <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
@@ -809,6 +807,12 @@ function onTraceClick(m) {
                 <div v-if="!streamThinkingCollapsed"
                   ref="thinkingStreamEl"
                   class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ streamThinking }}</div>
+              </div>
+
+              <!-- Streaming text (rendered after thinking — same order as
+                   the persisted assistant message above). -->
+              <div v-if="streamText" class="msg-body text-sm leading-7 text-t1">
+                <span v-html="renderStream(streamText)"></span><span class="inline-block w-0.5 h-4 ml-0.5 bg-brand animate-pulse rounded-sm"></span>
               </div>
             </div>
           </div>
