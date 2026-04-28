@@ -17,23 +17,35 @@
 -->
 <template>
   <div ref="rootEl" class="relative inline-block">
+    <!-- Icon-only trigger: ``Tools`` label + chevron would duplicate
+         the path picker's anatomy without adding info (the label
+         "Tools" doesn't carry data the way "/legal/2024" does for
+         the path picker). Tooltip carries discoverability; the brand
+         dot signals "you have non-default settings". -->
     <button
       type="button"
-      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 text-[11px] text-t2 hover:bg-bg3 transition-colors"
+      class="relative flex items-center justify-center w-7 h-7 rounded-md bg-bg3/70 text-t2 hover:bg-bg3 transition-colors"
       :class="{ 'text-brand': isCustom, '!bg-bg3': open }"
       :title="t('tools.tooltip')"
+      :aria-label="t('tools.label')"
       @click="toggle"
     >
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="21" x2="4" y2="14"/>
+        <line x1="4" y1="10" x2="4" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="12"/>
+        <line x1="12" y1="8"  x2="12" y2="3"/>
+        <line x1="20" y1="21" x2="20" y2="16"/>
+        <line x1="20" y1="12" x2="20" y2="3"/>
+        <line x1="1"  y1="14" x2="7"  y2="14"/>
+        <line x1="9"  y1="8"  x2="15" y2="8"/>
+        <line x1="17" y1="16" x2="23" y2="16"/>
       </svg>
-      <span>{{ t('tools.label') }}</span>
-      <span v-if="isCustom" class="w-1.5 h-1.5 rounded-full bg-brand" />
-      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-        class="ml-0.5 transition-transform" :class="open ? 'rotate-180' : ''">
-        <path d="M6 9l6 6 6-6" />
-      </svg>
+      <span
+        v-if="isCustom"
+        class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-brand"
+      />
     </button>
 
     <Transition name="popup">
