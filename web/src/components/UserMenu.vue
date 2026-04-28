@@ -39,75 +39,73 @@
       </svg>
     </button>
 
-    <!-- Popup panel: original divider style — sections separated by
-         border-b lines, single flat bg. (GitHub + version live in
-         the sidebar wordmark row now, so they're not in here.) -->
+    <!-- Popup panel: Geist-style row menu. Each row is `label LEFT,
+         control RIGHT`, no section dividers — vertical padding does
+         the grouping. Selected state on segmented controls uses
+         neutral bg-bg3 elevation, not the brand blue (Vercel blue is
+         reserved for actual CTAs like Send / cite-active). -->
     <Transition name="popup">
       <div
         v-if="open"
-        class="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-line bg-bg shadow-lg overflow-hidden z-30"
+        class="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-line bg-bg shadow-lg py-1.5 z-30"
       >
-        <!-- ── Section: Language ───────────────────────────────────── -->
-        <div class="px-3 pt-2.5 pb-2 border-b border-line">
-          <div class="text-[10px] uppercase tracking-wider text-t3 mb-1.5">{{ t('user_menu.language') }}</div>
-          <div class="flex gap-1">
+        <!-- ── Language: label + segmented control ─────────────────── -->
+        <div class="flex items-center justify-between gap-3 px-3 py-1.5">
+          <span class="text-[12px] text-t1">{{ t('user_menu.language') }}</span>
+          <div class="flex items-center gap-0.5 p-0.5 rounded-md border border-line">
             <button
               v-for="loc in locales"
               :key="loc.code"
               type="button"
-              class="flex-1 px-2 py-1 rounded text-[12px] transition-colors"
+              class="px-2 py-0.5 rounded text-[11px] transition-colors"
               :class="currentLocale === loc.code
-                ? 'bg-brand text-white'
-                : 'text-t2 hover:bg-bg3 border border-line'"
+                ? 'bg-bg3 text-t1'
+                : 'text-t3 hover:text-t2'"
               @click="onSetLocale(loc.code)"
             >{{ loc.label }}</button>
           </div>
         </div>
 
-        <!-- ── Section: Theme ──────────────────────────────────────── -->
-        <div class="px-3 py-2 border-b border-line">
-          <div class="text-[10px] uppercase tracking-wider text-t3 mb-1.5">{{ t('user_menu.theme') }}</div>
-          <div class="flex gap-1">
+        <!-- ── Theme: label + segmented control (icons) ────────────── -->
+        <div class="flex items-center justify-between gap-3 px-3 py-1.5">
+          <span class="text-[12px] text-t1">{{ t('user_menu.theme') }}</span>
+          <div class="flex items-center gap-0.5 p-0.5 rounded-md border border-line">
             <button
               type="button"
-              class="flex-1 px-2 py-1 rounded text-[12px] flex items-center justify-center gap-1.5 transition-colors"
-              :class="!isDark
-                ? 'bg-brand text-white'
-                : 'text-t2 hover:bg-bg3 border border-line'"
+              class="w-7 h-6 rounded flex items-center justify-center transition-colors"
+              :class="!isDark ? 'bg-bg3 text-t1' : 'text-t3 hover:text-t2'"
+              :title="t('user_menu.theme_light')"
               @click="onSetTheme('light')"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="4"/>
                 <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
               </svg>
-              {{ t('user_menu.theme_light') }}
             </button>
             <button
               type="button"
-              class="flex-1 px-2 py-1 rounded text-[12px] flex items-center justify-center gap-1.5 transition-colors"
-              :class="isDark
-                ? 'bg-brand text-white'
-                : 'text-t2 hover:bg-bg3 border border-line'"
+              class="w-7 h-6 rounded flex items-center justify-center transition-colors"
+              :class="isDark ? 'bg-bg3 text-t1' : 'text-t3 hover:text-t2'"
+              :title="t('user_menu.theme_dark')"
               @click="onSetTheme('dark')"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
               </svg>
-              {{ t('user_menu.theme_dark') }}
             </button>
           </div>
         </div>
 
-        <!-- ── Section: Sign out ───────────────────────────────────── -->
+        <!-- ── Sign out: label LEFT, icon RIGHT (Geist row pattern) ── -->
         <button
           type="button"
-          class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t2 hover:bg-bg3 transition-colors"
+          class="w-full flex items-center justify-between gap-3 px-3 py-2 mt-0.5 text-[12px] text-t1 hover:bg-bg3 transition-colors"
           @click="onLogout"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <span>{{ t('user_menu.sign_out') }}</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-t3">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
           </svg>
-          {{ t('user_menu.sign_out') }}
         </button>
       </div>
     </Transition>
