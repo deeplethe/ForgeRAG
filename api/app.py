@@ -163,7 +163,7 @@ def create_app(
     app = FastAPI(
         title="ForgeRAG",
         description="Structure-aware RAG with precise bbox citations.",
-        version="0.2.1",
+        version="0.2.2",
         lifespan=lifespan,
     )
 
