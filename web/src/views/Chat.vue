@@ -49,6 +49,7 @@ import { renderMarkdown } from '@/utils/renderMarkdown'
 const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'))
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
+import PathScopePicker from '@/components/PathScopePicker.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
@@ -58,13 +59,18 @@ const loadConvs = inject('loadConvs')
 const route = useRoute()
 const router = useRouter()
 const pathFilter = ref(route.query.path_filter || '')
+// URL → local: keep in sync when user navigates to /chat?path_filter=...
 watch(() => route.query.path_filter, v => { pathFilter.value = v || '' })
-function clearPathFilter() {
-  pathFilter.value = ''
+// Local → URL: when the user picks a different scope via PathScopePicker,
+// reflect it in the URL so refresh / share / browser-back still works.
+watch(pathFilter, v => {
+  const cur = route.query.path_filter || ''
+  if (v === cur) return
   const q = { ...route.query }
-  delete q.path_filter
+  if (v) q.path_filter = v
+  else delete q.path_filter
   router.replace({ query: q })
-}
+})
 
 // Bind module-level refs to local names for template access
 const msgs = _msgs
@@ -642,16 +648,8 @@ function onTraceClick(m) {
 
 <template>
   <div class="flex h-full relative">
-    <!-- Path-filter chip: visible only when @path scoping is active -->
-    <div
-      v-if="pathFilter"
-      class="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-[11px] text-brand select-none"
-      :title="'Chat scoped to: ' + pathFilter"
-    >
-      <span>📁 Scope:</span>
-      <span class="font-mono truncate max-w-[320px]">{{ pathFilter }}</span>
-      <button class="text-brand/80 hover:text-brand ml-1" @click="clearPathFilter" title="Clear scope">✕</button>
-    </div>
+    <!-- (Old top-center scope chip removed — PathScopePicker above the
+         input is now the single source of truth and entry point.) -->
 
     <!-- ═══════ Trace panel (OTel waterfall) ═══════ -->
     <Transition name="slide-trace">
@@ -686,6 +684,10 @@ function onTraceClick(m) {
         <div class="flex-[4]"></div>
         <div class="pl-8 pr-16 pb-6">
           <div class="max-w-2xl mx-auto">
+            <!-- Scope picker: left-aligned just above the input. -->
+            <div class="mb-1.5 flex">
+              <PathScopePicker v-model="pathFilter" />
+            </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
               <textarea v-model="input" @keydown="onKey" placeholder="Ask a question..." rows="2"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
@@ -842,6 +844,10 @@ function onTraceClick(m) {
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
+            <!-- Scope picker: left-aligned just above the input. -->
+            <div class="mb-1.5 flex">
+              <PathScopePicker v-model="pathFilter" />
+            </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
               <textarea v-model="input" @keydown="onKey" placeholder="Ask a follow-up..." rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
