@@ -99,9 +99,21 @@ const pdfMounted = ref(false)
 watch(() => pdf.show, (v) => {
   if (v) {
     pdfMounted.value = false
+    // Snapshot scroll state BEFORE reflow: if the user was already
+    // near the bottom (typical case — they just got an answer and
+    // clicked a chip under it), pin them there once the slide-in
+    // width transition reshapes the chat. Without this, the chat
+    // narrows, paragraphs grow taller, and the answer scrolls out of
+    // view right at the moment the PDF arrives.
+    const el = chatEl.value
+    const wasAtBottom = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 80)
     // CSS transition is ~250ms; wait for it to finish before doing the
     // heavy pdfjs init so the slide is GPU-clean.
     setTimeout(() => { pdfMounted.value = true }, 280)
+    if (wasAtBottom) {
+      // Slide animation is 200ms; nudge after it settles.
+      setTimeout(() => scroll(), 220)
+    }
   } else {
     pdfMounted.value = false
   }
