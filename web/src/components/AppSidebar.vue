@@ -8,6 +8,10 @@ const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 
+// Pinned next to the wordmark so version + repo link are discoverable
+// without cluttering the user-settings menu.
+const version = import.meta.env.VITE_APP_VERSION || '0.2.1'
+
 const props = defineProps({
   conversations: Array,
   currentConvId: String,
@@ -70,12 +74,28 @@ function isTabActive(tab) {
 
 <template>
   <nav class="w-60 shrink-0 flex flex-col border-r border-line bg-bg2">
-    <!-- Logo -->
-    <div class="px-4 pt-4 pb-5">
+    <!-- Logo + product-identity row.
+         Version + GitHub link live HERE (next to the wordmark) so the
+         UserMenu can stay focused on user-controlled settings. The
+         version is intentionally low-emphasis (10px / t3); the GitHub
+         icon is a small affordance pinned right. -->
+    <div class="px-4 pt-4 pb-5 flex items-center gap-2">
       <button
         @click="emit('new-chat'); router.push('/chat')"
         class="wordmark text-[15px] hover:opacity-80 transition-opacity cursor-pointer"
       >ForgeRAG</button>
+      <span class="text-[10px] text-t3 select-none">v{{ version }}</span>
+      <a
+        href="https://github.com/deeplethe/ForgeRAG"
+        target="_blank"
+        rel="noopener"
+        class="ml-auto p-1 -mr-1 rounded text-t3 hover:text-t1 hover:bg-bg3 transition-colors"
+        :title="t('common.github')"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 .3a12 12 0 00-3.8 23.38c.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 011.23 3.22c0 4.61-2.8 5.62-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.22.7.82.58A12 12 0 0012 .3"/>
+        </svg>
+      </a>
     </div>
 
     <!-- Tabs — Vercel-density: 13px label, 8px-12px inset, ~32px row height. -->
