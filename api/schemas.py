@@ -293,16 +293,26 @@ class GenerationOverrides(BaseModel):
     yaml; this UI override doesn't yet expose it).
     """
 
-    reasoning_effort: Literal[
-        "none", "minimal", "low", "medium", "high", "xhigh", "default", "disable"
-    ] | None = Field(
+    # Boolean thinking-mode switch. Works across providers because we
+    # route both via ``extra_body.thinking.type`` (DeepSeek's quirk) and
+    # via ``reasoning_effort=disable`` (Anthropic / Gemini). OpenAI
+    # o-series / xAI ignore (thinking is model-bound for them, can't be
+    # toggled per request — picking ``gpt-4.1`` vs ``o3-mini`` is the
+    # toggle there).
+    thinking: bool | None = Field(
         None,
         description=(
-            "Routed by LiteLLM per provider. ``low`` / ``medium`` / "
-            "``high`` are the universally meaningful values; ``none`` / "
-            "``disable`` work where supported (Anthropic / Gemini)."
+            "True = force thinking ON, False = force OFF, None = use "
+            "provider default. Resolved both via ``extra_body.thinking`` "
+            "(DeepSeek) and ``reasoning_effort`` (Anthropic / Gemini)."
         ),
     )
+    # Intensity dial — orthogonal to ``thinking``. ``low``/``medium``/
+    # ``high`` are universally meaningful; ``disable``/``none`` are
+    # better expressed via ``thinking=False`` above.
+    reasoning_effort: Literal[
+        "low", "medium", "high"
+    ] | None = Field(None)
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(None, ge=1, le=128000)
 

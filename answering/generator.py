@@ -282,7 +282,26 @@ def _apply_gen_overrides(kwargs: dict, overrides: Any) -> None:
     else:
         return
 
+    if "thinking" in data:
+        # Boolean toggle. Route both via DeepSeek's extra_body channel
+        # (the only way to actually disable on V4-Pro) AND via LiteLLM's
+        # ``reasoning_effort`` (covers Anthropic / Gemini "off" semantics,
+        # ignored by providers that don't recognize it). For "On" we
+        # only set extra_body — intensity is up to ``reasoning_effort``
+        # below, so we don't overwrite a user-picked level.
+        on = bool(data["thinking"])
+        eb = dict(kwargs.get("extra_body") or {})
+        eb_thinking = dict(eb.get("thinking") or {})
+        eb_thinking["type"] = "enabled" if on else "disabled"
+        eb["thinking"] = eb_thinking
+        kwargs["extra_body"] = eb
+        if not on:
+            # Belt-and-suspenders: providers that ignore extra_body
+            # respect ``reasoning_effort: disable`` to skip thinking.
+            kwargs["reasoning_effort"] = "disable"
     if "reasoning_effort" in data:
+        # User-set intensity wins over the disable we may have set above
+        # (since they're explicitly asking for thinking ON at level X).
         kwargs["reasoning_effort"] = data["reasoning_effort"]
     if "temperature" in data:
         kwargs["temperature"] = data["temperature"]

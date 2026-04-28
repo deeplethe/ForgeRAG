@@ -41,17 +41,31 @@
         v-if="open"
         class="absolute bottom-full left-0 mb-1.5 w-[300px] rounded-xl border border-line bg-bg shadow-lg py-1.5 z-20"
       >
-        <!-- Reasoning effort: segmented control -->
-        <div class="px-3 py-1.5">
+        <!-- Thinking: explicit on/off/default toggle -->
+        <div class="px-3 py-1.5" :title="t('tools.thinking_hint')">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-[12px] text-t1">{{ t('tools.thinking') }}</span>
+          </div>
+          <div class="grid grid-cols-3 gap-0.5 p-0.5 rounded-md border border-line">
+            <button
+              v-for="opt in thinkingOptions"
+              :key="String(opt.value)"
+              type="button"
+              class="px-1 py-0.5 rounded text-[11px] transition-colors"
+              :class="thinking === opt.value
+                ? 'bg-bg3 text-t1'
+                : 'text-t3 hover:text-t2'"
+              @click="thinking = opt.value"
+            >{{ opt.label }}</button>
+          </div>
+        </div>
+
+        <!-- Reasoning effort (intensity dial — orthogonal to thinking on/off) -->
+        <div class="px-3 py-1.5" :title="t('tools.effort_hint')">
           <div class="flex items-center justify-between mb-1.5">
             <span class="text-[12px] text-t1">{{ t('tools.reasoning_effort') }}</span>
-            <button
-              v-if="effort != null"
-              class="text-[10px] text-t3 hover:text-t1"
-              @click="effort = null"
-            >{{ t('tools.effort_default') }}</button>
           </div>
-          <div class="grid grid-cols-5 gap-0.5 p-0.5 rounded-md border border-line">
+          <div class="grid grid-cols-4 gap-0.5 p-0.5 rounded-md border border-line">
             <button
               v-for="opt in effortOptions"
               :key="opt.value ?? 'default'"
@@ -60,7 +74,6 @@
               :class="effort === opt.value
                 ? 'bg-bg3 text-t1'
                 : 'text-t3 hover:text-t2'"
-              :title="opt.hint"
               @click="effort = opt.value"
             >{{ opt.label }}</button>
           </div>
@@ -130,25 +143,34 @@ const open = ref(false)
 const rootEl = ref(null)
 
 // Local state — synced TO/FROM modelValue.
+// ``thinking`` is tri-state: null (default) / true (on) / false (off).
+const thinking = ref(typeof props.modelValue?.thinking === 'boolean' ? props.modelValue.thinking : null)
 const effort = ref(props.modelValue?.reasoning_effort ?? null)
 const temperature = ref(
   typeof props.modelValue?.temperature === 'number' ? props.modelValue.temperature : null,
 )
 
+const thinkingOptions = computed(() => [
+  { value: null,  label: t('tools.thinking_default') },
+  { value: false, label: t('tools.thinking_off') },
+  { value: true,  label: t('tools.thinking_on') },
+])
 const effortOptions = computed(() => [
-  { value: null,       label: t('tools.effort_default'), hint: t('tools.effort_hint_default') },
-  { value: 'low',      label: t('tools.effort_low'),     hint: '' },
-  { value: 'medium',   label: t('tools.effort_medium'),  hint: '' },
-  { value: 'high',     label: t('tools.effort_high'),    hint: '' },
-  { value: 'disable',  label: t('tools.effort_disable'), hint: t('tools.effort_hint_disable') },
+  { value: null,     label: t('tools.effort_default') },
+  { value: 'low',    label: t('tools.effort_low') },
+  { value: 'medium', label: t('tools.effort_medium') },
+  { value: 'high',   label: t('tools.effort_high') },
 ])
 
 // Trigger highlights when any field is non-default
-const isCustom = computed(() => effort.value != null || temperature.value != null)
+const isCustom = computed(() =>
+  thinking.value != null || effort.value != null || temperature.value != null,
+)
 
 // Emit aggregated overrides ({} → null so API layer can omit the field).
-watch([effort, temperature], () => {
+watch([thinking, effort, temperature], () => {
   const out = {}
+  if (thinking.value != null) out.thinking = thinking.value
   if (effort.value != null) out.reasoning_effort = effort.value
   if (temperature.value != null) out.temperature = temperature.value
   emit('update:modelValue', Object.keys(out).length ? out : null)
@@ -156,6 +178,7 @@ watch([effort, temperature], () => {
 
 // External resets (e.g. parent clearing) sync back to local.
 watch(() => props.modelValue, (v) => {
+  thinking.value = typeof v?.thinking === 'boolean' ? v.thinking : null
   effort.value = v?.reasoning_effort ?? null
   temperature.value = typeof v?.temperature === 'number' ? v.temperature : null
 })
@@ -170,6 +193,7 @@ function onTemperatureInput(e) {
 }
 
 function resetAll() {
+  thinking.value = null
   effort.value = null
   temperature.value = null
 }
