@@ -57,7 +57,7 @@ const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
-import QueryToolsPicker from '@/components/QueryToolsPicker.vue'
+import ThinkingPicker from '@/components/ThinkingPicker.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
@@ -93,6 +93,21 @@ const liveElapsed = _liveElapsed
 const abortCtrl = _abortCtrl
 const progressExpanded = _progressExpanded
 const genTools = _genTools
+
+// Thinking lives inside ``genTools`` (so the API gets one
+// ``generation_overrides`` payload), but the UI exposes it through a
+// dedicated chip. This adapter reads/writes just the ``thinking``
+// field while preserving any other fields a programmatic caller may
+// have set (reasoning_effort, temperature, ...).
+const thinkingValue = computed({
+  get: () => (typeof genTools.value?.thinking === 'boolean' ? genTools.value.thinking : null),
+  set: (v) => {
+    const next = { ...(genTools.value || {}) }
+    if (v === null || v === undefined) delete next.thinking
+    else next.thinking = v
+    genTools.value = Object.keys(next).length ? next : null
+  },
+})
 
 // Per-instance state (OK to reset on remount)
 const input = ref('')
@@ -705,7 +720,22 @@ function onTraceClick(m) {
                  belonging to the input card below. -->
             <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <QueryToolsPicker v-model="genTools" />
+              <ThinkingPicker v-model="thinkingValue" />
+              <!-- Web search placeholder. Disabled chip until a
+                   real retriever (Tavily / SearXNG / etc.) lands. -->
+              <span
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
+                :title="t('tools.web_search_coming_soon')"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
+                </svg>
+                <span>{{ t('tools.web_search') }}</span>
+                <span class="text-t3/60">·</span>
+                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
+              </span>
             </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
@@ -866,7 +896,22 @@ function onTraceClick(m) {
             <!-- Scope + Tools chips above the input. -->
             <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <QueryToolsPicker v-model="genTools" />
+              <ThinkingPicker v-model="thinkingValue" />
+              <!-- Web search placeholder. Disabled chip until a
+                   real retriever (Tavily / SearXNG / etc.) lands. -->
+              <span
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
+                :title="t('tools.web_search_coming_soon')"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
+                </svg>
+                <span>{{ t('tools.web_search') }}</span>
+                <span class="text-t3/60">·</span>
+                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
+              </span>
             </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
