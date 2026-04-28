@@ -18,6 +18,10 @@ const _livePhases = ref({})
 const _liveElapsed = ref({})
 const _abortCtrl = ref(null)
 const _progressExpanded = ref(false)
+// Generation overrides set via the Tools popup. ``null`` = use yaml
+// defaults; otherwise a {reasoning_effort?, temperature?} dict that
+// gets posted to the API as ``generation_overrides``.
+const _genTools = ref(null)
 let _presetGenId = 0
 let _streamGenId = 0
 let _skipNextWatch = false
@@ -53,6 +57,7 @@ const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
+import QueryToolsPicker from '@/components/QueryToolsPicker.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
@@ -87,6 +92,7 @@ const livePhases = _livePhases
 const liveElapsed = _liveElapsed
 const abortCtrl = _abortCtrl
 const progressExpanded = _progressExpanded
+const genTools = _genTools
 
 // Per-instance state (OK to reset on remount)
 const input = ref('')
@@ -426,7 +432,13 @@ async function send(text) {
   try {
     let fin = null
     let traceSpans = null   // OTel spans payload from the "trace" SSE event
-    for await (const { event, data } of askQueryStream({ query: q, conversationId: convId.value, pathFilter: pathFilter.value || null, signal: abortCtrl.value.signal })) {
+    for await (const { event, data } of askQueryStream({
+      query: q,
+      conversationId: convId.value,
+      pathFilter: pathFilter.value || null,
+      generationOverrides: genTools.value,
+      signal: abortCtrl.value.signal,
+    })) {
       // If conversation switched away, stop updating UI but don't abort request
       if (myGenId !== _streamGenId) break
       if (event === 'progress') {
@@ -687,12 +699,13 @@ function onTraceClick(m) {
         <div class="flex-[4]"></div>
         <div class="pl-8 pr-16 pb-6">
           <div class="max-w-2xl mx-auto">
-            <!-- Scope picker: floats above the input as a borderless
-                 label so it doesn't compete with the input card's
-                 visual edge. Aligned to the input's left padding so
-                 it reads as "owned by" the input below. -->
-            <div class="mb-1.5 pl-1">
+            <!-- Scope picker + Tools popup: badge-style chips above the
+                 input. Use ``flex gap`` so they sit side-by-side; both
+                 share the borderless-fill chip styling so they read as
+                 belonging to the input card below. -->
+            <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
+              <QueryToolsPicker v-model="genTools" />
             </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
@@ -850,10 +863,10 @@ function onTraceClick(m) {
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
-            <!-- Scope picker: borderless label above, aligned with the
-                 input's inner left padding. -->
-            <div class="mb-1.5 pl-1">
+            <!-- Scope + Tools chips above the input. -->
+            <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
+              <QueryToolsPicker v-model="genTools" />
             </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"

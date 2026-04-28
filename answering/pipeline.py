@@ -70,6 +70,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
     ) -> Answer:
         # Root span covering retrieval + generation. We extract the
         # trace_id so the route layer can collect all child spans (LLM
@@ -87,6 +88,7 @@ class AnsweringPipeline:
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
+                gen_overrides=gen_overrides,
                 _trace_id=_trace_id,
             )
             # Stash trace_id so the route layer can ``collector.take()`` the
@@ -104,6 +106,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
         _trace_id: int | None = None,
     ) -> Answer:
         stats: dict = {}
@@ -252,7 +255,7 @@ class AnsweringPipeline:
             _gen_span.set_attribute("forgerag.model", self.cfg.generator.model)
             _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
             _gen_span.set_attribute("forgerag.stream", False)
-            gen_result = self.generator.generate(messages)
+            gen_result = self.generator.generate(messages, overrides=gen_overrides)
             if gen_result.get("usage"):
                 for _k, _v in gen_result["usage"].items():
                     if isinstance(_v, (int, float, str, bool)):
@@ -327,6 +330,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
     ):
         # Wrap the streaming generator in the same ``forgerag.answer`` root
         # span used by ask(). Because this is a generator, we manage the
@@ -384,6 +388,7 @@ class AnsweringPipeline:
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
+                gen_overrides=gen_overrides,
                 _trace_id=_trace_id,
                 _pending_persist=pending_persist,
             )
@@ -425,6 +430,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
         _trace_id: int | None = None,
         _pending_persist: dict | None = None,
     ):
@@ -834,7 +840,7 @@ class AnsweringPipeline:
                 _gen_span.set_attribute("forgerag.model", _gen_model)
                 _gen_span.set_attribute("forgerag.stream", True)
                 _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
-                for chunk in self.generator.generate_stream(messages):
+                for chunk in self.generator.generate_stream(messages, overrides=gen_overrides):
                     if chunk["type"] == "delta":
                         full_text += chunk["delta"]
                         yield {"event": "delta", "data": {"text": chunk["delta"]}}

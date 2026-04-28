@@ -94,7 +94,7 @@ class LiteLLMGenerator:
         return litellm
 
     # ------------------------------------------------------------------
-    def generate(self, messages: list[dict]) -> dict:
+    def generate(self, messages: list[dict], *, overrides: Any = None) -> dict:
         litellm = self._ensure()
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
@@ -124,6 +124,10 @@ class LiteLLMGenerator:
         # Applied last so it can override the typed fields above.
         if self.cfg.extra_kwargs:
             kwargs.update(self.cfg.extra_kwargs)
+
+        # Per-request overrides win over yaml. UI-level "Tools" panel
+        # uses these for reasoning_effort / temperature / max_tokens.
+        _apply_gen_overrides(kwargs, overrides)
 
         max_retries = getattr(self.cfg, "max_retries", 3)
         retry_delay = getattr(self.cfg, "retry_base_delay", 1.0)
@@ -168,7 +172,7 @@ class LiteLLMGenerator:
         }
 
     # ------------------------------------------------------------------
-    def generate_stream(self, messages: list[dict]):
+    def generate_stream(self, messages: list[dict], *, overrides: Any = None):
         litellm = self._ensure()
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
@@ -191,6 +195,7 @@ class LiteLLMGenerator:
             kwargs["thinking"] = self.cfg.thinking
         if self.cfg.extra_kwargs:
             kwargs.update(self.cfg.extra_kwargs)
+        _apply_gen_overrides(kwargs, overrides)
 
         full_text = ""
         full_thinking = ""
@@ -252,6 +257,41 @@ class LiteLLMGenerator:
                 "cited_ids": extract_cited_ids(full_text),
                 "error": str(e),
             }
+
+
+# ---------------------------------------------------------------------------
+# Per-request override application
+# ---------------------------------------------------------------------------
+
+
+def _apply_gen_overrides(kwargs: dict, overrides: Any) -> None:
+    """Apply ``GenerationOverrides`` (or a plain dict) to LiteLLM kwargs.
+
+    Accepts either a pydantic model with attribute access or a plain
+    dict — the latter lets internal callers pass overrides without
+    importing the schema. ``None`` / unset fields are no-ops; explicit
+    values WIN over yaml-level cfg.
+    """
+    if overrides is None:
+        return
+    # Coerce to a plain dict of {field: value} for unset-aware iteration.
+    if hasattr(overrides, "model_dump"):
+        data = overrides.model_dump(exclude_none=True)
+    elif isinstance(overrides, dict):
+        data = {k: v for k, v in overrides.items() if v is not None}
+    else:
+        return
+
+    if "reasoning_effort" in data:
+        kwargs["reasoning_effort"] = data["reasoning_effort"]
+    if "temperature" in data:
+        kwargs["temperature"] = data["temperature"]
+    if "max_tokens" in data:
+        v = data["max_tokens"]
+        if v is not None and v > 0:
+            kwargs["max_tokens"] = v
+        else:
+            kwargs.pop("max_tokens", None)
 
 
 # ---------------------------------------------------------------------------

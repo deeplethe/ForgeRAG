@@ -67,8 +67,10 @@ export const askQuery = ({ query, filter, conversationId }) =>
  *   else if (event === 'done') showCitations(data.citations_used)
  * }
  */
-export async function* askQueryStream({ query, filter, conversationId, signal, pathFilter }) {
+export async function* askQueryStream({ query, filter, conversationId, signal, pathFilter, generationOverrides }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
+  // ``generationOverrides`` is the {reasoning_effort, temperature, max_tokens}
+  // dict from the Tools popup. ``null`` / unset = fall through to yaml defaults.
   const res = await fetch(`${BASE}/api/v1/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -78,6 +80,7 @@ export async function* askQueryStream({ query, filter, conversationId, signal, p
       path_filter: pathFilter || null,
       conversation_id: conversationId || null,
       stream: true,
+      generation_overrides: generationOverrides || null,
     }),
     signal,
   })
