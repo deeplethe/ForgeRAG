@@ -96,37 +96,22 @@ class LiteLLMGenerator:
     # ------------------------------------------------------------------
     def generate(self, messages: list[dict], *, overrides: Any = None) -> dict:
         litellm = self._ensure()
+        # Connection-level kwargs only. Per-call generation params
+        # (temperature / max_tokens / reasoning_effort / thinking) come
+        # exclusively from per-request ``overrides``. If a request
+        # doesn't set them, we don't pass them — the model's own
+        # defaults apply. yaml is intentionally not a place to pin
+        # them, so users picking those settings via the chat UI is
+        # the single source of truth.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
-            temperature=self.cfg.temperature,
             timeout=self.cfg.timeout,
         )
-        # Only forward ``max_tokens`` when the user explicitly set one.
-        # Default (None) lets the provider use the model's own maximum,
-        # which matters for thinking-mode models that count reasoning
-        # tokens against the cap.
-        if self.cfg.max_tokens is not None and self.cfg.max_tokens > 0:
-            kwargs["max_tokens"] = self.cfg.max_tokens
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
-
         if self._api_key:
             kwargs["api_key"] = self._api_key
-
-        # Reasoning controls — LiteLLM handles the per-provider routing,
-        # so we just forward the typed fields verbatim and let it translate.
-        if self.cfg.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
-        if self.cfg.thinking is not None:
-            kwargs["thinking"] = self.cfg.thinking
-        # Escape hatch for everything else (top_p, extra_body, ...).
-        # Applied last so it can override the typed fields above.
-        if self.cfg.extra_kwargs:
-            kwargs.update(self.cfg.extra_kwargs)
-
-        # Per-request overrides win over yaml. UI-level "Tools" panel
-        # uses these for reasoning_effort / temperature / max_tokens.
         _apply_gen_overrides(kwargs, overrides)
 
         max_retries = getattr(self.cfg, "max_retries", 3)
@@ -174,27 +159,18 @@ class LiteLLMGenerator:
     # ------------------------------------------------------------------
     def generate_stream(self, messages: list[dict], *, overrides: Any = None):
         litellm = self._ensure()
+        # See ``generate`` — connection-level kwargs only; per-call
+        # generation params come from ``overrides`` or stay unset.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
-            temperature=self.cfg.temperature,
             timeout=self.cfg.timeout,
             stream=True,
         )
-        # See ``generate`` — only forward when explicitly configured.
-        if self.cfg.max_tokens is not None and self.cfg.max_tokens > 0:
-            kwargs["max_tokens"] = self.cfg.max_tokens
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
-        # Reasoning controls — see ``generate`` for explanation.
-        if self.cfg.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
-        if self.cfg.thinking is not None:
-            kwargs["thinking"] = self.cfg.thinking
-        if self.cfg.extra_kwargs:
-            kwargs.update(self.cfg.extra_kwargs)
         _apply_gen_overrides(kwargs, overrides)
 
         full_text = ""
