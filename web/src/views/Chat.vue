@@ -955,8 +955,22 @@ function onTraceClick(m) {
 .phase-in { animation: phaseIn .15s ease; }
 @keyframes phaseIn { from { opacity: 0; } to { opacity: 1; } }
 
-.slide-trace-enter-active, .slide-trace-leave-active { transition: width .2s cubic-bezier(.4,0,.2,1), opacity .2s ease; }
-.slide-trace-enter-from, .slide-trace-leave-to { width: 0 !important; opacity: 0; }
-.slide-pdf-enter-active, .slide-pdf-leave-active { transition: width .2s cubic-bezier(.4,0,.2,1), opacity .2s ease; }
-.slide-pdf-enter-from, .slide-pdf-leave-to { width: 0 !important; opacity: 0; }
+/* Slide panels animate ``transform`` (compositor, no per-frame reflow)
+   instead of ``width`` (main-thread layout × 12+ frames at 60fps).
+   The chat still reflows once when the panel enters/leaves flex space
+   (v-if true/false), but the slide itself runs on the GPU. With
+   ``width`` animation, every frame of the 200ms slide forced full
+   chat reflow → the markdown body + cite chips + code blocks made it
+   stutter visibly.
+
+   Note: ``will-change: transform`` hints the browser to promote the
+   panel to its own layer up-front; without it the first frame of the
+   slide stutters as a layer is created on demand. */
+.slide-trace-enter-active, .slide-trace-leave-active,
+.slide-pdf-enter-active,   .slide-pdf-leave-active {
+  transition: transform .2s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+  will-change: transform;
+}
+.slide-trace-enter-from, .slide-trace-leave-to { transform: translateX(-100%); opacity: 0; }
+.slide-pdf-enter-from,   .slide-pdf-leave-to   { transform: translateX(100%);  opacity: 0; }
 </style>
