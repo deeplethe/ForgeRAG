@@ -12,6 +12,31 @@ Chroma client API.
 Chunk metadata mirrored into Chroma:
     doc_id, parse_version, node_id, content_type, page_start, page_end
 Plus any keys the caller passed in item.metadata.
+
+Path filtering (Chroma 1.x specific encoding)
+---------------------------------------------
+Chroma 1.5 dropped ``$startswith`` and its ``$contains`` operator on
+metadata is *array-membership*, not string-substring (see
+``chromadb/api/types.py:1235``: "checks if array field contains
+value"). To get correct subtree-prefix filtering we store ``path`` as
+a *list* of every ancestor + the self path:
+
+    /agriculture/00_b_eekeeping.md
+        →  ["/agriculture", "/agriculture/00_b_eekeeping.md"]
+
+Then a folder scope query becomes ``{"path": {"$contains": "/agriculture"}}``
+which list-membership-checks against each chunk's ancestor list. A
+single-file scope is the same shape — just the leaf path. Either case
+is one clause; no ``$or`` and no ``is_file`` plumbing needed.
+
+This encoding is **internal to ChromaStore**. Callers still pass
+``path_prefix: str`` filters and read ``meta["path"]`` as a string —
+the upsert encodes to list, the search restores the leaf back to a
+string before returning hits, so downstream code is unaware.
+
+Other vector backends (pgvector, qdrant, …) implement their own path
+filtering using whatever native operators they support; this list
+encoding is **not** propagated outside this file.
 """
 
 from __future__ import annotations
@@ -70,6 +95,20 @@ class ChromaStore:
             metadata=metadata,
         )
         log.info("Chroma collection ready: %s", self.cfg.collection_name)
+        # One-shot path-to-list migration. Idempotent — chunks already
+        # in list form are skipped, so re-runs are essentially free.
+        # Without this, legacy chunks (string ``path``) would be invisible
+        # to scoped queries since ``$contains`` does array-membership and
+        # a string field can't satisfy that.
+        try:
+            n = self._backfill_path_to_list()
+            if n > 0:
+                log.info("Chroma: migrated %d chunks to list-encoded path metadata", n)
+        except Exception as e:
+            log.warning(
+                "Chroma: path-to-list backfill failed; scoped queries may "
+                "miss legacy chunks: %s", e,
+            )
 
     def _ensure_collection(self):
         if self._collection is None:
@@ -88,12 +127,12 @@ class ChromaStore:
             m = dict(it.metadata)
             m.setdefault("doc_id", it.doc_id)
             m.setdefault("parse_version", it.parse_version)
-            # Denormalize path into metadata so Chroma can filter
-            # natively via {"path": {"$startswith": "/legal/"}}. FolderService
-            # rename keeps this in sync (small ops synchronously, large ops
-            # via the nightly maintenance queue + OR-fallback at query time).
-            if "path" not in m:
-                m["path"] = it.metadata.get("path", "/")
+            # Encode path as the ancestor list (see module docstring).
+            # FolderService rename keeps this in sync (small ops
+            # synchronously via update_paths, large ops via the nightly
+            # maintenance queue + OR-fallback at query time).
+            raw_path = m.get("path") if isinstance(m.get("path"), str) else it.metadata.get("path", "/")
+            m["path"] = _path_ancestors(raw_path)
             metadatas.append(m)
         col.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
 
@@ -101,6 +140,10 @@ class ChromaStore:
         """Bulk-update path metadata for a batch of existing chunk_ids.
         Used by the nightly maintenance script after a deferred folder
         rename, and by FolderService for small synchronous renames.
+
+        Caller passes ``{chunk_id: new_path_string}``; we encode each new
+        path to its ancestor list (Chroma's list-typed metadata schema)
+        before writing.
         """
         if not chunk_id_to_path:
             return
@@ -109,8 +152,61 @@ class ChromaStore:
         # Chroma's update() patches metadata in-place for these IDs.
         col.update(
             ids=ids,
-            metadatas=[{"path": chunk_id_to_path[cid]} for cid in ids],
+            metadatas=[{"path": _path_ancestors(chunk_id_to_path[cid])} for cid in ids],
         )
+
+    # -------------------------------------------------------------------
+    def _backfill_path_to_list(self) -> int:
+        """One-shot migration: any chunk whose ``path`` metadata is still
+        a string (legacy schema, pre-list-encoding) gets re-encoded to
+        the ancestor list. Idempotent — chunks already in list form are
+        skipped.
+
+        Chunks with an empty ancestor list (legacy ``path = "/"`` from
+        the old default fallback) are *also* skipped — Chroma rejects
+        empty-list metadata, and an empty list would never satisfy any
+        folder-scope query anyway, so leaving them as legacy strings
+        produces correct behaviour (string ``path`` field can't satisfy
+        Chroma's array-membership ``$contains``, so they're invisible
+        to scoped queries — which matches the "root-level chunk, never
+        in any folder scope" semantics).
+
+        Pages through the collection in batches so large collections
+        don't blow memory. Returns the number of chunks updated.
+        """
+        col = self._collection
+        if col is None:
+            return 0
+        BATCH = 1000
+        offset = 0
+        total = 0
+        while True:
+            res = col.get(limit=BATCH, offset=offset, include=["metadatas"])
+            ids = res.get("ids") or []
+            if not ids:
+                break
+            metas = res.get("metadatas") or []
+            up_ids: list[str] = []
+            up_metas: list[dict] = []
+            for cid, meta in zip(ids, metas):
+                if not isinstance(meta, dict):
+                    continue
+                p = meta.get("path")
+                if not isinstance(p, str):
+                    continue
+                ancestors = _path_ancestors(p)
+                if not ancestors:
+                    # Root / empty path — see method docstring.
+                    continue
+                up_ids.append(cid)
+                up_metas.append({"path": ancestors})
+            if up_ids:
+                col.update(ids=up_ids, metadatas=up_metas)
+                total += len(up_ids)
+            if len(ids) < BATCH:
+                break
+            offset += BATCH
+        return total
 
     # -------------------------------------------------------------------
     def delete_chunks(self, chunk_ids: list[str]) -> None:
@@ -152,6 +248,10 @@ class ChromaStore:
         for i, cid in enumerate(ids):
             dist = float(dists[i]) if i < len(dists) else 0.0
             meta = metas[i] if i < len(metas) else {}
+            # Restore ``path`` to its single-string form (the leaf of the
+            # ancestor list) so downstream consumers see the same shape
+            # as before the list encoding.
+            meta = _restore_path_string(meta)
             hits.append(
                 VectorHit(
                     chunk_id=cid,
@@ -169,16 +269,58 @@ class ChromaStore:
 # ---------------------------------------------------------------------------
 
 
+def _path_ancestors(path: str | None) -> list[str]:
+    """Encode a virtual path into the ancestor list used by Chroma's
+    list-typed ``path`` metadata field.
+
+        /agriculture/00.md  →  ["/agriculture", "/agriculture/00.md"]
+        /x.md               →  ["/x.md"]
+        /                   →  []        (root scope = no filter)
+        ""  / None          →  []
+
+    The leaf (longest element) is the canonical "self" path; the rest
+    are its ancestors. This shape is what makes ``$contains`` correctly
+    answer "is scope an ancestor-or-self of this chunk's path?".
+    """
+    stripped = (path or "").strip("/")
+    if not stripped:
+        return []
+    out: list[str] = []
+    cur = ""
+    for seg in stripped.split("/"):
+        cur += "/" + seg
+        out.append(cur)
+    return out
+
+
+def _restore_path_string(meta: dict[str, Any]) -> dict[str, Any]:
+    """Replace ``path: list[str]`` with ``path: str`` (= the leaf, i.e.
+    the longest element since ancestors are strict prefixes of self).
+
+    Used in ``search()`` so callers see the same metadata shape as
+    before the list encoding. Tolerant of legacy chunks that still have
+    a string ``path`` (returns them unchanged).
+    """
+    p = meta.get("path")
+    if isinstance(p, list) and p:
+        out = dict(meta)
+        out["path"] = max(p, key=len)
+        return out
+    return meta
+
+
 def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
     """
     Translate our generic filter dict to Chroma's JSON where-syntax.
 
     Supported keys:
       - doc_id, parse_version, node_id, content_type, path : exact match
-      - path_prefix : emits ``{"path": {"$startswith": pfx}}``
-      - path_prefix_or : a list of prefixes, combined with $or
-        (used by the deferred-rename OR-fallback: match new_path OR old_path
-        so queries don't lose hits while Chroma lags behind Postgres)
+      - path_prefix : emits ``{"path": {"$contains": scope}}`` —
+        list-membership query against the ancestor list (see module
+        docstring for why we encode ``path`` as a list).
+      - path_prefix_or : list of prefixes combined with $or (deferred-
+        rename OR-fallback: match new_path OR old_path so queries don't
+        lose hits while Chroma lags behind Postgres on a folder rename).
 
     Unknown keys are silently dropped to stay forward-compatible with
     the generic pipeline filter shape.
@@ -190,14 +332,14 @@ def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
     for k, v in filter.items():
         if k == "path_prefix":
             if isinstance(v, str) and v not in ("", "/"):
-                clauses.append({"path": {"$startswith": v.rstrip("/") + "/"}})
+                clauses.append({"path": {"$contains": v.rstrip("/")}})
             # Root / empty prefix: no constraint (match everything).
             continue
         if k == "path_prefix_or":
             sub = []
             for pfx in v or []:
                 if isinstance(pfx, str) and pfx not in ("", "/"):
-                    sub.append({"path": {"$startswith": pfx.rstrip("/") + "/"}})
+                    sub.append({"path": {"$contains": pfx.rstrip("/")}})
             if sub:
                 clauses.append({"$or": sub} if len(sub) > 1 else sub[0])
             continue

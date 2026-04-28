@@ -33,6 +33,62 @@ from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 log = logging.getLogger(__name__)
 
 
+def _backfill_chroma_paths_from_sql(rel, vec) -> None:
+    """Re-derive vector chunk path metadata from SQL ``Document.path``.
+
+    Fixes a long-standing bug where ``ingestion_writer`` didn't include
+    path in the chunk metadata it sent to the vector store, so every
+    chunk got the ChromaStore default fallback ``"/"`` — making
+    folder-scoped queries return nothing. This runs once at startup,
+    walks all docs in SQL, and bulk-updates the vector store with
+    correct paths via ``vec.update_paths``.
+
+    Idempotent: if any chunk's path metadata is already a list (= a
+    migration ran in a previous startup or the chunk was upserted by
+    the post-fix code path), we skip. Cheap probe — single ``get(1)``.
+
+    Currently only Chroma needs this; pgvector denormalizes path via
+    its own SQL view, qdrant/etc. would each need their own version.
+    """
+    if vec.backend != "chromadb":
+        return
+
+    # Probe: already migrated?
+    try:
+        col = vec._ensure_collection()
+        sample = col.get(limit=1, include=["metadatas"])
+        metas = sample.get("metadatas") or []
+        if metas and isinstance((metas[0] or {}).get("path"), list):
+            return
+    except Exception as e:
+        log.warning("vector backfill probe failed: %s", e)
+        return
+
+    # Pull all chunk_id → doc.path pairs from SQL in one query.
+    from sqlalchemy import select
+
+    from persistence.models import ChunkRow, Document
+
+    chunk_to_path: dict[str, str] = {}
+    with rel.transaction() as sess:
+        rows = sess.execute(
+            select(ChunkRow.chunk_id, Document.path)
+            .join(Document, Document.doc_id == ChunkRow.doc_id)
+        ).all()
+        for r in rows:
+            if r.path:
+                chunk_to_path[r.chunk_id] = r.path
+
+    if not chunk_to_path:
+        return
+
+    vec.update_paths(chunk_to_path)
+    log.info(
+        "vector backfill: re-derived path metadata for %d chunks from SQL",
+        len(chunk_to_path),
+    )
+
+
 class AppState:
     def __init__(
         self,
@@ -89,6 +145,18 @@ class AppState:
             self.vector = make_vector_store(cfg.persistence.vector, relational_store=self.store)
             self.vector.connect()
             self.vector.ensure_schema()
+
+        # One-shot path backfill: legacy chunks were upserted without
+        # path metadata (the old ``ingestion_writer`` didn't include it,
+        # so the ChromaStore default fallback ``"/"`` filled in for every
+        # chunk → folder-scoped queries returned nothing). Re-derive
+        # each chunk's path from SQL ``Document.path`` and write it to
+        # the vector store via ``update_paths``. Idempotent: probes one
+        # chunk's metadata; skips if already in list-form (= migrated).
+        try:
+            _backfill_chroma_paths_from_sql(self.store, self.vector)
+        except Exception as e:
+            log.warning("vector path backfill from SQL failed: %s", e)
 
         # Graph store (Knowledge Graph — optional)
         self.graph_store = None
