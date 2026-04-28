@@ -19,7 +19,14 @@ class GeneratorConfig(BaseModel):
     backend: Literal["litellm"] = "litellm"
     model: str = "openai/gpt-4o-mini"
     temperature: float = 0.1
-    max_tokens: int = 2048
+    # ``None`` (the default) means "don't pass max_tokens to the
+    # provider" — the model's own maximum output length applies. This
+    # matters for thinking-mode models (V4-Pro / o1 / DeepSeek-R1)
+    # where the reasoning trace itself counts toward the cap; a hard
+    # 2048 ceiling caused visible answers to truncate mid-sentence
+    # while the model burned most of the budget on reasoning. Set an
+    # explicit positive int to enforce a hard cap.
+    max_tokens: int | None = None
     timeout: float = 60.0
     # Authentication: use ONE of api_key (plaintext in yaml) or
     # api_key_env (name of an env var). api_key takes precedence.

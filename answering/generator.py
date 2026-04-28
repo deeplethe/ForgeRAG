@@ -100,9 +100,14 @@ class LiteLLMGenerator:
             model=self.cfg.model,
             messages=messages,
             temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
             timeout=self.cfg.timeout,
         )
+        # Only forward ``max_tokens`` when the user explicitly set one.
+        # Default (None) lets the provider use the model's own maximum,
+        # which matters for thinking-mode models that count reasoning
+        # tokens against the cap.
+        if self.cfg.max_tokens is not None and self.cfg.max_tokens > 0:
+            kwargs["max_tokens"] = self.cfg.max_tokens
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
 
@@ -158,10 +163,12 @@ class LiteLLMGenerator:
             model=self.cfg.model,
             messages=messages,
             temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
             timeout=self.cfg.timeout,
             stream=True,
         )
+        # See ``generate`` — only forward when explicitly configured.
+        if self.cfg.max_tokens is not None and self.cfg.max_tokens > 0:
+            kwargs["max_tokens"] = self.cfg.max_tokens
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if self.cfg.api_base:
