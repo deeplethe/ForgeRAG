@@ -77,6 +77,8 @@ def rehydrate(
     ``merged`` so downstream expansion / citation logic never sees a
     ``None`` chunk.
     """
+    if not merged:
+        return
     missing = [cid for cid, m in merged.items() if m.chunk is None]
     if not missing:
         return

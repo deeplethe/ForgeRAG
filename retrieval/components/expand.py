@@ -15,7 +15,7 @@ store) and the final budget cap via ``finalize_merged``.
 from __future__ import annotations
 
 from ..telemetry import get_tracer
-from ..types import ScoredChunk
+from ..types import MergedChunk
 
 _tracer = get_tracer()
 
@@ -36,14 +36,14 @@ class ContextExpander:
 
     def run(
         self,
-        merged: list[ScoredChunk],
+        merged: dict[str, MergedChunk],
         *,
         base_top_k: int,
         descendant: bool | None = None,
         sibling: bool | None = None,
         crossref: bool | None = None,
         candidate_limit: int | None = None,
-    ) -> list[ScoredChunk]:
+    ) -> list[MergedChunk]:
         # Effective merge cfg: shallow-copy so we can tweak expansion flags
         # without touching the shared self.cfg.
         updates: dict = {}
