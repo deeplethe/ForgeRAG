@@ -138,8 +138,10 @@ function isTabActive(tab) {
       </div>
     </div>
 
-    <!-- User card + popup menu (replaces previous user row + footer) -->
-    <div class="px-2 pt-2 pb-2.5 border-t border-line">
+    <!-- User card + popup menu. No top divider: padding + the card's
+         own ``bg-bg`` (vs sidebar's ``bg-bg2``) is enough visual
+         separation from the conversation list above. -->
+    <div class="px-2 pt-2 pb-2.5">
       <UserMenu :me="me" />
     </div>
   </nav>

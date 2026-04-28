@@ -13,12 +13,13 @@
 -->
 <template>
   <div ref="rootEl" class="relative">
-    <!-- Trigger card: defined card-look at rest (border + bg), so it
-         reads as a tappable surface even before hover. -->
+    <!-- Trigger card: rests on the sidebar's bg-bg2 with its own
+         bg-bg, so the lightness step makes it read as a card without
+         needing a border to spell that out. -->
     <button
       v-if="me"
       type="button"
-      class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border border-line bg-bg hover:bg-bg3 transition-colors"
+      class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-bg hover:bg-bg3 transition-colors"
       :class="{ '!bg-bg3': open }"
       @click="toggle"
     >
