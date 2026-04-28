@@ -108,6 +108,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         cfg = app_state.cfg.auth
 
         if not cfg.enabled:
+            # Auth disabled: synthesize a local-admin principal so routes
+            # that require one (``/auth/me``, ingestion endpoints, etc.)
+            # behave as "already logged in" instead of returning 401.
+            # The frontend then never enters the login flow on a server
+            # that has no auth configured.
+            request.state.principal = AuthenticatedPrincipal(
+                user_id="local",
+                username="local",
+                role="admin",
+                via="auth_disabled",
+            )
             return await call_next(request)
 
         # ── Bypass list ──

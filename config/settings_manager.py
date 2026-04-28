@@ -54,16 +54,10 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         None,
     ),
     # --- Generation ---
+    # ``temperature`` / ``max_tokens`` / ``reasoning_effort`` / ``thinking``
+    # are intentionally NOT exposed here — per-query decisions, controlled
+    # via the chat UI's Tools panel and the API's ``generation_overrides``.
     ("answering.generator.model", "llm", "Answer LLM", "Chat model for answer generation", "string", None),
-    ("answering.generator.temperature", "llm", "Temperature", "0.0 = deterministic, 1.0 = creative", "float", None),
-    (
-        "answering.generator.max_tokens",
-        "llm",
-        "Max output tokens",
-        "Maximum tokens in the generated answer",
-        "int",
-        None,
-    ),
     (
         "answering.max_chunks",
         "llm",

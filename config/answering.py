@@ -16,11 +16,23 @@ from pydantic import BaseModel, Field
 
 
 class GeneratorConfig(BaseModel):
+    """
+    Connection-level config for the LLM. yaml has the bare minimum
+    needed to *reach* the provider (model, auth, timeout, base URL).
+
+    **Not** in yaml: per-call generation parameters (temperature /
+    max_tokens / reasoning_effort / thinking / top_p / etc.). Those
+    are runtime decisions the chat UI exposes per query via
+    ``GenerationOverrides``. If a request doesn't set them, we don't
+    pass them — the model's own defaults apply. Direct API callers
+    who want to pin "always temperature 0.7" should send it on every
+    request, not bake it into yaml.
+    """
+
     backend: Literal["litellm"] = "litellm"
     model: str = "openai/gpt-4o-mini"
-    temperature: float = 0.1
-    max_tokens: int = 2048
     timeout: float = 60.0
+
     # Authentication: use ONE of api_key (plaintext in yaml) or
     # api_key_env (name of an env var). api_key takes precedence.
     api_key: str | None = None

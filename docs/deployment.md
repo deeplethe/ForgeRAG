@@ -54,7 +54,8 @@ python scripts/docker_setup.py --quick      # Accept all defaults (OpenAI, no Ne
 | Provider | Chat Model | Embed Model | Dimension |
 |----------|-----------|-------------|-----------|
 | OpenAI | `openai/gpt-4o-mini` | `openai/text-embedding-3-small` | 1536 |
-| DeepSeek | `deepseek/deepseek-chat` | `deepseek/deepseek-embedding` | 1536 |
+| DeepSeek | `deepseek/deepseek-v4-flash` | (use OpenAI / SiliconFlow / Ollama for embeddings — DeepSeek does not host an embedding model) | — |
+| SiliconFlow | `openai/deepseek-ai/DeepSeek-V4-Pro` (api_base = `https://api.siliconflow.cn/v1`) | `openai/BAAI/bge-m3` (same api_base) | 1024 |
 | Ollama | `ollama/qwen2.5` | `ollama/bge-m3` | 1024 |
 
 ### Manual Configuration

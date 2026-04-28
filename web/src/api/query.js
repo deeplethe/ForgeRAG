@@ -46,8 +46,10 @@ export const askQuery = ({ query, filter, conversationId }) =>
 /**
  * 流式查询 (SSE)
  *
- * 返回一个 async generator,yield 三种事件:
+ * 返回一个 async generator,yield 多种事件:
+ *   { event: 'progress',  data: { phase, status } }         // 阶段切换
  *   { event: 'retrieval', data: { vector_hits, bm25_hits, tree_hits, context_chunks, citations_all } }
+ *   { event: 'thinking',  data: { text: '...' } }           // 推理模型 (V4-Pro / o1) 的内部思考
  *   { event: 'delta',     data: { text: '...' } }          // 逐 token 追加
  *   { event: 'done',      data: { text, citations_used, stats, finish_reason } }
  *
@@ -65,8 +67,10 @@ export const askQuery = ({ query, filter, conversationId }) =>
  *   else if (event === 'done') showCitations(data.citations_used)
  * }
  */
-export async function* askQueryStream({ query, filter, conversationId, signal, pathFilter }) {
+export async function* askQueryStream({ query, filter, conversationId, signal, pathFilter, generationOverrides }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
+  // ``generationOverrides`` is the {reasoning_effort, temperature, max_tokens}
+  // dict from the Tools popup. ``null`` / unset = fall through to yaml defaults.
   const res = await fetch(`${BASE}/api/v1/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,6 +80,7 @@ export async function* askQueryStream({ query, filter, conversationId, signal, p
       path_filter: pathFilter || null,
       conversation_id: conversationId || null,
       stream: true,
+      generation_overrides: generationOverrides || null,
     }),
     signal,
   })

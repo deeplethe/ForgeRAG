@@ -19,6 +19,7 @@ from answering.pipeline import AnsweringPipeline
 from config import AppConfig
 from embedder.base import Embedder, make_embedder
 from ingestion import IngestionPipeline
+from ingestion.kg_queue import KGQueue
 from ingestion.queue import IngestionQueue
 from parser.blob_store import BlobStore, make_blob_store
 from parser.chunker import Chunker
@@ -30,6 +31,61 @@ from persistence.vector.base import VectorStore, make_vector_store
 from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 
 log = logging.getLogger(__name__)
+
+
+def _backfill_chroma_paths_from_sql(rel, vec) -> None:
+    """Re-derive vector chunk path metadata from SQL ``Document.path``.
+
+    Fixes a long-standing bug where ``ingestion_writer`` didn't include
+    path in the chunk metadata it sent to the vector store, so every
+    chunk got the ChromaStore default fallback ``"/"`` — making
+    folder-scoped queries return nothing. This runs once at startup,
+    walks all docs in SQL, and bulk-updates the vector store with
+    correct paths via ``vec.update_paths``.
+
+    Idempotent: if any chunk's path metadata is already a list (= a
+    migration ran in a previous startup or the chunk was upserted by
+    the post-fix code path), we skip. Cheap probe — single ``get(1)``.
+
+    Currently only Chroma needs this; pgvector denormalizes path via
+    its own SQL view, qdrant/etc. would each need their own version.
+    """
+    if vec.backend != "chromadb":
+        return
+
+    # Probe: already migrated?
+    try:
+        col = vec._ensure_collection()
+        sample = col.get(limit=1, include=["metadatas"])
+        metas = sample.get("metadatas") or []
+        if metas and isinstance((metas[0] or {}).get("path"), list):
+            return
+    except Exception as e:
+        log.warning("vector backfill probe failed: %s", e)
+        return
+
+    # Pull all chunk_id → doc.path pairs from SQL in one query.
+    from sqlalchemy import select
+
+    from persistence.models import ChunkRow, Document
+
+    chunk_to_path: dict[str, str] = {}
+    with rel.transaction() as sess:
+        rows = sess.execute(
+            select(ChunkRow.chunk_id, Document.path).join(Document, Document.doc_id == ChunkRow.doc_id)
+        ).all()
+        for r in rows:
+            if r.path:
+                chunk_to_path[r.chunk_id] = r.path
+
+    if not chunk_to_path:
+        return
+
+    vec.update_paths(chunk_to_path)
+    log.info(
+        "vector backfill: re-derived path metadata for %d chunks from SQL",
+        len(chunk_to_path),
+    )
 
 
 class AppState:
@@ -89,6 +145,18 @@ class AppState:
             self.vector.connect()
             self.vector.ensure_schema()
 
+        # One-shot path backfill: legacy chunks were upserted without
+        # path metadata (the old ``ingestion_writer`` didn't include it,
+        # so the ChromaStore default fallback ``"/"`` filled in for every
+        # chunk → folder-scoped queries returned nothing). Re-derive
+        # each chunk's path from SQL ``Document.path`` and write it to
+        # the vector store via ``update_paths``. Idempotent: probes one
+        # chunk's metadata; skips if already in list-form (= migrated).
+        try:
+            _backfill_chroma_paths_from_sql(self.store, self.vector)
+        except Exception as e:
+            log.warning("vector path backfill from SQL failed: %s", e)
+
         # Graph store (Knowledge Graph — optional)
         self.graph_store = None
         try:
@@ -120,7 +188,8 @@ class AppState:
         except Exception as e:
             log.warning("graph store not available: %s", e, exc_info=True)
 
-        # Ingestion orchestrator
+        # Ingestion orchestrator. ``kg_submit`` is wired below after we
+        # construct the dedicated KG worker pool.
         self.ingestion = IngestionPipeline(
             file_store=self.file_store,
             parser=self.parser,
@@ -133,7 +202,18 @@ class AppState:
             kg_extraction_cfg=cfg.retrieval.kg_extraction,
         )
 
-        # Background ingestion queue
+        # KG-extraction worker pool — separate from the parse/embed pool
+        # so long-running KG jobs (minutes per doc) can't starve incoming
+        # parse jobs. Created before ingest_queue so we can wire its
+        # submit callback into the pipeline.
+        self.kg_queue = KGQueue(
+            self.ingestion.run_kg_for_doc,
+            max_workers=cfg.parser.kg_max_workers,
+        )
+        self.kg_queue.start()
+        self.ingestion.kg_submit = self.kg_queue.submit
+
+        # Background parse/embed queue
         self.ingest_queue = IngestionQueue(
             self.ingestion,
             max_workers=cfg.parser.ingest_max_workers,
@@ -144,6 +224,18 @@ class AppState:
         # Re-queue documents that were stuck mid-ingestion when the
         # process last exited (crash, restart, worker recycled by uvicorn).
         self.ingest_queue.recover_stuck(self.store)
+
+        # Same for KG jobs that were in flight or merely queued — those
+        # also can't survive a process restart but their docs already
+        # passed parse+embed so we resubmit only to the KG pool.
+        try:
+            kg_recovered = self.store.recover_stuck_kg()
+            for doc_id in kg_recovered:
+                self.kg_queue.submit(doc_id)
+            if kg_recovered:
+                log.info("re-queued %d stuck KG job(s)", len(kg_recovered))
+        except Exception:
+            log.exception("KG recovery failed")
 
         # BM25 index is lazy -- built on first /ask
         self._init_lock = threading.RLock()
@@ -306,11 +398,17 @@ class AppState:
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
-        # Stop ingestion queue
+        # Stop the parse/embed queue first — this prevents new KG jobs
+        # from being submitted while we drain the KG queue below.
         try:
             self.ingest_queue.shutdown()
         except Exception:
             log.exception("ingestion queue shutdown failed")
+        # Stop KG queue (long-running jobs; longer drain timeout).
+        try:
+            self.kg_queue.shutdown(timeout=60.0)
+        except Exception:
+            log.exception("KG queue shutdown failed")
         # Save embedding cache
         if hasattr(self.embedder, "save"):
             with contextlib.suppress(Exception):

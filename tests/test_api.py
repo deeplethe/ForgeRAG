@@ -36,7 +36,7 @@ class FakeGenerator:
     backend = "fake"
     model = "fake/test"
 
-    def generate(self, messages):
+    def generate(self, messages, *, overrides=None):
         from answering.prompts import extract_cited_ids
 
         content = "\n".join(m["content"] for m in messages if m["role"] == "user")

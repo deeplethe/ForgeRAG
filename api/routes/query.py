@@ -72,6 +72,7 @@ def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
             filter=_inject_path_filter(req),
             conversation_id=req.conversation_id,
             overrides=req.overrides,
+            gen_overrides=req.generation_overrides,
         )
     except RetrievalError as e:
         # Upstream dependency failed (LLM / embedder / KG store / reranker).
@@ -143,6 +144,7 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
                 filter=_inject_path_filter(req),
                 conversation_id=req.conversation_id,
                 overrides=req.overrides,
+                gen_overrides=req.generation_overrides,
             ):
                 event_type = event.get("event", "delta")
                 data = json.dumps(event.get("data", {}), ensure_ascii=False, default=str)

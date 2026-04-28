@@ -27,14 +27,22 @@ log = logging.getLogger(__name__)
 class ObservabilityConfig(BaseModel):
     enabled: bool = True
     service_name: str = "forgerag"
-    exporter: Literal["stdout", "otlp", "none"] = Field(
-        "stdout",
+    exporter: Literal["stdout_compact", "stdout", "otlp", "none"] = Field(
+        "stdout_compact",
         description=(
-            "Where to send finished spans. ``stdout`` prints to the server "
-            "console (zero setup). ``otlp`` sends via OTLP/HTTP to "
-            "``otlp_endpoint`` (point at Langfuse / Jaeger / Phoenix / etc.). "
-            "``none`` disables external export (the per-request collector "
-            "still runs so the /query route can return trace JSON)."
+            "Where to send finished spans. ``stdout_compact`` (default) "
+            "prints one filtered, condensed line per span "
+            "(``[12ms] GET /api/v1/folders OK``); framework noise "
+            "(httpcore TCP/TLS handshakes, sub-ms SQL internals) is "
+            "dropped. ``stdout`` is the OpenTelemetry standard "
+            "ConsoleSpanExporter — full multi-line JSON dump per span "
+            "(very verbose; useful for piping to a JSON parser or "
+            "deep-debugging a single trace). ``otlp`` sends via "
+            "OTLP/HTTP to ``otlp_endpoint`` (Langfuse / Jaeger / "
+            "Phoenix / etc.) for real observability dashboards. "
+            "``none`` disables external export entirely; the per-"
+            "request collector still feeds the frontend trace viewer "
+            "either way."
         ),
     )
     otlp_endpoint: str | None = Field(
@@ -55,6 +63,103 @@ class ObservabilityConfig(BaseModel):
         le=1.0,
         description="Parent-based sampling ratio. Lower to reduce volume in prod.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Compact span exporter
+# ---------------------------------------------------------------------------
+
+
+# Span name prefixes whose spans are filtered out from compact stdout —
+# they're framework noise (TCP / TLS handshake breakdown, SQL prepare /
+# cursor / commit-step internals, internal litellm raw events) that
+# drown the actually-interesting request / retrieval / LLM spans.
+_NOISE_PREFIXES = (
+    "connect_tcp",
+    "start_tls",
+    "send_request_headers",
+    "send_request_body",
+    "receive_response_headers",
+    "receive_response_body",
+    "connect",  # SQLAlchemy session connect — fires before every query
+    "raw_gen_ai_request",  # litellm internal pre-request event
+)
+
+# Spans below this duration are dropped — sub-ms ORM internals aren't
+# actionable and just bury the useful entries.
+_MIN_DURATION_MS = 1.0
+
+
+def _condense_sql(stmt: str) -> str:
+    """``SELECT a, b, c, ... FROM users WHERE ...`` → ``SELECT FROM users``."""
+    import re
+
+    s = stmt.split("\n", 1)[0].strip()
+    m = re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE)\b.*?\bFROM\s+(\w+)", s, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).upper()} {m.group(2)}"
+    m = re.match(r"^\s*(INSERT INTO|UPDATE)\s+(\w+)", s, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).upper()} {m.group(2)}"
+    return s[:60]
+
+
+def _format_span_compact(span) -> str | None:
+    """Format an OTel span as one line; return None to suppress noisy spans."""
+    name = span.name or "<unnamed>"
+    if any(name.startswith(p) for p in _NOISE_PREFIXES):
+        return None
+
+    duration_ms = (span.end_time - span.start_time) / 1_000_000  # ns → ms
+    if duration_ms < _MIN_DURATION_MS:
+        return None
+
+    status_code = span.status.status_code.name if span.status else "UNSET"
+    status_marker = {"OK": "OK", "ERROR": "ERR", "UNSET": "  "}.get(status_code, status_code)
+
+    attrs = dict(span.attributes or {})
+
+    # SQL spans get a condensed ``OP table_name`` rendering — the SQLAlchemy
+    # span name already encodes the DB path, which is redundant noise.
+    if "db.system" in attrs:
+        stmt = attrs.get("db.statement", "")
+        if stmt:
+            return f"[{duration_ms:6.1f}ms] {status_marker} {_condense_sql(str(stmt))}"
+        return f"[{duration_ms:6.1f}ms] {status_marker} {name}"
+
+    # HTTP spans
+    if "http.method" in attrs:
+        target = attrs.get("http.route") or attrs.get("http.url") or attrs.get("http.target") or ""
+        return f"[{duration_ms:6.1f}ms] {status_marker} {attrs['http.method']} {target}"
+
+    # LLM / generative-AI spans
+    if "gen_ai.request.model" in attrs:
+        return f"[{duration_ms:6.1f}ms] {status_marker} {name} model={attrs['gen_ai.request.model']}"
+
+    # Everything else: just span name
+    return f"[{duration_ms:6.1f}ms] {status_marker} {name}"
+
+
+class _CompactSpanExporter:
+    """One-line-per-span exporter. Drop-in replacement for ConsoleSpanExporter
+    when the user just wants a quick activity readout, not full JSON."""
+
+    def export(self, spans):
+        import sys
+
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        for s in spans:
+            line = _format_span_compact(s)
+            if line is not None:
+                print(line, file=sys.stderr, flush=True)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        return
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +197,12 @@ def bootstrap(cfg: ObservabilityConfig) -> None:
     )
 
     # ── External exporter ──
-    if cfg.exporter == "stdout":
+    if cfg.exporter == "stdout_compact":
+        provider.add_span_processor(BatchSpanProcessor(_CompactSpanExporter()))
+        log.info("observability: stdout_compact exporter active")
+    elif cfg.exporter == "stdout":
         provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-        log.info("observability: stdout exporter active")
+        log.info("observability: stdout exporter active (full JSON)")
     elif cfg.exporter == "otlp":
         if not cfg.otlp_endpoint:
             raise ValueError("observability.exporter=otlp requires otlp_endpoint")

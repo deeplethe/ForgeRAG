@@ -152,4 +152,18 @@ class ParserSection(BaseModel):
     normalize: NormalizeConfig = Field(default_factory=NormalizeConfig)
     tree_builder: TreeBuilderConfig = Field(default_factory=TreeBuilderConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
-    ingest_max_workers: int = Field(default=10, description="Max concurrent document ingestion workers")
+    ingest_max_workers: int = Field(
+        default=10,
+        description=(
+            "Max concurrent document ingestion workers (parse + chunk + embed). Short, latency-sensitive jobs."
+        ),
+    )
+    kg_max_workers: int = Field(
+        default=10,
+        description=(
+            "Max concurrent KG extraction workers. Long-running jobs (minutes "
+            "per doc), runs on its own thread pool so it can't starve the "
+            "parse/embed pool. Default 10 matches ``ingest_max_workers``; "
+            "lower if your LLM provider rate-limits below this concurrency."
+        ),
+    )

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.1.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.2-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://github.com/deeplethe/ForgeRAG"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge" alt="Stars"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>
@@ -132,13 +132,14 @@ cd web && npm install && npm run build && cd ..
 #    To re-sync deps after a manual yaml edit: python scripts/setup.py --sync-deps forgerag.yaml
 python scripts/setup.py
 
-# 4. Run (use multiple workers for responsive UI during ingestion)
-python main.py --workers 4
+# 4. Run — defaults to a single worker (safe with the wizard's default
+#    SQLite + ChromaDB-persistent + NetworkX backends).
+python main.py
 ```
 
 Open [http://localhost:8000](http://localhost:8000) — the web UI is served automatically.
 
-> **Note:** We recommend running with `--workers 4` (or more). Document ingestion involves heavy LLM calls (tree building, KG extraction, embedding) that can block the API if only one worker is running. Multiple workers ensure the web UI stays responsive while documents are being processed in the background.
+> **Note:** Document ingestion involves heavy LLM calls (tree building, KG extraction, embedding). For a responsive UI under concurrent ingestion, scale to multiple workers — but `--workers >1` requires multi-process-safe backends (PostgreSQL + Neo4j + a non-persistent ChromaDB / Qdrant / Milvus / Weaviate / pgvector). Starting with `--workers >1` against single-process backends (SQLite, NetworkX, persistent ChromaDB) exits with code 2 to avoid silent data corruption.
 
 ### Option B: Docker Deployment
 
@@ -158,7 +159,7 @@ Open [http://localhost:8000](http://localhost:8000). See [Deployment Guide](docs
 
 | Component | Options |
 |-----------|---------|
-| **PDF Parser** | PyMuPDF (fast) → MinerU (layout-aware, table/formula) → VLM (vision-language) |
+| **PDF Parser** | One explicit choice: `pymupdf` (fast, default) / `mineru` (layout-aware, tables/formulas) / `mineru-vlm` (vision-language for scanned & complex layouts) |
 | **Relational DB** | SQLite (default), PostgreSQL, MySQL |
 | **Vector Store** | ChromaDB (default), pgvector (PostgreSQL), Qdrant, Milvus, Weaviate |
 | **Blob Storage** | Local filesystem (default), Amazon S3, Alibaba OSS |
@@ -173,7 +174,7 @@ Open [http://localhost:8000](http://localhost:8000). See [Deployment Guide](docs
 | `--host` | `0.0.0.0` | Bind address (or `$FORGERAG_HOST`) |
 | `--port` | `8000` | Bind port (or `$FORGERAG_PORT`) |
 | `--reload` | off | Hot-reload for development |
-| `--workers` | `4` | Uvicorn workers |
+| `--workers` | `1` | Uvicorn workers. Values > 1 require multi-process-safe backends (PostgreSQL + Neo4j + non-persistent vector store); startup exits 2 otherwise. |
 
 ## Architecture
 

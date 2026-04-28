@@ -9,7 +9,7 @@ All responses follow a consistent shape:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -277,6 +277,44 @@ class QueryOverrides(BaseModel):
     )
 
 
+class GenerationOverrides(BaseModel):
+    """
+    Per-request overrides of generation yaml defaults. Every field is
+    ``None`` by default — meaning "use cfg value". Set a field to take
+    effect only for this single query.
+
+    These travel through the API to the LLM via LiteLLM's unified
+    cross-provider params. ``reasoning_effort`` in particular is
+    routed automatically: for OpenAI o-series / xAI it passes through;
+    for Anthropic it maps to ``thinking={type, budget_tokens}``; for
+    Gemini it maps to ``thinking_budget``; for DeepSeek any non-none
+    value enables thinking (DeepSeek's LiteLLM route doesn't surface
+    "disable" — for that, set ``extra_kwargs.extra_body.thinking`` in
+    yaml; this UI override doesn't yet expose it).
+    """
+
+    # Boolean thinking-mode switch. Works across providers because we
+    # route both via ``extra_body.thinking.type`` (DeepSeek's quirk) and
+    # via ``reasoning_effort=disable`` (Anthropic / Gemini). OpenAI
+    # o-series / xAI ignore (thinking is model-bound for them, can't be
+    # toggled per request — picking ``gpt-4.1`` vs ``o3-mini`` is the
+    # toggle there).
+    thinking: bool | None = Field(
+        None,
+        description=(
+            "True = force thinking ON, False = force OFF, None = use "
+            "provider default. Resolved both via ``extra_body.thinking`` "
+            "(DeepSeek) and ``reasoning_effort`` (Anthropic / Gemini)."
+        ),
+    )
+    # Intensity dial — orthogonal to ``thinking``. ``low``/``medium``/
+    # ``high`` are universally meaningful; ``disable``/``none`` are
+    # better expressed via ``thinking=False`` above.
+    reasoning_effort: Literal["low", "medium", "high"] | None = Field(None)
+    temperature: float | None = Field(None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(None, ge=1, le=128000)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=8192)
     filter: dict[str, Any] | None = None
@@ -294,6 +332,13 @@ class QueryRequest(BaseModel):
     overrides: QueryOverrides | None = Field(
         None,
         description="Per-request overrides of retrieval yaml defaults. Unset fields fall through to cfg.",
+    )
+    generation_overrides: GenerationOverrides | None = Field(
+        None,
+        description=(
+            "Per-request overrides of generation yaml defaults — typically "
+            "wired to a UI 'Tools' panel for reasoning_effort / temperature."
+        ),
     )
     conversation_id: str | None = Field(
         None,
@@ -329,6 +374,7 @@ class MessageOut(BaseModel):
     content: str
     trace_id: str | None = None
     citations_json: list | None = None
+    thinking: str | None = None
     created_at: Any = None
 
 

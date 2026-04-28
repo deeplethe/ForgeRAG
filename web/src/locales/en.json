@@ -1,0 +1,83 @@
+{
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "close": "Close",
+    "search": "Search",
+    "edit": "Edit",
+    "loading": "Loading...",
+    "github": "GitHub"
+  },
+  "sidebar": {
+    "tabs": {
+      "chat": "Chat",
+      "workspace": "Workspace",
+      "knowledge_graph": "Knowledge Graph",
+      "simulation": "Simulation",
+      "metrics": "Metrics",
+      "benchmark": "Benchmark",
+      "tokens": "Tokens & Sessions"
+    },
+    "in_dev": "(In Dev)",
+    "locked": "locked",
+    "recents": "Recents",
+    "new_chat": "+ New chat",
+    "untitled": "Untitled"
+  },
+  "user_menu": {
+    "language": "Language",
+    "theme": "Theme",
+    "theme_light": "Light",
+    "theme_dark": "Dark",
+    "sign_out": "Sign out",
+    "sign_out_confirm_title": "Sign out?",
+    "sign_out_confirm_desc": "You will be returned to the login screen.",
+    "sign_out_button": "Sign out",
+    "role_admin": "admin"
+  },
+  "scope": {
+    "all_documents": "All documents",
+    "search_placeholder": "Search folders / files...",
+    "select_this_folder": "Use this folder",
+    "tooltip_pick_and_dive": "Scope and drill into {path}",
+    "tooltip_scoped_to": "Chat scoped to: {path}",
+    "tooltip_idle": "Click to scope this chat to a folder or file",
+    "tooltip_up": "Up one level",
+    "tooltip_confirm_close": "Confirm and close (also re-asserts this folder as scope)",
+    "empty_dir": "This folder is empty",
+    "no_match": "No matches for \"{query}\""
+  },
+  "chat": {
+    "ask_a_question": "Ask a question...",
+    "ask_followup": "Ask a follow-up...",
+    "may_make_mistakes": "ForgeRAG may make mistakes. Verify important information.",
+    "stop_generation": "Stop generation",
+    "thinking": "Thinking",
+    "trace": "Trace"
+  },
+  "tools": {
+    "label": "Tools",
+    "tooltip": "Per-query overrides — thinking, reasoning effort, temperature, etc.",
+    "active": "Custom",
+    "default": "Default",
+    "thinking": "Thinking",
+    "thinking_default": "Default",
+    "thinking_off": "Off",
+    "thinking_on": "On",
+    "thinking_hint": "Force thinking on/off. ``Default`` = provider's own setting. Disable on DeepSeek-V4-Pro to skip the reasoning trace and save tokens.",
+    "reasoning_effort": "Effort",
+    "effort_default": "Default",
+    "effort_low": "Low",
+    "effort_medium": "Medium",
+    "effort_high": "High",
+    "effort_hint": "Reasoning intensity. Independent of the on/off toggle above.",
+    "temperature": "Temperature",
+    "temperature_default": "Default",
+    "temperature_hint": "0 = deterministic, 1 = balanced, 2 = wild",
+    "web_search": "Web search",
+    "web_search_coming_soon": "Coming soon",
+    "reset": "Reset to default"
+  }
+}

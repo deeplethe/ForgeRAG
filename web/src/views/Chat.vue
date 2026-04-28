@@ -10,11 +10,18 @@ export default { name: 'ChatView' }
 const _msgs = ref([])
 const _streaming = ref(false)
 const _streamText = ref('')
+const _streamThinking = ref('')   // reasoning content from V4-Pro / o1 / deepseek-reasoner
+const _streamThinkingCollapsed = ref(false)   // default expanded
+const _thinkingCollapsed = ref({})   // {msgIndex: boolean} — default expanded for all
 const _retInfo = ref(null)
 const _livePhases = ref({})
 const _liveElapsed = ref({})
 const _abortCtrl = ref(null)
 const _progressExpanded = ref(false)
+// Generation overrides set via the Tools popup. ``null`` = use yaml
+// defaults; otherwise a {reasoning_effort?, temperature?} dict that
+// gets posted to the API as ``generation_overrides``.
+const _genTools = ref(null)
 let _presetGenId = 0
 let _streamGenId = 0
 let _skipNextWatch = false
@@ -34,13 +41,23 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 </script>
 
 <script setup>
-import { ref, reactive, nextTick, computed, inject, watch, onMounted } from 'vue'
+import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { askQueryStream, createConversation, addMessage, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
+
+const { t } = useI18n()
 import { renderMarkdown } from '@/utils/renderMarkdown'
-import PdfViewer from '@/components/PdfViewer.vue'
+// Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
+// clicks a citation. Without this the whole library + worker JS sit in
+// the Chat.vue bundle, slowing the first chat load AND making the panel
+// slide-in animation stutter when pdfjs-dist's main-thread init runs in
+// parallel with the CSS transition.
+const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'))
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
+import PathScopePicker from '@/components/PathScopePicker.vue'
+import ThinkingPicker from '@/components/ThinkingPicker.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
@@ -50,28 +67,96 @@ const loadConvs = inject('loadConvs')
 const route = useRoute()
 const router = useRouter()
 const pathFilter = ref(route.query.path_filter || '')
+// URL → local: keep in sync when user navigates to /chat?path_filter=...
 watch(() => route.query.path_filter, v => { pathFilter.value = v || '' })
-function clearPathFilter() {
-  pathFilter.value = ''
+// Local → URL: when the user picks a different scope via PathScopePicker,
+// reflect it in the URL so refresh / share / browser-back still works.
+watch(pathFilter, v => {
+  const cur = route.query.path_filter || ''
+  if (v === cur) return
   const q = { ...route.query }
-  delete q.path_filter
+  if (v) q.path_filter = v
+  else delete q.path_filter
   router.replace({ query: q })
-}
+})
 
 // Bind module-level refs to local names for template access
 const msgs = _msgs
 const streaming = _streaming
 const streamText = _streamText
+const streamThinking = _streamThinking
+const streamThinkingCollapsed = _streamThinkingCollapsed
+const thinkingCollapsed = _thinkingCollapsed
 const retInfo = _retInfo
 const livePhases = _livePhases
 const liveElapsed = _liveElapsed
 const abortCtrl = _abortCtrl
 const progressExpanded = _progressExpanded
+const genTools = _genTools
+
+// Thinking lives inside ``genTools`` (so the API gets one
+// ``generation_overrides`` payload), but the UI exposes it through a
+// dedicated chip. This adapter reads/writes just the ``thinking``
+// field while preserving any other fields a programmatic caller may
+// have set (reasoning_effort, temperature, ...).
+const thinkingValue = computed({
+  get: () => (typeof genTools.value?.thinking === 'boolean' ? genTools.value.thinking : null),
+  set: (v) => {
+    const next = { ...(genTools.value || {}) }
+    if (v === null || v === undefined) delete next.thinking
+    else next.thinking = v
+    genTools.value = Object.keys(next).length ? next : null
+  },
+})
 
 // Per-instance state (OK to reset on remount)
 const input = ref('')
 const chatEl = ref(null)
+const thinkingStreamEl = ref(null)   // live thinking pane element — auto-scrolls to bottom
+
+// Keep the live thinking pane scrolled to its latest content while
+// reasoning streams in. ``flush: 'post'`` runs after Vue has applied
+// the new ``streamThinking`` text to the DOM.
+watch(_streamThinking, () => {
+  if (!thinkingStreamEl.value) return
+  thinkingStreamEl.value.scrollTop = thinkingStreamEl.value.scrollHeight
+}, { flush: 'post' })
 const pdf = reactive({ show: false, url: '', page: 1, highlights: [], cite: null, downloadUrl: '', sourceDownloadUrl: '', sourceLabel: '' })
+// PdfViewer mount lifecycle is gated to the slide-pdf <Transition>:
+//   open  → wait for ``@after-enter`` → mount  (slide-in is GPU-clean)
+//   close → keep mounted, let slide-out finish → ``@after-leave`` →
+//           unmount via outer v-if  (teardown happens off-screen)
+// Don't tie mount to ``setTimeout`` — if the main thread is busy when
+// the timer fires (e.g. async chunk for pdfjs-dist still loading),
+// mount lands mid-slide and stutters the width transition.
+const pdfMounted = ref(false)
+let _wasAtBottomBeforePdf = false
+watch(() => pdf.show, (v) => {
+  if (v) {
+    pdfMounted.value = false   // spinner placeholder during slide-in
+    // Snapshot scroll state BEFORE the chat reflows narrower. If the
+    // user was at the bottom (typical: just got an answer, clicked a
+    // chip), pin them there once the slide-in lands.
+    const el = chatEl.value
+    _wasAtBottomBeforePdf = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+  }
+  // No close-branch action: setting pdfMounted=false here would tear
+  // down pdfjs synchronously and jankify the slide-out. Leave it to
+  // ``onPdfAfterLeave``.
+})
+
+function onPdfAfterEnter() {
+  // Slide-in finished — chat has fully reflowed. Mount the heavy
+  // PdfViewer now and restore scroll if the user was at the bottom.
+  pdfMounted.value = true
+  if (_wasAtBottomBeforePdf) scroll()
+}
+function onPdfAfterLeave() {
+  // Slide-out finished — outer v-if has destroyed the subtree, so
+  // PdfViewer is gone. Reset the flag so the next open shows the
+  // spinner again until the next ``after-enter``.
+  pdfMounted.value = false
+}
 const trace = reactive({ show: false, data: null })
 const empty = computed(() => !msgs.value.length && !streaming.value)
 
@@ -155,6 +240,7 @@ async function _loadAndPoll(id) {
       role: m.role,
       content: m.content,
       citations: normalizeCitations(m.citations_json),
+      thinking: m.thinking || null,
       traceId: m.trace_id || null,
     }))
   }
@@ -352,7 +438,7 @@ async function send(text) {
     return
   }
 
-  streaming.value = true; streamText.value = ''; retInfo.value = null
+  streaming.value = true; streamText.value = ''; streamThinking.value = ''; retInfo.value = null
   livePhases.value = {}; liveElapsed.value = {}; progressExpanded.value = false
   startTimer(); scroll()
 
@@ -361,7 +447,13 @@ async function send(text) {
   try {
     let fin = null
     let traceSpans = null   // OTel spans payload from the "trace" SSE event
-    for await (const { event, data } of askQueryStream({ query: q, conversationId: convId.value, pathFilter: pathFilter.value || null, signal: abortCtrl.value.signal })) {
+    for await (const { event, data } of askQueryStream({
+      query: q,
+      conversationId: convId.value,
+      pathFilter: pathFilter.value || null,
+      generationOverrides: genTools.value,
+      signal: abortCtrl.value.signal,
+    })) {
       // If conversation switched away, stop updating UI but don't abort request
       if (myGenId !== _streamGenId) break
       if (event === 'progress') {
@@ -375,6 +467,7 @@ async function send(text) {
         }
         scroll()
       } else if (event === 'retrieval') { retInfo.value = data }
+      else if (event === 'thinking') { streamThinking.value += data.text; scroll() }
       else if (event === 'delta') { streamText.value += data.text; scroll() }
       else if (event === 'trace') { traceSpans = data }   // OTel {spans: [...]}
       else if (event === 'error') {
@@ -391,12 +484,14 @@ async function send(text) {
       msgs.value.push({
         role: 'assistant',
         content: fin.text,
+        thinking: streamThinking.value || (fin.stats?.reasoning_text || ''),
         citations: fin.citations_used,
         stats: fin.stats,
         trace: traceSpans,
         traceId: fin.trace_id || null,
       })
       streamText.value = ''
+      streamThinking.value = ''
     }
   } catch (e) {
     // AbortError from user clicking stop — not an error
@@ -583,16 +678,8 @@ function onTraceClick(m) {
 
 <template>
   <div class="flex h-full relative">
-    <!-- Path-filter chip: visible only when @path scoping is active -->
-    <div
-      v-if="pathFilter"
-      class="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-[11px] text-brand select-none"
-      :title="'Chat scoped to: ' + pathFilter"
-    >
-      <span>📁 Scope:</span>
-      <span class="font-mono truncate max-w-[320px]">{{ pathFilter }}</span>
-      <button class="text-brand/80 hover:text-brand ml-1" @click="clearPathFilter" title="Clear scope">✕</button>
-    </div>
+    <!-- (Old top-center scope chip removed — PathScopePicker above the
+         input is now the single source of truth and entry point.) -->
 
     <!-- ═══════ Trace panel (OTel waterfall) ═══════ -->
     <Transition name="slide-trace">
@@ -627,8 +714,31 @@ function onTraceClick(m) {
         <div class="flex-[4]"></div>
         <div class="pl-8 pr-16 pb-6">
           <div class="max-w-2xl mx-auto">
+            <!-- Scope picker + Tools popup: badge-style chips above the
+                 input. Use ``flex gap`` so they sit side-by-side; both
+                 share the borderless-fill chip styling so they read as
+                 belonging to the input card below. -->
+            <div class="mb-1.5 pl-1 flex items-center gap-1.5">
+              <PathScopePicker v-model="pathFilter" />
+              <ThinkingPicker v-model="thinkingValue" />
+              <!-- Web search placeholder. Disabled chip until a
+                   real retriever (Tavily / SearXNG / etc.) lands. -->
+              <span
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
+                :title="t('tools.web_search_coming_soon')"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
+                </svg>
+                <span>{{ t('tools.web_search') }}</span>
+                <span class="text-t3/60">·</span>
+                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
+              </span>
+            </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
-              <textarea v-model="input" @keydown="onKey" placeholder="Ask a question..." rows="2"
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 40px; max-height: 120px" autofocus />
               <button @click="send()" :disabled="!input.trim()"
@@ -637,7 +747,7 @@ function onTraceClick(m) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>
-            <div class="text-center mt-2 text-[10px] text-t3">ForgeRAG may make mistakes. Verify important information.</div>
+            <div class="text-center mt-2 text-[10px] text-t3">{{ t('chat.may_make_mistakes') }}</div>
           </div>
         </div>
       </div>
@@ -653,6 +763,24 @@ function onTraceClick(m) {
               </div>
               <!-- Assistant -->
               <div v-else class="group mb-2">
+                <!-- Thinking pane (reasoning models like V4-Pro / o1)
+                     above the answer — chronological order, reasoning
+                     came first. Capped at ~140px with internal scroll. -->
+                <div v-if="m.thinking" class="mb-3 border-l-2 border-line pl-3 max-w-[90%]">
+                  <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
+                    @click="thinkingCollapsed[i] = !thinkingCollapsed[i]">
+                    <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                      <path fill-rule="evenodd" clip-rule="evenodd" d="M9.97165 1.29981C11.5853 0.718916 13.271 0.642197 14.3144 1.68555C15.3577 2.72902 15.2811 4.41466 14.7002 6.02833C14.4707 6.66561 14.1504 7.32937 13.75 8.00001C14.1504 8.67062 14.4707 9.33444 14.7002 9.97169C15.2811 11.5854 15.3578 13.271 14.3144 14.3145C13.271 15.3579 11.5854 15.2811 9.97165 14.7002C9.3344 14.4708 8.67059 14.1505 7.99997 13.75C7.32933 14.1505 6.66558 14.4708 6.02829 14.7002C4.41461 15.2811 2.72899 15.3578 1.68552 14.3145C0.642155 13.271 0.71887 11.5854 1.29977 9.97169C1.52915 9.33454 1.84865 8.67049 2.24899 8.00001C1.84866 7.32953 1.52915 6.66544 1.29977 6.02833C0.718852 4.41459 0.64207 2.729 1.68552 1.68555C2.72897 0.642112 4.41456 0.718887 6.02829 1.29981C6.66541 1.52918 7.32949 1.8487 7.99997 2.24903C8.67045 1.84869 9.33451 1.52919 9.97165 1.29981ZM12.9404 9.2129C12.4391 9.893 11.8616 10.5681 11.2148 11.2149C10.568 11.8616 9.89296 12.4391 9.21286 12.9404C9.62532 13.1579 10.0271 13.338 10.4121 13.4766C11.9146 14.0174 12.9172 13.8738 13.3955 13.3955C13.8737 12.9173 14.0174 11.9146 13.4765 10.4121C13.3379 10.0271 13.1578 9.62535 12.9404 9.2129ZM3.05856 9.2129C2.84121 9.62523 2.66197 10.0272 2.52341 10.4121C1.98252 11.9146 2.12627 12.9172 2.60446 13.3955C3.08278 13.8737 4.08544 14.0174 5.58786 13.4766C5.97264 13.338 6.37389 13.1577 6.7861 12.9404C6.10624 12.4393 5.43168 11.8614 4.78513 11.2149C4.13823 10.5679 3.55992 9.89313 3.05856 9.2129ZM7.99899 3.792C7.23179 4.31419 6.45306 4.95512 5.70407 5.70411C4.95509 6.45309 4.31415 7.23184 3.79196 7.99903C4.3143 8.76666 4.95471 9.54653 5.70407 10.2959C6.45309 11.0449 7.23271 11.6848 7.99997 12.207C8.76725 11.6848 9.54683 11.0449 10.2959 10.2959C11.0449 9.54686 11.6848 8.76729 12.207 8.00001C11.6848 7.23275 11.0449 6.45312 10.2959 5.70411C9.5465 4.95475 8.76662 4.31434 7.99899 3.792ZM5.58786 2.52344C4.08533 1.98255 3.08272 2.12625 2.60446 2.6045C2.12621 3.08275 1.98252 4.08536 2.52341 5.5879C2.66189 5.97253 2.8414 6.37409 3.05856 6.78614C3.55983 6.10611 4.1384 5.43189 4.78513 4.78516C5.43186 4.13843 6.10606 3.55987 6.7861 3.0586C6.37405 2.84144 5.97249 2.66192 5.58786 2.52344ZM13.3955 2.6045C12.9172 2.12631 11.9146 1.98257 10.4121 2.52344C10.0272 2.66201 9.62519 2.84125 9.21286 3.0586C9.8931 3.55996 10.5679 4.13827 11.2148 4.78516C11.8614 5.43172 12.4392 6.10627 12.9404 6.78614C13.1577 6.37393 13.338 5.97267 13.4765 5.5879C14.0174 4.08549 13.8736 3.08281 13.3955 2.6045Z"/>
+                    </svg>
+                    Thinking
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                      class="ml-0.5 transition-transform" :class="thinkingCollapsed[i] ? '-rotate-90' : ''">
+                      <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                  </button>
+                  <div v-if="!thinkingCollapsed[i]"
+                    class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ m.thinking }}</div>
+                </div>
                 <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
                   v-html="renderMsg(m.content, m.citations)"
                   @click="onMsgClick($event, m.citations)">
@@ -687,16 +815,21 @@ function onTraceClick(m) {
                 </template>
 
                 <template v-else>
-                  <!-- Summary line (always visible): "Searching... 3.2s ▾" -->
+                  <!-- Summary line (always visible): "Searching... 3.2s ▾".
+                       The old "Thinking:" prefix collided with the actual
+                       Thinking pane below — they looked identical despite
+                       meaning different things ("model is in Generating
+                       phase" vs "the model's reasoning_content"). Drop
+                       the prefix, the phase name + spinner are enough. -->
                   <span v-if="progressSummary && !progressSummary.done" class="text-t2">
-                    <span class="text-t3">Thinking:</span> {{ progressSummary.text }}...
+                    {{ progressSummary.text }}...
                     <span class="text-t3 text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
                   </span>
                   <span v-else-if="progressSummary && progressSummary.done" class="text-t3">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" class="inline -mt-px mr-0.5 text-t1">
                       <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <span class="text-t3/60">Thinking:</span> {{ progressSummary.text }}
+                    {{ progressSummary.text }}
                     <span class="text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
                   </span>
 
@@ -729,7 +862,32 @@ function onTraceClick(m) {
                 </template>
               </div>
 
-              <!-- Streaming text -->
+              <!-- Live thinking pane (reasoning models stream this).
+                   Rendered ABOVE the answer to match the persisted layout
+                   below — otherwise the pane jumps from below-answer (live)
+                   to above-answer (history) the moment the SSE ``done``
+                   event flips the message into ``msgs[]``. Chronological
+                   order anyway: the model thinks first, then answers. -->
+              <div v-if="streamThinking" class="mb-3 border-l-2 border-line pl-3">
+                <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
+                  @click="streamThinkingCollapsed = !streamThinkingCollapsed">
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                    <path fill-rule="evenodd" clip-rule="evenodd" d="M9.97165 1.29981C11.5853 0.718916 13.271 0.642197 14.3144 1.68555C15.3577 2.72902 15.2811 4.41466 14.7002 6.02833C14.4707 6.66561 14.1504 7.32937 13.75 8.00001C14.1504 8.67062 14.4707 9.33444 14.7002 9.97169C15.2811 11.5854 15.3578 13.271 14.3144 14.3145C13.271 15.3579 11.5854 15.2811 9.97165 14.7002C9.3344 14.4708 8.67059 14.1505 7.99997 13.75C7.32933 14.1505 6.66558 14.4708 6.02829 14.7002C4.41461 15.2811 2.72899 15.3578 1.68552 14.3145C0.642155 13.271 0.71887 11.5854 1.29977 9.97169C1.52915 9.33454 1.84865 8.67049 2.24899 8.00001C1.84866 7.32953 1.52915 6.66544 1.29977 6.02833C0.718852 4.41459 0.64207 2.729 1.68552 1.68555C2.72897 0.642112 4.41456 0.718887 6.02829 1.29981C6.66541 1.52918 7.32949 1.8487 7.99997 2.24903C8.67045 1.84869 9.33451 1.52919 9.97165 1.29981ZM12.9404 9.2129C12.4391 9.893 11.8616 10.5681 11.2148 11.2149C10.568 11.8616 9.89296 12.4391 9.21286 12.9404C9.62532 13.1579 10.0271 13.338 10.4121 13.4766C11.9146 14.0174 12.9172 13.8738 13.3955 13.3955C13.8737 12.9173 14.0174 11.9146 13.4765 10.4121C13.3379 10.0271 13.1578 9.62535 12.9404 9.2129ZM3.05856 9.2129C2.84121 9.62523 2.66197 10.0272 2.52341 10.4121C1.98252 11.9146 2.12627 12.9172 2.60446 13.3955C3.08278 13.8737 4.08544 14.0174 5.58786 13.4766C5.97264 13.338 6.37389 13.1577 6.7861 12.9404C6.10624 12.4393 5.43168 11.8614 4.78513 11.2149C4.13823 10.5679 3.55992 9.89313 3.05856 9.2129ZM7.99899 3.792C7.23179 4.31419 6.45306 4.95512 5.70407 5.70411C4.95509 6.45309 4.31415 7.23184 3.79196 7.99903C4.3143 8.76666 4.95471 9.54653 5.70407 10.2959C6.45309 11.0449 7.23271 11.6848 7.99997 12.207C8.76725 11.6848 9.54683 11.0449 10.2959 10.2959C11.0449 9.54686 11.6848 8.76729 12.207 8.00001C11.6848 7.23275 11.0449 6.45312 10.2959 5.70411C9.5465 4.95475 8.76662 4.31434 7.99899 3.792ZM5.58786 2.52344C4.08533 1.98255 3.08272 2.12625 2.60446 2.6045C2.12621 3.08275 1.98252 4.08536 2.52341 5.5879C2.66189 5.97253 2.8414 6.37409 3.05856 6.78614C3.55983 6.10611 4.1384 5.43189 4.78513 4.78516C5.43186 4.13843 6.10606 3.55987 6.7861 3.0586C6.37405 2.84144 5.97249 2.66192 5.58786 2.52344ZM13.3955 2.6045C12.9172 2.12631 11.9146 1.98257 10.4121 2.52344C10.0272 2.66201 9.62519 2.84125 9.21286 3.0586C9.8931 3.55996 10.5679 4.13827 11.2148 4.78516C11.8614 5.43172 12.4392 6.10627 12.9404 6.78614C13.1577 6.37393 13.338 5.97267 13.4765 5.5879C14.0174 4.08549 13.8736 3.08281 13.3955 2.6045Z"/>
+                  </svg>
+                  Thinking
+                  <span v-if="!streamText" class="text-t3/50 ml-0.5 inline-flex items-center gap-1"><Spinner size="xs" /></span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                    class="ml-0.5 transition-transform" :class="streamThinkingCollapsed ? '-rotate-90' : ''">
+                    <path d="M6 9l6 6 6-6"/>
+                  </svg>
+                </button>
+                <div v-if="!streamThinkingCollapsed"
+                  ref="thinkingStreamEl"
+                  class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ streamThinking }}</div>
+              </div>
+
+              <!-- Streaming text (rendered after thinking — same order as
+                   the persisted assistant message above). -->
               <div v-if="streamText" class="msg-body text-sm leading-7 text-t1">
                 <span v-html="renderStream(streamText)"></span><span class="inline-block w-0.5 h-4 ml-0.5 bg-brand animate-pulse rounded-sm"></span>
               </div>
@@ -740,15 +898,35 @@ function onTraceClick(m) {
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
+            <!-- Scope + Tools chips above the input. -->
+            <div class="mb-1.5 pl-1 flex items-center gap-1.5">
+              <PathScopePicker v-model="pathFilter" />
+              <ThinkingPicker v-model="thinkingValue" />
+              <!-- Web search placeholder. Disabled chip until a
+                   real retriever (Tavily / SearXNG / etc.) lands. -->
+              <span
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
+                :title="t('tools.web_search_coming_soon')"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
+                </svg>
+                <span>{{ t('tools.web_search') }}</span>
+                <span class="text-t3/60">·</span>
+                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
+              </span>
+            </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
-              <textarea v-model="input" @keydown="onKey" placeholder="Ask a follow-up..." rows="1"
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
                 @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />
               <!-- Stop button while streaming -->
               <button v-if="streaming" @click="stopGeneration()"
                 class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-bg3 hover:bg-bg3/80 text-t1 transition-colors"
-                title="Stop generation">
+                :title="t('chat.stop_generation')">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
               </button>
               <!-- Send button -->
@@ -764,7 +942,7 @@ function onTraceClick(m) {
     </div>
 
     <!-- ═══════ PDF panel ═══════ -->
-    <Transition name="slide-pdf">
+    <Transition name="slide-pdf" @after-enter="onPdfAfterEnter" @after-leave="onPdfAfterLeave">
       <div v-if="pdf.show" class="w-[45%] max-w-[620px] min-w-[400px] shrink-0 border-l border-line flex flex-col overflow-hidden">
         <div class="flex-none flex items-center justify-between px-3 py-2 border-b border-line">
           <div class="flex items-center gap-2 text-xs text-t3">
@@ -775,9 +953,11 @@ function onTraceClick(m) {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
-        <PdfViewer :url="pdf.url" :page="pdf.page" :highlight-blocks="pdf.highlights"
+        <PdfViewer v-if="pdfMounted"
+          :url="pdf.url" :page="pdf.page" :highlight-blocks="pdf.highlights"
           :downloadUrl="pdf.downloadUrl" :sourceDownloadUrl="pdf.sourceDownloadUrl" :sourceLabel="pdf.sourceLabel"
           class="flex-1" />
+        <div v-else class="flex-1 flex items-center justify-center"><Spinner /></div>
       </div>
     </Transition>
   </div>
@@ -851,8 +1031,22 @@ function onTraceClick(m) {
 .phase-in { animation: phaseIn .15s ease; }
 @keyframes phaseIn { from { opacity: 0; } to { opacity: 1; } }
 
-.slide-trace-enter-active, .slide-trace-leave-active { transition: width .2s cubic-bezier(.4,0,.2,1), opacity .2s ease; }
-.slide-trace-enter-from, .slide-trace-leave-to { width: 0 !important; opacity: 0; }
-.slide-pdf-enter-active, .slide-pdf-leave-active { transition: width .2s cubic-bezier(.4,0,.2,1), opacity .2s ease; }
-.slide-pdf-enter-from, .slide-pdf-leave-to { width: 0 !important; opacity: 0; }
+/* Slide panels animate ``transform`` (compositor, no per-frame reflow)
+   instead of ``width`` (main-thread layout × 12+ frames at 60fps).
+   The chat still reflows once when the panel enters/leaves flex space
+   (v-if true/false), but the slide itself runs on the GPU. With
+   ``width`` animation, every frame of the 200ms slide forced full
+   chat reflow → the markdown body + cite chips + code blocks made it
+   stutter visibly.
+
+   Note: ``will-change: transform`` hints the browser to promote the
+   panel to its own layer up-front; without it the first frame of the
+   slide stutters as a layer is created on demand. */
+.slide-trace-enter-active, .slide-trace-leave-active,
+.slide-pdf-enter-active,   .slide-pdf-leave-active {
+  transition: transform .2s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+  will-change: transform;
+}
+.slide-trace-enter-from, .slide-trace-leave-to { transform: translateX(-100%); opacity: 0; }
+.slide-pdf-enter-from,   .slide-pdf-leave-to   { transform: translateX(100%);  opacity: 0; }
 </style>

@@ -94,20 +94,25 @@ class LiteLLMGenerator:
         return litellm
 
     # ------------------------------------------------------------------
-    def generate(self, messages: list[dict]) -> dict:
+    def generate(self, messages: list[dict], *, overrides: Any = None) -> dict:
         litellm = self._ensure()
+        # Connection-level kwargs only. Per-call generation params
+        # (temperature / max_tokens / reasoning_effort / thinking) come
+        # exclusively from per-request ``overrides``. If a request
+        # doesn't set them, we don't pass them — the model's own
+        # defaults apply. yaml is intentionally not a place to pin
+        # them, so users picking those settings via the chat UI is
+        # the single source of truth.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
-            temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
             timeout=self.cfg.timeout,
         )
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
-
         if self._api_key:
             kwargs["api_key"] = self._api_key
+        _apply_gen_overrides(kwargs, overrides)
 
         max_retries = getattr(self.cfg, "max_retries", 3)
         retry_delay = getattr(self.cfg, "retry_base_delay", 1.0)
@@ -152,13 +157,13 @@ class LiteLLMGenerator:
         }
 
     # ------------------------------------------------------------------
-    def generate_stream(self, messages: list[dict]):
+    def generate_stream(self, messages: list[dict], *, overrides: Any = None):
         litellm = self._ensure()
+        # See ``generate`` — connection-level kwargs only; per-call
+        # generation params come from ``overrides`` or stay unset.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
-            temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
             timeout=self.cfg.timeout,
             stream=True,
         )
@@ -166,15 +171,25 @@ class LiteLLMGenerator:
             kwargs["api_key"] = self._api_key
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
+        _apply_gen_overrides(kwargs, overrides)
 
         full_text = ""
+        full_thinking = ""
         try:
             resp = litellm.completion(**kwargs)
             finish_reason = "stop"
             for chunk in resp:
                 delta = ""
+                # Reasoning models (DeepSeek V4-Pro thinking mode,
+                # deepseek-reasoner, OpenAI o1, etc.) stream the model's
+                # internal reasoning under ``delta.reasoning_content``
+                # alongside the user-visible ``delta.content``. We
+                # forward both so the UI can show "Thinking… ▾" panes.
+                thinking = ""
                 with contextlib.suppress(AttributeError, IndexError):
                     delta = chunk.choices[0].delta.content or ""
+                with contextlib.suppress(AttributeError, IndexError):
+                    thinking = chunk.choices[0].delta.reasoning_content or ""
                 fr = (
                     getattr(chunk.choices[0], "finish_reason", None)
                     if getattr(chunk, "choices", None) and len(chunk.choices) > 0
@@ -182,6 +197,13 @@ class LiteLLMGenerator:
                 )
                 if fr:
                     finish_reason = fr
+                if thinking:
+                    full_thinking += thinking
+                    yield {
+                        "type": "thinking",
+                        "delta": thinking,
+                        "model": self.cfg.model,
+                    }
                 if delta:
                     full_text += delta
                     yield {
@@ -194,6 +216,7 @@ class LiteLLMGenerator:
             yield {
                 "type": "done",
                 "text": full_text,
+                "thinking": full_thinking,
                 "finish_reason": finish_reason,
                 "usage": None,
                 "model": self.cfg.model,
@@ -210,6 +233,67 @@ class LiteLLMGenerator:
                 "cited_ids": extract_cited_ids(full_text),
                 "error": str(e),
             }
+
+
+# ---------------------------------------------------------------------------
+# Per-request override application
+# ---------------------------------------------------------------------------
+
+
+def _apply_gen_overrides(kwargs: dict, overrides: Any) -> None:
+    """Apply ``GenerationOverrides`` (or a plain dict) to LiteLLM kwargs.
+
+    Accepts either a pydantic model with attribute access or a plain
+    dict — the latter lets internal callers pass overrides without
+    importing the schema. ``None`` / unset fields are no-ops; explicit
+    values WIN over yaml-level cfg.
+    """
+    if overrides is None:
+        return
+    # Coerce to a plain dict of {field: value} for unset-aware iteration.
+    if hasattr(overrides, "model_dump"):
+        data = overrides.model_dump(exclude_none=True)
+    elif isinstance(overrides, dict):
+        data = {k: v for k, v in overrides.items() if v is not None}
+    else:
+        return
+
+    if "thinking" in data:
+        # Boolean toggle. Routes via DeepSeek's ``extra_body.thinking``
+        # channel (the only working "disable" knob on V4-Pro) AND, for
+        # non-DeepSeek providers, via LiteLLM's ``reasoning_effort``
+        # (Anthropic / Gemini understand it as "off"; OpenAI o-series
+        # ignore it since their thinking is model-bound).
+        #
+        # **Critical**: do NOT set ``reasoning_effort=disable`` on
+        # DeepSeek. LiteLLM's DeepSeek transformation interprets ANY
+        # non-"none" effort as "enable thinking", so passing "disable"
+        # there silently re-enables thinking and clobbers our extra_body
+        # (observed live: thinking pane kept streaming after the user
+        # toggled Off; extra_body said disabled, reasoning_effort=disable
+        # re-set thinking={type:enabled} via the DeepSeek route).
+        on = bool(data["thinking"])
+        eb = dict(kwargs.get("extra_body") or {})
+        eb_thinking = dict(eb.get("thinking") or {})
+        eb_thinking["type"] = "enabled" if on else "disabled"
+        eb["thinking"] = eb_thinking
+        kwargs["extra_body"] = eb
+        if not on:
+            model_lower = (kwargs.get("model") or "").lower()
+            if "deepseek" not in model_lower:
+                kwargs["reasoning_effort"] = "disable"
+    if "reasoning_effort" in data:
+        # User-set intensity wins over the disable we may have set above
+        # (since they're explicitly asking for thinking ON at level X).
+        kwargs["reasoning_effort"] = data["reasoning_effort"]
+    if "temperature" in data:
+        kwargs["temperature"] = data["temperature"]
+    if "max_tokens" in data:
+        v = data["max_tokens"]
+        if v is not None and v > 0:
+            kwargs["max_tokens"] = v
+        else:
+            kwargs.pop("max_tokens", None)
 
 
 # ---------------------------------------------------------------------------

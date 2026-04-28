@@ -717,27 +717,23 @@ erDiagram
 | Any | Qdrant | Production-grade, rich filtering, gRPC |
 | Any | Milvus | Scalable, GPU-accelerated |
 | Any | Weaviate | Multi-modal, GraphQL API |
-| MySQL | ChromaDB | Good for Chroma-only deployments |
-| SQLite | ChromaDB | **Test-only** (pytest fixture; rejected in production) |
+| SQLite | ChromaDB | First-class option (warns on `--workers >1`); use Postgres for multi-worker production |
 
 ---
 
 ## Configuration System
 
-**YAML is the single source of truth.** The DB holds a one-way mirror (`settings` + `llm_providers` tables) written at startup so admin tools can read a snapshot of the effective config, but the runtime never reads it back.
+**YAML is the single source of truth.** The DB holds a one-way mirror (`settings` table) written at startup so admin tools can read a snapshot of the effective config, but the runtime never reads it back. v0.2.0 dropped the `provider_id` indirection: model + api_key + api_base are now inlined directly under each subsystem in yaml.
 
 ```mermaid
 flowchart TB
     subgraph Startup ["Application Startup"]
         YAML["forgerag.yaml<br/>(+ myconfig.yaml for deployment secrets)"]
-        YAML -->|"parse + validate"| AppCfg["AppConfig<br/>(Pydantic root model,<br/>incl. llm_providers list)"]
+        YAML -->|"parse + validate"| AppCfg["AppConfig<br/>(Pydantic root model)"]
 
-        AppCfg -->|"resolve provider_id → model/key/base<br/>on each component (in-memory only)"| Resolved["Resolved AppConfig"]
+        AppCfg -->|"snapshot_to_db()<br/>overwrite every key"| DB[("settings table<br/>read-only mirror")]
 
-        Resolved -->|"snapshot_to_db()<br/>overwrite every key"| DB[("settings table<br/>read-only mirror")]
-        Resolved -->|"snapshot_providers_to_db()<br/>overwrite providers"| ProvDB[("llm_providers table<br/>read-only mirror")]
-
-        Resolved -->|"wire pipelines"| State["AppState<br/>components read cfg.* directly,<br/>never touch the DB tables"]
+        AppCfg -->|"wire pipelines"| State["AppState<br/>components read cfg.* directly,<br/>never touch the DB"]
     end
 
     subgraph PerRequest ["Per-request tweaks (non-mutating)"]
@@ -747,7 +743,6 @@ flowchart TB
 
     style YAML fill:#fff3e0
     style DB fill:#e3f2fd
-    style ProvDB fill:#e3f2fd
     style Req fill:#e8f5e9
 ```
 

@@ -268,26 +268,42 @@ class RetrievalPipeline:
         "log + return None" behaviour.
         """
         qu_cfg = self.cfg.query_understanding
-        try:
-            from .query_understanding import QueryUnderstanding
+        # Wrap the LLM-driven QU call in a span so the answering pipeline's
+        # *early* QU (called before retrieval to short-circuit greetings /
+        # reformulations) is attributed to a real phase. Without this the
+        # LLM call's ~hundreds of ms only showed up as orphan LiteLLM /
+        # HTTPX spans dangling under ``forgerag.answer``.
+        with _tracer.start_as_current_span("forgerag.query_understanding") as span:
+            span.set_attribute("forgerag.entry", "analyze_query")
+            span.set_attribute("forgerag.has_history", bool(chat_history))
+            span.set_attribute("forgerag.strict", strict)
+            try:
+                from .query_understanding import QueryUnderstanding
 
-            if self._expander is None:
-                self._expander = QueryUnderstanding(
-                    model=qu_cfg.model,
-                    api_key=qu_cfg.api_key,
-                    api_key_env=qu_cfg.api_key_env,
-                    api_base=qu_cfg.api_base,
-                    max_expansions=qu_cfg.max_expansions,
-                    timeout=qu_cfg.timeout,
-                    system_prompt=qu_cfg.system_prompt,
-                    user_prompt_template=qu_cfg.user_prompt_template,
-                )
-            return self._expander.analyze(query, chat_history=chat_history)
-        except Exception as e:
-            if strict:
-                raise RetrievalError("query_understanding", e) from e
-            log.warning("analyze_query failed (strict=False): %s", e)
-            return None
+                if self._expander is None:
+                    self._expander = QueryUnderstanding(
+                        model=qu_cfg.model,
+                        api_key=qu_cfg.api_key,
+                        api_key_env=qu_cfg.api_key_env,
+                        api_base=qu_cfg.api_base,
+                        max_expansions=qu_cfg.max_expansions,
+                        timeout=qu_cfg.timeout,
+                        system_prompt=qu_cfg.system_prompt,
+                        user_prompt_template=qu_cfg.user_prompt_template,
+                    )
+                qp = self._expander.analyze(query, chat_history=chat_history)
+                if qp is not None:
+                    span.set_attribute("forgerag.intent", qp.intent or "")
+                    span.set_attribute("forgerag.needs_retrieval", bool(qp.needs_retrieval))
+                    if qp.expanded_queries:
+                        span.set_attribute("forgerag.expanded_count", len(qp.expanded_queries))
+                return qp
+            except Exception as e:
+                span.set_attribute("forgerag.error", str(e)[:300])
+                if strict:
+                    raise RetrievalError("query_understanding", e) from e
+                log.warning("analyze_query failed (strict=False): %s", e)
+                return None
 
     # ------------------------------------------------------------------
     def retrieve(

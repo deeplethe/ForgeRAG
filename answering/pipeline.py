@@ -15,6 +15,7 @@ Statistics from both retrieval and generation are merged into
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
 import time
 from uuid import uuid4
@@ -69,6 +70,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
     ) -> Answer:
         # Root span covering retrieval + generation. We extract the
         # trace_id so the route layer can collect all child spans (LLM
@@ -86,6 +88,7 @@ class AnsweringPipeline:
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
+                gen_overrides=gen_overrides,
                 _trace_id=_trace_id,
             )
             # Stash trace_id so the route layer can ``collector.take()`` the
@@ -103,37 +106,42 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
         _trace_id: int | None = None,
     ) -> Answer:
         stats: dict = {}
         t0 = time.time()
 
-        # Persist user message immediately so it's never lost
-        if conversation_id and self.store:
-            try:
-                from uuid import uuid4
-
-                conv = self.store.get_conversation(conversation_id)
-                if not conv:
-                    self.store.create_conversation(
+        # ── Setup phase: persist user msg + load chat history ──
+        # Same pattern as ``_ask_stream_impl``: bundle DB bootstrap into
+        # one span so it shows up as a phase on the root rather than a gap.
+        with _tracer.start_as_current_span("forgerag.setup") as _setup_span:
+            _setup_span.set_attribute("forgerag.has_conversation", bool(conversation_id))
+            # Persist user message immediately so it's never lost
+            if conversation_id and self.store:
+                try:
+                    conv = self.store.get_conversation(conversation_id)
+                    if not conv:
+                        self.store.create_conversation(
+                            {
+                                "conversation_id": conversation_id,
+                                "title": query[:100],
+                            }
+                        )
+                    self.store.add_message(
                         {
+                            "message_id": uuid4().hex,
                             "conversation_id": conversation_id,
-                            "title": query[:100],
+                            "role": "user",
+                            "content": query,
                         }
                     )
-                self.store.add_message(
-                    {
-                        "message_id": uuid4().hex,
-                        "conversation_id": conversation_id,
-                        "role": "user",
-                        "content": query,
-                    }
-                )
-            except Exception as e:
-                log.warning("failed to persist user message early: %s", e)
+                except Exception as e:
+                    log.warning("failed to persist user message early: %s", e)
 
-        # Load conversation history for context-aware QU
-        chat_history = self._load_history(conversation_id) if conversation_id else []
+            # Load conversation history for context-aware QU
+            chat_history = self._load_history(conversation_id) if conversation_id else []
+            _setup_span.set_attribute("forgerag.history_turns", len(chat_history) // 2)
 
         # ── Early QU: greeting/meta/reformulation short-circuit ──
         _reuse = False
@@ -194,22 +202,29 @@ class AnsweringPipeline:
             if conversation_id:
                 self._cache_put(conversation_id, retrieval_result)
 
-        messages, used_in_prompt = build_messages(
-            query=query,
-            merged=retrieval_result.merged,
-            citations=retrieval_result.citations,
-            cfg=self.cfg.generator,
-            include_expanded_chunks=self.cfg.include_expanded_chunks,
-            max_chunks=self.cfg.max_chunks,
-            kg_context=retrieval_result.kg_context,
-        )
-        stats["context_chunks"] = len(used_in_prompt)
+        # ── Prompt build phase ──
+        # Same span pattern as ``_ask_stream_impl`` — group context
+        # assembly + history injection so it's attributed.
+        with _tracer.start_as_current_span("forgerag.prompt_build") as _pb_span:
+            messages, used_in_prompt = build_messages(
+                query=query,
+                merged=retrieval_result.merged,
+                citations=retrieval_result.citations,
+                cfg=self.cfg.generator,
+                include_expanded_chunks=self.cfg.include_expanded_chunks,
+                max_chunks=self.cfg.max_chunks,
+                kg_context=retrieval_result.kg_context,
+            )
+            stats["context_chunks"] = len(used_in_prompt)
 
-        # Inject conversation history into messages (multi-turn).
-        # Reuse chat_history loaded earlier (no new messages since then).
-        if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history, current_query=query)
-            stats["history_turns"] = len(chat_history) // 2
+            # Inject conversation history into messages (multi-turn).
+            # Reuse chat_history loaded earlier (no new messages since then).
+            if conversation_id and chat_history:
+                messages = self._inject_history(messages, chat_history, current_query=query)
+                stats["history_turns"] = len(chat_history) // 2
+            _pb_span.set_attribute("forgerag.context_chunks", len(used_in_prompt))
+            _pb_span.set_attribute("forgerag.history_turns", len(chat_history) // 2 if chat_history else 0)
+            _pb_span.set_attribute("forgerag.message_count", len(messages))
 
         # If no context chunks AND intent requires documents, refuse.
         # But for greeting/meta/reformulation, let the generator respond freely.
@@ -230,13 +245,23 @@ class AnsweringPipeline:
                 finish_reason="no_context",
                 stats=stats,
             )
-            tid = self._persist_trace(answer, retrieval_result)
+            tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
             if conversation_id:
                 self._save_turn(conversation_id, query, answer, trace_id=tid)
             return answer
 
         t1 = time.time()
-        gen_result = self.generator.generate(messages)
+        with _tracer.start_as_current_span("forgerag.generation") as _gen_span:
+            _gen_span.set_attribute("forgerag.model", self.cfg.generator.model)
+            _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
+            _gen_span.set_attribute("forgerag.stream", False)
+            gen_result = self.generator.generate(messages, overrides=gen_overrides)
+            if gen_result.get("usage"):
+                for _k, _v in gen_result["usage"].items():
+                    if isinstance(_v, (int, float, str, bool)):
+                        _gen_span.set_attribute(f"forgerag.usage.{_k}", _v)
+            if gen_result.get("finish_reason"):
+                _gen_span.set_attribute("forgerag.finish_reason", gen_result["finish_reason"])
         t2 = time.time()
         stats["generate_ms"] = int((t2 - t1) * 1000)
         stats["total_ms"] = int((t2 - t0) * 1000)
@@ -288,7 +313,7 @@ class AnsweringPipeline:
         )
 
         # Persist trace + conversation turn
-        tid = self._persist_trace(answer, retrieval_result)
+        tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
         if conversation_id:
             self._save_turn(conversation_id, query, answer, trace_id=tid)
 
@@ -305,6 +330,7 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
     ):
         # Wrap the streaming generator in the same ``forgerag.answer`` root
         # span used by ask(). Because this is a generator, we manage the
@@ -317,18 +343,78 @@ class AnsweringPipeline:
         if conversation_id:
             _root_span.set_attribute("forgerag.conversation_id", conversation_id)
         _trace_id = _root_span.get_span_context().trace_id
+
+        # Snapshot the OTel context with the root span attached, so we can
+        # re-attach it on every generator resume. ``StreamingResponse``
+        # iterates sync generators on a thread pool — each ``next()`` may
+        # land on a different worker thread whose ``contextvars`` is empty,
+        # so without an explicit re-attach the LLM / retrieval / SQL spans
+        # produced between yields end up parented to nothing (each gets a
+        # fresh trace_id) and ``collector.take(_trace_id)`` returns nothing.
+        from opentelemetry.context import attach, detach, get_current
+
+        _parent_ctx = get_current()
+
         _root_closed = False
+        # Filled by ``_ask_stream_impl`` when its done handler fires;
+        # the actual persist happens *after* we close the root span so
+        # the persisted trace_json captures the root + every nested
+        # span (LiteLLM completion, retrieval phases, etc.) instead of
+        # only the SQL writes ``_persist_trace`` itself produces.
+        pending_persist: dict = {}
+
+        def _reattach_each_resume(inner_gen):
+            """Re-attach ``_parent_ctx`` on every ``next()`` call into the
+            inner generator so the OTel context survives the thread hops
+            ``StreamingResponse`` does between yields."""
+            while True:
+                token = attach(_parent_ctx)
+                try:
+                    try:
+                        value = next(inner_gen)
+                    except StopIteration:
+                        return
+                finally:
+                    # ``detach`` raises ValueError if a yield in the
+                    # generator caused this token to land in a different
+                    # context. Either way the contextvar gets re-attached
+                    # on the next iteration, so the failure is benign.
+                    with contextlib.suppress(Exception):
+                        detach(token)
+                yield value
+
         try:
-            yield from self._ask_stream_impl(
+            inner = self._ask_stream_impl(
                 query,
                 filter=filter,
                 conversation_id=conversation_id,
                 overrides=overrides,
+                gen_overrides=gen_overrides,
+                _trace_id=_trace_id,
+                _pending_persist=pending_persist,
             )
-            # Close the root span BEFORE emitting the trace event so that
-            # the span itself is in the collector when we take() below.
+            yield from _reattach_each_resume(inner)
+            # Close the root span BEFORE persist + emit so the root + every
+            # in-flight LiteLLM/HTTPX/SQLAlchemy span is committed to the
+            # collector and we can claim them.
             _root_cm.__exit__(None, None, None)
             _root_closed = True
+            if pending_persist:
+                with contextlib.suppress(Exception):
+                    self._persist_trace(
+                        pending_persist["answer"],
+                        pending_persist["retrieval"],
+                        trace_id=_trace_id,
+                        record_id=pending_persist["tid"],
+                    )
+                if pending_persist.get("conversation_id"):
+                    with contextlib.suppress(Exception):
+                        self._save_turn(
+                            pending_persist["conversation_id"],
+                            pending_persist["query"],
+                            pending_persist["answer"],
+                            trace_id=pending_persist["tid"],
+                        )
             try:
                 spans = RequestSpanCollector.singleton().take(_trace_id)
                 yield {"event": "trace", "data": spans_to_payload(spans)}
@@ -345,6 +431,9 @@ class AnsweringPipeline:
         filter: dict | None = None,
         conversation_id: str | None = None,
         overrides=None,
+        gen_overrides=None,
+        _trace_id: int | None = None,
+        _pending_persist: dict | None = None,
     ):
         """
         Yield SSE-friendly dicts. Emits progress during retrieval,
@@ -362,35 +451,112 @@ class AnsweringPipeline:
         stats: dict = {}
         t0 = time.time()
 
-        # Persist user message immediately so it's never lost,
-        # even if the client disconnects mid-retrieval.
-        _user_msg_id = None
-        if conversation_id and self.store:
-            try:
-                from uuid import uuid4
+        # ── Failure-handling state (must be valid when ``_emit_failure`` ──
+        # fires, even if retrieval throws before generation begins). The
+        # generation loop further down may reassign these as work progresses.
+        _persisted = False
+        _gen_model = self.cfg.generator.model
+        _finish_reason = "incomplete"
+        _cited_ids: set = set()
+        full_text = ""
+        full_thinking = ""
+        used_in_prompt: list = []
+        # Pre-declare so ``_emit_failure`` can ``nonlocal`` it — bound below
+        # by the retrieval branch when retrieval succeeds.
+        retrieval_result = None
 
-                conv = self.store.get_conversation(conversation_id)
-                if not conv:
-                    self.store.create_conversation(
+        def _emit_failure(e):
+            """Generator helper: emit ``error`` + ``done`` SSE events and
+            populate ``_pending_persist`` so ``ask_stream`` saves a failure
+            trace + ``[Error] …`` assistant message.
+
+            Used at every inline retrieval/prompt-build raise point AND in
+            the catch-all ``except Exception`` at the bottom — without this,
+            retrieval failures bubbled up to the route layer with only an
+            ``error`` event (no matching ``done``, no persisted trace, no
+            assistant entry → conversation hung with the user's question).
+            """
+            nonlocal _persisted
+            error_msg = str(e) or type(e).__name__
+            error_text = f"[Error] {error_msg}"
+            tid = None
+            try:
+                stats["generate_ms"] = int((time.time() - t0) * 1000)
+                stats["error"] = error_msg
+                _err_retrieval = retrieval_result
+                _err_citations_all = list(_err_retrieval.citations) if _err_retrieval is not None else []
+                _err_answer = Answer(
+                    query=query,
+                    text=error_text,
+                    citations_used=[],
+                    citations_all=_err_citations_all,
+                    model=_gen_model,
+                    finish_reason="error",
+                    stats=stats,
+                )
+                tid = uuid4().hex
+                if _pending_persist is not None:
+                    _pending_persist.update(
                         {
+                            "tid": tid,
+                            "answer": _err_answer,
+                            "retrieval": _err_retrieval,
                             "conversation_id": conversation_id,
-                            "title": query[:100],
+                            "query": query,
                         }
                     )
-                _user_msg_id = uuid4().hex
-                self.store.add_message(
-                    {
-                        "message_id": _user_msg_id,
-                        "conversation_id": conversation_id,
-                        "role": "user",
-                        "content": query,
-                    }
-                )
-            except Exception as e:
-                log.warning("failed to persist user message early: %s", e)
+                _persisted = True
+            except Exception as inner_ex:
+                log.warning("failed to populate failure trace: %s", inner_ex)
+            try:
+                yield {"event": "error", "data": error_msg}
+                yield {
+                    "event": "done",
+                    "data": {
+                        "text": error_text,
+                        "finish_reason": "error",
+                        "error": error_msg,
+                        "trace_id": tid,
+                        "model": _gen_model,
+                    },
+                }
+            except GeneratorExit:
+                pass
 
-        # Load conversation history for context-aware QU
-        chat_history = self._load_history(conversation_id) if conversation_id else []
+        # ── Setup phase ──
+        # Persist the user message + load chat history under one span so
+        # the time spent on conversation bootstrapping (DB writes / reads)
+        # is attributed to a real phase rather than a gap on the root.
+        with _tracer.start_as_current_span("forgerag.setup") as _setup_span:
+            _setup_span.set_attribute("forgerag.has_conversation", bool(conversation_id))
+            # Persist user message immediately so it's never lost,
+            # even if the client disconnects mid-retrieval.
+            _user_msg_id = None
+            if conversation_id and self.store:
+                try:
+                    conv = self.store.get_conversation(conversation_id)
+                    if not conv:
+                        self.store.create_conversation(
+                            {
+                                "conversation_id": conversation_id,
+                                "title": query[:100],
+                            }
+                        )
+                    _user_msg_id = uuid4().hex
+                    self.store.add_message(
+                        {
+                            "message_id": _user_msg_id,
+                            "conversation_id": conversation_id,
+                            "role": "user",
+                            "content": query,
+                        }
+                    )
+                except Exception as e:
+                    log.warning("failed to persist user message early: %s", e)
+
+            # Load conversation history for context-aware QU
+            chat_history = self._load_history(conversation_id) if conversation_id else []
+            _setup_span.set_attribute("forgerag.history_turns", len(chat_history) // 2)
 
         # ── Early QU check: can we skip retrieval entirely? ──
         # For reformulation queries ("用中文回答", "简短一点") we reuse
@@ -401,8 +567,10 @@ class AnsweringPipeline:
         qp_early = None
 
         # ── Early QU: greeting/meta/reformulation short-circuit ──
-        qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None)
-        qu_enabled = qu_enabled and qu_enabled.enabled
+        # Query understanding has no ``enabled`` toggle in v0.2.0 — it
+        # always runs when the retrieval section configures it. Per-query
+        # opt-out goes through ``QueryOverrides.query_understanding=False``.
+        qu_enabled = getattr(self.retrieval.cfg, "query_understanding", None) is not None
         if overrides is not None and getattr(overrides, "query_understanding", None) is not None:
             qu_enabled = bool(overrides.query_understanding)
         if qu_enabled:
@@ -497,20 +665,39 @@ class AnsweringPipeline:
             # Pass early QU result to avoid duplicate QU call inside retrieve
             _precomputed = qp_early if _early_qu_done else None
 
+            # Capture the OTel context here (still on the iterate_in_threadpool
+            # worker thread, with our root span attached by ``_reattach_each_resume``)
+            # so the retrieval thread can re-attach it. Without this the retrieval
+            # thread starts with empty contextvars, opens its own ``forgerag.retrieve``
+            # root span with a fresh trace_id, and every nested LiteLLM / HTTPX /
+            # SQL span ends up in an orphan trace — the persisted trace_json then
+            # only has our top-level ``forgerag.answer`` plus the SQL writes
+            # ``_persist_trace`` itself produces.
+            from opentelemetry.context import attach as _otel_attach
+            from opentelemetry.context import detach as _otel_detach
+            from opentelemetry.context import get_current as _otel_get_current
+
+            _retrieval_ctx = _otel_get_current()
+
             def _do_retrieval():
+                _tok = _otel_attach(_retrieval_ctx)
                 try:
-                    _retrieval_result[0] = self.retrieval.retrieve(
-                        retrieval_query,
-                        filter=filter,
-                        progress_cb=_on_progress,
-                        chat_history=chat_history,
-                        precomputed_plan=_precomputed,
-                        overrides=overrides,
-                    )
-                except Exception as e:
-                    _retrieval_error[0] = e
+                    try:
+                        _retrieval_result[0] = self.retrieval.retrieve(
+                            retrieval_query,
+                            filter=filter,
+                            progress_cb=_on_progress,
+                            chat_history=chat_history,
+                            precomputed_plan=_precomputed,
+                            overrides=overrides,
+                        )
+                    except Exception as e:
+                        _retrieval_error[0] = e
+                    finally:
+                        progress_q.put(None)  # sentinel
                 finally:
-                    progress_q.put(None)  # sentinel
+                    with contextlib.suppress(Exception):
+                        _otel_detach(_tok)
 
             t = threading.Thread(target=_do_retrieval, daemon=True)
             t.start()
@@ -528,9 +715,11 @@ class AnsweringPipeline:
             t.join(timeout=300)
 
             if _retrieval_error[0] is not None:
-                raise _retrieval_error[0]
+                yield from _emit_failure(_retrieval_error[0])
+                return
             if _retrieval_result[0] is None:
-                raise RuntimeError("Retrieval returned no result (timeout or internal error)")
+                yield from _emit_failure(RuntimeError("Retrieval returned no result (timeout or internal error)"))
+                return
             retrieval_result = _retrieval_result[0]
             stats["retrieval"] = retrieval_result.stats
 
@@ -540,26 +729,35 @@ class AnsweringPipeline:
 
         qp = retrieval_result.query_plan
 
-        messages, used_in_prompt = build_messages(
-            query=query,
-            merged=retrieval_result.merged,
-            citations=retrieval_result.citations,
-            cfg=self.cfg.generator,
-            include_expanded_chunks=self.cfg.include_expanded_chunks,
-            max_chunks=self.cfg.max_chunks,
-            kg_context=retrieval_result.kg_context,
-        )
-        stats["context_chunks"] = len(used_in_prompt)
+        # ── Prompt build phase ──
+        # Wrap message assembly so the time spent slicing chunks into the
+        # context window + injecting history is attributed to a real
+        # phase. Cheap on small queries but can hit ~50 ms with long
+        # histories or large KG context blobs.
+        with _tracer.start_as_current_span("forgerag.prompt_build") as _pb_span:
+            messages, used_in_prompt = build_messages(
+                query=query,
+                merged=retrieval_result.merged,
+                citations=retrieval_result.citations,
+                cfg=self.cfg.generator,
+                include_expanded_chunks=self.cfg.include_expanded_chunks,
+                max_chunks=self.cfg.max_chunks,
+                kg_context=retrieval_result.kg_context,
+            )
+            stats["context_chunks"] = len(used_in_prompt)
 
-        # Inject generation hint from query understanding
-        if qp and qp.hint and messages:
-            sys_msg = messages[0]
-            if sys_msg.get("role") == "system":
-                sys_msg["content"] += f"\n\nNote: {qp.hint}"
+            # Inject generation hint from query understanding
+            if qp and qp.hint and messages:
+                sys_msg = messages[0]
+                if sys_msg.get("role") == "system":
+                    sys_msg["content"] += f"\n\nNote: {qp.hint}"
 
-        # Reuse chat_history loaded earlier (no new messages since then).
-        if conversation_id and chat_history:
-            messages = self._inject_history(messages, chat_history, current_query=query)
+            # Reuse chat_history loaded earlier (no new messages since then).
+            if conversation_id and chat_history:
+                messages = self._inject_history(messages, chat_history, current_query=query)
+            _pb_span.set_attribute("forgerag.context_chunks", len(used_in_prompt))
+            _pb_span.set_attribute("forgerag.history_turns", len(chat_history) // 2 if chat_history else 0)
+            _pb_span.set_attribute("forgerag.message_count", len(messages))
 
         # Emit retrieval metadata
         yield {
@@ -600,7 +798,7 @@ class AnsweringPipeline:
                 finish_reason="no_context",
                 stats=stats,
             )
-            tid = self._persist_trace(answer, retrieval_result)
+            tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
             if conversation_id:
                 self._save_turn(conversation_id, query, answer, trace_id=tid)
             yield {
@@ -623,73 +821,118 @@ class AnsweringPipeline:
         _finish_reason = "incomplete"
         _cited_ids: set = set()
 
+        full_thinking = ""
         try:
-            for chunk in self.generator.generate_stream(messages):
-                if chunk["type"] == "delta":
-                    full_text += chunk["delta"]
-                    yield {"event": "delta", "data": {"text": chunk["delta"]}}
-                elif chunk["type"] == "done":
-                    full_text = chunk.get("text", full_text)
-                    _cited_ids = set(chunk.get("cited_ids") or [])
-                    _gen_model = chunk.get("model", _gen_model)
-                    _finish_reason = chunk.get("finish_reason", "stop")
-                    citations_used = [c for c in used_in_prompt if c.citation_id in _cited_ids]
-                    stats["generate_ms"] = int((time.time() - t0) * 1000)
+            # Wrap the streaming loop in a ``forgerag.generation`` span so
+            # the trace viewer attributes the LLM stream's wall time to
+            # this phase. Without this, only the LiteLLM HTTP POST (a few
+            # hundred ms for the request handshake) was instrumented —
+            # the long tail of streamed-token reading (often the bulk of
+            # the request) showed up as untraced gap on the root span.
+            # The span survives generator yields: contextvars persist
+            # across ``yield`` within a single generator, and any thread
+            # hop only affects child-span parenting, not the parent's
+            # measured duration (start/end use a monotonic clock).
+            with _tracer.start_as_current_span("forgerag.generation") as _gen_span:
+                _gen_span.set_attribute("forgerag.model", _gen_model)
+                _gen_span.set_attribute("forgerag.stream", True)
+                _gen_span.set_attribute("forgerag.prompt_messages", len(messages))
+                for chunk in self.generator.generate_stream(messages, overrides=gen_overrides):
+                    if chunk["type"] == "delta":
+                        full_text += chunk["delta"]
+                        yield {"event": "delta", "data": {"text": chunk["delta"]}}
+                    elif chunk["type"] == "thinking":
+                        # Reasoning content (V4-Pro thinking mode etc.).
+                        # Stream to the UI so the user sees what the model
+                        # is considering during long generation.
+                        full_thinking += chunk["delta"]
+                        yield {"event": "thinking", "data": {"text": chunk["delta"]}}
+                    elif chunk["type"] == "done":
+                        full_text = chunk.get("text", full_text)
+                        full_thinking = chunk.get("thinking", full_thinking)
+                        _cited_ids = set(chunk.get("cited_ids") or [])
+                        _gen_model = chunk.get("model", _gen_model)
+                        _finish_reason = chunk.get("finish_reason", "stop")
+                        citations_used = [c for c in used_in_prompt if c.citation_id in _cited_ids]
+                        stats["generate_ms"] = int((time.time() - t0) * 1000)
+                        if full_thinking:
+                            # Land the model's reasoning text in the trace so
+                            # it's available for the trace viewer / debug
+                            # endpoints alongside the final answer.
+                            stats["reasoning_text"] = full_thinking
 
-                    # Persist
-                    answer = Answer(
-                        query=query,
-                        text=full_text,
-                        citations_used=citations_used,
-                        citations_all=retrieval_result.citations,
-                        model=_gen_model,
-                        finish_reason=_finish_reason,
-                        stats=stats,
-                    )
-                    tid = self._persist_trace(answer, retrieval_result)
-                    if conversation_id:
-                        self._save_turn(conversation_id, query, answer, trace_id=tid)
-                    _persisted = True
-
-                    yield {
-                        "event": "done",
-                        "data": {
-                            "text": full_text,
-                            "finish_reason": _finish_reason,
-                            "model": _gen_model,
-                            "trace_id": tid,
-                            "citations_used": [
+                        # Pre-allocate the trace UUID so it can flow into the
+                        # done event the client sees, but defer the actual
+                        # ``_persist_trace`` + ``_save_turn`` writes to ``ask_stream``
+                        # — done after the root span closes, so the persisted
+                        # trace_json captures every nested span.
+                        answer = Answer(
+                            query=query,
+                            text=full_text,
+                            citations_used=citations_used,
+                            citations_all=retrieval_result.citations,
+                            model=_gen_model,
+                            finish_reason=_finish_reason,
+                            stats=stats,
+                        )
+                        tid = uuid4().hex
+                        if _pending_persist is not None:
+                            _pending_persist.update(
                                 {
-                                    "citation_id": c.citation_id,
-                                    "chunk_id": getattr(c, "chunk_id", ""),
-                                    "doc_id": c.doc_id,
-                                    "file_id": c.file_id,
-                                    "source_file_id": getattr(c, "source_file_id", None),
-                                    "source_format": getattr(c, "source_format", ""),
-                                    "page_no": c.page_no,
-                                    "snippet": c.snippet,
-                                    "score": c.score,
-                                    "highlights": [
-                                        {"page_no": h.page_no, "bbox": list(h.bbox)} for h in (c.highlights or [])
-                                    ],
+                                    "tid": tid,
+                                    "answer": answer,
+                                    "retrieval": retrieval_result,
+                                    "conversation_id": conversation_id,
+                                    "query": query,
                                 }
-                                for c in citations_used
-                            ],
-                            "stats": stats,
-                        },
-                    }
+                            )
+                        _persisted = True
+
+                        yield {
+                            "event": "done",
+                            "data": {
+                                "text": full_text,
+                                "finish_reason": _finish_reason,
+                                "model": _gen_model,
+                                "trace_id": tid,
+                                "citations_used": [
+                                    {
+                                        "citation_id": c.citation_id,
+                                        "chunk_id": getattr(c, "chunk_id", ""),
+                                        "doc_id": c.doc_id,
+                                        "file_id": c.file_id,
+                                        "source_file_id": getattr(c, "source_file_id", None),
+                                        "source_format": getattr(c, "source_format", ""),
+                                        "page_no": c.page_no,
+                                        "snippet": c.snippet,
+                                        "score": c.score,
+                                        "highlights": [
+                                            {"page_no": h.page_no, "bbox": list(h.bbox)} for h in (c.highlights or [])
+                                        ],
+                                    }
+                                    for c in citations_used
+                                ],
+                                "stats": stats,
+                            },
+                        }
+                # Loop completed naturally — record final attributes on the
+                # generation span. Skipped on GeneratorExit / Exception, in
+                # which case the span still captures the truncated wall time
+                # (start/end use a monotonic clock).
+                _gen_span.set_attribute("forgerag.finish_reason", _finish_reason)
+                _gen_span.set_attribute("forgerag.text_chars", len(full_text))
+                if full_thinking:
+                    _gen_span.set_attribute("forgerag.reasoning_chars", len(full_thinking))
         except GeneratorExit:
             # Client disconnected mid-stream — fall through to finally
             log.info("ask_stream: client disconnected during generation")
         except Exception as e:
-            log.error("ask_stream failed: %s", e)
-            try:
-                yield {"event": "error", "data": str(e)}
-                yield {"event": "done", "data": {"text": "", "finish_reason": "error", "error": str(e)}}
-            except GeneratorExit:
-                pass
+            log.exception("ask_stream failed: %s", e)
+            yield from _emit_failure(e)
         finally:
-            # Persist even if client disconnected, so the answer isn't lost
+            # Persist even if client disconnected, so the answer isn't lost.
+            # Only fires for successful-but-interrupted generation; failure
+            # paths populate ``_pending_persist`` directly in ``except``.
             if not _persisted and full_text.strip():
                 try:
                     stats["generate_ms"] = int((time.time() - t0) * 1000)
@@ -703,7 +946,7 @@ class AnsweringPipeline:
                         finish_reason=_finish_reason,
                         stats=stats,
                     )
-                    tid = self._persist_trace(answer, retrieval_result)
+                    tid = self._persist_trace(answer, retrieval_result, trace_id=_trace_id)
                     if conversation_id:
                         self._save_turn(
                             conversation_id,
@@ -858,8 +1101,6 @@ class AnsweringPipeline:
         if not self.store:
             return
         try:
-            from uuid import uuid4
-
             # Ensure conversation exists (for sync `ask()` path)
             conv = self.store.get_conversation(conversation_id)
             if not conv:
@@ -895,6 +1136,9 @@ class AnsweringPipeline:
                     "content": answer.text,
                     "trace_id": trace_id,
                     "citations_json": cites_full,
+                    # Persist the model's reasoning text so the Thinking
+                    # pane survives conversation switches.
+                    "thinking": answer.stats.get("reasoning_text") or None,
                 }
             )
 
@@ -912,6 +1156,9 @@ class AnsweringPipeline:
         self,
         answer: Answer,
         retrieval_result: RetrievalResult,
+        *,
+        trace_id: int | None = None,
+        record_id: str | None = None,
     ) -> str | None:
         """
         Persist trace and return trace_id (or None on failure).
@@ -920,15 +1167,24 @@ class AnsweringPipeline:
         ``forgerag.answer`` root span, taken from the in-memory collector.
         We peek-by-copy so the route layer can claim the same spans for
         the live /query response payload.
+
+        ``trace_id`` may be passed explicitly by callers running inside a
+        sync generator (the streaming path), where ``yield`` causes
+        StreamingResponse to resume on a worker thread that has lost the
+        OTel context — ``get_current_span`` then returns NoOp and we'd
+        ``take(0)`` an empty buffer. Non-streaming callers can rely on
+        the ambient context.
         """
         if self.store is None:
             return None
         try:
             from opentelemetry import trace as _otel_trace
 
-            cur = _otel_trace.get_current_span()
-            ctx = cur.get_span_context() if cur else None
-            otel_tid = ctx.trace_id if (ctx and ctx.is_valid) else None
+            otel_tid = trace_id
+            if otel_tid is None:
+                cur = _otel_trace.get_current_span()
+                ctx = cur.get_span_context() if cur else None
+                otel_tid = ctx.trace_id if (ctx and ctx.is_valid) else None
 
             trace_data: dict = {}
             if otel_tid is not None:
@@ -961,7 +1217,7 @@ class AnsweringPipeline:
                     for c in answer.citations_used
                 ],
             }
-            tid = uuid4().hex
+            tid = record_id or uuid4().hex
             record = {
                 "trace_id": tid,
                 "query": answer.query,

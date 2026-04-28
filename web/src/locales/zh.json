@@ -1,0 +1,83 @@
+{
+  "common": {
+    "ok": "确定",
+    "cancel": "取消",
+    "save": "保存",
+    "delete": "删除",
+    "close": "关闭",
+    "search": "搜索",
+    "edit": "编辑",
+    "loading": "加载中...",
+    "github": "GitHub"
+  },
+  "sidebar": {
+    "tabs": {
+      "chat": "对话",
+      "workspace": "工作区",
+      "knowledge_graph": "知识图谱",
+      "simulation": "模拟",
+      "metrics": "指标",
+      "benchmark": "基准测试",
+      "tokens": "Tokens 与会话"
+    },
+    "in_dev": "(开发中)",
+    "locked": "已锁定",
+    "recents": "最近",
+    "new_chat": "+ 新对话",
+    "untitled": "未命名"
+  },
+  "user_menu": {
+    "language": "语言",
+    "theme": "主题",
+    "theme_light": "浅色",
+    "theme_dark": "深色",
+    "sign_out": "退出登录",
+    "sign_out_confirm_title": "退出登录？",
+    "sign_out_confirm_desc": "你将被返回到登录页。",
+    "sign_out_button": "退出",
+    "role_admin": "管理员"
+  },
+  "scope": {
+    "all_documents": "全部文档",
+    "search_placeholder": "搜索文件夹 / 文件...",
+    "select_this_folder": "选中此目录",
+    "tooltip_pick_and_dive": "选中并进入 {path}",
+    "tooltip_scoped_to": "当前对话范围：{path}",
+    "tooltip_idle": "点击为本次对话设置范围（文件夹或文件）",
+    "tooltip_up": "返回上一级",
+    "tooltip_confirm_close": "确认并关闭（同时把当前目录设为范围）",
+    "empty_dir": "这个目录是空的",
+    "no_match": "没有匹配 \"{query}\" 的结果"
+  },
+  "chat": {
+    "ask_a_question": "请输入问题...",
+    "ask_followup": "继续追问...",
+    "may_make_mistakes": "ForgeRAG 可能出错，请核实重要信息。",
+    "stop_generation": "停止生成",
+    "thinking": "思考",
+    "trace": "Trace"
+  },
+  "tools": {
+    "label": "工具",
+    "tooltip": "本次提问的覆盖项 — 思考、推理强度、温度等",
+    "active": "已自定义",
+    "default": "默认",
+    "thinking": "思考",
+    "thinking_default": "默认",
+    "thinking_off": "关",
+    "thinking_on": "开",
+    "thinking_hint": "强制开启/关闭思考。``默认`` = 用 provider 自己的设置。在 DeepSeek-V4-Pro 上关掉可以跳过推理流、省 token。",
+    "reasoning_effort": "强度",
+    "effort_default": "默认",
+    "effort_low": "低",
+    "effort_medium": "中",
+    "effort_high": "高",
+    "effort_hint": "思考强度，与上面的开关无关。",
+    "temperature": "采样温度",
+    "temperature_default": "默认",
+    "temperature_hint": "0 = 确定性，1 = 平衡，2 = 发散",
+    "web_search": "联网搜索",
+    "web_search_coming_soon": "即将上线",
+    "reset": "重置为默认"
+  }
+}

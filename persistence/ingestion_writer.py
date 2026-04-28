@@ -159,6 +159,13 @@ class IngestionWriter:
             if prev_version is not None and prev_version != doc.parse_version:
                 self.vec.delete_parse_version(doc.doc_id, prev_version)
 
+        # Denormalize the doc's current path into chunk metadata so the
+        # vector store can do path-scoped filtering without joining
+        # against SQL on every query. FolderService rename keeps these
+        # in sync via ``vec.update_paths``.
+        doc_row = self.rel.get_document(doc.doc_id) or {}
+        doc_path = doc_row.get("path") or "/"
+
         items: list[VectorItem] = []
         for c in chunks:
             vec = embeddings.get(c.chunk_id)
@@ -175,6 +182,7 @@ class IngestionWriter:
                         "content_type": c.content_type,
                         "page_start": c.page_start,
                         "page_end": c.page_end,
+                        "path": doc_path,
                     },
                 )
             )

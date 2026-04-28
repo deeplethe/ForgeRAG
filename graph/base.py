@@ -248,6 +248,32 @@ class GraphStore(ABC):
     def stats(self) -> dict:
         """Return ``{"entities": N, "relations": N}``."""
 
+    # -- batched writes (perf) ----------------------------------------------
+
+    def begin_batch(self) -> None:
+        """Open a write batch; durable persistence may be deferred until
+        ``end_batch``.
+
+        File-backed backends (NetworkX) use this to suppress the per-mutation
+        full-graph rewrite of ``kg.json`` — without it, ingesting a single
+        document can issue thousands of full-graph writes. Server-backed
+        backends (Neo4j) make this a no-op since they don't have the same
+        I/O amplification problem.
+
+        Mutations between ``begin_batch`` and ``end_batch`` MUST still be
+        immediately visible to in-process readers; only the on-disk
+        serialization is deferred. Crash before ``end_batch`` loses the
+        batched mutations — callers (the ingestion pipeline) treat KG
+        extraction as idempotent and will re-run on the next startup via
+        ``recover_stuck_kg``.
+        """
+
+    def end_batch(self) -> None:
+        """Close a write batch and force any deferred persistence.
+
+        Idempotent. Calling without a matching ``begin_batch`` is a no-op.
+        """
+
     # -- lifecycle ----------------------------------------------------------
 
     @abstractmethod
