@@ -92,32 +92,41 @@ watch(_streamThinking, () => {
   thinkingStreamEl.value.scrollTop = thinkingStreamEl.value.scrollHeight
 }, { flush: 'post' })
 const pdf = reactive({ show: false, url: '', page: 1, highlights: [], cite: null, downloadUrl: '', sourceDownloadUrl: '', sourceLabel: '' })
-// Deferred PDF mount: the slide-in animation gets to play smoothly
-// before pdfjs-dist starts parsing. Toggled by ``watch(pdf.show, ...)``
-// below — true after a short timeout once the panel is shown.
+// PdfViewer mount lifecycle is gated to the slide-pdf <Transition>:
+//   open  → wait for ``@after-enter`` → mount  (slide-in is GPU-clean)
+//   close → keep mounted, let slide-out finish → ``@after-leave`` →
+//           unmount via outer v-if  (teardown happens off-screen)
+// Don't tie mount to ``setTimeout`` — if the main thread is busy when
+// the timer fires (e.g. async chunk for pdfjs-dist still loading),
+// mount lands mid-slide and stutters the width transition.
 const pdfMounted = ref(false)
+let _wasAtBottomBeforePdf = false
 watch(() => pdf.show, (v) => {
   if (v) {
-    pdfMounted.value = false
-    // Snapshot scroll state BEFORE reflow: if the user was already
-    // near the bottom (typical case — they just got an answer and
-    // clicked a chip under it), pin them there once the slide-in
-    // width transition reshapes the chat. Without this, the chat
-    // narrows, paragraphs grow taller, and the answer scrolls out of
-    // view right at the moment the PDF arrives.
+    pdfMounted.value = false   // spinner placeholder during slide-in
+    // Snapshot scroll state BEFORE the chat reflows narrower. If the
+    // user was at the bottom (typical: just got an answer, clicked a
+    // chip), pin them there once the slide-in lands.
     const el = chatEl.value
-    const wasAtBottom = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 80)
-    // CSS transition is ~250ms; wait for it to finish before doing the
-    // heavy pdfjs init so the slide is GPU-clean.
-    setTimeout(() => { pdfMounted.value = true }, 280)
-    if (wasAtBottom) {
-      // Slide animation is 200ms; nudge after it settles.
-      setTimeout(() => scroll(), 220)
-    }
-  } else {
-    pdfMounted.value = false
+    _wasAtBottomBeforePdf = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 80)
   }
+  // No close-branch action: setting pdfMounted=false here would tear
+  // down pdfjs synchronously and jankify the slide-out. Leave it to
+  // ``onPdfAfterLeave``.
 })
+
+function onPdfAfterEnter() {
+  // Slide-in finished — chat has fully reflowed. Mount the heavy
+  // PdfViewer now and restore scroll if the user was at the bottom.
+  pdfMounted.value = true
+  if (_wasAtBottomBeforePdf) scroll()
+}
+function onPdfAfterLeave() {
+  // Slide-out finished — outer v-if has destroyed the subtree, so
+  // PdfViewer is gone. Reset the flag so the next open shows the
+  // spinner again until the next ``after-enter``.
+  pdfMounted.value = false
+}
 const trace = reactive({ show: false, data: null })
 const empty = computed(() => !msgs.value.length && !streaming.value)
 
@@ -857,7 +866,7 @@ function onTraceClick(m) {
     </div>
 
     <!-- ═══════ PDF panel ═══════ -->
-    <Transition name="slide-pdf">
+    <Transition name="slide-pdf" @after-enter="onPdfAfterEnter" @after-leave="onPdfAfterLeave">
       <div v-if="pdf.show" class="w-[45%] max-w-[620px] min-w-[400px] shrink-0 border-l border-line flex flex-col overflow-hidden">
         <div class="flex-none flex items-center justify-between px-3 py-2 border-b border-line">
           <div class="flex items-center gap-2 text-xs text-t3">
