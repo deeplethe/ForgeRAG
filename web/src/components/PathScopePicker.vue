@@ -28,10 +28,15 @@
 -->
 <template>
   <div ref="rootEl" class="relative inline-block">
+    <!-- Borderless trigger: when the picker sits ABOVE the input bar,
+         its own border would fragment the surrounding bg into "two
+         boxes with a gap". Without the border the chip blends with
+         whatever it's placed on; affordance comes from the icon +
+         label + chevron + a hover background. -->
     <button
       type="button"
-      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line text-[11px] text-t2 hover:bg-bg3 transition-colors"
-      :class="{ 'border-brand/50 text-brand': scoped, 'bg-bg3': open }"
+      class="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-t2 hover:bg-bg3 transition-colors"
+      :class="{ 'text-brand': scoped, 'bg-bg3': open }"
       :title="scoped ? t('scope.tooltip_scoped_to', { path: modelValue }) : t('scope.tooltip_idle')"
       @click="toggle"
     >

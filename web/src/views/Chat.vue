@@ -687,23 +687,22 @@ function onTraceClick(m) {
         <div class="flex-[4]"></div>
         <div class="pl-8 pr-16 pb-6">
           <div class="max-w-2xl mx-auto">
-            <!-- Unified input card: scope picker (top) + textarea + Send.
-                 Both rows share one bordered container so the input
-                 reads as a single control instead of two stacked blocks. -->
-            <div class="rounded-xl border border-line shadow-sm bg-bg">
-              <div class="pt-2 px-3">
-                <PathScopePicker v-model="pathFilter" />
-              </div>
-              <div class="flex items-end gap-3 px-3 pb-2.5 pt-1.5">
-                <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
-                  class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
-                  style="min-height: 40px; max-height: 120px" autofocus />
-                <button @click="send()" :disabled="!input.trim()"
-                  class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                  :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                </button>
-              </div>
+            <!-- Scope picker: floats above the input as a borderless
+                 label so it doesn't compete with the input card's
+                 visual edge. Aligned to the input's left padding so
+                 it reads as "owned by" the input below. -->
+            <div class="mb-1.5 pl-1">
+              <PathScopePicker v-model="pathFilter" />
+            </div>
+            <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
+                class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
+                style="min-height: 40px; max-height: 120px" autofocus />
+              <button @click="send()" :disabled="!input.trim()"
+                class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+              </button>
             </div>
             <div class="text-center mt-2 text-[10px] text-t3">{{ t('chat.may_make_mistakes') }}</div>
           </div>
@@ -851,31 +850,28 @@ function onTraceClick(m) {
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
-            <!-- Unified input card: scope picker (top) + textarea + Send/Stop.
-                 Both rows share one bordered container so the input
-                 reads as a single control instead of two stacked blocks. -->
-            <div class="rounded-xl border border-line bg-bg">
-              <div class="pt-2 px-3">
-                <PathScopePicker v-model="pathFilter" />
-              </div>
-              <div class="flex items-end gap-3 px-3 pb-2 pt-1.5">
-                <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
-                  class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
-                  style="min-height: 20px; max-height: 80px"
-                  @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />
-                <!-- Stop button while streaming -->
-                <button v-if="streaming" @click="stopGeneration()"
-                  class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-bg3 hover:bg-bg3/80 text-t1 transition-colors"
-                  :title="t('chat.stop_generation')">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-                </button>
-                <!-- Send button -->
-                <button v-else @click="send()" :disabled="!input.trim()"
-                  class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                  :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                </button>
-              </div>
+            <!-- Scope picker: borderless label above, aligned with the
+                 input's inner left padding. -->
+            <div class="mb-1.5 pl-1">
+              <PathScopePicker v-model="pathFilter" />
+            </div>
+            <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
+              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
+                class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
+                style="min-height: 20px; max-height: 80px"
+                @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />
+              <!-- Stop button while streaming -->
+              <button v-if="streaming" @click="stopGeneration()"
+                class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-bg3 hover:bg-bg3/80 text-t1 transition-colors"
+                :title="t('chat.stop_generation')">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              </button>
+              <!-- Send button -->
+              <button v-else @click="send()" :disabled="!input.trim()"
+                class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+              </button>
             </div>
           </div>
         </div>
