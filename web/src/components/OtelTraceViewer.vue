@@ -22,13 +22,25 @@
       @mousemove="onMouseMove"
       @mouseleave="cursorX = null"
     >
-      <!-- Hover guide line + time tooltip -->
+      <!-- Hover guide line + time tooltip.
+           ``top``/``height`` are bound to the body's CURRENT scroll
+           viewport (not its content extent), so the line spans only
+           the visible area regardless of scroll position. The tooltip
+           follows the cursor's Y inside the line — Chrome DevTools
+           Performance pattern, "look right where my eye is". -->
       <div
         v-if="cursorX != null"
         class="cursor-guide"
-        :style="{ left: cursorX + 'px' }"
+        :style="{
+          left: cursorX + 'px',
+          top: scrollTop + 'px',
+          height: visibleHeight + 'px',
+        }"
       >
-        <div class="cursor-tooltip">{{ cursorMs.toFixed(0) }}ms</div>
+        <div
+          class="cursor-tooltip"
+          :style="{ top: tooltipOffsetY + 'px' }"
+        >{{ cursorMs.toFixed(0) }}ms</div>
       </div>
 
       <!-- Phase groups (collapsed by default) -->
@@ -399,26 +411,62 @@ const ancestorIds = computed(() => {
 const selectedRow = computed(() => allRows.value.find(r => r.span_id === selectedId.value) || null)
 
 // ── Hover guide line ──
+//
+// Coordinates live in the body's CONTENT space (so they survive scroll
+// without us having to listen to mouse events from the window). The
+// guide line's ``top`` / ``height`` track the body's scroll viewport
+// (scrollTop + clientHeight) so the line covers exactly the visible
+// area; the tooltip follows the cursor's Y inside the line.
 
 const bodyEl = ref(null)
 const cursorX = ref(null)
+const cursorY = ref(0)         // y in body content coords
 const cursorMs = ref(0)
+const scrollTop = ref(0)
+const visibleHeight = ref(0)
+
+const tooltipOffsetY = computed(() => {
+  // Tooltip is positioned within ``cursor-guide`` whose top = scrollTop;
+  // so its local offset = cursorY - scrollTop, but clamped to stay
+  // inside the visible viewport (so the tooltip never disappears off
+  // an edge when the cursor is near top / bottom).
+  const local = cursorY.value - scrollTop.value
+  const max = Math.max(0, visibleHeight.value - 18)
+  return Math.min(Math.max(0, local + 8), max)
+})
+
+function syncScroll() {
+  if (!bodyEl.value) return
+  scrollTop.value = bodyEl.value.scrollTop
+  visibleHeight.value = bodyEl.value.clientHeight
+}
+
+let _resizeObs = null
+onMounted(() => {
+  if (!bodyEl.value) return
+  bodyEl.value.addEventListener('scroll', syncScroll, { passive: true })
+  _resizeObs = new ResizeObserver(syncScroll)
+  _resizeObs.observe(bodyEl.value)
+  syncScroll()
+})
+onBeforeUnmount(() => {
+  if (bodyEl.value) bodyEl.value.removeEventListener('scroll', syncScroll)
+  if (_resizeObs) _resizeObs.disconnect()
+})
+
 function onMouseMove(e) {
   if (!bodyEl.value || !totalMs.value) return
-  // Find the bar-track left edge: it's the row's left + padding (px-2 = 8px)
-  // + tree indent (variable) + bar's margin-left (22px). For a stable
-  // ruler we just measure relative to body's content area, which is the
-  // common bar-track parent. The bars all share the same width so we
-  // can use any one of them as the timeline.
+  // Use any phase bar-track as the timeline reference; they all share
+  // the same width since they're rendered with identical layout rules.
   const trackEls = bodyEl.value.querySelectorAll('.phase-bar-track')
   if (!trackEls.length) return
   const rect = trackEls[0].getBoundingClientRect()
   const x = e.clientX - rect.left
   if (x < 0 || x > rect.width) { cursorX.value = null; return }
-  // Translate x → absolute screen position INSIDE bodyEl (so the guide
-  // line spans full body height regardless of which row the cursor's on).
   const bodyRect = bodyEl.value.getBoundingClientRect()
   cursorX.value = e.clientX - bodyRect.left
+  // y in content coords = client-y offset + body's scroll
+  cursorY.value = e.clientY - bodyRect.top + bodyEl.value.scrollTop
   cursorMs.value = (x / rect.width) * totalMs.value
 }
 
@@ -617,24 +665,30 @@ function formatValue(v) {
   );
 }
 
-/* ── Hover guide line + time tooltip ──────────────────────── */
+/* ── Hover guide line + time tooltip ────────────────────────
+   Inverted (Vercel-style): the line + tooltip fill use ``--color-t1``
+   which is near-black in light mode and near-white in dark mode; the
+   tooltip's text uses ``--color-bg`` for inverted contrast. Brand
+   blue is reserved for selected state / accents — the cursor ruler
+   is a neutral measurement tool, not a CTA. */
 .cursor-guide {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  /* ``top`` and ``height`` are bound from JS to bodyEl.scrollTop
+     and bodyEl.clientHeight so the line spans the visible viewport
+     (not the body's content extent) regardless of scroll. */
   width: 1px;
-  background: var(--color-brand);
-  opacity: 0.5;
+  background: var(--color-t1);
+  opacity: 0.6;
   pointer-events: none;
   z-index: 5;
 }
 .cursor-tooltip {
   position: absolute;
-  top: 0;
+  /* ``top`` is bound from JS so the tooltip follows the cursor Y. */
   left: 4px;
   padding: 1px 5px;
-  background: var(--color-brand);
-  color: #fff;
+  background: var(--color-t1);
+  color: var(--color-bg);
   font-size: 9px;
   font-family: var(--font-mono, monospace);
   border-radius: 3px;
