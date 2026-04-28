@@ -435,6 +435,21 @@ class Store:
             row = s.get(Document, doc_id)
             return _doc_to_dict(row) if row else None
 
+    def get_documents_by_ids(self, doc_ids: list[str]) -> list[dict]:
+        """Batch fetch by doc_id whitelist. One SQL roundtrip via IN(...).
+
+        Used by ``POST /api/v1/documents/lookup`` so the chat citation
+        card (which has many doc_ids per render) doesn't fan out into
+        N parallel single-id GETs. Order of the returned list matches
+        the input order; missing IDs are skipped (no None placeholders).
+        """
+        if not doc_ids:
+            return []
+        with self._session() as s:
+            rows = s.execute(select(Document).where(Document.doc_id.in_(list(doc_ids)))).scalars().all()
+            by_id = {r.doc_id: _doc_to_dict(r) for r in rows}
+            return [by_id[d] for d in doc_ids if d in by_id]
+
     def delete_document(self, doc_id: str) -> None:
         with self._session() as s:
             row = s.get(Document, doc_id)

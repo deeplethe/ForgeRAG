@@ -39,6 +39,7 @@ export {
   uploadAndIngest,
   listDocuments,
   getDocument,
+  lookupDocuments,
   deleteDocument,
   stopDocument,
   reparseDocument,

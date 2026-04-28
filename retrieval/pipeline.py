@@ -452,23 +452,12 @@ class RetrievalPipeline:
         _skip_paths: set[str] = set()
 
         if precomputed_plan is not None:
-            # QU already ran upstream — just record its outcome on a span.
+            # QU already ran upstream (early QU in answering.pipeline). Its
+            # real span — with intent / expanded_count / latency attributes —
+            # already lives at the answer-level, so we DON'T emit a second
+            # QU span here. Just consume the plan.
             queries = precomputed_plan.expanded_queries or [query]
             _skip_paths = set(precomputed_plan.skip_paths)
-            with _tracer.start_as_current_span("forgerag.query_understanding") as span:
-                span.set_attributes(
-                    {
-                        "forgerag.intent": precomputed_plan.intent or "",
-                        "forgerag.needs_retrieval": bool(precomputed_plan.needs_retrieval),
-                        "forgerag.expanded_count": len(queries),
-                        "forgerag.precomputed": True,
-                    }
-                )
-                if precomputed_plan.skip_paths:
-                    span.set_attribute("forgerag.skip_paths", list(precomputed_plan.skip_paths))
-                if precomputed_plan.latency_ms:
-                    span.set_attribute("forgerag.llm.latency_ms", int(precomputed_plan.latency_ms))
-                    span.set_attribute("gen_ai.request.model", precomputed_plan.model or "unknown")
 
         qu_cfg = self.cfg.query_understanding
         if eff_qu_on and precomputed_plan is None:
@@ -793,7 +782,11 @@ class RetrievalPipeline:
                 active_paths.append("bm25_fallback")
 
         # ── Fusion ─────────────────────────────────────────────────────
-        merged = self.c_fusion.run(rrf_inputs, labels=active_paths) if rrf_inputs else []
+        # Empty fallback is a DICT (matches RRFFusion.run's real return
+        # shape — dict[str, MergedChunk]). Returning [] here used to crash
+        # downstream rehydrate() with ".items() on list" when an empty
+        # path-filter scope produced zero hits across all retrievers.
+        merged = self.c_fusion.run(rrf_inputs, labels=active_paths) if rrf_inputs else {}
         _pcb(phase="rrf_merge", status="done", detail=f"{len(merged)} merged")
 
         # ── Context expansion ──────────────────────────────────────────

@@ -329,6 +329,31 @@ def list_documents(
     )
 
 
+class _DocLookupRequest(BaseModel):
+    doc_ids: list[str]
+
+
+@router.post("/lookup", response_model=list[DocumentOut])
+def lookup_documents(
+    body: _DocLookupRequest,
+    state: AppState = Depends(get_state),
+) -> list[DocumentOut]:
+    """Batch-fetch documents by doc_id list. One SQL roundtrip.
+
+    Used by the chat citation card (and similar UIs) so rendering a
+    conversation's references doesn't fan out into N parallel
+    GET /documents/{id} calls. Missing IDs are silently dropped from
+    the response (caller already knows what it asked for).
+    """
+    # Cap to keep a single call from blowing up DB IO. Frontend caches
+    # so this is sized for "all citations on one screen".
+    ids = list(dict.fromkeys(body.doc_ids))[:200]  # dedupe + cap
+    if not ids:
+        return []
+    rows = state.store.get_documents_by_ids(ids)
+    return [_doc_out(r, state) for r in rows]
+
+
 @router.get("/{doc_id}", response_model=DocumentOut)
 def get_document(doc_id: str, state: AppState = Depends(get_state)):
     row = state.store.get_document(doc_id)

@@ -9,7 +9,7 @@ OTel-wrapped interface so it plugs into composable chains.
 from __future__ import annotations
 
 from ..telemetry import get_tracer
-from ..types import ScoredChunk
+from ..types import MergedChunk, ScoredChunk
 
 _tracer = get_tracer()
 
@@ -29,7 +29,7 @@ class RRFFusion:
         ranked_lists: list[list[ScoredChunk]],
         *,
         labels: list[str] | None = None,
-    ) -> list[ScoredChunk]:
+    ) -> dict[str, MergedChunk]:
         from ..merge import rrf_merge
 
         labels = labels or [f"path_{i}" for i in range(len(ranked_lists))]

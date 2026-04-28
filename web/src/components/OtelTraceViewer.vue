@@ -15,97 +15,108 @@
       </span>
     </div>
 
-    <!-- Body: phase groups -->
-    <div
-      ref="bodyEl"
-      class="overflow-y-auto flex-1 px-2 py-2 relative"
-      @mousemove="onMouseMove"
-      @mouseleave="cursorX = null"
-    >
-      <!-- Hover guide line + time tooltip.
-           ``top``/``height`` are bound to the body's CURRENT scroll
-           viewport (not its content extent), so the line spans only
-           the visible area regardless of scroll position. The tooltip
-           follows the cursor's Y inside the line — Chrome DevTools
-           Performance pattern, "look right where my eye is". -->
+    <!-- Body wrapper.
+         Two siblings live here: the scrolling list AND a non-scrolling
+         overlay. The overlay hosts the hover ruler so it never re-paints
+         when the list scrolls (eliminates the 1-frame lag / jitter we
+         had when the line's ``top`` was bound reactively to scrollTop). -->
+    <div class="body-wrapper relative flex-1">
       <div
-        v-if="cursorX != null"
-        class="cursor-guide"
-        :style="{
-          left: cursorX + 'px',
-          top: scrollTop + 'px',
-          height: visibleHeight + 'px',
-        }"
+        ref="bodyEl"
+        class="absolute inset-0 overflow-y-auto px-2 py-2"
+        @mousemove="onMouseMove"
+        @mouseleave="cursorX = null"
       >
+        <!-- Phase groups (collapsed by default) -->
         <div
-          class="cursor-tooltip"
-          :style="{ top: tooltipOffsetY + 'px' }"
-        >{{ cursorMs.toFixed(0) }}ms</div>
-      </div>
-
-      <!-- Phase groups (collapsed by default) -->
-      <div
-        v-for="phase in phaseGroups"
-        :key="phase.name"
-        class="phase-group"
-      >
-        <button
-          type="button"
-          class="phase-header"
-          :class="{ 'is-empty': !phase.spans.length, 'is-untraced': phase.untraced }"
-          @click="togglePhase(phase.name)"
+          v-for="phase in phaseGroups"
+          :key="phase.name"
+          class="phase-group"
         >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2.5" class="phase-chevron"
-            :class="{ 'is-open': !collapsed[phase.name] }">
-            <path d="M9 6l6 6-6 6"/>
-          </svg>
-          <span class="phase-label">{{ phase.label }}</span>
-          <span class="phase-count" v-if="phase.spans.length">{{ phase.spans.length }}</span>
-          <span class="phase-duration tabular-nums">{{ phase.duration_ms.toFixed(0) }}ms</span>
-          <div class="bar-track phase-bar-track">
-            <div
-              class="bar-fill"
-              :class="phase.untraced ? 'bar-fill--untraced' : 'bar-fill--forgerag'"
-              :style="{ left: phase.offsetPct + '%', width: phase.widthPct + '%' }"
-            />
-          </div>
-        </button>
-        <div v-if="!collapsed[phase.name] && phase.spans.length" class="phase-children">
-          <div
-            v-for="row in phase.spans"
-            :key="row.span_id"
-            class="span-row"
-            :class="{
-              'is-selected': selectedId === row.span_id,
-              'is-ancestor': ancestorIds.has(row.span_id) && selectedId !== row.span_id,
-              'is-dimmed': selectedId && !ancestorIds.has(row.span_id) && selectedId !== row.span_id,
-            }"
-            @click="onRowClick(row)"
+          <button
+            type="button"
+            class="phase-header"
+            :class="{ 'is-empty': !phase.topRows.length, 'is-untraced': phase.untraced }"
+            @click="togglePhase(phase.name)"
           >
-            <div class="flex items-center text-[10px]" :style="{ paddingLeft: row.depth * 10 + 'px' }">
-              <span class="tree-hinge" v-if="row.depth > 0">└</span>
-              <span class="span-tag" :class="`span-tag--${row.category}`">{{ row.shortName }}</span>
-              <span class="span-full-name truncate">{{ row.displayName }}</span>
-              <span class="ml-auto pl-2 text-t3 font-mono tabular-nums text-[9px]">{{ row.duration_ms.toFixed(1) }}ms</span>
-            </div>
-            <div class="bar-track">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.5" class="phase-chevron"
+              :class="{ 'is-open': !collapsed[phase.name] }">
+              <path d="M9 6l6 6-6 6"/>
+            </svg>
+            <span class="phase-label">{{ phase.label }}</span>
+            <span class="phase-count" v-if="phase.totalSpans">{{ phase.totalSpans }}</span>
+            <span class="phase-duration tabular-nums">{{ phase.duration_ms.toFixed(0) }}ms</span>
+            <div class="bar-track phase-bar-track">
               <div
                 class="bar-fill"
-                :class="`bar-fill--${row.category}`"
-                :style="{ left: row.offsetPct + '%', width: row.widthPct + '%' }"
+                :class="phase.untraced ? 'bar-fill--untraced' : 'bar-fill--forgerag'"
+                :style="{ left: phase.offsetPct + '%', width: phase.widthPct + '%' }"
               />
             </div>
-            <div v-if="row.llmInfo" class="text-[9px] text-t3 mt-0.5" :style="{ paddingLeft: row.depth * 10 + 14 + 'px' }">
-              <span class="font-mono">{{ row.llmInfo.model }}</span>
-              <span v-if="row.llmInfo.in_tokens" class="ml-2">in <b>{{ row.llmInfo.in_tokens }}</b></span>
-              <span v-if="row.llmInfo.out_tokens" class="ml-2">out <b>{{ row.llmInfo.out_tokens }}</b></span>
-              <span v-if="row.llmInfo.cost" class="ml-2">${{ row.llmInfo.cost.toFixed(4) }}</span>
-            </div>
-            <div v-if="row.isError" class="text-[9px] text-rose-500 mt-0.5" :style="{ paddingLeft: row.depth * 10 + 14 + 'px' }">
-              ⚠ {{ row.errorSummary }}
+          </button>
+          <div v-if="!collapsed[phase.name] && phase.topRows.length" class="phase-children">
+            <div
+              v-for="row in visibleRowsByPhase[phase.name]"
+              :key="row.span_id"
+              class="span-row"
+              :class="{
+                'is-selected': selectedId === row.span_id,
+                'is-ancestor': ancestorIds.has(row.span_id) && selectedId !== row.span_id,
+                'is-dimmed': selectedId && !ancestorIds.has(row.span_id) && selectedId !== row.span_id,
+              }"
+              @click="onRowClick(row)"
+            >
+              <div class="flex items-center text-[10px]" :style="{ paddingLeft: row.displayDepth * 12 + 'px' }">
+                <button
+                  v-if="row.hasChildren"
+                  type="button"
+                  class="span-chevron"
+                  :class="{ 'is-open': expandedSpans.has(row.span_id) }"
+                  @click.stop="toggleSpan(row.span_id)"
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M9 6l6 6-6 6"/>
+                  </svg>
+                </button>
+                <span v-else class="span-chevron-spacer" />
+                <span class="span-tag" :class="`span-tag--${row.category}`">{{ row.shortName }}</span>
+                <span class="span-full-name truncate">{{ row.displayName }}</span>
+                <span class="ml-auto pl-2 text-t3 font-mono tabular-nums text-[9px]">{{ row.duration_ms.toFixed(1) }}ms</span>
+              </div>
+              <div class="bar-track">
+                <div
+                  class="bar-fill"
+                  :class="`bar-fill--${row.category}`"
+                  :style="{ left: row.offsetPct + '%', width: row.widthPct + '%' }"
+                />
+              </div>
+              <div v-if="row.llmInfo" class="text-[9px] text-t3 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
+                <span class="font-mono">{{ row.llmInfo.model }}</span>
+                <span v-if="row.llmInfo.in_tokens" class="ml-2">in <b>{{ row.llmInfo.in_tokens }}</b></span>
+                <span v-if="row.llmInfo.out_tokens" class="ml-2">out <b>{{ row.llmInfo.out_tokens }}</b></span>
+                <span v-if="row.llmInfo.cost" class="ml-2">${{ row.llmInfo.cost.toFixed(4) }}</span>
+              </div>
+              <div v-if="row.isError" class="text-[9px] text-rose-500 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
+                ⚠ {{ row.errorSummary }}
+              </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Non-scrolling overlay: hosts the hover ruler. Sits over the
+           scroll container at absolute inset-0. Because it doesn't
+           scroll, the line/tooltip don't need to track scrollTop —
+           ``top: 0; height: 100%`` is enough and there's nothing to
+           re-paint when the list scrolls. -->
+      <div class="overlay">
+        <div
+          v-if="cursorX != null"
+          class="cursor-guide"
+          :style="{ left: cursorX + 'px' }"
+        >
+          <div class="cursor-tooltip">{{ cursorMs.toFixed(0) }}ms</div>
         </div>
       </div>
     </div>
@@ -140,25 +151,27 @@
  * direct children of ``forgerag.answer``:
  *
  *   ▶ Setup           (forgerag.setup + any pre-pipeline DB/HTTP spans)
- *   ▶ Understanding   (forgerag.query_understanding + descendants)
+ *   ▶ Understanding   (forgerag.query_understanding — early QU planner)
  *   ▶ Retrieval       (forgerag.retrieve + all retriever subspans)
  *   ▶ Generation      (forgerag.prompt_build + forgerag.generation + ...)
  *   ▶ Untraced        synthetic — only shown when root.duration ≠ Σ children
  *
  * Each phase header is its own waterfall bar (start/end derived from the
- * union of its member spans). Click to expand → individual spans render
- * with the same waterfall-row layout as before. Default state is all
- * phases collapsed; the user's choices persist in localStorage.
+ * union of its member spans). Click to expand → only the phase's
+ * top-level spans render. Each span row with descendants has its own
+ * chevron — click that to drill in one more level. This level-by-level
+ * model keeps the waterfall scannable for traces with deep retriever
+ * trees instead of dumping ~30 rows at once.
  *
  * Hover anywhere in the body → a vertical guide line + ms readout
- * floats at the cursor (Chrome DevTools-style). Beats a fixed top
- * ruler since it surfaces only when needed and works at every Y.
+ * floats at the cursor (Chrome DevTools-style). The ruler lives on a
+ * non-scrolling overlay so it never lags during scroll.
  *
  * Click a span row → its parent chain is highlighted (``.is-ancestor``)
  * and unrelated rows dim (``.is-dimmed``), so the user can see "this
  * leaf belongs to that branch" without re-reading indentation.
  */
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   trace: { type: Object, default: null },
@@ -172,7 +185,7 @@ const root = computed(() => spans.value.find(s => !s.parent_span_id) || null)
 const totalMs = computed(() => root.value?.duration_ms || 0)
 const rootStartNs = computed(() => root.value?.start_time_unix_nano || 0)
 
-// ── Categorisation / display helpers (unchanged from prior version) ──
+// ── Categorisation / display helpers ──
 
 function categorise(span) {
   const n = span.name || ''
@@ -190,6 +203,13 @@ function shortTag(category) {
 function displayName(name) { return name.replace(/^forgerag\./, '') }
 
 // ── Phase boundaries — name-based with start-time fallback ──
+//
+// QU stays SEPARATE from Retrieval on purpose: it's a planner/router
+// that can short-circuit retrieval entirely (greeting → direct answer,
+// reformulation → cache-reuse). When it short-circuits, retrieve never
+// runs and folding QU into a "Retrieval" phase would be misleading.
+// Rerank, in contrast, is unambiguously a sub-step of retrieve and
+// inherits via the parent span chain (no own phase entry).
 
 const PHASES = [
   { name: 'setup',         label: 'Setup',         match: /^forgerag\.setup$/ },
@@ -198,50 +218,46 @@ const PHASES = [
   { name: 'generation',    label: 'Generation',    match: /^forgerag\.(prompt_build|generation)$/ },
 ]
 
-/** All rows DFS-ordered with depth + waterfall offsets. */
-const allRows = computed(() => {
-  if (!hasSpans.value) return []
-  const byId = new Map(spans.value.map(s => [s.span_id, s]))
-  const childrenOf = new Map()
+/** parent_span_id → array of child spans, sorted by start time. */
+const childrenBySpanId = computed(() => {
+  const m = new Map()
   for (const s of spans.value) {
-    const p = s.parent_span_id
-    if (!childrenOf.has(p)) childrenOf.set(p, [])
-    childrenOf.get(p).push(s)
+    const p = s.parent_span_id || ''
+    if (!m.has(p)) m.set(p, [])
+    m.get(p).push(s)
   }
-  for (const [, list] of childrenOf) {
+  for (const [, list] of m) {
     list.sort((a, b) => (a.start_time_unix_nano || 0) - (b.start_time_unix_nano || 0))
   }
+  return m
+})
+
+/** Build a row object for a span (display-ready data, no parent chain). */
+function makeRow(span) {
+  const cat = categorise(span)
   const total = totalMs.value || 1
   const baseNs = rootStartNs.value
-  const out = []
-  const roots = spans.value.filter(s => !s.parent_span_id || !byId.has(s.parent_span_id))
-
-  function walk(span, depth) {
-    const cat = categorise(span)
-    const startMs = Math.max(0, ((span.start_time_unix_nano || 0) - baseNs) / 1e6)
-    out.push({
-      span_id: span.span_id,
-      parent_span_id: span.parent_span_id,
-      name: span.name,
-      displayName: displayName(span.name),
-      shortName: shortTag(cat),
-      category: cat,
-      depth,
-      duration_ms: span.duration_ms || 0,
-      startMs,
-      offsetPct: total > 0 ? (startMs / total) * 100 : 0,
-      widthPct: total > 0 ? Math.max(0.4, ((span.duration_ms || 0) / total) * 100) : 0,
-      attributes: span.attributes || {},
-      events: span.events || [],
-      llmInfo: extractLLMInfo(span),
-      isError: span.status?.code === 'ERROR' || hasErrorEvent(span),
-      errorSummary: errorSummary(span),
-    })
-    for (const c of childrenOf.get(span.span_id) || []) walk(c, depth + 1)
+  const startMs = Math.max(0, ((span.start_time_unix_nano || 0) - baseNs) / 1e6)
+  const kids = childrenBySpanId.value.get(span.span_id) || []
+  return {
+    span_id: span.span_id,
+    parent_span_id: span.parent_span_id,
+    name: span.name,
+    displayName: displayName(span.name),
+    shortName: shortTag(cat),
+    category: cat,
+    duration_ms: span.duration_ms || 0,
+    startMs,
+    offsetPct: total > 0 ? (startMs / total) * 100 : 0,
+    widthPct: total > 0 ? Math.max(0.4, ((span.duration_ms || 0) / total) * 100) : 0,
+    attributes: span.attributes || {},
+    events: span.events || [],
+    llmInfo: extractLLMInfo(span),
+    isError: span.status?.code === 'ERROR' || hasErrorEvent(span),
+    errorSummary: errorSummary(span),
+    hasChildren: kids.length > 0,
   }
-  for (const r of roots) walk(r, 0)
-  return out
-})
+}
 
 /** Group rows into phases. Children of forgerag.answer get bucketed by
  * name match; their descendants follow the same bucket. Top-level
@@ -249,31 +265,21 @@ const allRows = computed(() => {
  * directly off root) attach to whichever phase is currently "open"
  * by start-time order — i.e. they belong to the phase they ran during. */
 const phaseGroups = computed(() => {
-  if (!allRows.value.length) return []
-
-  // Index: span_id → which top-level phase it belongs to.
-  const phaseOf = new Map()    // span_id → phase.name
+  if (!hasSpans.value) return []
   const rootSpan = root.value
   if (!rootSpan) return []
 
-  // Step 1: top-level forgerag spans match a phase regex; everything
-  // descended from them inherits the phase.
-  const byParent = new Map()
-  for (const s of spans.value) {
-    const p = s.parent_span_id || ''
-    if (!byParent.has(p)) byParent.set(p, [])
-    byParent.get(p).push(s)
-  }
+  // Index: span_id → which top-level phase it belongs to.
+  const phaseOf = new Map()    // span_id → phase.name
 
   function inheritPhase(spanId, phaseName) {
     phaseOf.set(spanId, phaseName)
-    for (const c of byParent.get(spanId) || []) inheritPhase(c.span_id, phaseName)
+    for (const c of childrenBySpanId.value.get(spanId) || []) inheritPhase(c.span_id, phaseName)
   }
 
-  // Track top-level forgerag phases ordered by start time so we can
-  // bucket loose top-level DB/HTTP spans by which phase was active.
-  const topLevel = (byParent.get(rootSpan.span_id) || [])
-    .slice().sort((a, b) => (a.start_time_unix_nano || 0) - (b.start_time_unix_nano || 0))
+  // Step 1: top-level forgerag spans match a phase regex; everything
+  // descended from them inherits the phase.
+  const topLevel = childrenBySpanId.value.get(rootSpan.span_id) || []
   const phaseStarts = []     // [{name, startNs, endNs}]
   for (const s of topLevel) {
     const def = PHASES.find(p => p.match.test(s.name))
@@ -299,7 +305,6 @@ const phaseGroups = computed(() => {
       if (start >= ph.startNs && start <= ph.endNs) { chosen = ph.name; break }
     }
     if (!chosen) {
-      // pick closest phase by start time
       if (!phaseStarts.length) continue
       chosen = phaseStarts.reduce((best, ph) =>
         Math.abs(ph.startNs - start) < Math.abs(best.startNs - start) ? ph : best,
@@ -308,32 +313,42 @@ const phaseGroups = computed(() => {
     inheritPhase(s.span_id, chosen)
   }
 
-  // Step 3: build phase groups
+  // Step 3: build phase groups. ``topRows`` = direct children of root
+  // for that phase (rendered when phase opens). ``totalSpans`` counts
+  // ALL members for the badge. ``earliest/latest`` for waterfall bar.
   const groups = PHASES.map(p => ({
     name: p.name, label: p.label, untraced: false,
-    spans: [], duration_ms: 0, offsetPct: 0, widthPct: 0,
+    topRows: [], totalSpans: 0, duration_ms: 0,
+    offsetPct: 0, widthPct: 0,
     earliestNs: Infinity, latestNs: 0,
   }))
   const groupBy = new Map(groups.map(g => [g.name, g]))
 
-  for (const row of allRows.value) {
-    if (row.span_id === rootSpan.span_id) continue   // skip the root itself
-    const ph = phaseOf.get(row.span_id)
+  // Walk every span; if it belongs to a phase, count it; if its parent
+  // is the root, it's a top-level row for that phase.
+  for (const s of spans.value) {
+    if (s.span_id === rootSpan.span_id) continue
+    const ph = phaseOf.get(s.span_id)
     if (!ph) continue
     const g = groupBy.get(ph)
     if (!g) continue
-    g.spans.push(row)
-    const span = spans.value.find(s => s.span_id === row.span_id)
-    if (!span) continue
-    g.earliestNs = Math.min(g.earliestNs, span.start_time_unix_nano || Infinity)
-    g.latestNs   = Math.max(g.latestNs,   span.end_time_unix_nano   || 0)
+    g.totalSpans += 1
+    g.earliestNs = Math.min(g.earliestNs, s.start_time_unix_nano || Infinity)
+    g.latestNs   = Math.max(g.latestNs,   s.end_time_unix_nano   || 0)
+    if ((s.parent_span_id || '') === rootSpan.span_id) {
+      g.topRows.push(makeRow(s))
+    }
+  }
+  // Sort top rows by start time within each phase
+  for (const g of groups) {
+    g.topRows.sort((a, b) => a.startMs - b.startMs)
   }
 
   // Compute waterfall bars per phase (wall-clock span of its members)
   const total = totalMs.value || 1
   const baseNs = rootStartNs.value
   for (const g of groups) {
-    if (!g.spans.length) continue
+    if (!g.totalSpans) continue
     g.duration_ms = (g.latestNs - g.earliestNs) / 1e6
     const startMs = Math.max(0, (g.earliestNs - baseNs) / 1e6)
     g.offsetPct = total > 0 ? (startMs / total) * 100 : 0
@@ -346,18 +361,59 @@ const phaseGroups = computed(() => {
   if (gap >= 50) {
     groups.push({
       name: 'untraced', label: 'Untraced', untraced: true,
-      spans: [], duration_ms: gap,
+      topRows: [], totalSpans: 0, duration_ms: gap,
       offsetPct: 0, widthPct: total > 0 ? (gap / total) * 100 : 0,
       earliestNs: 0, latestNs: 0,
     })
   }
 
-  return groups.filter(g => g.spans.length || g.untraced)
+  return groups.filter(g => g.totalSpans || g.untraced)
 })
 
 const untracedMs = computed(() => {
   const g = phaseGroups.value.find(p => p.untraced)
   return g ? g.duration_ms : 0
+})
+
+// ── Per-span expansion (level-by-level drill-in) ──
+//
+// ``expandedSpans`` holds span_ids whose CHILDREN are currently visible.
+// A row is shown when (a) it's a phase top-level row, OR (b) its parent
+// is in ``expandedSpans``. Not persisted in localStorage — expansion is
+// per-trace and the trace itself is per-conversation, so persisting
+// would just recall stale state.
+
+const expandedSpans = ref(new Set())
+
+function toggleSpan(spanId) {
+  const s = new Set(expandedSpans.value)
+  if (s.has(spanId)) s.delete(spanId)
+  else s.add(spanId)
+  expandedSpans.value = s
+}
+
+// Reset expansion when the trace itself changes (different conversation
+// or re-asked query).
+watch(() => props.trace, () => {
+  expandedSpans.value = new Set()
+  selectedId.value = null
+})
+
+/** Visible rows per phase: phase.topRows + (recursive) expanded children. */
+const visibleRowsByPhase = computed(() => {
+  const out = {}
+  for (const phase of phaseGroups.value) {
+    const rows = []
+    const pushRecursive = (row, depth) => {
+      rows.push({ ...row, displayDepth: depth })
+      if (!expandedSpans.value.has(row.span_id)) return
+      const kids = childrenBySpanId.value.get(row.span_id) || []
+      for (const k of kids) pushRecursive(makeRow(k), depth + 1)
+    }
+    for (const r of phase.topRows) pushRecursive(r, 0)
+    out[phase.name] = rows
+  }
+  return out
 })
 
 // ── Phase collapse state — persisted in localStorage ──
@@ -408,50 +464,23 @@ const ancestorIds = computed(() => {
   }
   return set
 })
-const selectedRow = computed(() => allRows.value.find(r => r.span_id === selectedId.value) || null)
+const selectedRow = computed(() => {
+  if (!selectedId.value) return null
+  const span = spans.value.find(s => s.span_id === selectedId.value)
+  return span ? makeRow(span) : null
+})
 
 // ── Hover guide line ──
 //
-// Coordinates live in the body's CONTENT space (so they survive scroll
-// without us having to listen to mouse events from the window). The
-// guide line's ``top`` / ``height`` track the body's scroll viewport
-// (scrollTop + clientHeight) so the line covers exactly the visible
-// area; the tooltip follows the cursor's Y inside the line.
+// The ruler lives on a non-scrolling overlay that sits over the body
+// (absolute inset-0 inside body-wrapper). cursorX is in OVERLAY-space,
+// which equals viewport-space for the body — no scrollTop math needed.
+// This avoids the 1-frame jitter we had when ``top`` was bound to
+// scrollTop reactively.
 
 const bodyEl = ref(null)
 const cursorX = ref(null)
-const cursorY = ref(0)         // y in body content coords
 const cursorMs = ref(0)
-const scrollTop = ref(0)
-const visibleHeight = ref(0)
-
-// Tooltip sits at the TOP of the visible viewport (Chrome DevTools
-// Performance pattern) — never overlaps the row the cursor's on. Just
-// 2px in from the top so it doesn't kiss the panel border. The X
-// follows the cursor; only Y is fixed.
-//
-// (We tried "follow cursor Y" — turned out to actively block whatever
-// row the user was reading. Top-pin is calmer and more standard.)
-const tooltipOffsetY = computed(() => 2)
-
-function syncScroll() {
-  if (!bodyEl.value) return
-  scrollTop.value = bodyEl.value.scrollTop
-  visibleHeight.value = bodyEl.value.clientHeight
-}
-
-let _resizeObs = null
-onMounted(() => {
-  if (!bodyEl.value) return
-  bodyEl.value.addEventListener('scroll', syncScroll, { passive: true })
-  _resizeObs = new ResizeObserver(syncScroll)
-  _resizeObs.observe(bodyEl.value)
-  syncScroll()
-})
-onBeforeUnmount(() => {
-  if (bodyEl.value) bodyEl.value.removeEventListener('scroll', syncScroll)
-  if (_resizeObs) _resizeObs.disconnect()
-})
 
 function onMouseMove(e) {
   if (!bodyEl.value || !totalMs.value) return
@@ -464,12 +493,10 @@ function onMouseMove(e) {
   if (x < 0 || x > rect.width) { cursorX.value = null; return }
   const bodyRect = bodyEl.value.getBoundingClientRect()
   cursorX.value = e.clientX - bodyRect.left
-  // y in content coords = client-y offset + body's scroll
-  cursorY.value = e.clientY - bodyRect.top + bodyEl.value.scrollTop
   cursorMs.value = (x / rect.width) * totalMs.value
 }
 
-// ── LLM info / error / formatting (unchanged) ──
+// ── LLM info / error / formatting ──
 
 function extractLLMInfo(span) {
   const a = span.attributes || {}
@@ -493,15 +520,20 @@ function errorSummary(span) {
   }
   return ''
 }
-const llmCalls = computed(() => allRows.value.filter(r => r.category === 'llm').length)
+const llmCalls = computed(() =>
+  spans.value.filter(s => categorise(s) === 'llm').length
+)
 const totalTokens = computed(() => {
   let t = 0
-  for (const r of allRows.value) {
-    if (r.llmInfo) t += (r.llmInfo.in_tokens || 0) + (r.llmInfo.out_tokens || 0)
+  for (const s of spans.value) {
+    const info = extractLLMInfo(s)
+    if (info) t += (info.in_tokens || 0) + (info.out_tokens || 0)
   }
   return t
 })
-const errorCount = computed(() => allRows.value.filter(r => r.isError).length)
+const errorCount = computed(() =>
+  spans.value.filter(s => s.status?.code === 'ERROR' || hasErrorEvent(s)).length
+)
 
 function formatValue(v) {
   if (v == null) return 'null'
@@ -516,6 +548,19 @@ function formatValue(v) {
   display: flex;
   flex-direction: column;
   height: 100%;
+  overflow: hidden;
+}
+
+.body-wrapper {
+  /* Wrapper exists so the scrolling list and the non-scrolling overlay
+     can share absolute-position bounds. */
+  min-height: 0;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
   overflow: hidden;
 }
 
@@ -588,24 +633,56 @@ function formatValue(v) {
   transition: background 0.1s, opacity 0.1s;
 }
 .span-row:hover { background: var(--color-bg2); }
-.span-row.is-selected {
-  background: color-mix(in srgb, var(--color-brand) 14%, var(--color-bg));
-}
-/* Ancestor chain — slight outline + brand-tinted background, but
-   NOT as loud as the selected row itself. */
-.span-row.is-ancestor {
-  background: color-mix(in srgb, var(--color-brand) 6%, var(--color-bg));
-  outline: 1px solid color-mix(in srgb, var(--color-brand) 30%, transparent);
+/* Vercel-style selection: neutral grey elevation + crisp 1px border.
+   No brand blue — blue is reserved for actual CTAs (Send button, etc.).
+   The selected row pops via lightness shift, not hue. */
+.span-row.is-selected,
+.span-row.is-selected:hover {
+  background: var(--color-bg3);
+  outline: 1px solid var(--color-line2);
   outline-offset: -1px;
 }
+/* Ancestor chain — subtle "trail" leading up to the selected row.
+   Only a quiet bg shift, no border, so the selected row remains the
+   single focal point. */
+.span-row.is-ancestor,
+.span-row.is-ancestor:hover {
+  background: var(--color-bg2);
+}
 /* Non-related rows fade so the parent chain visually pops. */
-.span-row.is-dimmed { opacity: 0.45; }
+.span-row.is-dimmed { opacity: 0.55; }
+/* Drain colour from the timeline bars on dimmed rows — opacity alone
+   leaves a faint blue/orange afterimage; rerouting to grey reads as
+   "this is just here for context". The selected + ancestor bars keep
+   their category colour so the active branch's timing stays legible. */
+.span-row.is-dimmed .bar-fill { background: var(--color-line2); }
 
-.tree-hinge {
+/* Per-row chevron — small, t3 by default; click target is the whole
+   button so tiny SVG is fine. Spacer takes the same width when a row
+   has no children, to keep tag/name columns aligned. */
+.span-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--color-t3);
-  font-size: 8px;
-  padding-right: 3px;
-  opacity: 0.6;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.1s, color 0.1s, transform 0.15s;
+}
+.span-chevron:hover { background: var(--color-bg3); color: var(--color-t1); }
+.span-chevron > svg { transition: transform 0.15s; }
+.span-chevron.is-open > svg { transform: rotate(90deg); }
+.span-chevron-spacer {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 2px;
 }
 
 .span-tag {
@@ -635,7 +712,7 @@ function formatValue(v) {
 .bar-track {
   position: relative;
   height: 3px;
-  margin: 2px 0 0 22px;
+  margin: 2px 0 0 32px;
   background: var(--color-bg3);
   border-radius: 2px;
   overflow: visible;
@@ -669,21 +746,23 @@ function formatValue(v) {
    which is near-black in light mode and near-white in dark mode; the
    tooltip's text uses ``--color-bg`` for inverted contrast. Brand
    blue is reserved for selected state / accents — the cursor ruler
-   is a neutral measurement tool, not a CTA. */
+   is a neutral measurement tool, not a CTA.
+
+   The guide lives on the non-scrolling .overlay sibling, so its
+   position is naturally pinned to the body's viewport — no scroll
+   listener required. */
 .cursor-guide {
   position: absolute;
-  /* ``top`` and ``height`` are bound from JS to bodyEl.scrollTop
-     and bodyEl.clientHeight so the line spans the visible viewport
-     (not the body's content extent) regardless of scroll. */
+  top: 0;
+  height: 100%;
   width: 1px;
   background: var(--color-t1);
   opacity: 0.6;
   pointer-events: none;
-  z-index: 5;
 }
 .cursor-tooltip {
   position: absolute;
-  /* ``top`` is bound from JS so the tooltip follows the cursor Y. */
+  top: 2px;
   left: 4px;
   padding: 1px 5px;
   background: var(--color-t1);

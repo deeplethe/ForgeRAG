@@ -86,6 +86,22 @@ export const listDocuments = (params = {}) =>
 export const getDocument = (docId) => get(`/api/v1/documents/${docId}`)
 
 /**
+ * 批量按 doc_id 查文档（一次往返）。漏掉的 id 会从返回中静默剔除。
+ *
+ * 用途：聊天页引用卡片需要按 doc_id 把当前 filename 拉出来，对一条
+ * 对话里若干 citations 来说，N 次 GET /documents/{id} 太傻；这里
+ * 一个 IN(...) 解决。
+ *
+ * @param {string[]} docIds  最多 200 个；前端不要传过大列表
+ * @returns {Promise<DocumentOut[]>}
+ */
+export const lookupDocuments = (docIds) =>
+  request('/api/v1/documents/lookup', {
+    method: 'POST',
+    body: { doc_ids: Array.from(docIds || []) },
+  })
+
+/**
  * 删除文档 (级联删 blocks/chunks/tree + 清理向量库)
  * @param {string} docId
  * @returns {Promise<null>}

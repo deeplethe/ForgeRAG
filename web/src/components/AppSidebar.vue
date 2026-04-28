@@ -108,7 +108,7 @@ function isTabActive(tab) {
         :class="isTabDisabled(tab)
           ? 'text-t3/80 cursor-not-allowed'
           : isTabActive(tab)
-            ? 'bg-bg3 text-t1 font-medium'
+            ? 'bg-bg-selected text-t1 font-medium'
             : 'text-t2 hover:bg-bg3'"
       >{{ t(tab.label_key) }}<span v-if="tab.dev" class="ml-1 text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span><span v-else-if="isTabDisabled(tab) && benchmarkRunning" class="ml-1 text-[10px] text-t3/30">{{ t('sidebar.locked') }}</span></button>
     </div>
@@ -126,7 +126,7 @@ function isTabActive(tab) {
         v-for="c in conversations" :key="c.conversation_id"
         class="group flex items-center px-3 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
         :class="currentConvId === c.conversation_id && route.path.startsWith('/chat')
-          ? 'bg-bg3 text-t1'
+          ? 'bg-bg-selected text-t1'
           : 'text-t2 hover:bg-bg3'"
         @click="onSelectConv(c.conversation_id)"
       >
