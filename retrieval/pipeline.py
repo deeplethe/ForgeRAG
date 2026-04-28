@@ -566,7 +566,6 @@ class RetrievalPipeline:
                 filter=filter,
                 path_prefix=path_prefix,
                 or_fallback_prefixes=getattr(self, "_or_fallback_prefixes", None),
-                allowed_doc_ids=allowed_doc_ids,
             )
             _pcb(phase="vector_path", status="done", detail=f"{len(result.hits)} hits")
             return result.hits, result.raw_hits
