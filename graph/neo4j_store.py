@@ -732,6 +732,27 @@ class Neo4jGraphStore(GraphStore):
                 touched += int(rec["n"] or 0)
         return touched
 
+    # -- doc-scoped subgraph -----------------------------------------------
+
+    def get_by_doc(self, doc_id: str) -> dict:
+        """Cypher-indexed override of the base scan-and-filter default.
+
+        Uses the same ``$doc_id IN e.source_doc_ids`` predicate that
+        ``delete_by_doc`` uses, so behaviour is consistent across the
+        two doc-scoped operations.
+        """
+        cypher = """
+        MATCH (e:KGEntity)
+        WHERE $doc_id IN e.source_doc_ids
+        RETURN e.entity_id AS entity_id
+        """
+        with self._driver.session(database=self._db) as session:
+            result = session.run(cypher, doc_id=doc_id)
+            ids = [r["entity_id"] for r in result]
+        if not ids:
+            return {"nodes": [], "edges": []}
+        return self.get_subgraph(ids)
+
     # -- deletion -----------------------------------------------------------
 
     def delete_by_doc(self, doc_id: str) -> int:

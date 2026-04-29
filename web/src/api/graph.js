@@ -13,3 +13,6 @@ export const getSubgraph = (entityIds) =>
 
 export const getFullGraph = (limit = 500) =>
   get('/api/v1/graph/full', { limit })
+
+export const getGraphByDoc = (docId) =>
+  get(`/api/v1/graph/by-doc/${docId}`)

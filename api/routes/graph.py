@@ -205,6 +205,23 @@ def get_full_graph(
     )
 
 
+@router.get("/by-doc/{doc_id}", response_model=SubgraphOut)
+def get_graph_by_doc(doc_id: str, state: AppState = Depends(get_state)):
+    """Return entities sourced from this document plus the relations
+    among them. Powers the workspace doc-detail KG mini panel.
+    """
+    gs = _require_graph(state)
+    try:
+        result = gs.get_by_doc(doc_id)
+    except Exception as e:
+        log.exception("graph get_by_doc failed")
+        raise HTTPException(502, f"graph store error: {e}")
+    return SubgraphOut(
+        nodes=result.get("nodes", []),
+        edges=result.get("edges", []),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orphan cleanup
 # ---------------------------------------------------------------------------

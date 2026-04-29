@@ -92,6 +92,7 @@ export {
   getEntityDetail,
   getSubgraph,
   getFullGraph,
+  getGraphByDoc,
 } from './graph'
 
 // Benchmark
