@@ -12,6 +12,10 @@ SQLAlchemy>=2.0
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 litellm>=1.40
+# diskcache backs the ingest-side LLM response cache (forgerag/llm_cache.py).
+# Same package litellm[caching] would pull in — depending it explicitly so
+# the disk cache works whether or not litellm[caching] is installed.
+diskcache>=5.6
 PyYAML>=6.0
 networkx>=3.0
 alembic>=1.13

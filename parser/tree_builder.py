@@ -519,8 +519,8 @@ class _BuildContext:
         return lines
 
     def _call_llm(self, system_msg: str, user_msg: str) -> str:
-        """Call the LLM via litellm."""
-        import litellm
+        """Call the LLM via litellm (routed through ingest-side cache)."""
+        from forgerag.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
@@ -542,7 +542,7 @@ class _BuildContext:
             kwargs["api_base"] = cfg.api_base
 
         log.info("tree builder LLM call: model=%s", cfg.model)
-        response = litellm.completion(**kwargs)
+        response = cached_completion(**kwargs)
         log.info("tree builder LLM call done")
         return response.choices[0].message.content.strip()
 
@@ -733,7 +733,7 @@ class _BuildContext:
         structural_hints: str = "",
     ) -> list[dict]:
         """One LLM call to merge groups + generate titles + summaries."""
-        import litellm
+        from forgerag.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
@@ -794,7 +794,7 @@ class _BuildContext:
             kwargs["api_base"] = cfg.api_base
 
         log.info("page_group LLM call: model=%s groups=%d", cfg.model, len(groups))
-        response = litellm.completion(**kwargs)
+        response = cached_completion(**kwargs)
         raw = response.choices[0].message.content.strip()
         return self._parse_page_group_response(raw, len(groups))
 
@@ -805,7 +805,7 @@ class _BuildContext:
         last_page: int,
     ) -> list[dict]:
         """Split into batches when total text exceeds context window."""
-        import litellm
+        from forgerag.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
@@ -869,7 +869,7 @@ class _BuildContext:
             if cfg.api_base:
                 kwargs["api_base"] = cfg.api_base
 
-            response = litellm.completion(**kwargs)
+            response = cached_completion(**kwargs)
             raw = response.choices[0].message.content.strip()
 
             # Parse with this batch's group count, not global total

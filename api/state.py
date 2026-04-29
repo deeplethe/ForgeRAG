@@ -102,6 +102,14 @@ class AppState:
     ):
         self.cfg = cfg
 
+        # LLM response cache (ingest-side only). Installed early so
+        # every downstream collaborator that calls ``cached_completion``
+        # picks up the global cache automatically. Skipped when the
+        # config flag is off; falls back to plain ``litellm.completion``.
+        from forgerag import llm_cache as _llm_cache_mod
+
+        _llm_cache_mod.install(cfg.cache.llm)
+
         # Relational store (authoritative metadata)
         self.store = Store(cfg.persistence.relational)
         self.store.connect()

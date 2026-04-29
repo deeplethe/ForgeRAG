@@ -150,7 +150,7 @@ def make_vlm_fn(
     key = resolve_api_key(api_key=api_key, api_key_env=api_key_env)
 
     def _call(image_bytes: bytes, prompt: str) -> str:
-        import litellm
+        from forgerag.llm_cache import cached_completion
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
         # Detect mime from magic bytes
@@ -185,7 +185,7 @@ def make_vlm_fn(
         if api_base:
             kwargs["api_base"] = api_base
 
-        resp = litellm.completion(**kwargs)
+        resp = cached_completion(**kwargs)
         return resp.choices[0].message.content or ""
 
     return _call
