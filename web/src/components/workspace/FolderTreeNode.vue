@@ -108,7 +108,16 @@ function onDrop(e) {
   color: var(--color-t2);
 }
 .tree-row:hover { background: var(--color-bg2); color: var(--color-t1); }
-.tree-row--active { background: var(--color-bg3); color: var(--color-t1); font-weight: 500; }
+/* Active needs ``:hover`` co-targeted because ``.tree-row:hover`` has
+   specificity (0,1,1) which beats ``.tree-row--active`` (0,1,0) —
+   without this, hovering an already-selected row reverts the highlight
+   to the hover background. Same pattern .file-card--selected:hover uses. */
+.tree-row--active,
+.tree-row--active:hover {
+  background: var(--color-bg-selected);
+  color: var(--color-t1);
+  font-weight: 500;
+}
 .tree-row--drop { outline: 1.5px dashed var(--color-brand); outline-offset: -2px; }
 .tree-toggle {
   display: inline-block;
