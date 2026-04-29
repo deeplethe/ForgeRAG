@@ -4,7 +4,13 @@
        state without us re-passing crumbs through props. Padding
        (px-5 py-3) matches the Knowledge page topbar so the global
        page-header height stays consistent across views. -->
-  <div class="flex items-center gap-1 px-5 py-3 border-b border-line bg-bg2">
+  <!-- ``min-h-[52px]`` locks the toolbar height so it doesn't shrink
+       2px when switching to trash mode. In browse mode the search
+       input (the tallest action) drives the natural height; in trash
+       mode there's no search, so without this min-height the
+       toolbar would collapse to whatever the breadcrumb + small
+       buttons need, causing visible vertical jitter on enter/exit. -->
+  <div class="flex items-center gap-1 px-5 py-3 border-b border-line bg-bg2 min-h-[52px]">
     <slot name="lead" />
 
     <div class="flex-1"></div>
@@ -62,6 +68,22 @@
         🗑 <span v-if="trashCount">{{ trashCount }}</span>
       </button>
     </template>
+
+    <!-- Trash-mode actions: just the count + a destructive
+         "Empty bin" button. Lives in the same toolbar slot as the
+         browse-mode actions so the page header height is identical
+         in both modes (no jitter on enter/exit). -->
+    <template v-else>
+      <span class="text-[11px] text-t3">
+        {{ trashCount }} item{{ trashCount === 1 ? '' : 's' }}
+      </span>
+      <button
+        class="toolbar-btn toolbar-btn--danger ml-2"
+        :disabled="!trashCount"
+        @click="$emit('empty-trash')"
+        title="Permanently delete every item in the recycle bin"
+      >Empty bin</button>
+    </template>
   </div>
 </template>
 
@@ -74,7 +96,7 @@ defineProps({
   search: { type: String, default: '' },
   viewingTrash: { type: Boolean, default: false },
 })
-defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search'])
+defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 'empty-trash'])
 </script>
 
 <style scoped>
@@ -95,6 +117,12 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search'])
   background: var(--color-bg2);
   color: var(--color-t1);
 }
+.toolbar-btn--danger { color: var(--color-err-fg, #dc2626); }
+.toolbar-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 10%, transparent);
+  color: var(--color-err-fg, #dc2626);
+}
+.toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .view-btn {
   width: 26px;

@@ -1,26 +1,11 @@
 <template>
-  <!-- Recycle bin view — table layout matches FileList so the trash
-       feels like the same surface the user just came from, just with
-       trash-specific columns (Original location / Deleted at) and
-       per-row Restore / Delete-forever actions instead of the regular
-       open / move / rename gestures.
-
-       Header carries the count + Empty-bin action; the breadcrumb
-       (in Workspace.vue's toolbar) handles "exit trash" so we don't
-       need a Back button here. -->
+  <!-- Recycle bin — pure presenter. State (items / loading / mutations)
+       lives in Workspace.vue so the toolbar can render the count +
+       Empty-bin button without lifecycle plumbing, and so this view
+       contributes no extra header strip (which previously made the
+       page header height jitter when entering / exiting the trash). -->
   <div class="file-list trash-list">
-    <div class="trash-list__hdr">
-      <span class="text-[11px] text-t3">
-        {{ items.length }} item{{ items.length === 1 ? '' : 's' }}
-      </span>
-      <button
-        class="empty-btn"
-        :disabled="!items.length"
-        @click="onEmpty"
-      >Empty bin</button>
-    </div>
-
-    <div v-if="loading" class="file-list__loading">Loading…</div>
+    <div v-if="loading" class="trash-empty">Loading…</div>
     <div v-else-if="!items.length" class="trash-empty">Recycle bin is empty.</div>
 
     <table v-else class="w-full text-[11px]">
@@ -66,14 +51,14 @@
           <td class="actions-cell">
             <button
               class="icon-btn"
-              @click="onRestore(item)"
+              @click="$emit('restore', item)"
               title="Restore"
             >
               <ArrowUturnLeftIcon class="w-3.5 h-3.5" />
             </button>
             <button
               class="icon-btn icon-btn--danger"
-              @click="onPurge(item)"
+              @click="$emit('purge', item)"
               title="Delete forever"
             >
               <TrashIcon class="w-3.5 h-3.5" />
@@ -86,89 +71,17 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
 import { ArrowUturnLeftIcon, TrashIcon } from '@heroicons/vue/24/outline'
-import { emptyTrash, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
-import { useDialog } from '@/composables/useDialog'
 import FileIcon from './FileIcon.vue'
 
-const { confirm, toast } = useDialog()
+defineProps({
+  items: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false },
+})
+defineEmits(['restore', 'purge'])
 
-defineEmits(['back', 'changed'])
-
-const items = ref([])
-const loading = ref(true)
-
-async function load() {
-  loading.value = true
-  try {
-    const r = await listTrash()
-    items.value = r?.items || []
-  } catch (e) {
-    console.error('listTrash failed:', e)
-    items.value = []
-  } finally {
-    loading.value = false
-  }
-}
-
-async function onRestore(item) {
-  const ok = await confirm({
-    title: `Restore "${item.filename || item.name}"?`,
-    description: 'It will be moved back to its original location.',
-    confirmText: 'Restore',
-  })
-  if (!ok) return
-  const body = item.type === 'folder'
-    ? { folder_paths: [item.path] }
-    : { doc_ids: [item.doc_id] }
-  try {
-    await restoreFromTrash(body)
-    await load()
-  } catch (e) {
-    toast('Restore failed: ' + e.message, { variant: 'error' })
-  }
-}
-
-async function onPurge(item) {
-  const name = item.filename || item.name
-  const ok = await confirm({
-    title: `Permanently delete "${name}"?`,
-    description: 'This cannot be undone.',
-    confirmText: 'Delete forever',
-    variant: 'destructive',
-  })
-  if (!ok) return
-  const body = item.type === 'folder'
-    ? { folder_paths: [item.path] }
-    : { doc_ids: [item.doc_id] }
-  try {
-    await purgeTrashItems(body)
-    await load()
-  } catch (e) {
-    toast('Delete failed: ' + e.message, { variant: 'error' })
-  }
-}
-
-async function onEmpty() {
-  const n = items.value.length
-  const ok = await confirm({
-    title: `Empty the recycle bin?`,
-    description: `All ${n} item${n === 1 ? '' : 's'} will be permanently deleted. This cannot be undone.`,
-    confirmText: 'Empty bin',
-    variant: 'destructive',
-  })
-  if (!ok) return
-  try {
-    await emptyTrash()
-    await load()
-  } catch (e) {
-    toast('Empty bin failed: ' + e.message, { variant: 'error' })
-  }
-}
-
-// Reuse FileList's filename-extension type derivation (same logic;
-// kept local to avoid a cross-component import for one helper).
+// Mirrors FileList's filename-extension type derivation; kept local
+// to avoid pulling FileList in for one helper.
 function fmtType(name) {
   const m = (name || '').match(/\.([^.]+)$/)
   return m ? m[1].toUpperCase() : '—'
@@ -183,54 +96,18 @@ function fmtAgo(iso) {
   if (diff < 86400) return Math.floor(diff / 3600) + ' h ago'
   return Math.floor(diff / 86400) + ' d ago'
 }
-
-onMounted(load)
 </script>
 
 <style scoped>
-/* Reuse FileList's structural rules (same look & feel) and add the
-   trash-specific bits (header strip, action-icon column). */
-
 .trash-list {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 0;
   user-select: none;
 }
 
-.trash-list__hdr {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--color-line);
-  flex-shrink: 0;
-}
-.empty-btn {
-  font-size: 11px;
-  padding: 4px 12px;
-  color: var(--color-err-fg, #dc2626);
-  background: transparent;
-  border: 1px solid var(--color-line);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
-}
-.empty-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 8%, transparent);
-  border-color: var(--color-err-fg, #dc2626);
-}
-.empty-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.file-list__loading {
-  padding: 48px 16px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--color-t3);
-}
 .trash-empty {
   padding: 48px 16px;
   text-align: center;
