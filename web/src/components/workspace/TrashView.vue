@@ -28,7 +28,11 @@
         class="trash-row"
       >
         <span class="trash-row__icon">
-          {{ item.type === 'folder' ? '📁' : '📄' }}
+          <FileIcon
+            :kind="item.type === 'folder' ? 'folder' : 'file'"
+            :name="item.filename || item.name"
+            :size="22"
+          />
         </span>
         <div class="flex-1 min-w-0">
           <div class="text-t1 text-[12px] truncate">
@@ -53,6 +57,7 @@
 import { onMounted, ref } from 'vue'
 import { emptyTrash, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
 import { useDialog } from '@/composables/useDialog'
+import FileIcon from './FileIcon.vue'
 
 const { confirm, toast } = useDialog()
 
