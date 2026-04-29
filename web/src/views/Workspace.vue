@@ -39,6 +39,7 @@
       class="workspace__top"
       :view-mode="ws.viewMode.value"
       :trash-count="trashCount"
+      :viewing-trash="viewingTrash"
       v-model:search="searchQuery"
       @new-folder="onNewFolder"
       @upload="onUpload"
@@ -46,7 +47,10 @@
       @show-trash="viewingTrash = true"
     >
       <template #lead>
-        <Breadcrumb :crumbs="ws.breadcrumbs.value" @navigate="navigate" />
+        <Breadcrumb
+          :crumbs="viewingTrash ? trashCrumbs : ws.breadcrumbs.value"
+          @navigate="onCrumbNavigate"
+        />
       </template>
     </Toolbar>
 
@@ -56,7 +60,7 @@
       <aside class="workspace__sidebar">
         <FolderTree
           :root="ws.tree.value"
-          :current-path="ws.currentPath.value"
+          :current-path="viewingTrash ? '' : ws.currentPath.value"
           :loading="ws.treeLoading.value"
           :error="ws.treeError.value"
           @navigate="navigate"
@@ -267,6 +271,21 @@ function onDocDetailClose() {
 const viewingTrash = ref(false)
 const trashCount = ref(0)
 const fileInput = ref(null)
+
+// Synthetic breadcrumb for trash mode. Clicking ``/`` exits the trash
+// (handled by ``onCrumbNavigate`` below); the second crumb is the
+// current location and is a no-op.
+const trashCrumbs = [
+  { name: '/', path: '/' },
+  { name: 'Recycle bin', path: '/__trash__' },
+]
+function onCrumbNavigate(path) {
+  // Self-clicks on the trash crumb are no-op — the user is already here.
+  if (path === '/__trash__') return
+  // ``navigate`` clears ``viewingTrash`` itself, so a click on ``/``
+  // (or any other crumb) naturally exits the trash.
+  navigate(path)
+}
 
 // ── Context menu ──────────────────────────────────────────────────
 const ctx = reactive({ open: false, x: 0, y: 0, item: null })

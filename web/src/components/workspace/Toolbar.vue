@@ -9,59 +9,59 @@
 
     <div class="flex-1"></div>
 
-    <!-- Primary actions — moved to the right cluster so they sit next
-         to search/view/trash instead of sandwiching the breadcrumb.
-         Folder emoji + explicit "New folder" label avoids the
-         "what does ⊕ create?" ambiguity (an upload-and-create-doc
-         flow lives next to it). -->
-    <button class="toolbar-btn" @click="$emit('new-folder')" title="New folder (Ctrl+N)">
-      📁 <span>New folder</span>
-    </button>
-    <button class="toolbar-btn" @click="$emit('upload')" title="Upload file">
-      ⬆ <span>Upload</span>
-    </button>
+    <!-- Browse-mode actions: hidden in trash because none of them
+         (create / upload / search / view-toggle / open-trash) make
+         sense while the user is looking at deleted items. -->
+    <template v-if="!viewingTrash">
+      <button class="toolbar-btn" @click="$emit('new-folder')" title="New folder (Ctrl+N)">
+        📁 <span>New folder</span>
+      </button>
+      <button class="toolbar-btn" @click="$emit('upload')" title="Upload file">
+        ⬆ <span>Upload</span>
+      </button>
 
-    <!-- Search — filters the current folder's children -->
-    <div class="search-wrap ml-2">
-      <MagnifyingGlassIcon class="search-icon" />
-      <input
-        :value="search"
-        @input="$emit('update:search', $event.target.value)"
-        placeholder="Search this folder…"
-        class="search-input"
-      />
-      <button
-        v-if="search"
-        class="search-clear"
-        @click="$emit('update:search', '')"
-        title="Clear"
-      >✕</button>
-    </div>
+      <!-- Search — filters the current folder's children -->
+      <div class="search-wrap ml-2">
+        <MagnifyingGlassIcon class="search-icon" />
+        <input
+          :value="search"
+          @input="$emit('update:search', $event.target.value)"
+          placeholder="Search this folder…"
+          class="search-input"
+        />
+        <button
+          v-if="search"
+          class="search-clear"
+          @click="$emit('update:search', '')"
+          title="Clear"
+        >✕</button>
+      </div>
 
-    <!-- View mode switcher -->
-    <div class="flex items-center gap-0.5 p-0.5 border border-line rounded-md ml-2">
-      <button
-        class="view-btn"
-        :class="{ 'view-btn--active': viewMode === 'grid' }"
-        @click="$emit('set-view', 'grid')"
-        title="Grid view (Ctrl+1)"
-      >⊞</button>
-      <button
-        class="view-btn"
-        :class="{ 'view-btn--active': viewMode === 'list' }"
-        @click="$emit('set-view', 'list')"
-        title="List view (Ctrl+2)"
-      >☰</button>
-    </div>
+      <!-- View mode switcher -->
+      <div class="flex items-center gap-0.5 p-0.5 border border-line rounded-md ml-2">
+        <button
+          class="view-btn"
+          :class="{ 'view-btn--active': viewMode === 'grid' }"
+          @click="$emit('set-view', 'grid')"
+          title="Grid view (Ctrl+1)"
+        >⊞</button>
+        <button
+          class="view-btn"
+          :class="{ 'view-btn--active': viewMode === 'list' }"
+          @click="$emit('set-view', 'list')"
+          title="List view (Ctrl+2)"
+        >☰</button>
+      </div>
 
-    <!-- Trash shortcut -->
-    <button
-      class="toolbar-btn ml-2"
-      @click="$emit('show-trash')"
-      title="Recycle bin"
-    >
-      🗑 <span v-if="trashCount">{{ trashCount }}</span>
-    </button>
+      <!-- Trash shortcut -->
+      <button
+        class="toolbar-btn ml-2"
+        @click="$emit('show-trash')"
+        title="Recycle bin"
+      >
+        🗑 <span v-if="trashCount">{{ trashCount }}</span>
+      </button>
+    </template>
   </div>
 </template>
 
@@ -72,6 +72,7 @@ defineProps({
   viewMode: { type: String, required: true },
   trashCount: { type: Number, default: 0 },
   search: { type: String, default: '' },
+  viewingTrash: { type: Boolean, default: false },
 })
 defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search'])
 </script>
