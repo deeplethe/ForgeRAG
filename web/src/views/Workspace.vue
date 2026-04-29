@@ -82,6 +82,7 @@
               :loading="ws.contentsLoading.value"
               :selection="ws.selection"
               :creating="creatingFolder"
+              :renaming-key="renamingKey"
               @select="({ key, additive }) => ws.toggleSelect(key, { additive })"
               @open-folder="navigate"
               @open-document="onOpenDocument"
@@ -89,6 +90,8 @@
               @drop-onto-folder="onDropOntoFolder"
               @confirm-create="onCreateFolderInline"
               @cancel-create="creatingFolder = false"
+              @confirm-rename="onConfirmRename"
+              @cancel-rename="renamingKey = ''"
             />
             <FileList
               v-else
@@ -97,12 +100,15 @@
               :loading="ws.contentsLoading.value"
               :selection="ws.selection"
               :creating="creatingFolder"
+              :renaming-key="renamingKey"
               @select="({ key, additive }) => ws.toggleSelect(key, { additive })"
               @open-folder="navigate"
               @open-document="onOpenDocument"
               @context-menu="openContextMenu"
               @confirm-create="onCreateFolderInline"
               @cancel-create="creatingFolder = false"
+              @confirm-rename="onConfirmRename"
+              @cancel-rename="renamingKey = ''"
             />
           </MarqueeSelection>
         </template>
@@ -214,9 +220,14 @@ function onWorkspaceClick(e) {
   if (ws.selection.size > 0) ws.clearSelection()
 }
 
-// ── Toolbar search + inline new-folder state ─────────────────────
+// ── Toolbar search + inline new-folder + inline-rename state ─────
 const searchQuery = ref('')
 const creatingFolder = ref(false)
+// Selection-key of the folder currently being renamed ("f:abc-123"),
+// or '' when no rename is in progress. Mirrors the inline-create
+// pattern; FileGrid/FileList render the editable input when the key
+// matches one of their rows.
+const renamingKey = ref('')
 
 // Case-insensitive filter on folder name + document filename. Fallback to
 // the full list when search is empty so we avoid re-allocating arrays.
@@ -336,6 +347,10 @@ async function onContextAction(action) {
 
 async function navigate(path) {
   viewingTrash.value = false
+  // Drop any pending inline-rename / inline-create state — the folder
+  // being edited may not exist in the new path's list.
+  renamingKey.value = ''
+  creatingFolder.value = false
   await ws.navigate(path)
 }
 
@@ -393,11 +408,29 @@ function onFilesPicked(e) {
   setTimeout(() => { refresh() }, 800)
 }
 
-async function onRenameFolder(item) {
-  const newName = window.prompt('Rename folder to:', item.name)
-  if (!newName || newName === item.name) return
+function onRenameFolder(item) {
+  // Surface an inline editable name input on the matching folder card/row
+  // (Windows-style F2 rename). Actual rename happens once the user
+  // confirms via Enter / blur — see onConfirmRename.
+  renamingKey.value = 'f:' + item.folder_id
+}
+
+async function onConfirmRename({ oldName, newName }) {
+  const key = renamingKey.value
+  // Always exit rename mode, even when the user submits an empty / unchanged
+  // name (otherwise the input sticks around after a blur).
+  renamingKey.value = ''
+  const trimmed = (newName || '').trim()
+  if (!trimmed || trimmed === oldName) return
+  // Resolve folder path from the captured key — by the time this fires the
+  // selection or list could have shifted, so we look up by id, not item ref.
+  const folderId = key.startsWith('f:') ? key.slice(2) : null
+  const folder = folderId
+    ? ws.childFolders.value.find(f => f.folder_id === folderId)
+    : null
+  if (!folder) return
   try {
-    await ws.opRenameFolder(item.path, newName.trim())
+    await ws.opRenameFolder(folder.path, trimmed)
   } catch (e) {
     toast('Rename failed: ' + e.message, { variant: 'error' })
   }
