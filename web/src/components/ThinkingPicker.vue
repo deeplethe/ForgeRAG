@@ -73,9 +73,13 @@ const emit = defineEmits(['update:modelValue'])
 const open = ref(false)
 const rootEl = ref(null)
 
+// Off → Default → On reads as a thinking-intensity spectrum:
+// no thinking → model decides → always think. Putting Default in the
+// middle keeps the two explicit overrides on the outside, where
+// they read as "extreme" choices flanking the implicit default.
 const options = computed(() => [
-  { value: null,  label: t('tools.thinking_default') },
   { value: false, label: t('tools.thinking_off') },
+  { value: null,  label: t('tools.thinking_default') },
   { value: true,  label: t('tools.thinking_on') },
 ])
 
