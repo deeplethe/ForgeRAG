@@ -575,6 +575,15 @@ function onOpenDocument(doc) {
 
 function onKeydown(e) {
   if (viewingTrash.value) return
+  // Bail out when the user is typing in an input — otherwise the
+  // page-level shortcuts hijack characters meant for the inline-create
+  // / inline-rename editor: Backspace navigates up (and side-effects
+  // unmount the input), Delete kills the selected row, Ctrl+A selects
+  // all rows instead of the input text, Ctrl+1/2 swaps view mode
+  // mid-edit, etc. The input owns its own Esc / Enter handlers, so
+  // returning here is safe.
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
   const mod = e.ctrlKey || e.metaKey
   if (e.key === 'Delete') {
     const item = firstSelectedItem()
