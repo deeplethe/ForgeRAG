@@ -75,7 +75,7 @@ Controls how document hierarchy is built. When `llm_enabled` is true, an LLM gro
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `llm_enabled` | bool | `false` | Use LLM to build document tree with summaries (page-group strategy) |
+| `llm_enabled` | bool | `true` | Use LLM to build document tree with summaries (page-group strategy). Falls back to flat tree when `model` is unset, so this stays safe to keep on by default. |
 | `llm_model` | string | null | Model for tree building (defaults to generator model) |
 | `page_group_size` | int | `5` | Pages per group before LLM merge |
 | `max_tokens_per_node` | int | `8000` | Subdivide leaf nodes exceeding this token count |
