@@ -17,7 +17,11 @@
         <button class="btn-ghost" @click="refresh" :disabled="loading">
           {{ loading ? '…' : 'refresh' }}
         </button>
-        <span class="text-[10px] text-t3 tabular">
+        <!-- ``min-width`` so the auto-ticking label ("5s ago" → "12s ago"
+             → "1m ago") doesn't keep changing the controls-block width;
+             space-between would otherwise propagate that into a sideways
+             jitter on the range-toggle every second. -->
+        <span class="text-[10px] text-t3 tabular updated-label">
           <span v-if="lastRefreshedLabel">updated {{ lastRefreshedLabel }}</span>
         </span>
       </div>
@@ -325,6 +329,14 @@ function fmtAgo(iso) {
 .range-btn:hover { background: var(--color-bg2); color: var(--color-t1); }
 .range-btn.active { background: var(--color-t1); color: var(--color-bg); }
 
+/* Width floor for the auto-ticking "updated Ns ago" label — see the
+   comment next to its element in the template. */
+.updated-label {
+  display: inline-block;
+  min-width: 80px;
+  text-align: right;
+}
+
 .btn-ghost {
   padding: 4px 10px;
   font-size: 11px;
@@ -333,6 +345,12 @@ function fmtAgo(iso) {
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   cursor: pointer;
+  /* Lock width so loading-state ``…`` and ``refresh`` produce the same
+     button bounding box. Without this the header is right-anchored
+     (justify-content: space-between) so any width swap on the right
+     ripples back into the range-toggle and the whole bar jitters. */
+  min-width: 64px;
+  text-align: center;
 }
 .btn-ghost:hover:not(:disabled) { color: var(--color-t1); background: var(--color-bg2); }
 .btn-ghost:disabled { opacity: 0.4; cursor: wait; }
