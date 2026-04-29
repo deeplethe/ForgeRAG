@@ -11,6 +11,7 @@
         <col class="col-name" />
         <col class="col-type" />
         <col class="col-size" />
+        <col class="col-created" />
         <col class="col-modified" />
       </colgroup>
       <thead>
@@ -21,6 +22,9 @@
           <th class="list-th">Type</th>
           <th @click="toggleSort('size')" class="list-th list-th--clickable">
             Size<span class="sort-caret">{{ sortKey === 'size' ? (sortDir === 1 ? '▲' : '▼') : '' }}</span>
+          </th>
+          <th @click="toggleSort('created')" class="list-th list-th--clickable">
+            Created<span class="sort-caret">{{ sortKey === 'created' ? (sortDir === 1 ? '▲' : '▼') : '' }}</span>
           </th>
           <th @click="toggleSort('modified')" class="list-th list-th--clickable">
             Modified<span class="sort-caret">{{ sortKey === 'modified' ? (sortDir === 1 ? '▲' : '▼') : '' }}</span>
@@ -43,6 +47,7 @@
             />
           </td>
           <td>Folder</td>
+          <td>—</td>
           <td>—</td>
           <td>—</td>
         </tr>
@@ -75,6 +80,7 @@
             <template v-else>{{ f.name }}</template>
           </td>
           <td>Folder</td>
+          <td>—</td>
           <td>—</td>
           <td>—</td>
         </tr>
@@ -121,10 +127,11 @@
           </td>
           <td>{{ fmtType(d.filename || d.file_name) }}</td>
           <td>{{ fmtSize(d.file_size_bytes) }}</td>
+          <td>{{ fmtDate(d.created_at) }}</td>
           <td>{{ fmtDate(d.updated_at || d.created_at) }}</td>
         </tr>
         <tr v-if="!loading && !folders.length && !documents.length">
-          <td colspan="4" class="list-empty">This folder is empty.</td>
+          <td colspan="5" class="list-empty">This folder is empty.</td>
         </tr>
       </tbody>
     </table>
@@ -244,6 +251,7 @@ const sortedDocuments = computed(() => {
     const k = sortKey.value
     if (k === 'name') return cmp(a.filename || a.file_name || '', b.filename || b.file_name || '') * sortDir.value
     if (k === 'size') return (n(a.file_size_bytes) - n(b.file_size_bytes)) * sortDir.value
+    if (k === 'created') return (new Date(a.created_at || 0) - new Date(b.created_at || 0)) * sortDir.value
     if (k === 'modified') return (new Date(a.updated_at || 0) - new Date(b.updated_at || 0)) * sortDir.value
     return 0
   })
@@ -306,6 +314,7 @@ function fmtType(name) {
 .col-name      { width: auto; }
 .col-type      { width: 90px; }
 .col-size      { width: 96px; }
+.col-created   { width: 160px; }
 .col-modified  { width: 160px; }
 
 .list-th {
