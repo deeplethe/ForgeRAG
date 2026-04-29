@@ -44,7 +44,8 @@
       @new-folder="onNewFolder"
       @upload="onUpload"
       @set-view="ws.setViewMode"
-      @show-trash="viewingTrash = true"
+      @show-trash="onShowTrash"
+      @empty-trash="onEmptyTrash"
     >
       <template #lead>
         <Breadcrumb
@@ -76,8 +77,10 @@
       >
         <TrashView
           v-if="viewingTrash"
-          @back="onExitTrash"
-          @changed="refresh"
+          :items="trashItems"
+          :loading="trashLoading"
+          @restore="onRestoreItem"
+          @purge="onPurgeItem"
         />
 
         <template v-else>
@@ -147,7 +150,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getTrashStats } from '@/api'
+import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
 import { useWorkspace } from '@/composables/useWorkspace'
 import { useUploadsStore } from '@/stores/uploads'
 import { useDialog } from '@/composables/useDialog'
@@ -269,7 +272,13 @@ function onDocDetailClose() {
 
 // ── Page state ────────────────────────────────────────────────────
 const viewingTrash = ref(false)
+// trashCount drives the bin badge in the toolbar AND the "N items"
+// label inside the trash. While viewingTrash is false we get it cheaply
+// via the ``getTrashStats`` summary endpoint; while viewingTrash is true
+// we sync it to ``trashItems.length`` after each list/restore/purge.
 const trashCount = ref(0)
+const trashItems = ref([])
+const trashLoading = ref(false)
 const fileInput = ref(null)
 
 // Synthetic breadcrumb for trash mode. Clicking ``/`` exits the trash
@@ -391,6 +400,88 @@ async function refreshTrashCount() {
 function onExitTrash() {
   viewingTrash.value = false
   refresh()
+}
+
+// ── Trash mode (state lifted out of TrashView so the toolbar can
+//    drive the count + Empty-bin button without ref-fishing) ─────
+
+async function onShowTrash() {
+  viewingTrash.value = true
+  await loadTrashItems()
+}
+
+async function loadTrashItems() {
+  trashLoading.value = true
+  try {
+    const r = await listTrash()
+    trashItems.value = r?.items || []
+    // Keep the toolbar badge / "N items" label in sync with what the
+    // user actually sees in the table.
+    trashCount.value = trashItems.value.length
+  } catch (e) {
+    console.error('listTrash failed:', e)
+    trashItems.value = []
+  } finally {
+    trashLoading.value = false
+  }
+}
+
+async function onRestoreItem(item) {
+  const ok = await confirm({
+    title: `Restore "${item.filename || item.name}"?`,
+    description: 'It will be moved back to its original location.',
+    confirmText: 'Restore',
+  })
+  if (!ok) return
+  const body = item.type === 'folder'
+    ? { folder_paths: [item.path] }
+    : { doc_ids: [item.doc_id] }
+  try {
+    await restoreFromTrash(body)
+    // Reloading the workspace tree/contents alongside the trash list
+    // because the restored item reappears in its original folder.
+    await Promise.all([ws.loadTree(), loadTrashItems()])
+  } catch (e) {
+    toast('Restore failed: ' + e.message, { variant: 'error' })
+  }
+}
+
+async function onPurgeItem(item) {
+  const name = item.filename || item.name
+  const ok = await confirm({
+    title: `Permanently delete "${name}"?`,
+    description: 'This cannot be undone.',
+    confirmText: 'Delete forever',
+    variant: 'destructive',
+  })
+  if (!ok) return
+  const body = item.type === 'folder'
+    ? { folder_paths: [item.path] }
+    : { doc_ids: [item.doc_id] }
+  try {
+    await purgeTrashItems(body)
+    await loadTrashItems()
+  } catch (e) {
+    toast('Delete failed: ' + e.message, { variant: 'error' })
+  }
+}
+
+async function onEmptyTrash() {
+  const n = trashItems.value.length || trashCount.value
+  const ok = await confirm({
+    title: 'Empty the recycle bin?',
+    description: `All ${n} item${n === 1 ? '' : 's'} will be permanently deleted. This cannot be undone.`,
+    confirmText: 'Empty bin',
+    variant: 'destructive',
+  })
+  if (!ok) return
+  try {
+    await emptyTrash()
+    trashItems.value = []
+    trashCount.value = 0
+  } catch (e) {
+    toast('Empty bin failed: ' + e.message, { variant: 'error' })
+  }
 }
 
 function onNewFolder() {
