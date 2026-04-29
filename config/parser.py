@@ -105,11 +105,16 @@ class ChunkerConfig(BaseModel):
 
 
 class TreeBuilderConfig(BaseModel):
-    llm_enabled: bool = False  # LLM builds tree + summary via page-group strategy
-    # Unified LLM fields (same names as every other module). Empty model
-    # disables the LLM tree builder entirely; populate model + api_base +
-    # api_key_env (or api_key for dev) to wire it up.
-    model: str | None = None  # e.g. "openai/gpt-4o-mini"
+    # LLM-driven tree + per-section summary in a single page-group pass.
+    # Default is on so a properly-configured deployment gets rich trees
+    # automatically; degrades gracefully to flat-fallback when ``model``
+    # is unset (no API key required to run ForgeRAG bare-bones).
+    llm_enabled: bool = True
+    # Unified LLM fields (same names as every other module). Empty ``model``
+    # is the kill-switch: the page-group strategy logs a warning and falls
+    # back to the flat tree without touching the network. Populate
+    # model + api_base + api_key_env (or api_key for dev) to wire it up.
+    model: str | None = None  # e.g. "deepseek/deepseek-v4-flash"
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None

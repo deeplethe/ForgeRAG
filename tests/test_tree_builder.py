@@ -362,7 +362,8 @@ class TestBuildStrategy:
             _block(2, 2, "methods body " * 20),
         ]
         doc = _mk_doc(blocks=blocks, n_pages=2)
-        # Default config: llm_enabled=False
+        # Default config: llm_enabled=True but ``model`` unset → graceful
+        # fallback (no network call, returns the flat tree).
         tree = TreeBuilder(TreeBuilderConfig()).build(doc)
         assert tree.generation_method == "fallback"
 
