@@ -33,19 +33,22 @@
 
     <!-- Browser mode (default) -->
     <template v-else>
-    <!-- Top bar: breadcrumb + toolbar -->
-    <div class="workspace__top">
-      <Breadcrumb :crumbs="ws.breadcrumbs.value" @navigate="navigate" />
-      <Toolbar
-        :view-mode="ws.viewMode.value"
-        :trash-count="trashCount"
-        v-model:search="searchQuery"
-        @new-folder="onNewFolder"
-        @upload="onUpload"
-        @set-view="ws.setViewMode"
-        @show-trash="viewingTrash = true"
-      />
-    </div>
+    <!-- Single-row top bar: breadcrumb on the left, actions cluster
+         (New / Upload / search / view-toggle / trash) on the right. -->
+    <Toolbar
+      class="workspace__top"
+      :view-mode="ws.viewMode.value"
+      :trash-count="trashCount"
+      v-model:search="searchQuery"
+      @new-folder="onNewFolder"
+      @upload="onUpload"
+      @set-view="ws.setViewMode"
+      @show-trash="viewingTrash = true"
+    >
+      <template #lead>
+        <Breadcrumb :crumbs="ws.breadcrumbs.value" @navigate="navigate" />
+      </template>
+    </Toolbar>
 
     <!-- Two-pane body -->
     <div class="workspace__body">
@@ -666,14 +669,10 @@ onMounted(async () => {
 .workspace--drag-over .workspace__drop-overlay {
   border-color: var(--color-t2);
 }
-.workspace__top {
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid var(--color-line);
-  padding: 8px 16px 0;
-  gap: 6px;
-  flex-shrink: 0;
-}
+/* Single-row toolbar — Toolbar.vue already provides padding + the
+   bottom border. We just need to keep it from shrinking under
+   flex layout pressure from the body below. */
+.workspace__top { flex-shrink: 0; }
 .workspace__body {
   display: flex;
   flex: 1;

@@ -325,11 +325,12 @@ function fmtSize(n) {
 .file-card--error .file-card__title { color: var(--color-err-fg); }
 .meta-error { color: var(--color-err-fg); cursor: help; }
 
-/* Inline new-folder editor — ghost card with text input as title */
-.file-card--creating {
-  border: 1px dashed var(--color-brand);
-  background: color-mix(in srgb, var(--color-brand) 6%, transparent);
-}
+/* Inline new-folder editor — the input itself carries the focus ring,
+   so the card stays on the same neutral tint as a hovered card.
+   Earlier version had a brand-coloured dashed outline that read as a
+   stray selection / drop-target cue against the otherwise grayscale
+   workspace. */
+.file-card--creating { background: var(--color-bg3); }
 .file-card__name-input {
   width: 100%;
   padding: 2px 4px;
