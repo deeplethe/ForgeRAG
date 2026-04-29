@@ -11,7 +11,6 @@
         <col class="col-name" />
         <col class="col-type" />
         <col class="col-size" />
-        <col class="col-path" />
         <col class="col-modified" />
       </colgroup>
       <thead>
@@ -23,7 +22,6 @@
           <th @click="toggleSort('size')" class="list-th list-th--clickable">
             Size<span class="sort-caret">{{ sortKey === 'size' ? (sortDir === 1 ? '▲' : '▼') : '' }}</span>
           </th>
-          <th class="list-th">Path</th>
           <th @click="toggleSort('modified')" class="list-th list-th--clickable">
             Modified<span class="sort-caret">{{ sortKey === 'modified' ? (sortDir === 1 ? '▲' : '▼') : '' }}</span>
           </th>
@@ -45,7 +43,6 @@
             />
           </td>
           <td>Folder</td>
-          <td>—</td>
           <td>—</td>
           <td>—</td>
         </tr>
@@ -79,7 +76,6 @@
           </td>
           <td>Folder</td>
           <td>—</td>
-          <td class="path-cell">{{ f.path }}</td>
           <td>—</td>
         </tr>
         <tr
@@ -111,13 +107,12 @@
               :title="d.status"
             >{{ d.status }}</span>
           </td>
-          <td>{{ (d.format || 'unknown').toUpperCase() }}</td>
+          <td>{{ fmtType(d.filename || d.file_name) }}</td>
           <td>{{ fmtSize(d.file_size_bytes) }}</td>
-          <td class="path-cell">{{ d.path }}</td>
           <td>{{ fmtDate(d.updated_at || d.created_at) }}</td>
         </tr>
         <tr v-if="!loading && !folders.length && !documents.length">
-          <td colspan="5" class="list-empty">This folder is empty.</td>
+          <td colspan="4" class="list-empty">This folder is empty.</td>
         </tr>
       </tbody>
     </table>
@@ -245,6 +240,14 @@ function fmtDate(d) {
   if (!d) return '—'
   try { return new Date(d).toLocaleString() } catch { return d }
 }
+// Type column reads from the filename extension (Windows-Explorer style)
+// rather than ``Document.format``. Keeps the displayed type aligned with
+// the icon (which also derives from filename) and stays correct even when
+// the parser writes a post-conversion format to the DB.
+function fmtType(name) {
+  const m = (name || '').match(/\.([^.]+)$/)
+  return m ? m[1].toUpperCase() : '—'
+}
 </script>
 
 <style scoped>
@@ -252,6 +255,11 @@ function fmtDate(d) {
   position: relative;        /* anchor for the absolute loading hint */
   padding: 8px 16px;
   min-height: 160px;
+  /* Suppress native text selection in the list. Without this, dragging
+     a marquee across the header (or any cell text) paints the browser's
+     blue text-selection over "Type"/"Modified"/etc. The grid view uses
+     the same trick on .file-card. Inputs ignore this on purpose. */
+  user-select: none;
 }
 .file-list table { border-collapse: collapse; table-layout: fixed; }
 .file-list__loading {
@@ -276,7 +284,6 @@ function fmtDate(d) {
 .col-name      { width: auto; }
 .col-type      { width: 90px; }
 .col-size      { width: 96px; }
-.col-path      { width: 240px; }
 .col-modified  { width: 160px; }
 
 .list-th {
@@ -319,7 +326,6 @@ function fmtDate(d) {
 .list-row--selected:hover {
   background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg3));
 }
-.path-cell { color: var(--color-t3); }
 .list-empty { padding: 32px; text-align: center; color: var(--color-t3); }
 
 /* Inline new-folder editor row */
