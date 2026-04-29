@@ -1,16 +1,21 @@
 <template>
   <!-- Single-row toolbar: [breadcrumb slot] ... [actions on the right].
        Breadcrumb arrives via the ``lead`` slot so the parent owns nav
-       state without us re-passing crumbs through props. -->
-  <div class="flex items-center gap-1 px-3 py-1.5 border-b border-line bg-bg2">
+       state without us re-passing crumbs through props. Padding
+       (px-5 py-3) matches the Knowledge page topbar so the global
+       page-header height stays consistent across views. -->
+  <div class="flex items-center gap-1 px-5 py-3 border-b border-line bg-bg2">
     <slot name="lead" />
 
     <div class="flex-1"></div>
 
     <!-- Primary actions — moved to the right cluster so they sit next
-         to search/view/trash instead of sandwiching the breadcrumb. -->
+         to search/view/trash instead of sandwiching the breadcrumb.
+         Folder emoji + explicit "New folder" label avoids the
+         "what does ⊕ create?" ambiguity (an upload-and-create-doc
+         flow lives next to it). -->
     <button class="toolbar-btn" @click="$emit('new-folder')" title="New folder (Ctrl+N)">
-      ⊕ <span>New</span>
+      📁 <span>New folder</span>
     </button>
     <button class="toolbar-btn" @click="$emit('upload')" title="Upload file">
       ⬆ <span>Upload</span>
