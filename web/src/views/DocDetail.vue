@@ -195,10 +195,25 @@ function onClickChunk(c) {
   // Translate chunk's block_ids to bbox highlights via the all-blocks
   // map; jump the PDF to the chunk's start page.
   const blockMap = new Map(allBlocks.value.map((b) => [b.block_id, b]))
+  const bidSet = new Set(c.block_ids || [])
   const highlights = []
   for (const bid of c.block_ids || []) {
     const b = blockMap.get(bid)
     if (b?.bbox) highlights.push({ page_no: b.page_no, bbox: b.bbox })
+  }
+  // Second pass: pick up blocks that were merged INTO one of the
+  // chunk's surviving blocks. Merged-out blocks carry
+  // ``excluded_reason: "merged_into:<surviving_bid>"``. The
+  // chunk's ``block_ids`` only lists the survivor, so without this
+  // pass a chunk that wraps a page break shows highlights only on
+  // the surviving block — leaving the merged continuation visually
+  // un-highlighted on the previous/next page.
+  for (const b of allBlocks.value) {
+    if (!b.excluded || !b.excluded_reason?.startsWith('merged_into:')) continue
+    const targetBid = b.excluded_reason.slice('merged_into:'.length)
+    if (bidSet.has(targetBid) && b.bbox) {
+      highlights.push({ page_no: b.page_no, bbox: b.bbox })
+    }
   }
   pdfHighlightBlocks.value = highlights
   if (c.page_start) pdfPage.value = c.page_start
