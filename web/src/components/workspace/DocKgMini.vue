@@ -129,8 +129,9 @@ function buildGraph(rawNodes, rawEdges) {
       sourceChunkIds: n.source_chunk_ids || [],
       x: (Math.random() - 0.5) * 100,
       y: (Math.random() - 0.5) * 100,
-      // Smaller nodes than the full KG view because the pane is small.
-      size: Math.max(2.5, Math.min(8, 2.5 + degree * 0.4)),
+      // Slightly bigger than before so labels read at this scale —
+      // the pane is small but the labels still need to be legible.
+      size: Math.max(4, Math.min(12, 3.5 + degree * 0.5)),
       color: typeFill(n.type),
     })
   }
@@ -174,14 +175,16 @@ function initSigma(g) {
     defaultEdgeType: 'arrow',
     renderEdgeLabels: filtered,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
-    edgeLabelSize: 8,
+    edgeLabelSize: 10,
     edgeLabelColor: { color: '#9aa0a6' },
     labelFont: 'Geist, Inter, system-ui, sans-serif',
-    labelSize: 9,
+    labelSize: 12,
     labelWeight: '500',
     labelColor: { color: '#cccccc' },
-    labelDensity: 0.5,
-    labelRenderedSizeThreshold: 4,
+    // Show labels even on small / dim nodes — the small pane needs
+    // every node labeled to be useful.
+    labelDensity: 1,
+    labelRenderedSizeThreshold: 1,
     hideEdgesOnMove: false,
     hideLabelsOnMove: false,
     zIndex: true,
@@ -198,8 +201,15 @@ function initSigma(g) {
   // the first frame paints.
   fa2 = new FA2Layout(g, {
     settings: {
-      gravity: 1,
-      scalingRatio: 4,
+      // Strong gravity + low scalingRatio packs the cluster tight
+      // (the previous defaults flung weakly-connected / orphan
+      // nodes to the canvas corners). ``strongGravityMode`` keeps
+      // pulling even the lightest-weight nodes toward the center
+      // so an isolated entity ends up next to its cluster instead
+      // of orbiting the pane.
+      gravity: 8,
+      strongGravityMode: true,
+      scalingRatio: 1.5,
       slowDown: 8,
       barnesHutOptimize: g.order > 100,
     },
@@ -214,7 +224,10 @@ function initSigma(g) {
       sigma?.refresh()
       // After fa2 settles, snap the camera back to a centered fit
       // so the filtered subgraph (or full doc) sits inside the pane.
-      sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1.05, angle: 0 })
+      // Tighter camera fit (was 1.05 — left too much margin around
+      // the cluster). 0.85 zooms in slightly so labels are easier
+      // to read at this pane size.
+      sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 0.85, angle: 0 })
     }
   }, settleMs)
 }
