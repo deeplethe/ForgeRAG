@@ -726,11 +726,20 @@ watch(isDark, () => {
          redundant with the side-nav tab, and the two-line block made
          the bar visibly taller than other page headers. -->
     <div class="flex-none flex items-center justify-between px-5 py-3 border-b border-line bg-bg2">
-      <div class="text-[10px] text-t3 min-h-[1em]">
+      <!-- ``text-xs`` + ``text-t2`` matches the Workspace breadcrumb so
+           page headers feel typographically consistent. Backend leads
+           as the context label (which graph store is in use), then
+           the counts — putting the system tag at the end made it
+           dangle. ``font-mono`` dropped: the proportional-font numbers
+           and a monospace ``networkx`` on the same line read as two
+           different fonts. -->
+      <div class="text-xs text-t2 min-h-[1em]">
         <template v-if="stats.entities">
-          {{ stats.entities.toLocaleString() }} entities &middot;
-          {{ stats.relations.toLocaleString() }} relations &middot;
-          <span class="font-mono">{{ stats.backend }}</span>
+          <span class="text-t3">{{ stats.backend }}</span>
+          &middot;
+          {{ stats.entities.toLocaleString() }} entities
+          &middot;
+          {{ stats.relations.toLocaleString() }} relations
         </template>
       </div>
 
