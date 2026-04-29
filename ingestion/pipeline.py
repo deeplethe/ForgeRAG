@@ -149,13 +149,16 @@ class IngestionPipeline:
             doc_id = f"doc_{file_id[:12]}"
 
         # Ensure document placeholder exists (may already be created by API route).
-        # FileStore guarantees display_name is always populated.
-        display_name = file_row["display_name"]
+        # Use ``original_name`` (the user's filename) — not ``display_name``,
+        # which is the ``<stem>_<ts>_<rand>`` internal blob name. Falling
+        # back to display_name keeps old code paths alive in case
+        # original_name is ever absent.
+        original_name = file_row.get("original_name") or file_row["display_name"]
         self.rel.create_document_placeholder(
             doc_id=doc_id,
             file_id=file_id,
-            filename=display_name,
-            format=Path(display_name).suffix.lstrip(".") or "bin",
+            filename=original_name,
+            format=Path(original_name).suffix.lstrip(".") or "bin",
             status="pending",
         )
 
@@ -249,9 +252,12 @@ class IngestionPipeline:
             # ── Phase 1: Parse (pure extraction, no LLM) ──
             self.rel.update_document_status(doc_id, status="parsing", parse_started_at=datetime.utcnow())
             parsed = self.parser.parse(local_path, doc_id=doc_id, parse_version=parse_version)
-            # Fix filename: parser sets the temp file name, but we
-            # want the user-visible original filename.
-            parsed.filename = file_row["display_name"]
+            # Fix filename: parser sets the temp file name, but we want
+            # the user-visible original filename. ``display_name`` is the
+            # internal ``<stem>_<ts>_<rand>`` blob name and must NOT be
+            # exposed here — that gets written through to Document.filename
+            # on the next ``upsert_document`` call.
+            parsed.filename = file_row.get("original_name") or file_row["display_name"]
 
             # For text / markdown files: the PDF conversion renders
             # Markdown headings at different font sizes, but PyMuPDF
@@ -259,7 +265,7 @@ class IngestionPipeline:
             # second pass re-tags blocks whose text matches ``# heading``
             # or ``**heading**`` patterns so the tree builder can use
             # the heading-based strategy instead of falling back to flat.
-            fmt = Path(file_row["display_name"]).suffix.lower().lstrip(".")
+            fmt = Path(parsed.filename).suffix.lower().lstrip(".")
             if fmt in ("text", "md", "txt", "markdown"):
                 from ingestion.md_headings import reclassify_md_headings
 

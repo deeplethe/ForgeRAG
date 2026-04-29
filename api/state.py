@@ -95,6 +95,60 @@ def _backfill_document_source_format(rel) -> None:
     log.info("document format backfill: corrected %d rows from filename extension", len(fixes))
 
 
+def _backfill_document_filename_from_original(rel) -> None:
+    """One-shot fix for documents whose ``filename`` got clobbered with
+    the internal ``display_name`` (a ``<stem>_<14digits>_<8hex>.<ext>``
+    blob-storage name).
+
+    Pre-fix path: ``ingestion/pipeline._ingest_inner`` set
+    ``parsed.filename = file_row['display_name']`` right before
+    ``upsert_document`` wrote that value to ``Document.filename``.
+    Result: a doc the user uploaded as ``foo.md`` showed up as
+    ``foo_20260427044948_c18482ea.md`` everywhere — workspace list,
+    chat citations, repository title.
+
+    The bug is fixed forward (the pipeline now uses ``original_name``).
+    This backfill repairs rows written under the buggy code by reading
+    ``files.original_name`` and overwriting ``Document.filename``.
+
+    Heuristic: only repair filenames matching the display_name regex —
+    that pattern won't collide with user-chosen filenames or
+    ``foo (1).pdf``-style collision suffixes. Idempotent.
+    """
+    import re
+
+    from sqlalchemy import select
+
+    from persistence.models import Document
+
+    # display_name format from FileStore._build_display_name:
+    #   ``<safe_stem>_<YYYYMMDDHHMMSS>_<8 hex chars>.<ext>``
+    DISPLAY_NAME_RE = re.compile(r"^.+_\d{14}_[0-9a-f]{8}\.[^.]+$")
+
+    fixes: list[tuple[str, str]] = []  # (doc_id, original_name)
+    with rel.transaction() as sess:
+        rows = sess.execute(select(Document.doc_id, Document.filename, Document.file_id)).all()
+        for r in rows:
+            if not r.filename or not r.file_id:
+                continue
+            if not DISPLAY_NAME_RE.match(r.filename):
+                continue
+            file_row = rel.get_file(r.file_id)
+            original = (file_row or {}).get("original_name")
+            if original and original != r.filename:
+                fixes.append((r.doc_id, original))
+
+    if not fixes:
+        return
+
+    with rel.transaction() as sess:
+        for doc_id, original in fixes:
+            row = sess.get(Document, doc_id)
+            if row is not None:
+                row.filename = original
+    log.info("document filename backfill: restored %d rows from files.original_name", len(fixes))
+
+
 def _backfill_chroma_paths_from_sql(rel, vec) -> None:
     """Re-derive vector chunk path metadata from SQL ``Document.path``.
 
@@ -186,6 +240,15 @@ class AppState:
             _backfill_document_source_format(self.store)
         except Exception as e:
             log.warning("document source-format backfill failed: %s", e)
+
+        # One-shot repair: documents whose ``filename`` was set to the
+        # internal ``display_name`` (``<stem>_<ts>_<rand>.<ext>``) by
+        # the pre-fix ingestion pipeline. Idempotent — only rows whose
+        # filename matches the display-name regex are touched.
+        try:
+            _backfill_document_filename_from_original(self.store)
+        except Exception as e:
+            log.warning("document filename backfill failed: %s", e)
 
         # yaml is the single source of truth; the DB carries a one-way
         # mirror so read-only admin views can see the effective state.

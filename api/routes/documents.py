@@ -121,8 +121,13 @@ def ingest_document(
         raise HTTPException(404, f"file {req.file_id} not found")
 
     doc_id = req.doc_id or f"doc_{req.file_id[:12]}"
-    # FileStore guarantees display_name is always populated.
-    name = file_row["display_name"]
+    # Use the user's original filename here, NOT ``display_name`` (which
+    # is the ``<stem>_<ts>_<rand>`` internal blob name) — leaks the
+    # internal name into Document.filename / Document.path otherwise.
+    # ``unique_document_path`` below appends ``" (1).pdf"``-style
+    # suffixes for collisions, so we don't need the timestamp+rand
+    # mangling for uniqueness.
+    name = file_row.get("original_name") or file_row["display_name"]
     ext = _Path(name).suffix.lower().lstrip(".")
     fmt = {
         "pdf": "pdf",
