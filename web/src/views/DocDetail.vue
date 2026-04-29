@@ -58,6 +58,10 @@ const activeNodeId = ref(null)
 const expandedNodes = reactive(new Set())
 const pdfPage = ref(1)
 const pdfHighlightBlocks = ref([])
+// Live KG counts emitted from DocKgMini after each (re)build —
+// shrinks to the filtered subgraph's size while a chunk is selected,
+// returns to the full doc total when deselected.
+const kgCounts = ref(null)
 // Per-chunk expand state — clicking the row's "view" affordance
 // flips it; clicking again collapses. Keyed by chunk_id so the
 // state persists while the user clicks around other panels.
@@ -434,7 +438,8 @@ watch(() => props.docId, loadAll, { immediate: true })
           <div class="pane-hdr">
             <span class="pane-title">Knowledge graph</span>
             <span class="pane-meta">
-              {{ doc?.kg_entity_count || 0 }} entities · {{ doc?.kg_relation_count || 0 }} relations
+              {{ kgCounts?.entities ?? doc?.kg_entity_count ?? 0 }} entities ·
+              {{ kgCounts?.relations ?? doc?.kg_relation_count ?? 0 }} relations
             </span>
           </div>
           <div class="pane-body pane-body--canvas">
@@ -442,6 +447,7 @@ watch(() => props.docId, loadAll, { immediate: true })
               v-if="doc"
               :doc-id="doc.doc_id"
               :active-chunk-id="activeChunkId || ''"
+              @counts-change="kgCounts = $event"
             />
           </div>
         </section>

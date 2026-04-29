@@ -25,7 +25,7 @@ const props = defineProps({
   docId: { type: String, required: true },
   activeChunkId: { type: String, default: '' },
 })
-const emit = defineEmits(['entity-click'])
+const emit = defineEmits(['entity-click', 'counts-change'])
 
 // ── DOM + sigma refs ─────────────────────────────────────────────
 const containerRef = ref(null)
@@ -52,7 +52,18 @@ function typeFill(type) {
   return TYPE_COLORS[(type || '').toUpperCase()] || '#6b7280'
 }
 
+// Truncate keyword/description text used as an edge label so even a
+// dense subgraph stays legible in the small pane.
+function truncate(s, n = 18) {
+  if (!s) return ''
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
 const counts = ref({ entities: 0, relations: 0 })
+// Raw fetch cached so we can rebuild a filtered subgraph cheaply
+// when the active chunk changes (no extra network round-trip).
+const rawNodes = ref([])
+const rawEdges = ref([])
 
 // ── Load + build ────────────────────────────────────────────────
 async function load() {
@@ -61,17 +72,45 @@ async function load() {
   error.value = ''
   try {
     const r = await getGraphByDoc(props.docId)
-    counts.value = {
-      entities: r.nodes?.length || 0,
-      relations: r.edges?.length || 0,
-    }
-    buildGraph(r.nodes || [], r.edges || [])
+    rawNodes.value = r.nodes || []
+    rawEdges.value = r.edges || []
+    rebuildForCurrentFilter()
   } catch (e) {
     error.value = e?.message || String(e)
     console.error('DocKgMini load failed:', e)
   } finally {
     loading.value = false
   }
+}
+
+// Filter the cached raw graph to either:
+//   (a) every entity from this doc — when no chunk is selected, or
+//   (b) only entities whose ``source_chunk_ids`` contains the active
+//       chunk + the relations among them.
+//
+// Then rebuild graphology + sigma from scratch. Cheaper to throw
+// out the old sigma instance and rebuild than to mutate the graph
+// in place — forceAtlas2 has to re-settle either way once the node
+// set changes, and the small filtered subgraph (5–30 nodes) is fast
+// to rebuild.
+function rebuildForCurrentFilter() {
+  let nodes = rawNodes.value
+  let edges = rawEdges.value
+  const cid = props.activeChunkId
+  if (cid) {
+    const activeIds = new Set(
+      nodes
+        .filter((n) => (n.source_chunk_ids || []).includes(cid))
+        .map((n) => n.id),
+    )
+    nodes = nodes.filter((n) => activeIds.has(n.id))
+    edges = edges.filter(
+      (e) => activeIds.has(e.source) && activeIds.has(e.target),
+    )
+  }
+  counts.value = { entities: nodes.length, relations: edges.length }
+  emit('counts-change', counts.value)
+  buildGraph(nodes, edges)
 }
 
 function buildGraph(rawNodes, rawEdges) {
@@ -98,19 +137,24 @@ function buildGraph(rawNodes, rawEdges) {
   // Spread evenly first so forceAtlas2 has a non-degenerate start.
   circular.assign(g, { scale: 100 })
 
+  // When the filter is active we surface relation keywords as edge
+  // labels so the tiny subgraph reads as "X — verb-phrase — Y"
+  // instead of just "two dots and a line". Labels are off in the
+  // full-doc view (would clutter on a 50+ edge graph).
+  const filtered = !!props.activeChunkId
   const edgeKeys = new Set()
   for (const e of rawEdges) {
     if (!g.hasNode(e.source) || !g.hasNode(e.target)) continue
     const k = `${e.source}->${e.target}`
     if (edgeKeys.has(k)) continue
     edgeKeys.add(k)
-    // Stash relation metadata so the reducer can surface keywords as
-    // an edge label only when filter mode is active (otherwise labels
-    // on every edge clutter the small pane).
     g.addEdge(e.source, e.target, {
       type: 'arrow',
       size: 0.6,
-      color: 'rgba(120, 120, 120, 0.35)',
+      color: filtered
+        ? 'rgba(180, 180, 180, 0.65)'
+        : 'rgba(120, 120, 120, 0.35)',
+      label: filtered ? truncate(e.keywords || e.description) : '',
       keywords: e.keywords || '',
       description: e.description || '',
     })
@@ -121,14 +165,14 @@ function buildGraph(rawNodes, rawEdges) {
 }
 
 function initSigma(g) {
+  // Edge labels: on when filtering (a small subgraph benefits from
+  // seeing relation keywords), off on the full doc view (would clutter).
+  const filtered = !!props.activeChunkId
   sigma = new Sigma(g, containerRef.value, {
     defaultNodeColor: '#6b7280',
     defaultEdgeColor: 'rgba(120, 120, 120, 0.35)',
     defaultEdgeType: 'arrow',
-    // Edge labels are rendered conditionally — kept off by default
-    // so the unfiltered view stays readable, flipped on by the
-    // chunk-filter reducer below.
-    renderEdgeLabels: false,
+    renderEdgeLabels: filtered,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
     edgeLabelSize: 8,
     edgeLabelColor: { color: '#9aa0a6' },
@@ -161,105 +205,18 @@ function initSigma(g) {
     },
   })
   fa2.start()
-  // Stop after a short settle window — small graphs converge fast.
-  // Re-apply the chunk filter once after settle so the camera focus
-  // (which depends on final node positions) is correct.
+  // Settle window scales with node count: tiny filtered subgraphs
+  // converge in <500ms, full-doc graphs (100+ nodes) take longer.
+  const settleMs = Math.min(2500, 500 + g.order * 12)
   setTimeout(() => {
     if (fa2) {
       fa2.stop()
       sigma?.refresh()
-      applyDimming()
+      // After fa2 settles, snap the camera back to a centered fit
+      // so the filtered subgraph (or full doc) sits inside the pane.
+      sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1.05, angle: 0 })
     }
-  }, 1500)
-
-  applyDimming()
-}
-
-// Truncate keyword/description text used as an edge label so even a
-// dense neighbourhood stays legible in the small pane.
-function truncate(s, n = 18) {
-  if (!s) return ''
-  return s.length > n ? s.slice(0, n - 1) + '…' : s
-}
-
-// Apply / remove the chunk-filter pass.  When ``activeChunkId`` is
-// set, only entities whose ``source_chunk_ids`` includes it stay
-// fully rendered; everything else fades into the background and
-// drops below them in z-order, and the camera animates to the
-// active sub-graph's centroid. Edges between two active nodes
-// surface their keywords as labels so the user can see how the
-// chunk's entities relate.
-function applyDimming() {
-  if (!sigma || !graph.value) return
-  const cid = props.activeChunkId
-  if (!cid) {
-    // Reset to base view — no reducers, no edge labels.
-    sigma.setSetting('renderEdgeLabels', false)
-    sigma.setSetting('nodeReducer', (n, d) => d)
-    sigma.setSetting('edgeReducer', (e, d) => d)
-    sigma.refresh()
-    return
-  }
-  // Gather active node IDs once so the reducers stay O(1) per element.
-  const active = new Set()
-  graph.value.forEachNode((nid, attr) => {
-    if ((attr.sourceChunkIds || []).includes(cid)) active.add(nid)
-  })
-  sigma.setSetting('renderEdgeLabels', true)
-  sigma.setSetting('nodeReducer', (node, data) => {
-    if (active.has(node)) return { ...data, zIndex: 1 }
-    // Dim non-active nodes to a near-background color and drop
-    // them below the active set so the filtered subgraph reads
-    // clearly even when it's spatially mixed in.
-    return {
-      ...data,
-      color: 'rgba(40, 40, 40, 0.35)',
-      label: null,
-      zIndex: 0,
-    }
-  })
-  sigma.setSetting('edgeReducer', (edge, data) => {
-    const s = graph.value.source(edge)
-    const t = graph.value.target(edge)
-    if (active.has(s) && active.has(t)) {
-      return {
-        ...data,
-        color: 'rgba(180, 180, 180, 0.65)',
-        label: truncate(data.keywords || data.description),
-        zIndex: 1,
-      }
-    }
-    return {
-      ...data,
-      color: 'rgba(40, 40, 40, 0.18)',
-      label: null,
-      zIndex: 0,
-    }
-  })
-  sigma.refresh()
-  focusOnNodes(active)
-}
-
-// Animate the camera to the centroid of a node set, zooming in to
-// roughly fit the cluster. ``getNodeDisplayData`` returns
-// camera-space coords that ``camera.animate`` can consume directly.
-function focusOnNodes(nodeIds) {
-  if (!sigma || !nodeIds.size) return
-  let sumX = 0
-  let sumY = 0
-  let count = 0
-  for (const nid of nodeIds) {
-    const dd = sigma.getNodeDisplayData(nid)
-    if (!dd) continue
-    sumX += dd.x
-    sumY += dd.y
-    count += 1
-  }
-  if (!count) return
-  sigma.getCamera().animate(
-    { x: sumX / count, y: sumY / count, ratio: 0.55 },
-    { duration: 400 },
-  )
+  }, settleMs)
 }
 
 function destroySigma() {
@@ -270,7 +227,10 @@ function destroySigma() {
 }
 
 watch(() => props.docId, load, { immediate: true })
-watch(() => props.activeChunkId, applyDimming)
+// Chunk-change rebuilds the subgraph (drops irrelevant nodes/edges
+// and re-runs forceAtlas2) instead of dimming. Cheaper conceptually
+// and makes the camera land tightly on the filtered cluster.
+watch(() => props.activeChunkId, rebuildForCurrentFilter)
 
 onBeforeUnmount(destroySigma)
 </script>
@@ -280,7 +240,12 @@ onBeforeUnmount(destroySigma)
     <div ref="containerRef" class="kg-mini__canvas" />
     <div v-if="loading" class="kg-mini__overlay">Loading…</div>
     <div v-else-if="error" class="kg-mini__overlay">Failed to load graph</div>
-    <div v-else-if="!counts.entities" class="kg-mini__overlay">No entities for this document</div>
+    <div v-else-if="!counts.entities && activeChunkId" class="kg-mini__overlay">
+      No entities for this chunk
+    </div>
+    <div v-else-if="!counts.entities" class="kg-mini__overlay">
+      No entities for this document
+    </div>
   </div>
 </template>
 
