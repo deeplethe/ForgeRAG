@@ -408,13 +408,20 @@ function fmtType(name) {
 .list-name-input {
   flex: 1;
   min-width: 0;        /* default flex min is auto = content width — without this the input refuses to shrink */
-  padding: 2px 6px;
+  max-width: 240px;    /* don't stretch across the full column on wide viewports */
+  /* Vertical padding zero + ``outline`` instead of ``border`` so the
+     input occupies the same vertical space as the plain ``{{ f.name }}``
+     text. Keeps row height stable when entering / exiting rename mode
+     (no row-height jitter). The outline supplies the visual border
+     without taking layout space. */
+  padding: 0 6px;
   font-size: 11px;
+  line-height: inherit;
   color: var(--color-t1);
   background: var(--color-bg);
-  border: 1px solid var(--color-line2);
+  border: none;
   border-radius: var(--r-sm);
-  outline: none;
+  outline: 1px solid var(--color-line2);
   box-shadow: var(--ring-focus);
 }
 
