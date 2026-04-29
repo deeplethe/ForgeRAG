@@ -349,8 +349,22 @@ class KGExtractor:
                     _fut = _pool.submit(cached_completion, **kwargs)
                     resp = _fut.result(timeout=hard_timeout)
                 elapsed = time.monotonic() - t0
-                log.info("KG LLM call OK (%.1fs) attempt=%d", elapsed, attempt + 1)
-                return resp.choices[0].message.content or ""
+                content = resp.choices[0].message.content or ""
+                # Diagnostic: log a tiny preview of the raw response
+                # alongside the OK timing. Critical for debugging the
+                # "LLM returned OK but parser produced 0 entities"
+                # case (e.g. missing chunk_id fields, malformed JSON,
+                # unexpected schema). Truncated at 200 chars + cleaned
+                # of newlines so the log line stays readable.
+                preview = content[:200].replace("\n", " ").replace("\r", " ")
+                log.info(
+                    "KG LLM call OK (%.1fs) attempt=%d chars=%d preview=%r",
+                    elapsed,
+                    attempt + 1,
+                    len(content),
+                    preview,
+                )
+                return content
             except _TE:
                 elapsed = time.monotonic() - t0
                 log.warning(
@@ -439,15 +453,44 @@ class KGExtractor:
         all_rels: list[Relation] = []
 
         if isinstance(parsed, list):
+            # Diagnostic counters: how many items did the LLM return,
+            # and how many did we silently drop because the item
+            # lacked a usable ``chunk_id``? When the post-extraction
+            # entity count is unexpectedly 0, this telemetry tells us
+            # whether the LLM omitted the field entirely or returned
+            # an empty array — without it the two failure modes look
+            # identical from the outside.
+            skipped_no_cid = 0
+            unknown_cid = 0
             for item in parsed:
-                cid = str(item.get("chunk_id", ""))
+                cid = str(item.get("chunk_id", "")) if isinstance(item, dict) else ""
                 if not cid:
-                    # Try to use any available chunk_id
+                    skipped_no_cid += 1
                     continue
+                if cid not in expected_ids:
+                    # cid is non-empty but doesn't match any chunk we
+                    # actually sent — the LLM likely hallucinated /
+                    # mangled the id. Counting these separately keeps
+                    # them from getting silently merged into the wrong
+                    # provenance later if we decide to be lenient.
+                    unknown_cid += 1
                 ents = _build_entities(item, doc_id, cid, path=pmap.get(cid))
                 rels = _build_relations(item, doc_id, cid, path=pmap.get(cid))
                 all_ents.extend(ents)
                 all_rels.extend(rels)
+            if skipped_no_cid or unknown_cid:
+                # Capture the keys of the first item so we can spot
+                # schema drift (e.g. ``id`` vs ``chunk_id`` vs
+                # ``chunkId``) without dumping the whole payload.
+                first_keys = list(parsed[0].keys()) if isinstance(parsed[0], dict) else "<not-a-dict>"
+                log.warning(
+                    "KG batch parse: items=%d dropped_missing_cid=%d unknown_cid=%d expected=%d first_item_keys=%s",
+                    len(parsed),
+                    skipped_no_cid,
+                    unknown_cid,
+                    len(expected_ids),
+                    first_keys,
+                )
         elif isinstance(parsed, dict):
             # LLM returned a single object instead of array — treat as one chunk
             cid = str(parsed.get("chunk_id", "")) or (next(iter(expected_ids)) if len(expected_ids) == 1 else "unknown")
