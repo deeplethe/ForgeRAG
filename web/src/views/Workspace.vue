@@ -22,11 +22,13 @@
         <span>Drop files to upload to <code>{{ ws.currentPath.value }}</code></span>
       </div>
     </div>
-    <!-- Doc detail overlay (PDF + tree + chunks) — takes over when ?doc=X -->
+    <!-- Doc detail overlay — takes over when ?doc=X. New 3-col layout
+         (Tree / PDF / KG-mini + Chunks) lives in DocDetail.vue; the
+         standalone /repository route still uses the original
+         Repository.vue for backwards compat. -->
     <div v-if="focusedDocId" class="workspace__doc-detail">
-      <Repository
-        :inline="true"
-        :initial-doc-id="focusedDocId"
+      <DocDetail
+        :doc-id="focusedDocId"
         @close="onDocDetailClose"
       />
     </div>
@@ -155,7 +157,7 @@ import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash
 import { useWorkspace } from '@/composables/useWorkspace'
 import { useUploadsStore } from '@/stores/uploads'
 import { useDialog } from '@/composables/useDialog'
-import Repository from '@/views/Repository.vue'
+import DocDetail from '@/views/DocDetail.vue'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
 import Toolbar from '@/components/workspace/Toolbar.vue'
 import FolderTree from '@/components/workspace/FolderTree.vue'
