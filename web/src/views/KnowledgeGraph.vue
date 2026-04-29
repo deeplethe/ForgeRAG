@@ -721,14 +721,17 @@ watch(isDark, () => {
 <template>
   <div class="h-full flex flex-col bg-bg2 overflow-hidden">
     <!-- ═══════ Top bar ═══════ -->
+    <!-- Single-row, matches the Workspace toolbar's height. The
+         "Knowledge Graph" title used to sit above the stats line —
+         redundant with the side-nav tab, and the two-line block made
+         the bar visibly taller than other page headers. -->
     <div class="flex-none flex items-center justify-between px-5 py-3 border-b border-line bg-bg2">
-      <div>
-        <div class="text-[10px] text-t3 uppercase tracking-widest">Knowledge Graph</div>
-        <div class="text-[10px] text-t3 mt-0.5" v-if="stats.entities">
+      <div class="text-[10px] text-t3 min-h-[1em]">
+        <template v-if="stats.entities">
           {{ stats.entities.toLocaleString() }} entities &middot;
           {{ stats.relations.toLocaleString() }} relations &middot;
           <span class="font-mono">{{ stats.backend }}</span>
-        </div>
+        </template>
       </div>
 
       <div class="flex items-center gap-1">
