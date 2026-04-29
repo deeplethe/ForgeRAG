@@ -7,9 +7,14 @@ Readonly dashboard backing — no new tables. Aggregates come from:
     full OTel span tree from which we mine per-path timings + LLM tokens.
   * ``documents``     — ingestion status + per-phase timestamps + error_message.
 
-Postgres-native SQL is used for histogram buckets and percentiles; SQLite is
-only supported for test code paths, so we return HTTP 503 if the active
-backend isn't Postgres.
+All aggregation is computed in Python on top of plain SELECTs so the routes
+work uniformly across SQLite / Postgres / DuckDB / etc. The percentile and
+time-bucket SQL we used to use (``percentile_cont WITHIN GROUP``,
+``date_bin``, ``COUNT(*) FILTER``) is Postgres-only; rewriting in Python
+costs ~ms per few-thousand rows — fine for the dashboard window sizes
+(24h / 7d / 30d) we expose. If anyone ever runs ForgeRAG at the scale
+where 30-day rollups are too slow in Python, switching back to SQL on
+the Postgres-only fast path is a single dialect check.
 
     GET  /api/v1/metrics/summary?range=24h
     GET  /api/v1/metrics/query/latency?range=24h
@@ -44,12 +49,18 @@ RangeKey = Literal["24h", "7d", "30d"]
 
 # Each range maps to a bucket size for time-series charts. Picking a bucket
 # size that yields ~50-100 points keeps the charts readable without needing
-# client-side resampling.
-_RANGE_TO_BUCKET = {
-    "24h": ("15 minutes", timedelta(hours=24)),
-    "7d": ("1 hour", timedelta(days=7)),
-    "30d": ("6 hours", timedelta(days=30)),
+# client-side resampling. ``timedelta`` (not raw strings) so we can do
+# Python-side bucketing without parsing.
+_RANGE_TO_BUCKET: dict[str, tuple[timedelta, timedelta]] = {
+    "24h": (timedelta(minutes=15), timedelta(hours=24)),
+    "7d": (timedelta(hours=1), timedelta(days=7)),
+    "30d": (timedelta(hours=6), timedelta(days=30)),
 }
+
+# Bucket-snap anchor — every bucket boundary is anchor + k * bucket_size.
+# Picking a fixed past-anchor (instead of "now") so the same wall-clock
+# time always lands in the same bucket across requests.
+_BUCKET_ANCHOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def _range_cutoff(rng: RangeKey) -> datetime:
@@ -57,18 +68,49 @@ def _range_cutoff(rng: RangeKey) -> datetime:
     return datetime.now(timezone.utc) - delta
 
 
-def _bucket_width(rng: RangeKey) -> str:
+def _bucket_size(rng: RangeKey) -> timedelta:
     return _RANGE_TO_BUCKET[rng][0]
 
 
-def _require_postgres(state: AppState) -> None:
-    """Metrics queries rely on Postgres JSON operators + percentile_cont."""
-    dialect = state.store._sessionmaker.kw["bind"].dialect.name if state.store._sessionmaker else "?"
-    if dialect != "postgresql":
-        raise HTTPException(
-            503,
-            detail=f"metrics endpoints require a Postgres backend (got {dialect!r})",
-        )
+def _bucket_ts(ts: datetime, bucket: timedelta) -> datetime:
+    """Snap ``ts`` down to the nearest ``bucket`` boundary, anchor-relative.
+
+    Naive datetimes (SQLite returns these from ``DateTime`` columns) are
+    treated as UTC. Returns a tz-aware UTC datetime for consistent JSON
+    serialisation with Postgres TIMESTAMPTZ columns.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    delta_s = (ts - _BUCKET_ANCHOR).total_seconds()
+    bucket_s = bucket.total_seconds()
+    n = int(delta_s // bucket_s)
+    return _BUCKET_ANCHOR + timedelta(seconds=n * bucket_s)
+
+
+def _percentiles(values: list[float], qs: list[float]) -> list[float | None]:
+    """Linear-interpolation percentiles, semantics matching Postgres
+    ``percentile_cont`` (a.k.a. numpy ``linear`` method): for a sorted
+    sample of length n, the q-th percentile sits at fractional index
+    q*(n-1) and is interpolated between the two neighbouring ranks.
+
+    Returns ``None`` for any q when ``values`` is empty so callers can
+    bind the result straight into nullable response fields.
+    """
+    if not values:
+        return [None] * len(qs)
+    sv = sorted(values)
+    n = len(sv)
+    out: list[float | None] = []
+    for q in qs:
+        if n == 1:
+            out.append(float(sv[0]))
+            continue
+        pos = q * (n - 1)
+        lo = int(pos)
+        hi = min(lo + 1, n - 1)
+        frac = pos - lo
+        out.append(float(sv[lo] + frac * (sv[hi] - sv[lo])))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -207,54 +249,34 @@ def metrics_summary(
     range: RangeKey = Query("24h"),
     state: AppState = Depends(get_state),
 ):
-    _require_postgres(state)
     cutoff = _range_cutoff(range)
     with state.store._session() as s:
-        # Queries + percentiles in one round-trip
-        row = s.execute(
-            text(
-                """
-                SELECT
-                  COUNT(*)                                                           AS n,
-                  percentile_cont(0.5)  WITHIN GROUP (ORDER BY total_ms)             AS p50,
-                  percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms)             AS p95
-                FROM query_traces
-                WHERE timestamp >= :cutoff
-                """
-            ),
-            {"cutoff": cutoff},
-        ).one()
-        n = row.n or 0
-        p50 = float(row.p50) if row.p50 is not None else None
-        p95 = float(row.p95) if row.p95 is not None else None
-
-        # Ingest outcome buckets
-        ing = s.execute(
-            text(
-                """
-                SELECT
-                  COUNT(*) FILTER (WHERE status = 'ready')                           AS ok,
-                  COUNT(*) FILTER (WHERE status = 'error')                           AS failed,
-                  COUNT(*) FILTER (WHERE status IS NOT NULL
-                                   AND status NOT IN ('ready', 'error'))             AS in_progress
-                FROM documents
-                WHERE COALESCE(updated_at, created_at) >= :cutoff
-                """
-            ),
-            {"cutoff": cutoff},
-        ).one()
-
-        # Token totals — walk spans in a bounded window
-        tokens_total = 0
-        rows = s.execute(
-            text("SELECT trace_json FROM query_traces WHERE timestamp >= :cutoff LIMIT 2000"),
+        # Pull the columns we need; aggregate in Python so the route
+        # works on any backend (no percentile_cont, no FILTER).
+        trace_rows = s.execute(
+            text("SELECT total_ms, trace_json FROM query_traces WHERE timestamp >= :cutoff"),
             {"cutoff": cutoff},
         ).all()
-        for (tj,) in rows:
-            usage = _extract_llm_usage((tj or {}).get("spans") or [])
-            for m in usage.values():
-                tokens_total += m["prompt_tokens"] + m["completion_tokens"]
 
+        ing_rows = s.execute(
+            text("SELECT status FROM documents WHERE COALESCE(updated_at, created_at) >= :cutoff"),
+            {"cutoff": cutoff},
+        ).all()
+
+    durations = [float(r.total_ms) for r in trace_rows if r.total_ms is not None]
+    p50, p95 = _percentiles(durations, [0.5, 0.95])
+
+    tokens_total = 0
+    for r in trace_rows:
+        usage = _extract_llm_usage((r.trace_json or {}).get("spans") or [])
+        for m in usage.values():
+            tokens_total += m["prompt_tokens"] + m["completion_tokens"]
+
+    ok = sum(1 for r in ing_rows if r.status == "ready")
+    failed = sum(1 for r in ing_rows if r.status == "error")
+    in_progress = sum(1 for r in ing_rows if r.status not in (None, "ready", "error"))
+
+    n = len(trace_rows)
     _, delta = _RANGE_TO_BUCKET[range]
     hours = delta.total_seconds() / 3600.0
     return MetricsSummary(
@@ -264,9 +286,9 @@ def metrics_summary(
         p95_ms=p95,
         queries_per_hour=(n / hours) if hours else 0,
         tokens_total=tokens_total,
-        ingest_ok=ing.ok or 0,
-        ingest_failed=ing.failed or 0,
-        ingest_in_progress=ing.in_progress or 0,
+        ingest_ok=ok,
+        ingest_failed=failed,
+        ingest_in_progress=in_progress,
     )
 
 
@@ -275,35 +297,27 @@ def query_latency(
     range: RangeKey = Query("24h"),
     state: AppState = Depends(get_state),
 ):
-    _require_postgres(state)
     cutoff = _range_cutoff(range)
-    bucket = _bucket_width(range)
+    bucket = _bucket_size(range)
     with state.store._session() as s:
         rows = s.execute(
-            text(
-                f"""
-                SELECT
-                  date_bin(INTERVAL '{bucket}', timestamp, TIMESTAMPTZ '2000-01-01') AS bucket,
-                  COUNT(*)                                                           AS n,
-                  percentile_cont(0.5)  WITHIN GROUP (ORDER BY total_ms)             AS p50,
-                  percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms)             AS p95
-                FROM query_traces
-                WHERE timestamp >= :cutoff
-                GROUP BY bucket
-                ORDER BY bucket
-                """
-            ),
+            text("SELECT timestamp, total_ms FROM query_traces WHERE timestamp >= :cutoff"),
             {"cutoff": cutoff},
         ).all()
-    return [
-        LatencyPoint(
-            ts=r.bucket,
-            count=r.n or 0,
-            p50_ms=float(r.p50) if r.p50 is not None else None,
-            p95_ms=float(r.p95) if r.p95 is not None else None,
-        )
-        for r in rows
-    ]
+
+    by_bucket: dict[datetime, list[float]] = {}
+    for r in rows:
+        if r.total_ms is None or r.timestamp is None:
+            continue
+        b = _bucket_ts(r.timestamp, bucket)
+        by_bucket.setdefault(b, []).append(float(r.total_ms))
+
+    out: list[LatencyPoint] = []
+    for ts in sorted(by_bucket):
+        vals = by_bucket[ts]
+        p50, p95 = _percentiles(vals, [0.5, 0.95])
+        out.append(LatencyPoint(ts=ts, count=len(vals), p50_ms=p50, p95_ms=p95))
+    return out
 
 
 @router.get("/query/tokens", response_model=list[TokensPoint])
@@ -311,30 +325,24 @@ def query_tokens(
     range: RangeKey = Query("24h"),
     state: AppState = Depends(get_state),
 ):
-    _require_postgres(state)
     cutoff = _range_cutoff(range)
-    bucket = _bucket_width(range)
+    bucket = _bucket_size(range)
     with state.store._session() as s:
         rows = s.execute(
-            text(
-                f"""
-                SELECT
-                  date_bin(INTERVAL '{bucket}', timestamp, TIMESTAMPTZ '2000-01-01') AS bucket,
-                  trace_json
-                FROM query_traces
-                WHERE timestamp >= :cutoff
-                LIMIT 5000
-                """
-            ),
+            text("SELECT timestamp, trace_json FROM query_traces WHERE timestamp >= :cutoff LIMIT 5000"),
             {"cutoff": cutoff},
         ).all()
 
-    # Fold JSON client-side: (bucket, model) → tokens
+    # Fold (bucket, model) → tokens client-side. We were doing the JSON
+    # walk in Python anyway; the bucket assignment is one extra op per row.
     agg: dict[tuple[datetime, str], dict[str, int]] = {}
     for r in rows:
+        if r.timestamp is None:
+            continue
+        b = _bucket_ts(r.timestamp, bucket)
         usage = _extract_llm_usage((r.trace_json or {}).get("spans") or [])
         for model, tok in usage.items():
-            key = (r.bucket, model)
+            key = (b, model)
             box = agg.setdefault(key, {"prompt_tokens": 0, "completion_tokens": 0})
             box["prompt_tokens"] += tok["prompt_tokens"]
             box["completion_tokens"] += tok["completion_tokens"]
@@ -348,7 +356,6 @@ def query_path_timing(
     range: RangeKey = Query("24h"),
     state: AppState = Depends(get_state),
 ):
-    _require_postgres(state)
     cutoff = _range_cutoff(range)
     with state.store._session() as s:
         rows = s.execute(
@@ -395,7 +402,6 @@ def query_slow(
     state: AppState = Depends(get_state),
 ):
     log.info("query_slow invoked: range=%s limit=%s", range, limit)
-    _require_postgres(state)
     cutoff = _range_cutoff(range)
     try:
         with state.store._session() as s:
@@ -448,7 +454,6 @@ def ingestion_recent_failures(
     limit: int = Query(10, ge=1, le=50),
     state: AppState = Depends(get_state),
 ):
-    _require_postgres(state)
     with state.store._session() as s:
         rows = s.execute(
             text(
