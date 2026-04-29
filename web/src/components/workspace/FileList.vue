@@ -33,7 +33,7 @@
         <!-- Inline new-folder editor (Windows-style) — appears at top of list -->
         <tr v-if="creating" class="list-row list-row--creating">
           <td>
-            <span class="doc-icon">📁</span>
+            <FileIcon kind="folder" :size="16" class="row-icon" />
             <input
               ref="newNameInput"
               type="text"
@@ -60,7 +60,7 @@
           @contextmenu.prevent.stop="onContext($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
           @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
         >
-          <td>📁 {{ f.name }}</td>
+          <td><FileIcon kind="folder" :size="16" class="row-icon" />{{ f.name }}</td>
           <td>Folder</td>
           <td>—</td>
           <td class="path-cell">{{ f.path }}</td>
@@ -81,7 +81,7 @@
           @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
         >
           <td>
-            <span class="doc-icon">📄</span>
+            <FileIcon kind="file" :name="d.filename || d.file_name" :size="16" class="row-icon" />
             {{ d.filename || d.file_name || d.doc_id }}
             <span
               v-if="d.status === 'error'"
@@ -109,6 +109,8 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
+
+import FileIcon from './FileIcon.vue'
 
 const props = defineProps({
   folders: { type: Array, default: () => [] },
@@ -282,6 +284,9 @@ function fmtDate(d) {
 }
 
 .doc-icon { margin-right: 2px; }
+/* Inline FileIcon sits slightly above text baseline; nudge it onto
+   the centre line so the row reads as a single block. */
+.row-icon { margin-right: 6px; vertical-align: -3px; }
 .list-row--error td:first-child { color: var(--color-err-fg); }
 .status-chip {
   display: inline-block;

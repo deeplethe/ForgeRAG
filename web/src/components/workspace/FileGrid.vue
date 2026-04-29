@@ -10,7 +10,7 @@
 
     <!-- Inline new-folder editor (Windows-style: ghost folder with name input) -->
     <div v-if="creating" class="file-card file-card--creating">
-      <div class="file-card__icon">📁</div>
+      <div class="file-card__icon"><FileIcon kind="folder" :size="36" /></div>
       <input
         ref="newNameInput"
         type="text"
@@ -38,7 +38,7 @@
       @dragover.prevent
       @drop.prevent="onDropOntoFolder($event, f)"
     >
-      <div class="file-card__icon">📁</div>
+      <div class="file-card__icon"><FileIcon kind="folder" :size="36" /></div>
       <div class="file-card__title" :title="f.name">{{ f.name }}</div>
       <div class="file-card__meta">{{ f.document_count }} docs · {{ f.child_folders }} subfolders</div>
     </div>
@@ -61,7 +61,7 @@
       @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
     >
       <div class="file-card__icon">
-        📄
+        <FileIcon kind="file" :name="d.filename || d.file_name" :size="36" />
         <span
           v-if="d.status === 'error'"
           class="status-badge status-badge--error"
@@ -94,6 +94,8 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue'
+
+import FileIcon from './FileIcon.vue'
 
 const props = defineProps({
   folders: { type: Array, default: () => [] },

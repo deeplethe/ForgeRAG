@@ -14,7 +14,7 @@
         :class="{ invisible: !hasChildren }"
         @click.stop="$emit('toggle', node.path)"
       >{{ isExpanded ? '▾' : '▸' }}</span>
-      <span class="tree-icon">📁</span>
+      <FileIcon kind="folder" :size="14" class="tree-icon" />
       <span class="tree-label">{{ node.name || 'Root' }}</span>
       <span v-if="badgeCount > 0" class="tree-count">{{ badgeCount }}</span>
     </div>
@@ -36,6 +36,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+
+import FileIcon from './FileIcon.vue'
 
 const props = defineProps({
   node: { type: Object, required: true },
