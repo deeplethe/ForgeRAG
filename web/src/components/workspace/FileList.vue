@@ -307,12 +307,15 @@ function fmtDate(d) {
   white-space: nowrap;
 }
 .list-row:hover { background: var(--color-bg3); color: var(--color-t1); }
-/* Selected state — neutral gray (Vercel pattern); double selector beats
-   .list-row:hover specificity so hovering a selected row keeps its tint. */
-.list-row--selected,
-.list-row--selected:hover {
-  background: var(--color-bg3);
+/* Selected uses the heavier ``--color-bg-selected`` token so it
+   reads as distinct from hover. Hover layered on top mixes the two
+   for a slight cue that the row is being pointed at. */
+.list-row--selected {
+  background: var(--color-bg-selected);
   color: var(--color-t1);
+}
+.list-row--selected:hover {
+  background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg3));
 }
 .path-cell { color: var(--color-t3); }
 .list-empty { padding: 32px; text-align: center; color: var(--color-t3); }
