@@ -30,16 +30,28 @@
       class="file-card"
       :class="{ 'file-card--selected': isSelected('f:' + f.folder_id) }"
       :data-selkey="'f:' + f.folder_id"
-      draggable="true"
+      :draggable="!isRenaming(f)"
       @click.stop="onSelect('f:' + f.folder_id, $event)"
-      @dblclick.stop="$emit('open-folder', f.path)"
+      @dblclick.stop="onFolderDblClick(f)"
       @contextmenu.prevent.stop="onContext($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
       @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
       @dragover.prevent
       @drop.prevent="onDropOntoFolder($event, f)"
     >
       <div class="file-card__icon"><FileIcon kind="folder" :size="36" /></div>
-      <div class="file-card__title" :title="f.name">{{ f.name }}</div>
+      <input
+        v-if="isRenaming(f)"
+        ref="renameInput"
+        type="text"
+        class="file-card__name-input"
+        :value="f.name"
+        @click.stop
+        @dblclick.stop
+        @keydown.enter.prevent="confirmRename(f)"
+        @keydown.esc.prevent="cancelRename"
+        @blur="confirmRename(f)"
+      />
+      <div v-else class="file-card__title" :title="f.name">{{ f.name }}</div>
       <div class="file-card__meta">{{ f.document_count }} docs · {{ f.child_folders }} subfolders</div>
     </div>
 
@@ -103,10 +115,15 @@ const props = defineProps({
   selection: { type: Set, required: true },
   loading: { type: Boolean, default: false },
   creating: { type: Boolean, default: false },
+  // Selection-key of the item currently being renamed (e.g. "f:abc-123"),
+  // or empty string when no rename is in progress. Mirrors `creating` —
+  // the parent owns the state; we just render the inline input.
+  renamingKey: { type: String, default: '' },
 })
 const emit = defineEmits([
   'select', 'open-folder', 'open-document', 'context-menu', 'drop-onto-folder', 'drag-start',
   'confirm-create', 'cancel-create',
+  'confirm-rename', 'cancel-rename',
 ])
 
 // Autofocus + select-all when entering "creating" mode
@@ -127,6 +144,44 @@ function confirmCreate() {
   emit('confirm-create', v)
   // reset for the next round
   setTimeout(() => { _confirmFired = false }, 0)
+}
+
+// Inline rename — same shape as create. ``renameInput`` is a v-for ref;
+// only one element ever satisfies the v-if so the array always has at
+// most one entry.
+const renameInput = ref(null)
+function isRenaming(f) { return props.renamingKey === 'f:' + f.folder_id }
+watch(() => props.renamingKey, async (key) => {
+  if (!key) return
+  await nextTick()
+  // ``ref`` inside v-for collects an array; grab the only mounted input
+  const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
+  if (!el) return
+  el.focus()
+  el.select()
+})
+
+// Same blur/Enter double-fire guard as create.
+let _renameFired = false
+function confirmRename(f) {
+  if (_renameFired) return
+  _renameFired = true
+  const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
+  const v = el?.value || ''
+  emit('confirm-rename', { key: 'f:' + f.folder_id, oldName: f.name, newName: v })
+  setTimeout(() => { _renameFired = false }, 0)
+}
+function cancelRename() {
+  // Esc — bypass the blur-fired confirm by tripping the guard before
+  // the input loses focus (blur fires on unmount, hits the guard, no-op).
+  _renameFired = true
+  emit('cancel-rename')
+  setTimeout(() => { _renameFired = false }, 0)
+}
+
+function onFolderDblClick(f) {
+  if (isRenaming(f)) return
+  emit('open-folder', f.path)
 }
 
 function isSelected(key) { return props.selection.has(key) }

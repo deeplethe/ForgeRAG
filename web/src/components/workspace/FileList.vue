@@ -54,13 +54,28 @@
           :key="'f:' + f.folder_id"
           class="list-row"
           :class="{ 'list-row--selected': isSelected('f:' + f.folder_id) }"
-          draggable="true"
+          :draggable="!isRenaming(f)"
           @click.stop="onSelect('f:' + f.folder_id, $event)"
-          @dblclick.stop="$emit('open-folder', f.path)"
+          @dblclick.stop="onFolderDblClick(f)"
           @contextmenu.prevent.stop="onContext($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
           @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
         >
-          <td><FileIcon kind="folder" :size="16" class="row-icon" />{{ f.name }}</td>
+          <td>
+            <FileIcon kind="folder" :size="16" class="row-icon" />
+            <input
+              v-if="isRenaming(f)"
+              ref="renameInput"
+              type="text"
+              class="list-name-input"
+              :value="f.name"
+              @click.stop
+              @dblclick.stop
+              @keydown.enter.prevent="confirmRename(f)"
+              @keydown.esc.prevent="cancelRename"
+              @blur="confirmRename(f)"
+            />
+            <template v-else>{{ f.name }}</template>
+          </td>
           <td>Folder</td>
           <td>—</td>
           <td class="path-cell">{{ f.path }}</td>
@@ -118,10 +133,13 @@ const props = defineProps({
   selection: { type: Set, required: true },
   loading: { type: Boolean, default: false },
   creating: { type: Boolean, default: false },
+  // Selection-key of the row being renamed ("f:abc-123") or '' when idle.
+  renamingKey: { type: String, default: '' },
 })
 const emit = defineEmits([
   'select', 'open-folder', 'open-document', 'context-menu', 'drag-start',
   'confirm-create', 'cancel-create',
+  'confirm-rename', 'cancel-rename',
 ])
 
 // Inline-create autofocus
@@ -139,6 +157,40 @@ function confirmCreate() {
   const v = newNameInput.value?.value || ''
   emit('confirm-create', v)
   setTimeout(() => { _confirmFired = false }, 0)
+}
+
+// Inline rename — mirrors create. v-for ref collects an array but only
+// the matching row mounts an input.
+const renameInput = ref(null)
+function isRenaming(f) { return props.renamingKey === 'f:' + f.folder_id }
+watch(() => props.renamingKey, async (key) => {
+  if (!key) return
+  await nextTick()
+  const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
+  if (!el) return
+  el.focus()
+  el.select()
+})
+
+let _renameFired = false
+function confirmRename(f) {
+  if (_renameFired) return
+  _renameFired = true
+  const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
+  const v = el?.value || ''
+  emit('confirm-rename', { key: 'f:' + f.folder_id, oldName: f.name, newName: v })
+  setTimeout(() => { _renameFired = false }, 0)
+}
+function cancelRename() {
+  // Trip the guard so the blur-on-unmount doesn't fire confirm
+  _renameFired = true
+  emit('cancel-rename')
+  setTimeout(() => { _renameFired = false }, 0)
+}
+
+function onFolderDblClick(f) {
+  if (isRenaming(f)) return
+  emit('open-folder', f.path)
 }
 
 function isSelected(key) { return props.selection.has(key) }
