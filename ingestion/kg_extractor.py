@@ -160,10 +160,20 @@ class KGExtractor:
 
         for attempt in range(2):
             try:
-                raw = self._call_llm(
-                    system=EXTRACTION_SYSTEM,
-                    user=EXTRACTION_USER.replace("{text}", text),
-                )
+                user_text = EXTRACTION_USER.replace("{text}", text)
+                if attempt > 0:
+                    # Retry: append a tail comment so the prompt hash
+                    # changes — otherwise litellm's cache returns the
+                    # same empty response we just got (observed: a
+                    # 54s call followed by a 0.0s call with identical
+                    # empty content). The suffix also nudges the
+                    # model to actually emit JSON this time.
+                    user_text += (
+                        "\n\n(Retry — the previous attempt produced no output. "
+                        "Please respond with the JSON object even if the "
+                        "entities and relations arrays are empty.)"
+                    )
+                raw = self._call_llm(system=EXTRACTION_SYSTEM, user=user_text)
                 if raw.strip():
                     return self._parse_response(raw, doc_id, chunk_id, path=path)
                 # Empty content: LLM API returned successfully with

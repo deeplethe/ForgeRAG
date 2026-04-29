@@ -156,7 +156,10 @@ class KGExtractionConfig(BaseModel):
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None
-    max_workers: int = 5
+    # Per-chunk extraction means ~5x more API calls than the prior
+    # batched path; 10 workers keeps wall-time comparable. Lower if
+    # the upstream provider rate-limits below this concurrency.
+    max_workers: int = 10
     timeout: float = 120.0
     # Description merge: LLM-consolidate fragmented entity/relation descriptions.
     # When an entity accumulates many description fragments (from multiple chunks
