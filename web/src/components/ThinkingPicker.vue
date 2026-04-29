@@ -39,7 +39,7 @@
     <Transition name="popup">
       <div
         v-if="open"
-        class="absolute bottom-full left-0 mb-1.5 w-[180px] rounded-xl border border-line bg-bg shadow-lg p-1 z-20"
+        class="absolute bottom-full left-0 mb-1.5 w-[180px] rounded-xl border border-line bg-bg shadow-lg p-1 z-20 space-y-0.5"
       >
         <button
           v-for="opt in options"
