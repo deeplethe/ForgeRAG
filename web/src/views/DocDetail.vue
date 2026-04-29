@@ -28,12 +28,14 @@ import { ArrowLeftIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
 import {
   fileDownloadUrl,
   filePreviewUrl,
+  getChunkByBlock,
   getDocument,
   getTree,
   listBlocks,
   listChunks,
   reparseDocument,
 } from '@/api'
+import DocKgMini from '@/components/workspace/DocKgMini.vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 import TreeNode from '@/components/TreeNode.vue'
 
@@ -218,10 +220,62 @@ function toggleNode(nodeId) {
   else expandedNodes.add(nodeId)
 }
 
-function onPdfClick(/* { page_no, x, y } */) {
-  // Future iteration: hit-test against block bboxes and select the
-  // corresponding chunk. Stub for now so the PdfViewer's @pdf-click
-  // doesn't error.
+// Track chunk-row DOM refs so we can scroll the chunks pane to the
+// chunk a PDF click resolved to.
+const chunkRefs = new Map()
+function setChunkRef(chunkId, el) {
+  if (el) chunkRefs.set(chunkId, el)
+  else chunkRefs.delete(chunkId)
+}
+function scrollToChunk(chunkId) {
+  const el = chunkRefs.get(chunkId)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function onPdfClick({ page_no, x, y }) {
+  // Hit-test against the block list cached at load time. Bbox is in
+  // PDF coordinates (origin bottom-left). Same logic Repository.vue
+  // has — kept inline (no shared util) until a third caller appears.
+  if (!allBlocks.value.length || !doc.value) return
+  let hit = null
+  for (const b of allBlocks.value) {
+    if (b.page_no !== page_no || !b.bbox) continue
+    const { x0, y0, x1, y1 } = b.bbox
+    const minX = Math.min(x0, x1), maxX = Math.max(x0, x1)
+    const minY = Math.min(y0, y1), maxY = Math.max(y0, y1)
+    if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+      hit = b
+      break
+    }
+  }
+  if (!hit) return
+
+  // Some blocks get merged into another during chunking; follow the
+  // pointer to the surviving block.
+  let bid = hit.block_id
+  if (hit.excluded && hit.excluded_reason?.startsWith('merged_into:')) {
+    bid = hit.excluded_reason.slice('merged_into:'.length)
+  }
+
+  // Try local chunks first (skip the network round-trip when possible).
+  let target = chunks.value.find((c) => c.block_ids?.includes(bid))
+  if (!target) {
+    try {
+      const resp = await getChunkByBlock(bid, doc.value.doc_id)
+      target = resp?.chunk
+    } catch {
+      return
+    }
+  }
+  if (!target) return
+
+  // Reuse the chunk-click flow — it sets activeChunkId, jumps the
+  // PDF (well, we're already on that page), and rebuilds the bbox
+  // highlight set.
+  onClickChunk(target)
+  // Then scroll the chunks pane so the selected row is in view.
+  scrollToChunk(target.chunk_id)
 }
 
 async function onReparse() {
@@ -343,9 +397,10 @@ watch(() => props.docId, loadAll, { immediate: true })
 
       <!-- RIGHT: KG mini (top) + Chunks (bottom) -->
       <aside class="pane pane--right">
-        <!-- KG mini — placeholder for skeleton iteration. Next pass
-             will render entities + relations scoped to this doc via
-             the existing ``source_chunk_ids`` provenance on the KG. -->
+        <!-- KG mini — entities sourced from this doc + relations
+             among them. Activates a node-fade pass when a chunk is
+             selected so the user sees which entities came from that
+             chunk (uses the ``source_chunk_ids`` provenance). -->
         <section class="pane pane--kg">
           <div class="pane-hdr">
             <span class="pane-title">Knowledge graph</span>
@@ -353,8 +408,12 @@ watch(() => props.docId, loadAll, { immediate: true })
               {{ doc?.kg_entity_count || 0 }} entities · {{ doc?.kg_relation_count || 0 }} relations
             </span>
           </div>
-          <div class="pane-body pane-empty pane-empty--center">
-            <span class="text-[10px]">Mini graph — coming next iteration</span>
+          <div class="pane-body pane-body--canvas">
+            <DocKgMini
+              v-if="doc"
+              :doc-id="doc.doc_id"
+              :active-chunk-id="activeChunkId || ''"
+            />
           </div>
         </section>
 
@@ -370,6 +429,7 @@ watch(() => props.docId, loadAll, { immediate: true })
             <div
               v-for="c in chunks"
               :key="c.chunk_id"
+              :ref="(el) => setChunkRef(c.chunk_id, el)"
               class="chunk-row"
               :class="{ 'chunk-row--active': activeChunkId === c.chunk_id }"
               @click="onClickChunk(c)"
@@ -553,6 +613,11 @@ watch(() => props.docId, loadAll, { immediate: true })
 .pane-body--scroll {
   overflow-y: auto;
   padding: 0;
+}
+.pane-body--canvas {
+  position: relative;       /* anchor for sigma's absolute canvas */
+  padding: 0;
+  overflow: hidden;
 }
 .pane-empty {
   padding: 24px 12px;

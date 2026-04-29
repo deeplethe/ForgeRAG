@@ -155,6 +155,20 @@ class GraphStore(ABC):
             return {"nodes": [], "edges": []}
         return self.get_subgraph([e.entity_id for e in all_entities])
 
+    def get_by_doc(self, doc_id: str) -> dict:
+        """Return the sub-graph for entities whose ``source_doc_ids``
+        contains ``doc_id``, plus the relations among them.
+
+        Default implementation: scan ``get_all_entities`` and filter,
+        then delegate to ``get_subgraph``. Backends should override
+        when they can do an indexed query (e.g. Neo4j Cypher
+        ``WHERE $doc_id IN e.source_doc_ids``).
+        """
+        matching = [e for e in self.get_all_entities() if doc_id in e.source_doc_ids]
+        if not matching:
+            return {"nodes": [], "edges": []}
+        return self.get_subgraph([e.entity_id for e in matching])
+
     # -- description update ---------------------------------------------------
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
