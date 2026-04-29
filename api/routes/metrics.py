@@ -26,6 +26,7 @@ the Postgres-only fast path is a single dialect check.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -111,6 +112,44 @@ def _percentiles(values: list[float], qs: list[float]) -> list[float | None]:
         frac = pos - lo
         out.append(float(sv[lo] + frac * (sv[hi] - sv[lo])))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Per-dialect raw-row coercion
+#
+# Raw ``text()`` SQL bypasses SQLAlchemy's type marshaling, so JSON and
+# DateTime columns come back in whatever representation the underlying
+# DB driver hands over: dict on Postgres (JSONB native), str on SQLite
+# (JSON-as-TEXT). Same story for DateTime — Postgres returns datetime,
+# SQLite returns ISO string. The ORM ``Mapped`` types only kick in
+# through ``session.execute(select(Model))``, not through ``text(...)``.
+# ---------------------------------------------------------------------------
+
+
+def _coerce_dict(v: Any) -> dict:
+    if v is None or v == "":
+        return {}
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+    return v if isinstance(v, dict) else {}
+
+
+def _coerce_dt(v: Any) -> datetime | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, str):
+        try:
+            # ``fromisoformat`` doesn't accept the trailing ``Z`` shorthand
+            # before 3.11; normalise just in case the SQLite driver emits it.
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +307,7 @@ def metrics_summary(
 
     tokens_total = 0
     for r in trace_rows:
-        usage = _extract_llm_usage((r.trace_json or {}).get("spans") or [])
+        usage = _extract_llm_usage(_coerce_dict(r.trace_json).get("spans") or [])
         for m in usage.values():
             tokens_total += m["prompt_tokens"] + m["completion_tokens"]
 
@@ -307,9 +346,10 @@ def query_latency(
 
     by_bucket: dict[datetime, list[float]] = {}
     for r in rows:
-        if r.total_ms is None or r.timestamp is None:
+        ts = _coerce_dt(r.timestamp)
+        if r.total_ms is None or ts is None:
             continue
-        b = _bucket_ts(r.timestamp, bucket)
+        b = _bucket_ts(ts, bucket)
         by_bucket.setdefault(b, []).append(float(r.total_ms))
 
     out: list[LatencyPoint] = []
@@ -337,10 +377,11 @@ def query_tokens(
     # walk in Python anyway; the bucket assignment is one extra op per row.
     agg: dict[tuple[datetime, str], dict[str, int]] = {}
     for r in rows:
-        if r.timestamp is None:
+        ts = _coerce_dt(r.timestamp)
+        if ts is None:
             continue
-        b = _bucket_ts(r.timestamp, bucket)
-        usage = _extract_llm_usage((r.trace_json or {}).get("spans") or [])
+        b = _bucket_ts(ts, bucket)
+        usage = _extract_llm_usage(_coerce_dict(r.trace_json).get("spans") or [])
         for model, tok in usage.items():
             key = (b, model)
             box = agg.setdefault(key, {"prompt_tokens": 0, "completion_tokens": 0})
@@ -365,7 +406,7 @@ def query_path_timing(
 
     buckets: dict[str, list[float]] = {k: [] for k in _PATH_SPANS}
     for (tj,) in rows:
-        per = _extract_per_path_ms((tj or {}).get("spans") or [])
+        per = _extract_per_path_ms(_coerce_dict(tj).get("spans") or [])
         for k, v in per.items():
             if v > 0:
                 buckets[k].append(v)
@@ -432,7 +473,7 @@ def query_slow(
                     cits = _json.loads(cits)
                 except Exception:
                     cits = []
-            ts_val = r.timestamp
+            ts_val = _coerce_dt(r.timestamp)
             out.append(
                 {
                     "trace_id": r.trace_id,
