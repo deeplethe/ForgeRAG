@@ -66,9 +66,9 @@
         'file-card--pending': d.status && !['ready', 'error'].includes(d.status),
       }"
       :data-selkey="'d:' + d.doc_id"
-      draggable="true"
+      :draggable="!isRenamingDoc(d)"
       @click.stop="onSelect('d:' + d.doc_id, $event)"
-      @dblclick.stop="$emit('open-document', d)"
+      @dblclick.stop="onDocDblClick(d)"
       @contextmenu.prevent.stop="onContext($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
       @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
     >
@@ -85,7 +85,19 @@
           :title="d.status"
         >⟳</span>
       </div>
-      <div class="file-card__title" :title="d.filename || d.file_name">
+      <input
+        v-if="isRenamingDoc(d)"
+        ref="renameInput"
+        type="text"
+        class="file-card__name-input"
+        :value="d.filename || d.file_name || ''"
+        @click.stop
+        @dblclick.stop
+        @keydown.enter.prevent="confirmRenameDoc(d)"
+        @keydown.esc.prevent="cancelRename"
+        @blur="confirmRenameDoc(d)"
+      />
+      <div v-else class="file-card__title" :title="d.filename || d.file_name">
         {{ d.filename || d.file_name || d.doc_id }}
       </div>
       <div class="file-card__meta">
@@ -147,10 +159,11 @@ function confirmCreate() {
 }
 
 // Inline rename — same shape as create. ``renameInput`` is a v-for ref;
-// only one element ever satisfies the v-if so the array always has at
-// most one entry.
+// only one element across folders + documents ever satisfies the v-if so
+// the array always has at most one entry.
 const renameInput = ref(null)
 function isRenaming(f) { return props.renamingKey === 'f:' + f.folder_id }
+function isRenamingDoc(d) { return props.renamingKey === 'd:' + d.doc_id }
 watch(() => props.renamingKey, async (key) => {
   if (!key) return
   await nextTick()
@@ -161,15 +174,20 @@ watch(() => props.renamingKey, async (key) => {
   el.select()
 })
 
-// Same blur/Enter double-fire guard as create.
+// Same blur/Enter double-fire guard as create — shared across folder
+// and document rename paths since at most one input is mounted at a time.
 let _renameFired = false
-function confirmRename(f) {
+function _emitConfirm(key, oldName) {
   if (_renameFired) return
   _renameFired = true
   const el = Array.isArray(renameInput.value) ? renameInput.value[0] : renameInput.value
   const v = el?.value || ''
-  emit('confirm-rename', { key: 'f:' + f.folder_id, oldName: f.name, newName: v })
+  emit('confirm-rename', { key, oldName, newName: v })
   setTimeout(() => { _renameFired = false }, 0)
+}
+function confirmRename(f) { _emitConfirm('f:' + f.folder_id, f.name) }
+function confirmRenameDoc(d) {
+  _emitConfirm('d:' + d.doc_id, d.filename || d.file_name || '')
 }
 function cancelRename() {
   // Esc — bypass the blur-fired confirm by tripping the guard before
@@ -182,6 +200,10 @@ function cancelRename() {
 function onFolderDblClick(f) {
   if (isRenaming(f)) return
   emit('open-folder', f.path)
+}
+function onDocDblClick(d) {
+  if (isRenamingDoc(d)) return
+  emit('open-document', d)
 }
 
 function isSelected(key) { return props.selection.has(key) }

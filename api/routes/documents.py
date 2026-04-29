@@ -524,6 +524,116 @@ def bulk_move_documents(body: BulkMoveReq, state: AppState = Depends(get_state))
     return {"moved": moved, "errors": errors}
 
 
+# ---------------------------------------------------------------------------
+# Rename
+# ---------------------------------------------------------------------------
+
+
+class RenameDocumentReq(BaseModel):
+    new_filename: str
+
+
+@router.patch("/{doc_id}/filename")
+def rename_document(doc_id: str, body: RenameDocumentReq, state: AppState = Depends(get_state)):
+    """Rename a document's user-facing filename in place.
+
+    Updates ``Document.filename``, ``Document.path``, and the
+    ``ChunkRow.path`` mirror in PG, then synchronously rewrites the
+    same path in the vector store (so folder-scoped retrieval keeps
+    matching) and the graph store (entity ``source_paths`` references).
+    Returns 409 on collision with a sibling document.
+    """
+    from sqlalchemy import select, update
+
+    from persistence.folder_service import (
+        InvalidFolderName,
+        normalize_name,
+    )
+    from persistence.models import AuditLogRow, ChunkRow, Document
+    from persistence.scope import ScopeMode, ScopeService
+
+    # Validate via the same primitive folder rename uses — the constraint
+    # set (no slashes / control chars / reserved names, ≤255 chars) is
+    # identical for filenames and folder names. Dots are allowed, so
+    # ``foo.md`` passes through.
+    try:
+        new_filename = normalize_name(body.new_filename)
+    except InvalidFolderName as e:
+        raise HTTPException(422, str(e))
+
+    scope = ScopeService(state.store)
+
+    old_path: str | None = None
+    new_path: str | None = None
+    chunk_ids: list[str] = []
+    folder_id: str | None = None
+
+    with state.store.transaction() as sess:
+        doc = sess.get(Document, doc_id)
+        if doc is None:
+            raise HTTPException(404, "document not found")
+        scope.require_folder(doc.folder_id, ScopeMode.WRITE)
+
+        if doc.filename == new_filename:
+            return {"doc_id": doc_id, "filename": doc.filename, "path": doc.path}
+
+        # Reject sibling collisions explicitly. Auto-suffixing (``foo (1).pdf``)
+        # would silently rewrite what the user typed — surprising for an
+        # explicit rename, even though we accept it for move/upload.
+        sibling = sess.execute(
+            select(Document).where(
+                Document.folder_id == doc.folder_id,
+                Document.filename == new_filename,
+                Document.doc_id != doc_id,
+            )
+        ).scalar_one_or_none()
+        if sibling is not None:
+            raise HTTPException(
+                409,
+                f"a document named {new_filename!r} already exists in this folder",
+            )
+
+        old_path = doc.path
+        # Replace just the last segment of the path; parent stays put.
+        parent = old_path.rsplit("/", 1)[0]
+        new_path = (parent + "/" + new_filename) if parent else "/" + new_filename
+        folder_id = doc.folder_id
+
+        doc.filename = new_filename
+        doc.path = new_path
+
+        # Cascade the path change into the chunk table so PG-side
+        # folder-scoped queries see the new path immediately.
+        sess.execute(update(ChunkRow).where(ChunkRow.doc_id == doc_id).values(path=new_path))
+        chunk_ids = [r.chunk_id for r in sess.execute(select(ChunkRow.chunk_id).where(ChunkRow.doc_id == doc_id)).all()]
+
+        sess.add(
+            AuditLogRow(
+                actor_id="local",
+                action="document.rename",
+                target_type="document",
+                target_id=doc_id,
+                details={"old_path": old_path, "new_path": new_path},
+            )
+        )
+
+    # Post-commit cross-store sync. Match the folder-rename pattern:
+    # apply AFTER the PG transaction commits so a rolled-back rename
+    # never leaks into Chroma / Neo4j.
+    if chunk_ids and getattr(state, "vector", None) is not None:
+        try:
+            state.vector.update_paths({cid: new_path for cid in chunk_ids})
+        except Exception as e:
+            log.warning("vector update_paths failed for document.rename: %s", e)
+    if getattr(state, "graph_store", None) is not None and hasattr(state.graph_store, "update_paths"):
+        try:
+            state.graph_store.update_paths(old_path, new_path)
+        except Exception as e:
+            log.warning("graph update_paths failed for document.rename: %s", e)
+
+    return {"doc_id": doc_id, "filename": new_filename, "path": new_path, "folder_id": folder_id}
+
+
 @router.post("/{doc_id}/reparse", response_model=IngestAcceptedResponse, status_code=202)
 def reparse_document(
     doc_id: str,

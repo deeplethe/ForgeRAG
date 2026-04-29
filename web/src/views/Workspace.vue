@@ -321,6 +321,7 @@ function buildContextItems(item) {
     { label: 'Cut',             icon: '✂', shortcut: 'Ctrl+X', action: 'cut' },
     { label: 'Copy',            icon: '📋', shortcut: 'Ctrl+C', action: 'copy' },
     { divider: true },
+    { label: 'Rename',          icon: '✏', shortcut: 'F2', action: 'rename' },
     { label: 'Move to…',        icon: '➡',                   action: 'move' },
     { divider: true },
     { label: 'Delete',          icon: '🗑', shortcut: 'Del', action: 'delete', danger: true },
@@ -338,7 +339,7 @@ async function onContextAction(action) {
   if (action === 'scope-chat' && item?.type === 'document') return scopeChatTo(item.path)
   if (action === 'cut')    return onCut(item)
   if (action === 'copy')   return onCopy(item)
-  if (action === 'rename' && item?.type === 'folder') return onRenameFolder(item)
+  if (action === 'rename') return onRename(item)
   if (action === 'move')   return onMoveDialog(item)
   if (action === 'delete') return onDelete(item)
 }
@@ -408,11 +409,14 @@ function onFilesPicked(e) {
   setTimeout(() => { refresh() }, 800)
 }
 
-function onRenameFolder(item) {
-  // Surface an inline editable name input on the matching folder card/row
-  // (Windows-style F2 rename). Actual rename happens once the user
-  // confirms via Enter / blur — see onConfirmRename.
-  renamingKey.value = 'f:' + item.folder_id
+function onRename(item) {
+  // Surface an inline editable name input on the matching card/row
+  // (Windows-style F2 rename). Works for both folders and documents.
+  // Actual rename happens once the user confirms via Enter / blur — see
+  // onConfirmRename.
+  if (!item) return
+  if (item.type === 'folder') renamingKey.value = 'f:' + item.folder_id
+  else if (item.type === 'document') renamingKey.value = 'd:' + item.doc_id
 }
 
 async function onConfirmRename({ oldName, newName }) {
@@ -422,17 +426,24 @@ async function onConfirmRename({ oldName, newName }) {
   renamingKey.value = ''
   const trimmed = (newName || '').trim()
   if (!trimmed || trimmed === oldName) return
-  // Resolve folder path from the captured key — by the time this fires the
-  // selection or list could have shifted, so we look up by id, not item ref.
-  const folderId = key.startsWith('f:') ? key.slice(2) : null
-  const folder = folderId
-    ? ws.childFolders.value.find(f => f.folder_id === folderId)
-    : null
-  if (!folder) return
-  try {
-    await ws.opRenameFolder(folder.path, trimmed)
-  } catch (e) {
-    toast('Rename failed: ' + e.message, { variant: 'error' })
+  // Resolve from the captured key — by the time this fires the selection
+  // or list could have shifted, so we look up by id, not item ref.
+  if (key.startsWith('f:')) {
+    const folder = ws.childFolders.value.find(f => f.folder_id === key.slice(2))
+    if (!folder) return
+    try {
+      await ws.opRenameFolder(folder.path, trimmed)
+    } catch (e) {
+      toast('Rename failed: ' + e.message, { variant: 'error' })
+    }
+  } else if (key.startsWith('d:')) {
+    const doc = ws.childDocuments.value.find(d => d.doc_id === key.slice(2))
+    if (!doc) return
+    try {
+      await ws.opRenameDocument(doc.doc_id, trimmed)
+    } catch (e) {
+      toast('Rename failed: ' + e.message, { variant: 'error' })
+    }
   }
 }
 
@@ -567,7 +578,7 @@ function onKeydown(e) {
     if (item) onDelete(item)
   } else if (e.key === 'F2') {
     const item = firstSelectedItem()
-    if (item?.type === 'folder') onRenameFolder(item)
+    if (item) onRename(item)
   } else if (mod && e.key.toLowerCase() === 'n') {
     e.preventDefault(); onNewFolder()
   } else if (mod && e.key.toLowerCase() === 'x') {
