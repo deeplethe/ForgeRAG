@@ -316,7 +316,10 @@ class KGExtractor:
         from concurrent.futures import ThreadPoolExecutor as _TP
         from concurrent.futures import TimeoutError as _TE
 
+        # ``litellm`` for exception classes; ``cached_completion`` for the call.
         import litellm
+
+        from forgerag.llm_cache import cached_completion
 
         # Hard timeout = 2× the litellm timeout to account for thinking models
         hard_timeout = self.timeout * 2
@@ -343,7 +346,7 @@ class KGExtractor:
                 # Hard timeout wrapper — litellm.completion may hang on
                 # thinking models even with timeout= set.
                 with _TP(1) as _pool:
-                    _fut = _pool.submit(litellm.completion, **kwargs)
+                    _fut = _pool.submit(cached_completion, **kwargs)
                     resp = _fut.result(timeout=hard_timeout)
                 elapsed = time.monotonic() - t0
                 log.info("KG LLM call OK (%.1fs) attempt=%d", elapsed, attempt + 1)
@@ -692,7 +695,7 @@ def consolidate_descriptions(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    import litellm
+    from forgerag.llm_cache import cached_completion
 
     # Collect items that need merging
     ent_targets = [
@@ -738,7 +741,7 @@ def consolidate_descriptions(
                 kwargs["api_key"] = api_key
             if api_base:
                 kwargs["api_base"] = api_base
-            resp = litellm.completion(**kwargs)
+            resp = cached_completion(**kwargs)
             result = (resp.choices[0].message.content or "").strip()
             return result if result else None
         except Exception as e:

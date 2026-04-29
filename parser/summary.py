@@ -321,7 +321,7 @@ def make_summary_fn(
     key = _resolve(api_key=api_key, api_key_env=api_key_env)
 
     def _generate(prompt: str) -> str:
-        import litellm
+        from forgerag.llm_cache import cached_completion
 
         kwargs: dict[str, Any] = dict(
             model=model,
@@ -334,7 +334,7 @@ def make_summary_fn(
             kwargs["api_key"] = key
         if api_base:
             kwargs["api_base"] = api_base
-        resp = litellm.completion(**kwargs)
+        resp = cached_completion(**kwargs)
         return resp.choices[0].message.content or ""
 
     return _generate
