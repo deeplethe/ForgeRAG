@@ -20,6 +20,7 @@ import {
   listDocuments,
   moveDocument,
   moveFolder,
+  renameDocument,
   renameFolder,
 } from '@/api'
 
@@ -187,6 +188,13 @@ export function useWorkspace() {
     await loadContents()
   }
 
+  async function opRenameDocument(docId, newFilename) {
+    await renameDocument(docId, newFilename)
+    // Path didn't change folder so the tree is fine; reload contents
+    // to refresh the renamed row + any sort order shift.
+    await loadContents()
+  }
+
   return {
     // state
     currentPath,
@@ -199,6 +207,6 @@ export function useWorkspace() {
     // actions
     loadTree, loadContents, navigate,
     opCreateFolder, opRenameFolder, opMoveFolder, opDeleteFolder,
-    opMoveDocument, opBulkMoveDocuments,
+    opMoveDocument, opBulkMoveDocuments, opRenameDocument,
   }
 }

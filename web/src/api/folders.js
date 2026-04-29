@@ -48,3 +48,10 @@ export const moveDocument = (doc_id, to_path) =>
 /** Move multiple documents at once. */
 export const bulkMoveDocuments = (doc_ids, to_path) =>
   post('/api/v1/documents/bulk-move', { doc_ids, to_path })
+
+/** Rename a document's user-facing filename (path's last segment is rewritten). */
+export const renameDocument = (doc_id, new_filename) =>
+  request(`/api/v1/documents/${doc_id}/filename`, {
+    method: 'PATCH',
+    body: { new_filename },
+  })

@@ -104,7 +104,7 @@ export {
 export {
   listFolders, getFolderTree, getFolderInfo,
   createFolder, renameFolder, moveFolder, deleteFolder,
-  moveDocument, bulkMoveDocuments,
+  moveDocument, bulkMoveDocuments, renameDocument,
 } from './folders'
 
 // Trash
