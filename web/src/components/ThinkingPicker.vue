@@ -73,14 +73,15 @@ const emit = defineEmits(['update:modelValue'])
 const open = ref(false)
 const rootEl = ref(null)
 
-// Off → Default → On reads as a thinking-intensity spectrum:
-// no thinking → model decides → always think. Putting Default in the
-// middle keeps the two explicit overrides on the outside, where
-// they read as "extreme" choices flanking the implicit default.
+// Default → On → Off — Default leads because it's the recommended
+// state (most users never override). The two explicit overrides
+// follow in "more thinking" → "less thinking" order: On surfaces
+// before Off so the picker reads as a positive-action menu rather
+// than a "did you mean to disable this?" cue.
 const options = computed(() => [
-  { value: false, label: t('tools.thinking_off') },
   { value: null,  label: t('tools.thinking_default') },
   { value: true,  label: t('tools.thinking_on') },
+  { value: false, label: t('tools.thinking_off') },
 ])
 
 const stateLabel = computed(() => {
