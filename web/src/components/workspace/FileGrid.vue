@@ -227,8 +227,13 @@ function fmtSize(n) {
 .file-grid {
   position: relative;        /* anchor for the absolute loading hint */
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
+  /* Fixed-width tiles instead of ``1fr`` — stretching tiles to fill the
+     row turns them into wide horizontal rectangles, which doesn't read
+     as a "file". 112px gives a roughly square card (36 icon + 2-line
+     title + meta) that matches how Finder/Explorer space their tiles. */
+  grid-template-columns: repeat(auto-fill, 112px);
+  justify-content: start;    /* leftover horizontal space sits on the right, not stretched between cards */
+  gap: 8px;
   padding: 16px;
   align-content: start;
   min-height: 200px;
@@ -255,20 +260,22 @@ function fmtSize(n) {
   align-items: center;
   gap: 4px;
   padding: 12px 8px;
-  border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s;
   user-select: none;
 }
 .file-card:hover { background: var(--color-bg3); }
-/* Selected state — neutral gray (Vercel pattern), not branded.
-   Both base + hover targeted so the bg doesn't disappear when hovering
-   an already-selected card (CSS specificity: .class:hover beats .class). */
-.file-card--selected,
+/* Selected state — neutral gray, no border. Selected uses
+   ``--color-bg-selected`` (one step heavier than the hover token) so
+   the user can clearly tell hover from selected. */
+.file-card--selected { background: var(--color-bg-selected); }
+/* Hover layered on top of selected — keep the cue visible by mixing
+   a touch of the lighter hover tone into the selected colour. Resolves
+   correctly in both light (selected darker → mix lifts it) and dark
+   (selected lighter → mix dampens it) themes. */
 .file-card--selected:hover {
-  background: var(--color-bg3);
-  border-color: var(--color-line2);
+  background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg3));
 }
 .file-card__icon {
   font-size: 32px;

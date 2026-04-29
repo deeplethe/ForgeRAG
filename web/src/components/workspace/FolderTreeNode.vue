@@ -110,15 +110,17 @@ function onDrop(e) {
   color: var(--color-t2);
 }
 .tree-row:hover { background: var(--color-bg2); color: var(--color-t1); }
-/* Active needs ``:hover`` co-targeted because ``.tree-row:hover`` has
-   specificity (0,1,1) which beats ``.tree-row--active`` (0,1,0) —
-   without this, hovering an already-selected row reverts the highlight
-   to the hover background. Same pattern .file-card--selected:hover uses. */
-.tree-row--active,
-.tree-row--active:hover {
+/* Active uses ``--color-bg-selected``; hover-on-active layers a slight
+   tint shift so the user gets a cue when pointing at an already-active
+   row (without it, hover collapsing to active makes the row feel "stuck").
+   Same hover-on-selected pattern .file-card and .list-row use. */
+.tree-row--active {
   background: var(--color-bg-selected);
   color: var(--color-t1);
   font-weight: 500;
+}
+.tree-row--active:hover {
+  background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg2));
 }
 .tree-row--drop { outline: 1.5px dashed var(--color-brand); outline-offset: -2px; }
 .tree-toggle {
