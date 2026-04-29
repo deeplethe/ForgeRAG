@@ -142,7 +142,15 @@ class KGExtractor:
         chunk_id: str,
         path: str | None = None,
     ) -> tuple[list[Entity], list[Relation]]:
-        """Extract entities and relations from a single chunk of text."""
+        """Extract entities and relations from a single chunk of text.
+
+        Retries once if the LLM returns an empty content string
+        (without raising) — a known DeepSeek-flash failure mode where
+        the API succeeds but the model produces zero output. The
+        retry is cheap relative to losing the chunk's KG provenance
+        entirely; ``_call_llm``'s own retry loop handles transient
+        timeouts/rate-limits separately at a layer below this.
+        """
         if not text or len(text.strip()) < 20:
             return [], []
         if self._fatal_error:
@@ -150,15 +158,31 @@ class KGExtractor:
         if len(text) > 8000:
             text = text[:8000]
 
-        try:
-            raw = self._call_llm(
-                system=EXTRACTION_SYSTEM,
-                user=EXTRACTION_USER.replace("{text}", text),
-            )
-            return self._parse_response(raw, doc_id, chunk_id, path=path)
-        except Exception as e:
-            log.warning("KG extraction failed for chunk %s: %s", chunk_id, e)
-            return [], []
+        for attempt in range(2):
+            try:
+                raw = self._call_llm(
+                    system=EXTRACTION_SYSTEM,
+                    user=EXTRACTION_USER.replace("{text}", text),
+                )
+                if raw.strip():
+                    return self._parse_response(raw, doc_id, chunk_id, path=path)
+                # Empty content: LLM API returned successfully with
+                # ``content == ""``. Log + retry once.
+                log.warning(
+                    "KG extraction empty response (attempt %d/2) chunk_id=%s",
+                    attempt + 1,
+                    chunk_id,
+                )
+            except Exception as e:
+                log.warning(
+                    "KG extraction failed chunk_id=%s attempt=%d/2: %s",
+                    chunk_id,
+                    attempt + 1,
+                    e,
+                )
+                if attempt == 1:
+                    return [], []
+        return [], []
 
     # ----- multi-chunk batch extraction -----
 
@@ -219,25 +243,32 @@ class KGExtractor:
         chunks: list[dict],
         doc_id: str,
         *,
-        max_workers: int = 5,
+        max_workers: int = 10,
     ) -> tuple[list[Entity], list[Relation]]:
         """
-        Extract entities/relations from all chunks, using multi-chunk
-        batch prompts with parallel execution.
+        Extract entities/relations from all chunks — one LLM call per
+        chunk, parallelised.
 
-        Chunks are grouped into batches of up to _BATCH_CHUNK_LIMIT
-        (or _BATCH_CHAR_LIMIT total characters), then each batch is
-        processed as a single LLM call.  Batches run in parallel.
+        We previously batched up to 8 chunks per LLM call to save on
+        API requests, but on cost-tier models (deepseek-flash) the
+        batch path produced a ~60% silent-empty rate: the LLM would
+        return ``content == ""`` after running for ~55s, meaning some
+        combination of safety filter, output-token budget exhaustion,
+        or model-internal "give up" on the long packed prompt. The
+        per-chunk path has none of these symptoms (smaller prompt →
+        smaller response surface → safer for the model) and a tighter
+        output schema (``{entities, relations}`` — no ``chunk_id``
+        field for the LLM to mis-format).
+
+        Trade-off: ~5× more API calls, mitigated by bumping
+        ``max_workers`` from 5 to 10 so wall-time stays comparable.
         """
         all_entities: dict[str, Entity] = {}
         all_relations: dict[str, Relation] = {}
 
-        # Group chunks into batches
-        groups = _make_groups(chunks)
         log.info(
-            "KG extraction: %d chunks → %d batch groups (workers=%d)",
+            "KG extraction: %d chunks (per-chunk, workers=%d)",
             len(chunks),
-            len(groups),
             max_workers,
         )
 
@@ -245,15 +276,16 @@ class KGExtractor:
 
         t_start = _time.monotonic()
         done_count = 0
-        total_groups = len(groups)
+        empty_count = 0
+        total = len(chunks)
 
-        def _do(group):
-            return self._extract_multi(group, doc_id)
+        def _do(c):
+            return self.extract(c["content"], doc_id, c["chunk_id"], path=c.get("path"))
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_do, g): i for i, g in enumerate(groups)}
+            futures = {pool.submit(_do, c): c["chunk_id"] for c in chunks}
             for fut in as_completed(futures):
-                futures[fut]
+                cid = futures[fut]
                 done_count += 1
                 try:
                     entities, relations = fut.result()
@@ -261,22 +293,41 @@ class KGExtractor:
                         _merge_entity(all_entities, e)
                     for r in relations:
                         _merge_relation(all_relations, r)
-                    log.info(
-                        "KG group %d/%d done: %d entities, %d relations (%.1fs elapsed)",
-                        done_count,
-                        total_groups,
-                        len(entities),
-                        len(relations),
-                        _time.monotonic() - t_start,
-                    )
+                    if not entities and not relations:
+                        empty_count += 1
+                    # Progress log every 10 chunks (avoid log spam on
+                    # 100+ chunk docs), plus always log empty results
+                    # so we still see them granularly.
+                    if done_count % 10 == 0 or (not entities and not relations):
+                        log.info(
+                            "KG chunk %d/%d done (cid=%s): %d entities, %d relations (%.1fs elapsed)",
+                            done_count,
+                            total,
+                            cid,
+                            len(entities),
+                            len(relations),
+                            _time.monotonic() - t_start,
+                        )
                 except Exception as exc:
+                    empty_count += 1
                     log.warning(
-                        "KG batch group %d/%d failed (%.1fs elapsed): %s",
+                        "KG chunk %d/%d failed (cid=%s, %.1fs elapsed): %s",
                         done_count,
-                        total_groups,
+                        total,
+                        cid,
                         _time.monotonic() - t_start,
                         exc,
                     )
+
+        log.info(
+            "KG extraction summary: %d chunks → %d entities, %d relations "
+            "(%d chunks empty, %.1fs total)",
+            total,
+            len(all_entities),
+            len(all_relations),
+            empty_count,
+            _time.monotonic() - t_start,
+        )
 
         return list(all_entities.values()), list(all_relations.values())
 
