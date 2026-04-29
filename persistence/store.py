@@ -375,7 +375,12 @@ class Store:
             else:
                 row.file_id = file_id if file_id is not None else row.file_id
                 row.filename = filename
-                row.format = format
+                # Don't overwrite ``format``. The placeholder set the SOURCE
+                # extension (e.g. "text" for an .md file); the parser's
+                # post-conversion view is "pdf" for everything that gets
+                # converted, which would clobber the user-facing identity
+                # of the document. Format only changes if the user re-
+                # ingests as a different doc_id.
                 row.active_parse_version = active_parse_version
                 if metadata_json is not None:
                     row.metadata_json = metadata_json
