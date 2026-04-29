@@ -33,6 +33,68 @@ from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 log = logging.getLogger(__name__)
 
 
+def _backfill_document_source_format(rel) -> None:
+    """One-shot fix for documents whose ``format`` was clobbered by the
+    parser's post-conversion view.
+
+    Pre-fix path: ingest a markdown / docx / html file → converter
+    rewrites it to a temporary PDF for parsing → ParsedDocument has
+    ``format=DocFormat.PDF`` → ``ingestion_writer.upsert_document`` wrote
+    that value over the placeholder's source-extension format. Result:
+    a document called ``foo.md`` with DB ``format='pdf'``, which
+    confused both the workspace icon resolver and any caller filtering
+    by source format.
+
+    The bug is fixed forward in ``Store.upsert_document`` (which now
+    preserves ``format`` on existing rows). This backfill repairs rows
+    written under the buggy code by deriving the source format from
+    the filename extension whenever it disagrees with the stored value.
+    Idempotent: rows where filename-derived format already equals
+    stored format are no-ops.
+    """
+    from sqlalchemy import select
+
+    from persistence.models import Document
+
+    # Same mapping the API route uses when creating placeholders, kept
+    # local so we don't introduce a cross-module dep just for this
+    # one-shot. Stays in sync with api/routes/documents.py.
+    _EXT_TO_FORMAT = {
+        "pdf": "pdf",
+        "docx": "docx",
+        "doc": "docx",
+        "pptx": "pptx",
+        "ppt": "pptx",
+        "xlsx": "xlsx",
+        "xls": "xlsx",
+        "txt": "text",
+        "md": "text",
+        "html": "html",
+        "htm": "html",
+    }
+
+    fixes: list[tuple[str, str]] = []  # (doc_id, new_format)
+    with rel.transaction() as sess:
+        rows = sess.execute(select(Document.doc_id, Document.filename, Document.format)).all()
+        for r in rows:
+            if not r.filename:
+                continue
+            ext = r.filename.rsplit(".", 1)[-1].lower() if "." in r.filename else ""
+            derived = _EXT_TO_FORMAT.get(ext, ext or "unknown")
+            if derived and derived != r.format:
+                fixes.append((r.doc_id, derived))
+
+    if not fixes:
+        return
+
+    with rel.transaction() as sess:
+        for doc_id, new_fmt in fixes:
+            row = sess.get(Document, doc_id)
+            if row is not None:
+                row.format = new_fmt
+    log.info("document format backfill: corrected %d rows from filename extension", len(fixes))
+
+
 def _backfill_chroma_paths_from_sql(rel, vec) -> None:
     """Re-derive vector chunk path metadata from SQL ``Document.path``.
 
@@ -114,6 +176,16 @@ class AppState:
         self.store = Store(cfg.persistence.relational)
         self.store.connect()
         self.store.ensure_schema()
+
+        # One-shot repair: documents whose ``format`` was clobbered by
+        # the parser's post-conversion view (``.md`` ingested before the
+        # ``upsert_document`` fix would land in DB as ``format='pdf'``).
+        # Idempotent — rows already aligned with their filename are
+        # untouched.
+        try:
+            _backfill_document_source_format(self.store)
+        except Exception as e:
+            log.warning("document source-format backfill failed: %s", e)
 
         # yaml is the single source of truth; the DB carries a one-way
         # mirror so read-only admin views can see the effective state.
