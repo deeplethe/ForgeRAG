@@ -291,7 +291,18 @@ function fmtType(name) {
      the same trick on .file-card. Inputs ignore this on purpose. */
   user-select: none;
 }
-.file-list table { border-collapse: collapse; table-layout: fixed; }
+.file-list table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  /* Sum of fixed cols (90+96+150+150 = 486) + 200 min for the
+     auto-width Name column. Without this, narrow viewports + a wide
+     sidebar squeeze Name down to ~6px and the inline rename / create
+     input collapses to a sliver — visually it looks like "..." next
+     to the icon because there's no room left for the input box.
+     The marquee-container already has overflow: auto, so the table
+     scrolls horizontally when the viewport is narrower than this. */
+  min-width: 686px;
+}
 .file-list__loading {
   position: absolute;
   top: 50%;
@@ -314,8 +325,8 @@ function fmtType(name) {
 .col-name      { width: auto; }
 .col-type      { width: 90px; }
 .col-size      { width: 96px; }
-.col-created   { width: 160px; }
-.col-modified  { width: 160px; }
+.col-created   { width: 150px; }
+.col-modified  { width: 150px; }
 
 .list-th {
   text-align: left;
