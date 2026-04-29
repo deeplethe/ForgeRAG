@@ -46,6 +46,7 @@
       @set-view="ws.setViewMode"
       @show-trash="onShowTrash"
       @empty-trash="onEmptyTrash"
+      @exit-trash="onExitTrash"
     >
       <template #lead>
         <Breadcrumb
