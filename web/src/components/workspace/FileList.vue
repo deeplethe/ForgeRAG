@@ -35,16 +35,18 @@
         <!-- Inline new-folder editor (Windows-style) — appears at top of list -->
         <tr v-if="creating" class="list-row list-row--creating">
           <td>
-            <FileIcon kind="folder" :size="16" class="row-icon" />
-            <input
-              ref="newNameInput"
-              type="text"
-              class="list-name-input"
-              placeholder="New folder"
-              @keydown.enter.prevent="confirmCreate"
-              @keydown.esc.prevent="$emit('cancel-create')"
-              @blur="confirmCreate"
-            />
+            <div class="name-cell">
+              <FileIcon kind="folder" :size="16" class="row-icon" />
+              <input
+                ref="newNameInput"
+                type="text"
+                class="list-name-input"
+                placeholder="New folder"
+                @keydown.enter.prevent="confirmCreate"
+                @keydown.esc.prevent="$emit('cancel-create')"
+                @blur="confirmCreate"
+              />
+            </div>
           </td>
           <td>Folder</td>
           <td>—</td>
@@ -64,20 +66,22 @@
           @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
         >
           <td>
-            <FileIcon kind="folder" :size="16" class="row-icon" />
-            <input
-              v-if="isRenaming(f)"
-              ref="renameInput"
-              type="text"
-              class="list-name-input"
-              :value="f.name"
-              @click.stop
-              @dblclick.stop
-              @keydown.enter.prevent="confirmRename(f)"
-              @keydown.esc.prevent="cancelRename"
-              @blur="confirmRename(f)"
-            />
-            <template v-else>{{ f.name }}</template>
+            <div class="name-cell">
+              <FileIcon kind="folder" :size="16" class="row-icon" />
+              <input
+                v-if="isRenaming(f)"
+                ref="renameInput"
+                type="text"
+                class="list-name-input"
+                :value="f.name"
+                @click.stop
+                @dblclick.stop
+                @keydown.enter.prevent="confirmRename(f)"
+                @keydown.esc.prevent="cancelRename"
+                @blur="confirmRename(f)"
+              />
+              <span v-else class="name-text">{{ f.name }}</span>
+            </div>
           </td>
           <td>Folder</td>
           <td>—</td>
@@ -100,30 +104,32 @@
           @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
         >
           <td>
-            <FileIcon kind="file" :name="d.filename || d.file_name" :size="16" class="row-icon" />
-            <input
-              v-if="isRenamingDoc(d)"
-              ref="renameInput"
-              type="text"
-              class="list-name-input"
-              :value="d.filename || d.file_name || ''"
-              @click.stop
-              @dblclick.stop
-              @keydown.enter.prevent="confirmRenameDoc(d)"
-              @keydown.esc.prevent="cancelRename"
-              @blur="confirmRenameDoc(d)"
-            />
-            <template v-else>{{ d.filename || d.file_name || d.doc_id }}</template>
-            <span
-              v-if="d.status === 'error'"
-              class="status-chip status-chip--error"
-              :title="d.error_message || 'Ingestion failed'"
-            >failed</span>
-            <span
-              v-else-if="d.status && !['ready', 'error'].includes(d.status)"
-              class="status-chip status-chip--pending"
-              :title="d.status"
-            >{{ d.status }}</span>
+            <div class="name-cell">
+              <FileIcon kind="file" :name="d.filename || d.file_name" :size="16" class="row-icon" />
+              <input
+                v-if="isRenamingDoc(d)"
+                ref="renameInput"
+                type="text"
+                class="list-name-input"
+                :value="d.filename || d.file_name || ''"
+                @click.stop
+                @dblclick.stop
+                @keydown.enter.prevent="confirmRenameDoc(d)"
+                @keydown.esc.prevent="cancelRename"
+                @blur="confirmRenameDoc(d)"
+              />
+              <span v-else class="name-text">{{ d.filename || d.file_name || d.doc_id }}</span>
+              <span
+                v-if="d.status === 'error'"
+                class="status-chip status-chip--error"
+                :title="d.error_message || 'Ingestion failed'"
+              >failed</span>
+              <span
+                v-else-if="d.status && !['ready', 'error'].includes(d.status)"
+                class="status-chip status-chip--pending"
+                :title="d.status"
+              >{{ d.status }}</span>
+            </div>
           </td>
           <td>{{ fmtType(d.filename || d.file_name) }}</td>
           <td>{{ fmtSize(d.file_size_bytes) }}</td>
@@ -375,10 +381,33 @@ function fmtType(name) {
    real cue, no need for a brand-coloured highlight on the row. */
 .list-row--creating,
 .list-row--creating:hover { background: var(--color-bg3); }
+
+/* Name cell uses flex so the icon stays at its natural width and the
+   input/text fills the remaining space. The previous inline-block +
+   ``width: calc(100% - 28px)`` setup was fragile — the 100% reference
+   for inline-block inside a table-cell + ``overflow: hidden /
+   text-overflow: ellipsis / white-space: nowrap`` produced a sliver
+   of an input on some browser/font combinations, with the
+   user-visible result being just "..." next to the icon. */
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;        /* let flex children actually shrink */
+}
+.name-cell .row-icon {
+  flex-shrink: 0;      /* never squeeze the folder/file icon */
+  margin-right: 0;     /* gap on the parent handles spacing */
+}
+.name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .list-name-input {
-  display: inline-block;
-  width: calc(100% - 28px);
-  margin-left: 4px;
+  flex: 1;
+  min-width: 0;        /* default flex min is auto = content width — without this the input refuses to shrink */
   padding: 2px 6px;
   font-size: 11px;
   color: var(--color-t1);
@@ -387,7 +416,6 @@ function fmtType(name) {
   border-radius: var(--r-sm);
   outline: none;
   box-shadow: var(--ring-focus);
-  vertical-align: middle;
 }
 
 .doc-icon { margin-right: 2px; }
