@@ -360,8 +360,10 @@ function fmtType(name) {
 .list-empty { padding: 32px; text-align: center; color: var(--color-t3); }
 
 /* Inline new-folder editor row */
-.list-row--creating { background: color-mix(in srgb, var(--color-brand) 6%, transparent); }
-.list-row--creating:hover { background: color-mix(in srgb, var(--color-brand) 6%, transparent); }
+/* Creating row — neutral hover tint; the input's focus ring is the
+   real cue, no need for a brand-coloured highlight on the row. */
+.list-row--creating,
+.list-row--creating:hover { background: var(--color-bg3); }
 .list-name-input {
   display: inline-block;
   width: calc(100% - 28px);

@@ -1,6 +1,14 @@
 <template>
+  <!-- Single-row toolbar: [breadcrumb slot] ... [actions on the right].
+       Breadcrumb arrives via the ``lead`` slot so the parent owns nav
+       state without us re-passing crumbs through props. -->
   <div class="flex items-center gap-1 px-3 py-1.5 border-b border-line bg-bg2">
-    <!-- Primary actions — everything else lives in the context menu -->
+    <slot name="lead" />
+
+    <div class="flex-1"></div>
+
+    <!-- Primary actions — moved to the right cluster so they sit next
+         to search/view/trash instead of sandwiching the breadcrumb. -->
     <button class="toolbar-btn" @click="$emit('new-folder')" title="New folder (Ctrl+N)">
       ⊕ <span>New</span>
     </button>
@@ -8,10 +16,8 @@
       ⬆ <span>Upload</span>
     </button>
 
-    <div class="flex-1"></div>
-
     <!-- Search — filters the current folder's children -->
-    <div class="search-wrap">
+    <div class="search-wrap ml-2">
       <span class="search-icon">⌕</span>
       <input
         :value="search"
