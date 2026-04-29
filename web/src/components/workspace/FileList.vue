@@ -54,6 +54,7 @@
           :key="'f:' + f.folder_id"
           class="list-row"
           :class="{ 'list-row--selected': isSelected('f:' + f.folder_id) }"
+          :data-selkey="'f:' + f.folder_id"
           :draggable="!isRenaming(f)"
           @click.stop="onSelect('f:' + f.folder_id, $event)"
           @dblclick.stop="onFolderDblClick(f)"
@@ -89,6 +90,7 @@
             'list-row--selected': isSelected('d:' + d.doc_id),
             'list-row--error': d.status === 'error',
           }"
+          :data-selkey="'d:' + d.doc_id"
           draggable="true"
           @click.stop="onSelect('d:' + d.doc_id, $event)"
           @dblclick.stop="$emit('open-document', d)"
