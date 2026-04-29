@@ -26,6 +26,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ArrowLeftIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
 import {
+  blockImageUrl,
   fileDownloadUrl,
   filePreviewUrl,
   getChunkByBlock,
@@ -57,6 +58,19 @@ const activeNodeId = ref(null)
 const expandedNodes = reactive(new Set())
 const pdfPage = ref(1)
 const pdfHighlightBlocks = ref([])
+// Per-chunk expand state — clicking the row's "view" affordance
+// flips it; clicking again collapses. Keyed by chunk_id so the
+// state persists while the user clicks around other panels.
+const expandedChunks = reactive({})
+function toggleChunkExpand(chunkId) {
+  expandedChunks[chunkId] = !expandedChunks[chunkId]
+}
+function chunkImageUrls(c) {
+  // Figure-type chunks have one or more block_ids that point to
+  // figure crops; the block-image endpoint serves them by id.
+  if (c.content_type !== 'figure' || !c.block_ids?.length) return []
+  return c.block_ids.map((bid) => blockImageUrl(bid))
+}
 
 // ── Computed ─────────────────────────────────────────────────────
 const breadcrumb = computed(() => {
@@ -445,8 +459,11 @@ watch(() => props.docId, loadAll, { immediate: true })
               v-for="c in chunks"
               :key="c.chunk_id"
               :ref="(el) => setChunkRef(c.chunk_id, el)"
-              class="chunk-row"
-              :class="{ 'chunk-row--active': activeChunkId === c.chunk_id }"
+              class="chunk-row group"
+              :class="{
+                'chunk-row--active': activeChunkId === c.chunk_id,
+                'chunk-row--expanded': expandedChunks[c.chunk_id],
+              }"
               @click="onClickChunk(c)"
             >
               <div class="chunk-row__hdr">
@@ -454,7 +471,43 @@ watch(() => props.docId, loadAll, { immediate: true })
                 <span v-if="c.content_type && c.content_type !== 'text'" class="chunk-row__type">{{ c.content_type }}</span>
                 <span class="chunk-row__tok">{{ c.token_count }}t</span>
               </div>
-              <div class="chunk-row__body">{{ c.content }}</div>
+              <div
+                class="chunk-row__body"
+                :class="{ 'chunk-row__body--clamp': !expandedChunks[c.chunk_id] }"
+              >{{ c.content }}</div>
+
+              <!-- Inline figure preview when expanded. Same
+                   ``blockImageUrl`` endpoint Repository.vue uses
+                   for the standalone view. -->
+              <div
+                v-if="expandedChunks[c.chunk_id] && c.content_type === 'figure'"
+                class="chunk-row__figs"
+              >
+                <img
+                  v-for="url in chunkImageUrls(c)"
+                  :key="url"
+                  :src="url"
+                  class="chunk-row__fig"
+                  loading="lazy"
+                  @error="$event.target.style.display = 'none'"
+                />
+              </div>
+
+              <!-- Hover-revealed expand / collapse affordance.
+                   Stays out of the way at rest; click reveals the
+                   full chunk content + any attached figure crops. -->
+              <div class="chunk-row__action">
+                <button
+                  v-show="!expandedChunks[c.chunk_id]"
+                  class="chunk-row__view-btn"
+                  @click.stop="toggleChunkExpand(c.chunk_id)"
+                >view detail</button>
+                <button
+                  v-show="expandedChunks[c.chunk_id]"
+                  class="chunk-row__close-btn"
+                  @click.stop="toggleChunkExpand(c.chunk_id)"
+                >collapse</button>
+              </div>
             </div>
           </div>
         </section>
@@ -680,9 +733,66 @@ watch(() => props.docId, loadAll, { immediate: true })
   font-size: 10px;
   line-height: 1.45;
   color: var(--color-t2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chunk-row__body--clamp {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  white-space: normal;
 }
+
+/* Inline figure previews, only visible when the chunk is expanded
+   (and only emitted for ``content_type === 'figure'``). */
+.chunk-row__figs {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chunk-row__fig {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-sm);
+}
+
+/* The view/collapse affordance stays calm at rest — only the
+   collapsed-state "view detail" link is hidden until hover, so the
+   row reads as a passive list item; once expanded, "collapse" is
+   visible all the time so the user can re-fold without
+   having to hover precisely. */
+.chunk-row__action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.chunk-row__view-btn {
+  font-size: 9px;
+  color: var(--color-brand, #3291ff);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.chunk-row.group:hover .chunk-row__view-btn {
+  opacity: 1;
+}
+.chunk-row--active .chunk-row__view-btn { opacity: 1; }
+.chunk-row__close-btn {
+  font-size: 9px;
+  color: var(--color-t3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.12s;
+}
+.chunk-row__close-btn:hover { color: var(--color-t1); }
 </style>

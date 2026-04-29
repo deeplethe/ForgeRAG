@@ -104,10 +104,15 @@ function buildGraph(rawNodes, rawEdges) {
     const k = `${e.source}->${e.target}`
     if (edgeKeys.has(k)) continue
     edgeKeys.add(k)
+    // Stash relation metadata so the reducer can surface keywords as
+    // an edge label only when filter mode is active (otherwise labels
+    // on every edge clutter the small pane).
     g.addEdge(e.source, e.target, {
       type: 'arrow',
       size: 0.6,
       color: 'rgba(120, 120, 120, 0.35)',
+      keywords: e.keywords || '',
+      description: e.description || '',
     })
   }
 
@@ -120,7 +125,13 @@ function initSigma(g) {
     defaultNodeColor: '#6b7280',
     defaultEdgeColor: 'rgba(120, 120, 120, 0.35)',
     defaultEdgeType: 'arrow',
+    // Edge labels are rendered conditionally — kept off by default
+    // so the unfiltered view stays readable, flipped on by the
+    // chunk-filter reducer below.
     renderEdgeLabels: false,
+    edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
+    edgeLabelSize: 8,
+    edgeLabelColor: { color: '#9aa0a6' },
     labelFont: 'Geist, Inter, system-ui, sans-serif',
     labelSize: 9,
     labelWeight: '500',
@@ -137,7 +148,10 @@ function initSigma(g) {
     emit('entity-click', node)
   })
 
-  // Auto-layout: small forceAtlas2 burst then settle.
+  // Auto-layout: small forceAtlas2 burst then settle. Runs in a
+  // worker so the main thread stays responsive even on bigger
+  // graphs — the loading overlay below covers initial render until
+  // the first frame paints.
   fa2 = new FA2Layout(g, {
     settings: {
       gravity: 1,
@@ -148,33 +162,104 @@ function initSigma(g) {
   })
   fa2.start()
   // Stop after a short settle window — small graphs converge fast.
+  // Re-apply the chunk filter once after settle so the camera focus
+  // (which depends on final node positions) is correct.
   setTimeout(() => {
     if (fa2) {
       fa2.stop()
-      // Keep camera centered on what just settled.
       sigma?.refresh()
+      applyDimming()
     }
   }, 1500)
 
   applyDimming()
 }
 
-// Dim nodes whose source_chunk_ids doesn't include the active chunk
-// (no-op if no chunk is selected).
+// Truncate keyword/description text used as an edge label so even a
+// dense neighbourhood stays legible in the small pane.
+function truncate(s, n = 18) {
+  if (!s) return ''
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
+// Apply / remove the chunk-filter pass.  When ``activeChunkId`` is
+// set, only entities whose ``source_chunk_ids`` includes it stay
+// fully rendered; everything else fades into the background and
+// drops below them in z-order, and the camera animates to the
+// active sub-graph's centroid. Edges between two active nodes
+// surface their keywords as labels so the user can see how the
+// chunk's entities relate.
 function applyDimming() {
-  if (!sigma) return
+  if (!sigma || !graph.value) return
   const cid = props.activeChunkId
+  if (!cid) {
+    // Reset to base view — no reducers, no edge labels.
+    sigma.setSetting('renderEdgeLabels', false)
+    sigma.setSetting('nodeReducer', (n, d) => d)
+    sigma.setSetting('edgeReducer', (e, d) => d)
+    sigma.refresh()
+    return
+  }
+  // Gather active node IDs once so the reducers stay O(1) per element.
+  const active = new Set()
+  graph.value.forEachNode((nid, attr) => {
+    if ((attr.sourceChunkIds || []).includes(cid)) active.add(nid)
+  })
+  sigma.setSetting('renderEdgeLabels', true)
   sigma.setSetting('nodeReducer', (node, data) => {
-    if (!cid) return data
-    const chunkIds = data.sourceChunkIds || []
-    if (chunkIds.includes(cid)) return data
-    return { ...data, color: 'rgba(120, 120, 120, 0.18)', label: null }
+    if (active.has(node)) return { ...data, zIndex: 1 }
+    // Dim non-active nodes to a near-background color and drop
+    // them below the active set so the filtered subgraph reads
+    // clearly even when it's spatially mixed in.
+    return {
+      ...data,
+      color: 'rgba(40, 40, 40, 0.35)',
+      label: null,
+      zIndex: 0,
+    }
   })
   sigma.setSetting('edgeReducer', (edge, data) => {
-    if (!cid) return data
-    return { ...data, color: 'rgba(120, 120, 120, 0.12)' }
+    const s = graph.value.source(edge)
+    const t = graph.value.target(edge)
+    if (active.has(s) && active.has(t)) {
+      return {
+        ...data,
+        color: 'rgba(180, 180, 180, 0.65)',
+        label: truncate(data.keywords || data.description),
+        zIndex: 1,
+      }
+    }
+    return {
+      ...data,
+      color: 'rgba(40, 40, 40, 0.18)',
+      label: null,
+      zIndex: 0,
+    }
   })
   sigma.refresh()
+  focusOnNodes(active)
+}
+
+// Animate the camera to the centroid of a node set, zooming in to
+// roughly fit the cluster. ``getNodeDisplayData`` returns
+// camera-space coords that ``camera.animate`` can consume directly.
+function focusOnNodes(nodeIds) {
+  if (!sigma || !nodeIds.size) return
+  let sumX = 0
+  let sumY = 0
+  let count = 0
+  for (const nid of nodeIds) {
+    const dd = sigma.getNodeDisplayData(nid)
+    if (!dd) continue
+    sumX += dd.x
+    sumY += dd.y
+    count += 1
+  }
+  if (!count) return
+  sigma.getCamera().animate(
+    { x: sumX / count, y: sumY / count, ratio: 0.55 },
+    { duration: 400 },
+  )
 }
 
 function destroySigma() {
