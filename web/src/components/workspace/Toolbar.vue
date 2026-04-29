@@ -23,7 +23,7 @@
 
     <!-- Search — filters the current folder's children -->
     <div class="search-wrap ml-2">
-      <span class="search-icon">⌕</span>
+      <MagnifyingGlassIcon class="search-icon" />
       <input
         :value="search"
         @input="$emit('update:search', $event.target.value)"
@@ -66,6 +66,8 @@
 </template>
 
 <script setup>
+import { MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
+
 defineProps({
   viewMode: { type: String, required: true },
   trashCount: { type: Number, default: 0 },
@@ -119,11 +121,11 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search'])
 }
 .search-icon {
   position: absolute;
-  left: 8px;
-  font-size: 12px;
+  left: 7px;
+  width: 14px;
+  height: 14px;
   color: var(--color-t3);
   pointer-events: none;
-  line-height: 1;
 }
 .search-input {
   width: 100%;

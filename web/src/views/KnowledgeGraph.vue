@@ -71,9 +71,11 @@ const chunkPanelRef = ref(null)     // scroll container ref
 
 // Search
 const searchQuery = ref('')
+// `showSearch` was a toggle for the popup-style panel; the inline
+// search-wrap is always visible now, so the only state we need is
+// the query + the results.
 const searchResults = ref([])
 const searching = ref(false)
-const showSearch = ref(false)
 const searchInput = ref(null)
 
 // DOM refs
@@ -274,12 +276,7 @@ watch(searchQuery, (q) => {
   }, 300)
 })
 
-watch(showSearch, (v) => {
-  if (v) nextTick(() => searchInput.value?.focus())
-})
-
 function focusNode(entityId) {
-  showSearch.value = false
   searchQuery.value = ''
   if (!sigma) return
   if (graph.value?.hasNode(entityId)) {
@@ -601,11 +598,14 @@ function updateZoom() {
 function onKeyDown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
     e.preventDefault()
-    showSearch.value = !showSearch.value
+    // Inline search is always mounted; just focus + select to mirror
+    // the standard Ctrl+K = focus search behavior.
+    nextTick(() => searchInput.value?.focus())
+    searchInput.value?.select?.()
   }
   if (e.key === 'Escape') {
     if (showLayoutMenu.value) showLayoutMenu.value = false
-    else if (showSearch.value) showSearch.value = false
+    else if (searchQuery.value) searchQuery.value = ''
     else if (chunkPanelDocId.value) closeChunkPanel()
     else if (selectedNode.value) clearSelection()
   }
@@ -744,38 +744,41 @@ watch(isDark, () => {
       </div>
 
       <div class="flex items-center gap-1">
-        <!-- Search -->
-        <div class="relative">
-          <button @click="showSearch = !showSearch"
-            :class="['p-1.5 rounded-md transition-colors', showSearch ? 'bg-bg-hover text-t1' : 'text-t3 hover:text-t1 hover:bg-bg-hover']"
-            title="Search entities (Ctrl+K)">
-            <MagnifyingGlassIcon class="w-4 h-4" />
-          </button>
-
+        <!-- Search — inline input mirroring the workspace pattern.
+             Results dropdown anchors below the input when the query
+             length crosses the 2-char threshold; click a result to
+             focus that node. ``Ctrl+K`` focuses the input. -->
+        <div class="search-wrap">
+          <MagnifyingGlassIcon class="search-icon" />
+          <input
+            ref="searchInput"
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search entities..."
+            class="search-input"
+            @keydown.escape="searchQuery = ''"
+          />
+          <button
+            v-if="searchQuery"
+            class="search-clear"
+            @click="searchQuery = ''"
+            title="Clear"
+          >✕</button>
           <Transition name="fade">
-            <div v-if="showSearch"
-              class="absolute right-0 top-full mt-1.5 w-72 bg-bg border border-line rounded-lg shadow-lg z-30 overflow-hidden">
-              <div class="p-2 border-b border-line">
-                <input ref="searchInput" v-model="searchQuery" type="text"
-                  placeholder="Search entities..."
-                  class="w-full text-[11px] px-2.5 py-1.5 rounded-md border border-line bg-bg2 text-t1 placeholder:text-t3 outline-none focus:border-brand"
-                  @keydown.escape="showSearch = false" />
-              </div>
-              <div class="max-h-60 overflow-y-auto">
-                <div v-if="searching" class="p-3 text-center text-[10px] text-t3">Searching...</div>
-                <div v-else-if="searchQuery.length >= 2 && !searchResults.length"
-                  class="p-3 text-center text-[10px] text-t3">No entities found</div>
-                <button v-for="r in searchResults" :key="r.entity_id"
-                  @click="focusNode(r.entity_id)"
-                  class="w-full text-left px-3 py-2 hover:bg-bg-hover transition-colors border-b border-line last:border-0">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full shrink-0"
-                      :style="{ background: typeFill(r.entity_type) }"></span>
-                    <span class="text-[11px] text-t1 font-medium truncate">{{ r.name }}</span>
-                    <span class="text-[9px] text-t3 uppercase ml-auto shrink-0">{{ r.entity_type }}</span>
-                  </div>
-                </button>
-              </div>
+            <div v-if="searchQuery.length >= 2" class="search-results">
+              <div v-if="searching" class="p-3 text-center text-[10px] text-t3">Searching...</div>
+              <div v-else-if="!searchResults.length"
+                class="p-3 text-center text-[10px] text-t3">No entities found</div>
+              <button v-for="r in searchResults" :key="r.entity_id"
+                @click="focusNode(r.entity_id)"
+                class="w-full text-left px-3 py-2 hover:bg-bg-hover transition-colors border-b border-line last:border-0">
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full shrink-0"
+                    :style="{ background: typeFill(r.entity_type) }"></span>
+                  <span class="text-[11px] text-t1 font-medium truncate">{{ r.name }}</span>
+                  <span class="text-[9px] text-t3 uppercase ml-auto shrink-0">{{ r.entity_type }}</span>
+                </div>
+              </button>
             </div>
           </Transition>
         </div>
@@ -1129,5 +1132,67 @@ watch(isDark, () => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Inline entity-search input — same shape as the workspace toolbar's
+   search so the two pages share a visual language. Results dropdown
+   anchors below the input as a popover; click-outside dismisses
+   naturally because the dropdown lives inside .search-wrap. */
+.search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 240px;
+}
+.search-icon {
+  position: absolute;
+  left: 7px;
+  width: 14px;
+  height: 14px;
+  color: var(--color-t3);
+  pointer-events: none;
+}
+.search-input {
+  width: 100%;
+  padding: 5px 26px 5px 24px;
+  font-size: 11px;
+  color: var(--color-t1);
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.search-input:hover { border-color: var(--color-line2); }
+.search-input:focus { border-color: var(--color-line2); box-shadow: var(--ring-focus); }
+.search-input::placeholder { color: var(--color-t3); }
+.search-clear {
+  position: absolute;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--color-t3);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.search-clear:hover { background: var(--color-bg2); color: var(--color-t1); }
+.search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 30;
 }
 </style>
