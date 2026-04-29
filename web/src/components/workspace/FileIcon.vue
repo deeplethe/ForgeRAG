@@ -4,12 +4,13 @@
   <span v-if="kind === 'folder'" class="file-icon-emoji" :style="{ fontSize: emojiSize }">📁</span>
 
   <!-- File: inline-rendered Phosphor duotone SVG. ``v-html`` so the SVG
-       inherits ``color`` from this span, letting per-type tints flow
-       through the duotone strokes + 20%-opacity fill layer. -->
+       inherits ``color`` from this span. We deliberately keep all file
+       icons monochromatic (Vercel-style) — type information is carried
+       by the icon *shape*, not colour. Saturated per-type tints felt
+       like noise against the otherwise grayscale workspace. -->
   <span
     v-else
     class="file-icon"
-    :class="`file-icon--${typeKey}`"
     :style="{ width: pxSize, height: pxSize }"
     v-html="svgMarkup"
   />
@@ -17,7 +18,11 @@
 
 <script setup>
 /**
- * FileIcon — Phosphor duotone file icons coloured per source type.
+ * FileIcon — Phosphor duotone file icons, monochromatic.
+ *
+ * Vercel-style: type information is carried by icon *shape* alone, not
+ * colour. We tried per-type tints (PDF red, DOC blue, etc.) but they
+ * read as visual noise against the otherwise grayscale workspace.
  *
  * Format detection runs off the **filename extension**, not the
  * ``Document.format`` field — that field used to get clobbered by
@@ -35,9 +40,8 @@
  *
  * Source SVGs live under ``web/src/assets/file-icons/`` and are pulled
  * in as raw strings via vite's ``?raw`` query so we can inline them
- * (which lets ``currentColor`` flow through to the strokes — img tags
- * can't do that). Adds maybe 6KB total to the bundle for the bundle of
- * formats we ingest.
+ * (which lets ``currentColor`` inherit from the parent span — ``<img>``
+ * tags can't do that, leaving them locked at black).
  *
  * Source: https://phosphoricons.com (MIT). Files are vendored verbatim
  * under ``web/src/assets/file-icons/file-*.svg``.
@@ -69,10 +73,9 @@ const props = defineProps({
   size: { type: [Number, String], default: 24 },
 })
 
-// Filename → typeKey. ``typeKey`` doubles as the CSS class suffix
-// (``file-icon--pdf``) for per-type colour, AND keys into the SVG map.
-// Order matters within a category — explicit extensions win over
-// catch-alls (``js`` before ``code``, ``html`` before ``code``).
+// Filename → typeKey, used to look up the right SVG. Order matters
+// within a category — explicit extensions win over catch-alls
+// (``js`` before ``code``, ``html`` before ``code``).
 const _EXT_TO_TYPE = {
   pdf: 'pdf',
   doc: 'doc', docx: 'doc', rtf: 'doc', odt: 'doc', pages: 'doc',
@@ -140,36 +143,11 @@ const emojiSize = computed(() => `${Number(props.size) * 0.85}px`)
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  color: var(--color-t2);   /* monochrome — shape carries the type signal */
 }
 .file-icon :deep(svg) {
   width: 100%;
   height: 100%;
   display: block;
 }
-
-/* Per-type colour. ``currentColor`` flows through Phosphor's duotone
-   strokes; the 20%-opacity polygon at the corner picks the same hue
-   at low alpha, giving the soft duotone effect without me having to
-   touch the SVG. Colours follow the file-format conventions users
-   recognise (PDF Adobe red, Word blue, Excel green, etc.) but at
-   slightly muted Tailwind ~600 saturation so they sit calmly in
-   the workspace grid. */
-.file-icon--pdf      { color: #DC2626; }  /* red-600 */
-.file-icon--doc      { color: #2563EB; }  /* blue-600 */
-.file-icon--xls      { color: #059669; }  /* emerald-600 */
-.file-icon--csv      { color: #059669; }
-.file-icon--ppt      { color: #EA580C; }  /* orange-600 */
-.file-icon--md       { color: #475569; }  /* slate-600 — markdown is plain text in spirit */
-.file-icon--text     { color: #475569; }
-.file-icon--image    { color: #0891B2; }  /* cyan-600 */
-.file-icon--svg      { color: #0891B2; }
-.file-icon--audio    { color: #DB2777; }  /* pink-600 */
-.file-icon--video    { color: #9333EA; }  /* purple-600 */
-.file-icon--archive  { color: #B45309; }  /* amber-700 */
-.file-icon--html     { color: #EA580C; }  /* orange-600 — same family as web markup */
-.file-icon--css      { color: #2563EB; }  /* blue-600 */
-.file-icon--js       { color: #CA8A04; }  /* yellow-600 — JS/TS yellow lineage */
-.file-icon--py       { color: #2563EB; }  /* blue-600 */
-.file-icon--code     { color: #6B7280; }  /* gray-500 — generic config / source */
-.file-icon--generic  { color: var(--color-t2); }
 </style>
