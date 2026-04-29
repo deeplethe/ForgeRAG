@@ -115,7 +115,10 @@ window.addEventListener('keydown', onKey)
   border-top: 1px solid var(--color-line);
 }
 
-/* Destructive variant — red filled button */
+/* Destructive variant — solid red, white text. ``filter:
+   brightness`` was a Material-era hack and made the button look
+   muddy on dark themes; an explicit darker-red on hover is cleaner
+   and matches Vercel's destructive-button pattern. */
 .btn-destructive {
   display: inline-flex;
   align-items: center;
@@ -124,13 +127,16 @@ window.addEventListener('keydown', onKey)
   font-size: var(--fs-md);
   font-weight: 500;
   color: #fff;
-  background: var(--color-err-fg);
-  border: 1px solid var(--color-err-fg);
+  background: #dc2626;            /* red-600 — single-source for both themes */
+  border: 1px solid #dc2626;
   border-radius: var(--r-sm);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
-.btn-destructive:hover { filter: brightness(0.92); }
+.btn-destructive:hover {
+  background: #b91c1c;            /* red-700 */
+  border-color: #b91c1c;
+}
 
 /* ── Dialog enter/leave ─────────────────────────────────────────── */
 .dialog-enter-active, .dialog-leave-active {

@@ -69,26 +69,36 @@
       </button>
     </template>
 
-    <!-- Trash-mode actions: just the count + a destructive
-         "Empty bin" button. Lives in the same toolbar slot as the
-         browse-mode actions so the page header height is identical
-         in both modes (no jitter on enter/exit). -->
+    <!-- Trash-mode actions. Order matters: the rightmost slot in
+         browse-mode was the bin icon, so the rightmost slot here is
+         the *back-to-workspace* arrow — clicking the same screen
+         position you arrived from feels intuitive and avoids accidentally
+         hitting Empty bin (a destructive action). The Empty bin button
+         lives further left and uses neutral styling; the destructive
+         intent is gated by the confirmation modal. -->
     <template v-else>
       <span class="text-[11px] text-t3">
         {{ trashCount }} item{{ trashCount === 1 ? '' : 's' }}
       </span>
       <button
-        class="toolbar-btn toolbar-btn--danger ml-2"
+        class="toolbar-btn ml-2"
         :disabled="!trashCount"
         @click="$emit('empty-trash')"
         title="Permanently delete every item in the recycle bin"
       >Empty bin</button>
+      <button
+        class="toolbar-btn ml-2"
+        @click="$emit('exit-trash')"
+        title="Back to workspace"
+      >
+        <ArrowLeftIcon class="w-3.5 h-3.5" />
+      </button>
     </template>
   </div>
 </template>
 
 <script setup>
-import { MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
+import { ArrowLeftIcon, MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
 
 defineProps({
   viewMode: { type: String, required: true },
@@ -96,7 +106,7 @@ defineProps({
   search: { type: String, default: '' },
   viewingTrash: { type: Boolean, default: false },
 })
-defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 'empty-trash'])
+defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 'empty-trash', 'exit-trash'])
 </script>
 
 <style scoped>
@@ -113,14 +123,9 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
-.toolbar-btn:hover {
+.toolbar-btn:hover:not(:disabled) {
   background: var(--color-bg2);
   color: var(--color-t1);
-}
-.toolbar-btn--danger { color: var(--color-err-fg, #dc2626); }
-.toolbar-btn--danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 10%, transparent);
-  color: var(--color-err-fg, #dc2626);
 }
 .toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
