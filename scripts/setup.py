@@ -1687,6 +1687,56 @@ def _step_kg_path(answers: dict, defaults: dict) -> None:
     )
 
 
+def _step_tree_builder_llm(answers: dict, defaults: dict) -> None:
+    """Ingest-time tree builder — single page-group LLM pass produces
+    the document hierarchy + per-section summaries."""
+    _print_dim_lines(
+        (
+            "  tree_builder runs ONCE per document during ingest. The page-group",
+            "  tree_builder 入库时每篇文档调用一次。page-group 策略",
+        ),
+        (
+            "  strategy reads block excerpts in 5-page windows and emits the doc's",
+            "  按 5 页一窗读取 block 摘要，让 LLM 给出文档的",
+        ),
+        (
+            "  section structure + per-node titles + summaries in one shot — the",
+            "  章节结构 + 节标题 + 节摘要，一次出齐 ——",
+        ),
+        (
+            "  source format's headings (markdown #, PDF TOC) are passed only as",
+            "  源格式的 heading（markdown #、PDF TOC）只作为提示，",
+        ),
+        (
+            "  hints; the LLM owns structural decisions.",
+            "  最终结构由 LLM 决定。",
+        ),
+        (
+            "    benefit: same structural-task tier as KG extraction — a cheaper",
+            "    收益：和 KG 抽取同档（结构化任务），便宜模型即可，",
+        ),
+        (
+            "    model is fine; cost is ~1-3 LLM calls per doc (auto-batches when",
+            "    单篇 ~1-3 次调用（超过 40k 字符自动分批）。",
+        ),
+        (
+            "    text exceeds 40k chars).",
+            "",
+        ),
+        (
+            "    candidates: deepseek/deepseek-v4-flash, openai/gpt-4o-mini",
+            "    候选：deepseek/deepseek-v4-flash、openai/gpt-4o-mini",
+        ),
+    )
+    _ask_subsystem_override(
+        answers,
+        defaults,
+        answer_key="tree_builder",
+        label_en="tree_builder",
+        label_zh="树构建",
+    )
+
+
 def _step_tree_path_nav(answers: dict, defaults: dict) -> None:
     """LLM tree navigator (PageIndex-style retrieval)."""
     _print_dim_lines(
@@ -2077,6 +2127,7 @@ _STEPS: list[tuple[str, str, Callable[[dict, dict], None]]] = [
     ("Rerank backend", "结果重排后端", _step_rerank),
     ("KG extraction LLM", "KG 抽取 LLM", _step_kg_extraction),
     ("KG retrieval LLM", "KG 检索 LLM", _step_kg_path),
+    ("Tree builder LLM", "树构建 LLM", _step_tree_builder_llm),
     ("Tree navigator LLM", "树形导航 LLM", _step_tree_path_nav),
     ("Image enrichment (optional)", "图片增强 (可选)", _step_image_enrichment),
 ]
@@ -2494,6 +2545,14 @@ def build_config_dict(a: dict[str, Any]) -> dict[str, Any]:
         "kg_path": _subsystem_creds("kg_path"),
         "tree_path": {"nav": _subsystem_creds("tree_path_nav")},
     }
+
+    # Tree builder lives under ``parser.tree_builder`` (ingest-time, not
+    # retrieval). Emit it here AFTER ``_subsystem_creds`` is in scope so
+    # the reuse-vs-override resolution matches every other LLM stage.
+    # ``llm_enabled: true`` is set explicitly so a user reading the
+    # generated yaml sees the kill-switch — flip to false to skip the
+    # LLM entirely and fall back to flat-tree (chunking still works).
+    cfg["parser"]["tree_builder"] = {"llm_enabled": True, **_subsystem_creds("tree_builder")}
 
     # --- image enrichment (optional — wizard step asks) ---
     if a.get("image_enrichment_enabled"):
