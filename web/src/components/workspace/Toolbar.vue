@@ -81,7 +81,7 @@
         {{ trashCount }} item{{ trashCount === 1 ? '' : 's' }}
       </span>
       <button
-        class="toolbar-btn ml-2"
+        class="toolbar-btn toolbar-btn--danger ml-2"
         :disabled="!trashCount"
         @click="$emit('empty-trash')"
         title="Permanently delete every item in the recycle bin"
@@ -128,6 +128,21 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   color: var(--color-t1);
 }
 .toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Secondary-destructive variant — red text + visible neutral border
+   so the button reads as a button at rest, with a red-tinted hover
+   that surfaces the destructive intent only when the user reaches
+   for it. Matches Vercel's outline-destructive pattern; the actual
+   irreversible action is gated by the confirmation modal. */
+.toolbar-btn--danger {
+  color: var(--color-err-fg, #dc2626);
+  border-color: var(--color-line);
+}
+.toolbar-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 10%, transparent);
+  border-color: var(--color-err-fg, #dc2626);
+  color: var(--color-err-fg, #dc2626);
+}
 
 .view-btn {
   width: 26px;
