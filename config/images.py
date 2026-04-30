@@ -11,5 +11,4 @@ class ImageEnrichmentConfig(BaseModel):
     api_key: str | None = None
     api_key_env: str | None = None
     api_base: str | None = None
-    max_tokens: int = 500
     max_workers: int = 4

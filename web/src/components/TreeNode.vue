@@ -1,11 +1,20 @@
 <script setup>
+// ``collapsed`` is a Set<string> of node_ids the user has explicitly
+// collapsed. Default behaviour is fully expanded; a node renders its
+// children unless its id is in this set. This matches the semantics
+// the parent (DocDetail.vue) actually maintains via ``toggleNode``,
+// which add/removes node_ids from the set on the user's expand/collapse
+// click. (Earlier the prop was typed ``Object`` and read with
+// ``expanded[id] !== false`` — but the parent passed a Set, so the
+// indexed read always returned ``undefined`` and the toggle button
+// did nothing visible.)
 const props = defineProps({
   node: Object,
   nodes: Object,
   depth: { type: Number, default: 0 },
   highlight: Set,
   filterNodeId: String,
-  expanded: Object,
+  collapsed: { type: Set, default: () => new Set() },
 })
 const emit = defineEmits(['toggle', 'select'])
 
@@ -15,7 +24,7 @@ function children() {
 }
 
 function isExpanded() {
-  return props.expanded[props.node.node_id] !== false
+  return !props.collapsed.has(props.node.node_id)
 }
 
 function hasChildren() {
@@ -49,7 +58,7 @@ function hasChildren() {
           L{{ node.level }}
           <template v-if="node.page_start"> · p.{{ node.page_start }}{{ node.page_end && node.page_end !== node.page_start ? '-' + node.page_end : '' }}</template>
           <template v-if="node.table_count"> · {{ node.table_count }}T</template>
-          <template v-if="node.figure_count"> · {{ node.figure_count }}F</template>
+          <template v-if="node.image_count"> · {{ node.image_count }}I</template>
         </div>
       </div>
     </div>
@@ -63,7 +72,7 @@ function hasChildren() {
         :depth="depth + 1"
         :highlight="highlight"
         :filterNodeId="filterNodeId"
-        :expanded="expanded"
+        :collapsed="collapsed"
         @toggle="emit('toggle', $event)"
         @select="emit('select', $event)"
       />

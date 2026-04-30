@@ -59,7 +59,7 @@ from typing import Any
 
 from config import MinerUConfig
 
-from ..blob_store import BlobStore, figure_key
+from ..blob_store import BlobStore, image_key
 from ..schema import (
     BBox,
     Block,
@@ -82,17 +82,17 @@ log = logging.getLogger(__name__)
 _TYPE_MAP = {
     "text": BlockType.PARAGRAPH,
     "title": BlockType.HEADING,
-    "image": BlockType.FIGURE,
+    "image": BlockType.IMAGE,
     "table": BlockType.TABLE,
     "equation": BlockType.FORMULA,
     "formula": BlockType.FORMULA,
     "list": BlockType.LIST,
 }
 
-# Minimum area (in PDF points²) for a figure to be kept.
+# Minimum area (in PDF points²) for an image to be kept.
 # Anything smaller is likely a decorative element (line, border, icon).
 # 50×50 pt ≈ 17×17 mm — small but still meaningful.
-_MIN_FIGURE_AREA = 2500.0  # 50 * 50
+_MIN_IMAGE_AREA = 2500.0  # 50 * 50
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +267,14 @@ class MinerUBackend(ParserBackend):
             text = (item.get("text") or "").strip()
             level = item.get("text_level") if btype == BlockType.HEADING else None
 
-            # Demote tiny "figures" to paragraphs — they are usually
+            # Demote tiny "images" to paragraphs — they are usually
             # decorative PDF elements (lines, borders, small icons).
-            if btype == BlockType.FIGURE:
+            if btype == BlockType.IMAGE:
                 bw = abs(bbox[2] - bbox[0])
                 bh = abs(bbox[3] - bbox[1])
-                if bw * bh < _MIN_FIGURE_AREA:
+                if bw * bh < _MIN_IMAGE_AREA:
                     log.debug(
-                        "demoting tiny figure %s (%.0f×%.0f = %.0f pt²)",
+                        "demoting tiny image %s (%.0f×%.0f = %.0f pt²)",
                         block_id,
                         bw,
                         bh,
@@ -282,14 +282,14 @@ class MinerUBackend(ParserBackend):
                     )
                     btype = BlockType.PARAGRAPH
 
-            # Figure / table payload handling
-            figure_storage_key = None
-            figure_mime = None
+            # Image / table payload handling
+            image_storage_key = None
+            image_mime = None
             table_html = None
             table_markdown = None
             formula_latex = None
 
-            if btype == BlockType.FIGURE and images_dir is not None:
+            if btype == BlockType.IMAGE and images_dir is not None:
                 rel = item.get("img_path")
                 if rel:
                     stored = self._store_image(
@@ -301,7 +301,7 @@ class MinerUBackend(ParserBackend):
                         seq=seq,
                     )
                     if stored:
-                        figure_storage_key, figure_mime = stored
+                        image_storage_key, image_mime = stored
 
             if btype == BlockType.TABLE:
                 table_html = item.get("table_body") or item.get("html")
@@ -316,7 +316,7 @@ class MinerUBackend(ParserBackend):
                         seq=seq,
                     )
                     if stored:
-                        figure_storage_key, figure_mime = stored
+                        image_storage_key, image_mime = stored
                 # Keep a plain-text view in `text` for LLM consumption
                 if not text and table_html:
                     text = _html_to_text(table_html)
@@ -340,8 +340,8 @@ class MinerUBackend(ParserBackend):
                     confidence=float(item.get("score", 1.0) or 1.0),
                     table_html=table_html,
                     table_markdown=table_markdown,
-                    figure_storage_key=figure_storage_key,
-                    figure_mime=figure_mime,
+                    image_storage_key=image_storage_key,
+                    image_mime=image_mime,
                     formula_latex=formula_latex,
                 )
             )
@@ -381,7 +381,7 @@ class MinerUBackend(ParserBackend):
             "webp": "image/webp",
         }.get(ext, "application/octet-stream")
 
-        key = figure_key(doc_id, parse_version, page_no, seq, ext=ext)
+        key = image_key(doc_id, parse_version, page_no, seq, ext=ext)
         self.blob_store.put(key, src.read_bytes(), mime)
         return key, mime
 

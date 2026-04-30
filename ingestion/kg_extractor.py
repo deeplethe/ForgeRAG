@@ -164,25 +164,62 @@ class KGExtractor:
                 if attempt > 0:
                     # Retry: append a tail comment so the prompt hash
                     # changes — otherwise litellm's cache returns the
-                    # same empty response we just got (observed: a
+                    # same bad response we just got (observed: a
                     # 54s call followed by a 0.0s call with identical
-                    # empty content). The suffix also nudges the
-                    # model to actually emit JSON this time.
+                    # empty / truncated content). The suffix also
+                    # nudges the model to actually emit complete JSON
+                    # this time.
+                    # Retry suffix: BOTH busts the cache (prompt hash
+                    # changes) AND nudges the model toward a shorter
+                    # response. DeepSeek-Flash truncates persistently
+                    # when the output is large, so asking for concise
+                    # descriptions and a small entity cap keeps the
+                    # JSON inside the model's reliable output window.
                     user_text += (
-                        "\n\n(Retry — the previous attempt produced no output. "
-                        "Please respond with the JSON object even if the "
-                        "entities and relations arrays are empty.)"
+                        "\n\n(Retry — the previous attempt produced no output "
+                        "or a truncated JSON. Keep entity descriptions VERY "
+                        "BRIEF (under 40 chars each); list only the 6-10 most "
+                        "important entities. The JSON object MUST be complete "
+                        "with all brackets closed.)"
                     )
                 raw = self._call_llm(system=EXTRACTION_SYSTEM, user=user_text)
-                if raw.strip():
-                    return self._parse_response(raw, doc_id, chunk_id, path=path)
-                # Empty content: LLM API returned successfully with
-                # ``content == ""``. Log + retry once.
-                log.warning(
-                    "KG extraction empty response (attempt %d/2) chunk_id=%s",
-                    attempt + 1,
-                    chunk_id,
-                )
+                if not raw.strip():
+                    # Empty content: LLM API returned successfully with
+                    # ``content == ""``. Log + retry once.
+                    log.warning(
+                        "KG extraction empty response (attempt %d/2) chunk_id=%s",
+                        attempt + 1,
+                        chunk_id,
+                    )
+                    continue
+                # Sanity-check JSON completeness BEFORE handing to
+                # ``_parse_response``. DeepSeek-Flash-style providers
+                # occasionally return a *truncated* response (mid-string
+                # cutoff) — our permissive parser silently swallows
+                # those as ``([], [])`` which is indistinguishable from
+                # a chunk legitimately having no entities. Catching it
+                # here lets the retry-with-suffix path bust the cache
+                # and re-call the LLM.
+                raw_t = raw.strip()
+                if raw_t.startswith("```"):
+                    raw_t = "\n".join(
+                        line
+                        for line in raw_t.split("\n")
+                        if not line.strip().startswith("```")
+                    )
+                try:
+                    json.loads(raw_t)
+                except json.JSONDecodeError as je:
+                    log.warning(
+                        "KG extraction malformed JSON (attempt %d/2) chunk_id=%s "
+                        "chars=%d: %s",
+                        attempt + 1,
+                        chunk_id,
+                        len(raw),
+                        je,
+                    )
+                    continue
+                return self._parse_response(raw, doc_id, chunk_id, path=path)
             except Exception as e:
                 log.warning(
                     "KG extraction failed chunk_id=%s attempt=%d/2: %s",
@@ -392,8 +429,20 @@ class KGExtractor:
                 {"role": "user", "content": user},
             ],
             temperature=0.0,
-            max_tokens=4096,
             timeout=self.timeout,
+            # Deliberately NO ``max_tokens``. A hard cap was the root
+            # cause of the truncated-JSON failures we shipped a fix
+            # for: structured-output tasks have no graceful
+            # degradation when the model is cut off mid-entity, and
+            # every modern provider already enforces a model-side
+            # ceiling. Keeping a knob here just lets users hurt
+            # themselves; we removed the config field entirely.
+            #
+            # ``thinking: disabled`` stops the model from burning
+            # output budget on internal CoT reasoning that we never
+            # read — for structured-JSON extraction it is pure
+            # overhead and slowed calls 5-7×.
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self.api_key:
             kwargs["api_key"] = self.api_key
@@ -491,6 +540,32 @@ class KGExtractor:
         data = _parse_json(raw)
         entities = _build_entities(data, doc_id, chunk_id, path=path)
         relations = _build_relations(data, doc_id, chunk_id, path=path)
+        # Auto-promote relation endpoints that the LLM mentioned in
+        # ``relations`` but forgot to declare in ``entities``. Without
+        # this, ``NetworkXKGStore.upsert_relation`` creates placeholder
+        # nodes whose ``name`` is the entity-id hash itself, which then
+        # surfaces in the graph viewer as "0be6d3...". Stubs use the
+        # original *string* the LLM wrote, with type=UNKNOWN.
+        declared = {e.name for e in entities}
+        for r in data.get("relations", []) or []:
+            if not isinstance(r, dict):
+                continue
+            for key in ("source", "target"):
+                nm = str(r.get(key, "")).strip()
+                if not nm or nm in declared:
+                    continue
+                entities.append(
+                    Entity(
+                        entity_id=entity_id_from_name(nm),
+                        name=nm,
+                        entity_type="UNKNOWN",
+                        description="",
+                        source_doc_ids={doc_id},
+                        source_chunk_ids={chunk_id},
+                        source_paths={path} if path else set(),
+                    )
+                )
+                declared.add(nm)
         return entities, relations
 
     def _parse_batch_response(
@@ -577,11 +652,11 @@ def _make_groups(chunks: list[dict]) -> list[list[dict]]:
         clen = len(content)
         if not content or len(content.strip()) < 20:
             continue
-        # Skip figure/image chunks — their content is just a placeholder
-        # like "[figure:doc_xxx:1:1:107]" with no extractable knowledge.
-        if c.get("content_type") == "figure":
+        # Skip image chunks — their content is just a placeholder
+        # like "[image:doc_xxx:1:1:107]" with no extractable knowledge.
+        if c.get("content_type") == "image":
             continue
-        if content.strip().startswith("[figure:"):
+        if content.strip().startswith("[image:"):
             continue
 
         # Would this chunk overflow the current batch?
@@ -838,8 +913,11 @@ def consolidate_descriptions(
                     },
                 ],
                 temperature=0.0,
-                max_tokens=1024,
                 timeout=timeout,
+                # Same fix as the per-chunk extractor: drop max_tokens
+                # (provider truncates mid-output) + disable thinking
+                # (overhead for synthesis tasks).
+                extra_body={"thinking": {"type": "disabled"}},
             )
             if api_key:
                 kwargs["api_key"] = api_key

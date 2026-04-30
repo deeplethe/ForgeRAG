@@ -709,7 +709,8 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "bool",
         None,
     ),
-    ("parser.chunker.isolate_figures", "chunker", "Isolate figures", "Give each figure its own chunk", "bool", None),
+    ("parser.chunker.isolate_images", "chunker", "Isolate images", "Give each image its own chunk", "bool", None),
+    ("parser.chunker.isolate_code", "chunker", "Isolate code blocks", "Give each code block its own chunk", "bool", None),
     (
         "parser.chunker.isolate_formulas",
         "chunker",

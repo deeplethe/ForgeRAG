@@ -8,7 +8,7 @@ from parser.blob_store import (
     LocalBlobStore,
     LocalStoreConfig,
     StorageConfig,
-    figure_key,
+    image_key,
     make_blob_store,
 )
 
@@ -82,10 +82,10 @@ class TestFactory:
 
 
 class TestKeyHelpers:
-    def test_figure_key_format(self):
-        k = figure_key("doc_abc", 1, 14, 7)
-        assert k == "figures/doc_abc/v1/p0014/b_0007.png"
+    def test_image_key_format(self):
+        k = image_key("doc_abc", 1, 14, 7)
+        assert k == "images/doc_abc/v1/p0014/b_0007.png"
 
-    def test_figure_key_custom_ext(self):
-        k = figure_key("doc_abc", 2, 3, 1, ext="jpg")
-        assert k == "figures/doc_abc/v2/p0003/b_0001.jpg"
+    def test_image_key_custom_ext(self):
+        k = image_key("doc_abc", 2, 3, 1, ext="jpg")
+        assert k == "images/doc_abc/v2/p0003/b_0001.jpg"

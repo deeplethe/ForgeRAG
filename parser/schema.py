@@ -45,8 +45,9 @@ class BlockType(str, Enum):
     PARAGRAPH = "paragraph"
     LIST = "list"
     TABLE = "table"
-    FIGURE = "figure"
+    IMAGE = "image"  # raster image / chart / diagram (was: FIGURE)
     FORMULA = "formula"
+    CODE = "code"  # code block (markdown ``` fences, monospace blocks)
     CAPTION = "caption"
     HEADER = "header"  # page header (usually excluded from reading flow)
     FOOTER = "footer"  # page footer (usually excluded from reading flow)
@@ -144,13 +145,22 @@ class Block:
     table_html: str | None = None
     table_markdown: str | None = None
 
-    # Figure payload (stored via BlobStore; these are the lookup keys)
-    figure_storage_key: str | None = None
-    figure_mime: str | None = None
-    figure_caption: str | None = None
+    # Image payload (stored via BlobStore; these are the lookup keys).
+    # Renamed from ``figure_*`` since ``image`` covers the broader
+    # taxonomy (raster image / chart / diagram / icon) not just
+    # academic-style figures.
+    image_storage_key: str | None = None
+    image_mime: str | None = None
+    image_caption: str | None = None
 
     # Formula payload
     formula_latex: str | None = None
+
+    # Code payload — preserved verbatim so language detection / syntax
+    # highlighting can run downstream. Currently populated only when
+    # the parser backend specifically tags a block as CODE.
+    code_text: str | None = None
+    code_language: str | None = None
 
     # Normalizer flags -- never delete blocks, only mark them
     excluded: bool = False  # True for header/footer/noise
@@ -248,13 +258,27 @@ class TreeNode:
     # Enrichment (cheap, computed at build time)
     element_types: list[str] = field(default_factory=list)  # BlockType values
     table_count: int = 0
-    figure_count: int = 0
+    image_count: int = 0  # was: figure_count
     content_hash: str = ""  # hash of concatenated block text
 
     # Deferred enrichment (filled by later passes)
     summary: str | None = None
     key_entities: list[str] = field(default_factory=list)
     cross_reference_targets: list[str] = field(default_factory=list)  # node_ids
+
+    # Section role — drives downstream filtering. ``main`` is body
+    # content (default). The non-main values let KG extraction skip
+    # noise sources (TOC, Index, Bibliography, Front matter) and let
+    # retrieval optionally downweight supplementary material.
+    #   "main"          - body chapter/section content
+    #   "front_matter"  - copyright, dedication, foreword, acknowledgements
+    #   "toc"           - table of contents
+    #   "glossary"      - definitions list (KEPT for KG; high-quality)
+    #   "appendix"      - supplementary content (KEPT for KG)
+    #   "bibliography"  - references / works cited
+    #   "index"         - alphabetical term index
+    # Populated by tree_builder via LLM tag + regex fallback.
+    role: str = "main"
 
 
 @dataclass
@@ -314,11 +338,17 @@ class Chunk:
           chunk never spans multiple nodes).
         - content_type reflects the structural kind of content:
             "text":    ordinary prose / lists / headings
-            "table":   a single table block
-            "figure":  a single figure block
+            "table":   a single table block (with caption)
+            "image":   a single image block (was: figure)
             "formula": a single formula block
-            "mixed":   text chunk that happens to include a non-text
-                       block because isolate_* was disabled for it
+            "code":    a single code block (markdown ``` fence,
+                       monospace block, etc.)
+            "mixed":   text chunk that happens to include a structural
+                       (non-text-like) block — image, table, formula
+                       or code — because the corresponding
+                       ``isolate_*`` was disabled. Heading + paragraph
+                       + list combinations are NOT mixed, they're
+                       still ``text``.
 
     chunk_id format: "{doc_id}:{parse_version}:c{seq}"
     """
@@ -330,7 +360,7 @@ class Chunk:
     block_ids: list[str]  # ordered, contiguous
     content: str  # joined block texts
 
-    content_type: Literal["text", "table", "figure", "formula", "mixed"]
+    content_type: Literal["text", "table", "image", "formula", "code", "mixed"]
     page_start: int
     page_end: int
     token_count: int  # approximate, per ChunkerConfig.tokenizer
@@ -350,6 +380,12 @@ class Chunk:
     # via their block.cross_ref_targets. Filled in a second pass after
     # all chunks are emitted. Deduped, excludes self.
     cross_ref_chunk_ids: list[str] = field(default_factory=list)
+
+    # Inherited from owning ``TreeNode.role``. Lets KG extraction skip
+    # noise sources (Index, TOC, Bibliography, Front matter) without
+    # re-walking the tree, and lets retrieval downweight supplementary
+    # content (Appendix). See ``TreeNode.role`` for the value set.
+    role: str = "main"
 
 
 # ---------------------------------------------------------------------------

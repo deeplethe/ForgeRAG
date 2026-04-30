@@ -138,7 +138,7 @@ class TestTree:
             block_ids=["doc:1:1:1"],
             element_types=["paragraph"],
             table_count=1,
-            figure_count=0,
+            image_count=0,
             content_hash="abc123",
         )
         tree = DocTree(

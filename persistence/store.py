@@ -1196,10 +1196,12 @@ def _block_to_dict(row: ParsedBlock) -> dict:
         "confidence": row.confidence,
         "table_html": row.table_html,
         "table_markdown": row.table_markdown,
-        "figure_storage_key": row.figure_storage_key,
-        "figure_mime": row.figure_mime,
-        "figure_caption": row.figure_caption,
+        "image_storage_key": getattr(row, "image_storage_key", None),
+        "image_mime": getattr(row, "image_mime", None),
+        "image_caption": getattr(row, "image_caption", None),
         "formula_latex": row.formula_latex,
+        "code_text": getattr(row, "code_text", None),
+        "code_language": getattr(row, "code_language", None),
         "excluded": row.excluded,
         "excluded_reason": row.excluded_reason,
         "caption_of": row.caption_of,
@@ -1223,6 +1225,7 @@ def _chunk_to_dict(row: ChunkRow) -> dict:
         "section_path": list(row.section_path or []),
         "ancestor_node_ids": list(row.ancestor_node_ids or []),
         "cross_ref_chunk_ids": list(row.cross_ref_chunk_ids or []),
+        "role": getattr(row, "role", "main") or "main",
     }
 
 

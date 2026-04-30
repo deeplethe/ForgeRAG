@@ -142,8 +142,12 @@ class QueryUnderstanding:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=400,
             timeout=self.timeout,
+            # Same fix as KG extractor: drop max_tokens (DeepSeek
+            # truncates JSON at the cap) + disable thinking (a 400
+            # token budget is hostile to thinking models that burn
+            # 1000+ tokens of CoT before emitting the actual answer).
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self._api_key:
             kwargs["api_key"] = self._api_key

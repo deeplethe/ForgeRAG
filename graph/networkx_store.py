@@ -285,23 +285,29 @@ class NetworkXGraphStore(GraphStore):
     def upsert_relation(self, relation: Relation) -> None:
         with self._lock:
             src, tgt = relation.source_entity, relation.target_entity
-            # Ensure both endpoint nodes exist (add_edge auto-creates bare
-            # nodes without the "entity" attr, which breaks _save).
-            for eid in (src, tgt):
-                if eid not in self._graph:
-                    placeholder = Entity(
-                        entity_id=eid,
-                        name=eid,
-                        entity_type="UNKNOWN",
-                        source_doc_ids=relation.source_doc_ids.copy(),
-                        source_chunk_ids=relation.source_chunk_ids.copy(),
-                        source_paths=relation.source_paths.copy(),
-                    )
-                    self._graph.add_node(
-                        eid,
-                        entity=placeholder,
-                        _type_counts=Counter({"UNKNOWN": 1}),
-                    )
+            # Both endpoints must exist as proper entities. The
+            # ingestion pipeline guarantees this by upserting all
+            # entities BEFORE any relation, with ``_parse_response``
+            # auto-promoting any relation-only endpoint into a
+            # real-named stub before it ever reaches the graph.
+            #
+            # If we still find a missing endpoint here, the upstream
+            # invariant has been violated — log and skip rather than
+            # silently fabricating an Entity whose ``name`` is the
+            # entity-id hash. (That fabrication was the source of the
+            # ``bb1c30...`` hash-label nodes in the graph viewer.)
+            missing = [eid for eid in (src, tgt) if eid not in self._graph]
+            if missing:
+                logger.warning(
+                    "upsert_relation skipped: endpoints not in graph %s "
+                    "(src=%s tgt=%s, doc_ids=%s). Upstream pipeline must "
+                    "upsert entities before relations.",
+                    missing,
+                    src,
+                    tgt,
+                    sorted(relation.source_doc_ids),
+                )
+                return
             if self._graph.has_edge(src, tgt):
                 existing: Relation = self._graph.edges[src, tgt]["relation"]
                 if relation.description and relation.description not in existing.description:

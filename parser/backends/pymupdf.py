@@ -191,7 +191,7 @@ class PyMuPDFBackend(ParserBackend):
                 img_bytes = raw_blk.get("image")
                 img_ext = (raw_blk.get("ext") or "png").lower()
                 if img_bytes and len(img_bytes) > 100:  # skip tiny placeholders
-                    from ..blob_store import figure_key as _fkey
+                    from ..blob_store import image_key as _fkey
 
                     mime = {
                         "png": "image/png",
@@ -212,11 +212,11 @@ class PyMuPDFBackend(ParserBackend):
                         page_no=page_no,
                         seq=seq,
                         bbox=bbox,
-                        type=BlockType.FIGURE,
+                        type=BlockType.IMAGE,
                         text="",
                         confidence=0.5,
-                        figure_storage_key=storage_key,
-                        figure_mime=mime,
+                        image_storage_key=storage_key,
+                        image_mime=mime,
                     )
                 )
                 continue

@@ -23,7 +23,7 @@
   iteration that will render entities scoped to this document.
 -->
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ArrowLeftIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
 import {
   blockImageUrl,
@@ -55,7 +55,30 @@ const loading = ref(false)
 // Cross-panel selection state
 const activeChunkId = ref(null)
 const activeNodeId = ref(null)
-const expandedNodes = reactive(new Set())
+const collapsedNodes = reactive(new Set())
+
+// Tree-pane scrollbar: hidden at rest, fades in while the user is
+// scrolling, fades out 800ms after they stop. Using a class toggle
+// (vs `:hover`) keeps the scrollbar invisible when the cursor is
+// inside the pane but the content is static — e.g. the user is
+// just hovering a row to read it. Only actual scroll activity
+// surfaces the indicator.
+const treeScrollEl = ref(null)
+let treeScrollIdleTimer = null
+function onTreeScroll() {
+  const el = treeScrollEl.value
+  if (!el) return
+  el.classList.add('is-scrolling')
+  if (treeScrollIdleTimer) clearTimeout(treeScrollIdleTimer)
+  treeScrollIdleTimer = setTimeout(() => {
+    el.classList.remove('is-scrolling')
+    treeScrollIdleTimer = null
+  }, 800)
+}
+onBeforeUnmount(() => {
+  if (treeScrollIdleTimer) clearTimeout(treeScrollIdleTimer)
+  if (_pollTimer) clearTimeout(_pollTimer)
+})
 const pdfPage = ref(1)
 const pdfHighlightBlocks = ref([])
 // Live KG counts emitted from DocKgMini after each (re)build —
@@ -70,9 +93,9 @@ function toggleChunkExpand(chunkId) {
   expandedChunks[chunkId] = !expandedChunks[chunkId]
 }
 function chunkImageUrls(c) {
-  // Figure-type chunks have one or more block_ids that point to
-  // figure crops; the block-image endpoint serves them by id.
-  if (c.content_type !== 'figure' || !c.block_ids?.length) return []
+  // Image-type chunks have one or more block_ids that point to
+  // image crops; the block-image endpoint serves them by id.
+  if (c.content_type !== 'image' || !c.block_ids?.length) return []
   return c.block_ids.map((bid) => blockImageUrl(bid))
 }
 
@@ -131,6 +154,64 @@ const sourceLabel = computed(() => {
   return ext || d.format?.toUpperCase() || 'Source'
 })
 
+// ── Phase / processing state ─────────────────────────────────────
+// Backend pipeline goes through:
+//   1. parse  (parse_completed_at) — PDF/blocks ready
+//   2. tree   (structure_completed_at) — tree built
+//   3. chunk  — chunks rows in DB (we infer from chunks.length)
+//   4. embed  (embed_status === "done") — vector index ready
+//   5. KG     (kg_status in {done, skipped}) — entities + relations
+// Document.status hits "ready" after step 3 but BEFORE KG, so the
+// composite "fully ready" needs the kg gate too. Until then we poll.
+const phases = computed(() => {
+  const d = doc.value || {}
+  return {
+    parsed: !!d.parse_completed_at,
+    structured: !!d.structure_completed_at && !!tree.value,
+    chunked: chunks.value.length > 0,
+    embedded: d.embed_status === 'done' || d.embed_status === 'skipped',
+    kgDone:
+      d.kg_status === 'done' ||
+      d.kg_status === 'skipped' ||
+      d.kg_status === 'disabled',
+  }
+})
+// Optimistic flag — flipped TRUE the moment the user clicks Reparse,
+// before the backend has had a chance to set ``status=pending``.
+// Without it the button stays clickable for ~2.5s (one poll cycle)
+// and the user can fire duplicate jobs. Cleared on backend rejection
+// (409 etc.) and naturally bridged by polling once the backend
+// reflects the in-flight state.
+const _optimisticReparse = ref(false)
+
+const fullyReady = computed(() => {
+  const d = doc.value
+  if (!d) return false
+  return d.status === 'ready' && phases.value.kgDone
+})
+const inFlight = computed(() => {
+  if (_optimisticReparse.value) return true
+  const d = doc.value
+  if (!d) return false
+  if (d.status === 'error') return false
+  return !fullyReady.value
+})
+// Human-readable stage chip:
+//   parsing → structuring → chunking → embedding → kg → ready
+const stageLabel = computed(() => {
+  const d = doc.value
+  if (!d) return 'loading'
+  if (d.status === 'error') return 'error'
+  if (fullyReady.value) return 'ready'
+  const p = phases.value
+  if (!p.parsed) return 'parsing'
+  if (!p.structured) return 'structuring'
+  if (!p.chunked) return 'chunking'
+  if (!p.embedded) return 'embedding'
+  if (!p.kgDone) return 'building graph'
+  return d.status || 'processing'
+})
+
 // Tree-highlight set: every ancestor of the active chunk's node, plus
 // the active node itself if a tree row is the selection driver.
 const highlightNodeIds = computed(() => {
@@ -158,6 +239,42 @@ async function loadAll() {
   } finally {
     loading.value = false
   }
+  // Kick off polling if the doc isn't fully through KG yet — phase
+  // panels reveal as their prerequisite data lands.
+  schedulePoll()
+}
+
+// Soft refresh while the pipeline is still running. Pulls the doc
+// row + each panel that's still missing data, so users see chunks /
+// tree / KG appear without manual reload. Stops once ``fullyReady``.
+let _pollTimer = null
+function schedulePoll() {
+  if (_pollTimer) {
+    clearTimeout(_pollTimer)
+    _pollTimer = null
+  }
+  if (!inFlight.value) return
+  _pollTimer = setTimeout(pollOnce, 2500)
+}
+async function pollOnce() {
+  _pollTimer = null
+  if (!props.docId) return
+  try {
+    const fresh = await getDocument(props.docId)
+    doc.value = fresh
+    // Refetch only the panels whose prerequisite has just landed.
+    const fetches = []
+    if (phases.value.parsed && allBlocks.value.length === 0) fetches.push(loadBlocks())
+    if (phases.value.structured && !tree.value) fetches.push(loadTree())
+    // Always refresh chunks while not fully ready — count grows in
+    // chunks during ingest, and chunk role tags can change after KG
+    // post-processing.
+    if (!fullyReady.value) fetches.push(loadChunks())
+    if (fetches.length) await Promise.all(fetches)
+  } catch (e) {
+    console.warn('poll failed:', e)
+  }
+  schedulePoll()
 }
 
 async function loadTree() {
@@ -249,8 +366,8 @@ function onClickTreeNode(nodeId) {
 }
 
 function toggleNode(nodeId) {
-  if (expandedNodes.has(nodeId)) expandedNodes.delete(nodeId)
-  else expandedNodes.add(nodeId)
+  if (collapsedNodes.has(nodeId)) collapsedNodes.delete(nodeId)
+  else collapsedNodes.add(nodeId)
 }
 
 // Track chunk-row DOM refs so we can scroll the chunks pane to the
@@ -312,14 +429,29 @@ async function onPdfClick({ page_no, x, y }) {
 }
 
 async function onReparse() {
-  if (!doc.value) return
+  if (!doc.value || inFlight.value) return
+  // Optimistic UI: flip the flag synchronously so the button
+  // disables before the network round-trip finishes. Polling will
+  // take over once the backend has actually moved to a non-ready
+  // status. If the API call fails (e.g. 409 because the backend
+  // already has this doc in flight), restore the flag so the user
+  // can retry.
+  _optimisticReparse.value = true
   try {
     await reparseDocument(doc.value.doc_id)
-    await loadAll()
+    schedulePoll()
   } catch (e) {
+    _optimisticReparse.value = false
     console.error('reparse failed:', e)
   }
 }
+
+// Clear optimistic flag once the document is fully ready again so
+// the next click cycle starts from a clean slate. Avoids the case
+// where a stuck job leaves the button frozen forever.
+watch(fullyReady, (v) => {
+  if (v) _optimisticReparse.value = false
+})
 
 watch(() => props.docId, loadAll, { immediate: true })
 </script>
@@ -354,7 +486,16 @@ watch(() => props.docId, loadAll, { immediate: true })
         <span v-if="doc.num_pages" class="chip-sep">·</span>
         <span v-if="doc.num_pages" class="chip-text">{{ doc.num_pages }}p</span>
         <span class="chip-sep">·</span>
-        <span class="chip-text" :class="`chip-status--${doc.status}`">{{ doc.status }}</span>
+        <span
+          class="chip-text chip-stage"
+          :class="[
+            `chip-status--${stageLabel.replace(/\s+/g, '-')}`,
+            { 'chip-stage--inflight': inFlight },
+          ]"
+        >
+          <span v-if="inFlight" class="chip-stage__dot" aria-hidden="true"></span>
+          {{ stageLabel }}
+        </span>
       </div>
 
       <!-- Right action cluster. Reparse is the only context-specific
@@ -364,11 +505,15 @@ watch(() => props.docId, loadAll, { immediate: true })
       <div class="doc-detail__actions">
         <button
           class="toolbar-btn"
+          :disabled="inFlight"
           @click="onReparse"
-          title="Reparse this document"
+          :title="inFlight ? 'Processing — please wait' : 'Reparse this document'"
         >
-          <ArrowPathIcon class="w-3.5 h-3.5" />
-          <span>Reparse</span>
+          <ArrowPathIcon
+            class="w-3.5 h-3.5"
+            :class="{ 'animate-spin': inFlight }"
+          />
+          <span>{{ inFlight ? 'Processing' : 'Reparse' }}</span>
         </button>
         <button
           class="toolbar-btn ml-2"
@@ -392,8 +537,22 @@ watch(() => props.docId, loadAll, { immediate: true })
             {{ tree.generation_method }}<template v-if="tree.quality_score != null"> · {{ tree.quality_score.toFixed(2) }}</template>
           </span>
         </div>
-        <div class="pane-body">
-          <div v-if="loading && !tree" class="pane-empty">Loading…</div>
+        <div
+          ref="treeScrollEl"
+          class="pane-body pane-body--auto-scrollbar"
+          @scroll.passive="onTreeScroll"
+        >
+          <!-- Skeleton state while structure phase is in flight.
+               Polling will swap this out for the real tree as soon
+               as ``structure_completed_at`` lands. -->
+          <div
+            v-if="!tree && inFlight && !phases.structured"
+            class="pane-skeleton"
+          >
+            <span class="pane-skeleton__dot" />
+            Building tree…
+          </div>
+          <div v-else-if="loading && !tree" class="pane-empty">Loading…</div>
           <div v-else-if="!tree" class="pane-empty">No tree</div>
           <TreeNode
             v-else
@@ -402,7 +561,7 @@ watch(() => props.docId, loadAll, { immediate: true })
             :depth="0"
             :highlight="highlightNodeIds"
             :filterNodeId="activeNodeId"
-            :expanded="expandedNodes"
+            :collapsed="collapsedNodes"
             @toggle="toggleNode"
             @select="onClickTreeNode"
           />
@@ -412,7 +571,7 @@ watch(() => props.docId, loadAll, { immediate: true })
       <!-- CENTER: PDF -->
       <main class="pane pane--pdf">
         <PdfViewer
-          v-if="doc && isPdf && pdfUrl"
+          v-if="doc && isPdf && pdfUrl && phases.parsed"
           :url="pdfUrl"
           :page="pdfPage"
           :highlightBlocks="pdfHighlightBlocks"
@@ -422,6 +581,12 @@ watch(() => props.docId, loadAll, { immediate: true })
           :sourceLabel="sourceLabel"
           @pdf-click="onPdfClick"
         />
+        <div v-else-if="inFlight && !phases.parsed" class="pane-empty pane-empty--center">
+          <span class="pane-skeleton">
+            <span class="pane-skeleton__dot" />
+            Parsing document…
+          </span>
+        </div>
         <div v-else class="pane-empty pane-empty--center">
           <span v-if="loading">Loading…</span>
           <span v-else>No PDF preview</span>
@@ -443,12 +608,22 @@ watch(() => props.docId, loadAll, { immediate: true })
             </span>
           </div>
           <div class="pane-body pane-body--canvas">
+            <!-- Render the mini KG only when extraction has finished;
+                 otherwise the component fetches an empty graph and
+                 renders a "no entities" overlay that contradicts the
+                 fact we're still building. -->
             <DocKgMini
-              v-if="doc"
+              v-if="doc && phases.kgDone"
               :doc-id="doc.doc_id"
               :active-chunk-id="activeChunkId || ''"
               @counts-change="kgCounts = $event"
             />
+            <div v-else class="pane-empty pane-empty--center">
+              <span class="pane-skeleton">
+                <span class="pane-skeleton__dot" />
+                {{ phases.embedded ? 'Building knowledge graph…' : 'Waiting for extraction…' }}
+              </span>
+            </div>
           </div>
         </section>
 
@@ -459,7 +634,16 @@ watch(() => props.docId, loadAll, { immediate: true })
             <span class="pane-meta">{{ chunks.length }} total</span>
           </div>
           <div class="pane-body pane-body--scroll">
-            <div v-if="loading && !chunks.length" class="pane-empty">Loading…</div>
+            <div
+              v-if="!chunks.length && inFlight && !phases.chunked"
+              class="pane-empty"
+            >
+              <span class="pane-skeleton">
+                <span class="pane-skeleton__dot" />
+                Chunking…
+              </span>
+            </div>
+            <div v-else-if="loading && !chunks.length" class="pane-empty">Loading…</div>
             <div v-else-if="!chunks.length" class="pane-empty">No chunks</div>
             <div
               v-for="c in chunks"
@@ -482,11 +666,11 @@ watch(() => props.docId, loadAll, { immediate: true })
                 :class="{ 'chunk-row__body--clamp': !expandedChunks[c.chunk_id] }"
               >{{ c.content }}</div>
 
-              <!-- Inline figure preview when expanded. Same
+              <!-- Inline image preview when expanded. Same
                    ``blockImageUrl`` endpoint Repository.vue uses
                    for the standalone view. -->
               <div
-                v-if="expandedChunks[c.chunk_id] && c.content_type === 'figure'"
+                v-if="expandedChunks[c.chunk_id] && c.content_type === 'image'"
                 class="chunk-row__figs"
               >
                 <img
@@ -501,7 +685,7 @@ watch(() => props.docId, loadAll, { immediate: true })
 
               <!-- Hover-revealed expand / collapse affordance.
                    Stays out of the way at rest; click reveals the
-                   full chunk content + any attached figure crops. -->
+                   full chunk content + any attached image crops. -->
               <div class="chunk-row__action">
                 <button
                   v-show="!expandedChunks[c.chunk_id]"
@@ -592,7 +776,50 @@ watch(() => props.docId, loadAll, { immediate: true })
 .chip-status--processing,
 .chip-status--parsing,
 .chip-status--converting,
-.chip-status--structuring { color: #f59e0b; }
+.chip-status--structuring,
+.chip-status--chunking,
+.chip-status--embedding,
+.chip-status--building-graph { color: #f59e0b; }
+
+/* In-flight stage indicator: pulsing amber dot before the label so
+   the user perceives liveness even when the same word stays for a
+   while (e.g. "building graph" can run 2-5 min). */
+.chip-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.chip-stage__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: chip-pulse 1.4s ease-in-out infinite;
+}
+@keyframes chip-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+
+/* Skeleton loader for not-yet-ready panels — same vocabulary as the
+   chip dot so users learn one cue across the page. Padded centered
+   text reads as "still working" without flashing/jumping. */
+.pane-skeleton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 12px;
+  font-size: 11px;
+  color: var(--color-t3);
+}
+.pane-skeleton__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: chip-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
 
 .doc-detail__actions {
   display: flex;
@@ -688,6 +915,37 @@ watch(() => props.docId, loadAll, { immediate: true })
   overflow-y: auto;
   padding: 0;
 }
+
+/* Auto-hiding scrollbar for the structure tree pane.
+   Default state: track + thumb fully transparent so the rail is
+   invisible. While the user is actively scrolling the JS handler
+   adds ``is-scrolling`` for 800ms — that fades the thumb in. We
+   reserve gutter so the layout doesn't jump when the thumb appears. */
+.pane-body--auto-scrollbar {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease;
+}
+.pane-body--auto-scrollbar.is-scrolling {
+  scrollbar-color: var(--color-t3, rgba(255, 255, 255, 0.25)) transparent;
+}
+.pane-body--auto-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.pane-body--auto-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pane-body--auto-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.25s ease;
+}
+.pane-body--auto-scrollbar.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
 .pane-body--canvas {
   position: relative;       /* anchor for sigma's absolute canvas */
   padding: 0;
@@ -750,8 +1008,8 @@ watch(() => props.docId, loadAll, { immediate: true })
   white-space: normal;
 }
 
-/* Inline figure previews, only visible when the chunk is expanded
-   (and only emitted for ``content_type === 'figure'``). */
+/* Inline image previews, only visible when the chunk is expanded
+   (and only emitted for ``content_type === 'image'``). */
 .chunk-row__figs {
   margin-top: 6px;
   display: flex;

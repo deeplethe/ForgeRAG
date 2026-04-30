@@ -268,22 +268,22 @@ class TestFallback:
 
 
 class TestEnrichment:
-    def test_counts_tables_and_figures(self):
+    def test_counts_tables_and_images(self):
         toc = [TocEntry(level=1, title="Only", page_no=1)]
         blocks = [
             _block(1, 1, "para"),
             _block(1, 2, "", btype=BlockType.TABLE),
-            _block(1, 3, "", btype=BlockType.FIGURE),
-            _block(1, 4, "", btype=BlockType.FIGURE),
+            _block(1, 3, "", btype=BlockType.IMAGE),
+            _block(1, 4, "", btype=BlockType.IMAGE),
         ]
         doc = _mk_doc(blocks=blocks, n_pages=1, toc=toc)
         tree = _build_tree_direct(doc, "toc")
         only = next(n for n in tree.nodes.values() if n.title == "Only")
         assert only.table_count == 1
-        assert only.figure_count == 2
+        assert only.image_count == 2
         assert "paragraph" in only.element_types
         assert "table" in only.element_types
-        assert "figure" in only.element_types
+        assert "image" in only.element_types
         assert only.content_hash  # non-empty
 
 
@@ -353,8 +353,9 @@ class TestQualityScore:
 
 
 class TestBuildStrategy:
-    def test_no_llm_uses_fallback(self):
-        """Without LLM enabled, build() always returns fallback."""
+    def test_no_llm_uses_heading_fallback(self):
+        """Without LLM, build() uses the heading-level fallback when
+        the doc actually has headings (richer than flat fallback)."""
         blocks = [
             _block(1, 1, "Introduction", btype=BlockType.HEADING, level=1),
             _block(1, 2, "intro body " * 20),
@@ -363,9 +364,9 @@ class TestBuildStrategy:
         ]
         doc = _mk_doc(blocks=blocks, n_pages=2)
         # Default config: llm_enabled=True but ``model`` unset → graceful
-        # fallback (no network call, returns the flat tree).
+        # fallback. With visible headings, fallback is heading-based.
         tree = TreeBuilder(TreeBuilderConfig()).build(doc)
-        assert tree.generation_method == "fallback"
+        assert tree.generation_method == "headings"
 
     def test_no_llm_weak_headings_also_fallback(self):
         """Weak headings with no LLM → fallback."""

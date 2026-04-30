@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.2-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.3-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://github.com/deeplethe/ForgeRAG"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge" alt="Stars"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>

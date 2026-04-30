@@ -1,7 +1,7 @@
 """
 Image enrichment: VLM description + OCR in one pass.
 
-For each figure block that has a `figure_storage_key` (image stored
+For each figure block that has a `image_storage_key` (image stored
 in BlobStore), ask a vision LLM to:
 
     1. Describe the image (what it shows, key findings)
@@ -9,7 +9,7 @@ in BlobStore), ask a vision LLM to:
 
 The combined output replaces the figure block's `text` field so
 it becomes searchable by all three retrieval paths (vector, BM25,
-tree navigation). The block's `figure_caption` is also updated
+tree navigation). The block's `image_caption` is also updated
 if the original caption was empty.
 
 This is an optional async enrichment pass — same pattern as
@@ -46,21 +46,21 @@ def enrich_images(
 ) -> tuple[int, int]:
     """
     Walk every figure block, call vlm_fn(image_bytes, prompt) -> text
-    **in parallel**, store the result in block.text and block.figure_caption.
+    **in parallel**, store the result in block.text and block.image_caption.
 
     Returns (enriched_count, failure_count).
     """
     # ── Collect tasks ──
     tasks: list[tuple[Block, bytes]] = []
     for block in doc.blocks:
-        if block.type != BlockType.FIGURE:
+        if block.type != BlockType.IMAGE:
             continue
-        if not block.figure_storage_key:
+        if not block.image_storage_key:
             continue
         if skip_if_has_text and block.text and len(block.text) > 50:
             continue  # already has meaningful text
         try:
-            img_bytes = blob_store.get(block.figure_storage_key)
+            img_bytes = blob_store.get(block.image_storage_key)
         except Exception:
             continue
         if len(img_bytes) < 200:
@@ -92,8 +92,8 @@ def enrich_images(
             block, description = fut.result()
             if description:
                 block.text = description
-                if not block.figure_caption or len(block.figure_caption) < 20:
-                    block.figure_caption = description[:300]
+                if not block.image_caption or len(block.image_caption) < 20:
+                    block.image_caption = description[:300]
                 count += 1
                 consecutive_fails = 0
                 log.debug("enriched image %s: %s", block.block_id, description[:80])
@@ -123,8 +123,8 @@ def _build_vlm_prompt(block: Block) -> str:
         "",
         "Be concise but comprehensive. Focus on factual content, not aesthetics.",
     ]
-    if block.figure_caption:
-        parts.insert(0, f"Caption: {block.figure_caption}")
+    if block.image_caption:
+        parts.insert(0, f"Caption: {block.image_caption}")
     return "\n".join(parts)
 
 
@@ -139,7 +139,6 @@ def make_vlm_fn(
     api_key: str | None = None,
     api_key_env: str | None = None,
     api_base: str | None = None,
-    max_tokens: int = 500,
 ) -> Callable[[bytes, str], str]:
     """
     Build a callable `(image_bytes, prompt) -> description` using
@@ -176,7 +175,6 @@ def make_vlm_fn(
                     ],
                 }
             ],
-            max_tokens=max_tokens,
             temperature=0.1,
             timeout=60,
         )

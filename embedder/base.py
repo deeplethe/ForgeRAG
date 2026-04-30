@@ -10,10 +10,10 @@ Batching, retry, and backend-specific quirks live inside each
 implementation. Callers only see a pure-function-shaped API.
 
 Chunk-level embedding rules:
-    - For content_type == "figure" or "formula", we prefix the
-      content with a short tag ("[figure] ", "[formula] ") so the
-      vector captures the modality signal; this is a cheap trick
-      that helps cross-type retrieval.
+    - For content_type in {"image", "formula", "code"}, we prefix the
+      content with a short tag ("[image] ", "[formula] ", "[code] ")
+      so the vector captures the modality signal; this is a cheap
+      trick that helps cross-type retrieval.
     - content_type == "table" uses the markdown payload as-is.
     - Empty or whitespace-only chunks are skipped (embedding would
       be noise); the returned dict will simply not contain them.
@@ -74,8 +74,10 @@ def chunk_to_embedding_text(chunk: Chunk) -> str:
     content = (chunk.content or "").strip()
     if not content:
         return ""
-    if chunk.content_type == "figure":
-        return "[figure] " + content
+    if chunk.content_type == "image":
+        return "[image] " + content
     if chunk.content_type == "formula":
         return "[formula] " + content
+    if chunk.content_type == "code":
+        return "[code] " + content
     return content

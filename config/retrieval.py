@@ -42,7 +42,6 @@ class TreeNavConfig(BaseModel):
     api_key_env: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    max_tokens: int = 1024
     timeout: float = 30.0
     max_nodes: int = 8  # LLM returns up to this many node_ids
     max_docs: int = 8  # max documents to navigate (top by cross-validation score)

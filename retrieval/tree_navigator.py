@@ -64,7 +64,6 @@ class LLMTreeNavigator:
         api_key_env: str | None = None,
         api_base: str | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
         timeout: float = 30.0,
         max_nodes: int = 8,
         system_prompt: str | None = None,
@@ -72,7 +71,6 @@ class LLMTreeNavigator:
         self.model = model
         self.api_base = api_base
         self.temperature = temperature
-        self.max_tokens = max_tokens
         self.timeout = timeout
         self.max_nodes = max_nodes
         self.custom_system_prompt = system_prompt
@@ -161,7 +159,6 @@ class LLMTreeNavigator:
                 {"role": "user", "content": prompt},
             ],
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
             timeout=self.timeout,
             # Disable litellm's internal retries so total wall-clock time
             # stays bounded by self.timeout. Without this, litellm may

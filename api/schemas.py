@@ -154,9 +154,11 @@ class BlockOut(BaseModel):
     confidence: float
     table_html: str | None = None
     table_markdown: str | None = None
-    figure_storage_key: str | None = None
-    figure_caption: str | None = None
+    image_storage_key: str | None = None
+    image_caption: str | None = None
     formula_latex: str | None = None
+    code_text: str | None = None
+    code_language: str | None = None
     excluded: bool
     excluded_reason: str | None = None
     caption_of: str | None = None
@@ -182,6 +184,7 @@ class ChunkOut(BaseModel):
     section_path: list[str]
     ancestor_node_ids: list[str]
     cross_ref_chunk_ids: list[str]
+    role: str = "main"
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +203,10 @@ class TreeNodeOut(BaseModel):
     block_ids: list[str]
     element_types: list[str]
     table_count: int
-    figure_count: int
+    image_count: int
     summary: str | None = None
     key_entities: list[str] = []
+    role: str = "main"
 
 
 class TreeOut(BaseModel):

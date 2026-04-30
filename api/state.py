@@ -277,7 +277,6 @@ class AppState:
                     api_key_env=tp.nav.api_key_env,
                     api_base=tp.nav.api_base,
                     temperature=tp.nav.temperature,
-                    max_tokens=tp.nav.max_tokens,
                     timeout=tp.nav.timeout,
                     max_nodes=tp.nav.max_nodes,
                     system_prompt=tp.nav.system_prompt,

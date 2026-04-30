@@ -644,7 +644,7 @@ function toggleChunk(chunkId) {
 }
 
 function chunkImageUrls(c) {
-  if (c.content_type !== 'figure' || !c.block_ids?.length) return []
+  if (c.content_type !== 'image' || !c.block_ids?.length) return []
   return c.block_ids.map(bid => blockImageUrl(bid))
 }
 
@@ -1261,8 +1261,8 @@ const totalDuration = computed(() => {
               </div>
               <div class="text-[10px] text-t2 leading-relaxed" :class="expandedChunks[c.chunk_id] ? '' : 'line-clamp-1'">{{ c.content }}</div>
 
-              <!-- Inline figure images -->
-              <div v-if="expandedChunks[c.chunk_id] && c.content_type === 'figure' && !(showPdf && isPdf)" class="mt-2 flex flex-wrap gap-2">
+              <!-- Inline images -->
+              <div v-if="expandedChunks[c.chunk_id] && c.content_type === 'image' && !(showPdf && isPdf)" class="mt-2 flex flex-wrap gap-2">
                 <img
                   v-for="url in chunkImageUrls(c)" :key="url"
                   :src="url"

@@ -336,14 +336,14 @@ def make_blob_store(cfg: StorageConfig) -> BlobStore:
 # ---------------------------------------------------------------------------
 
 
-def figure_key(doc_id: str, parse_version: int, page_no: int, block_seq: int, ext: str = "png") -> str:
-    """Canonical key for a figure block's image."""
-    return f"figures/{doc_id}/v{parse_version}/p{page_no:04d}/b_{block_seq:04d}.{ext}"
+def image_key(doc_id: str, parse_version: int, page_no: int, block_seq: int, ext: str = "png") -> str:
+    """Canonical key for an image block's blob (was: ``figure_key``)."""
+    return f"images/{doc_id}/v{parse_version}/p{page_no:04d}/b_{block_seq:04d}.{ext}"
 
 
 def table_image_key(doc_id: str, parse_version: int, page_no: int, block_seq: int, ext: str = "png") -> str:
     """Canonical key for a rasterized table image (optional)."""
-    return f"figures/{doc_id}/v{parse_version}/p{page_no:04d}/t_{block_seq:04d}.{ext}"
+    return f"images/{doc_id}/v{parse_version}/p{page_no:04d}/t_{block_seq:04d}.{ext}"
 
 
 def file_key(content_hash: str, ext: str, *, levels: int = 2) -> str:

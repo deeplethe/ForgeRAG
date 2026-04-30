@@ -33,6 +33,108 @@ from pathlib import Path
 from config import TreeBuilderConfig
 from config.auth import resolve_api_key
 
+# ---------------------------------------------------------------------------
+# Section-role classification
+# ---------------------------------------------------------------------------
+
+# Allowed values for ``TreeNode.role``. Any other LLM-emitted string
+# falls back to ``main`` (and gets a second chance via the regex
+# whitelist below).
+_VALID_ROLES = frozenset(
+    {"main", "front_matter", "toc", "glossary", "appendix", "bibliography", "index"}
+)
+
+# Roles that propagate from parent → child during the inheritance pass.
+# Deliberately excludes ``front_matter`` because LLM page-groups
+# regularly misgroup the first body chapter into the front-matter
+# bucket; blindly inheriting would silently drop ~140 chunks of real
+# content from KG extraction. Excludes ``appendix`` / ``glossary``
+# because we WANT their content extracted anyway. ``main`` doesn't
+# need to inherit (it's the default).
+_INHERIT_ROLES = frozenset({"toc", "index", "bibliography"})
+
+# Regex whitelist — runs as a SAFETY NET after LLM tagging so a node
+# whose title obviously says "Index" / "附录" / "Bibliography" still
+# gets the right role even when:
+#   - the LLM forgot the field (DeepSeek truncated JSON, etc.)
+#   - the LLM emitted ``main`` because it didn't recognise the title
+#   - the path was heading-fallback (no LLM call at all)
+#
+# Patterns deliberately skip things like body paragraphs that
+# happen to *contain* the word "Index" or "Appendix" — the regexes
+# anchor at the start of the title and require the back-matter word
+# to be the dominant token.
+_BACK_MATTER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # English (with optional ``**`` markdown bold prefix from MinerU)
+    (re.compile(r"^\s*\**\s*appendix(\s|[:\-–]|$)", re.I), "appendix"),
+    (re.compile(r"^\s*\**\s*index\s*$", re.I), "index"),
+    (re.compile(r"^\s*\**\s*(bibliograph(?:y|ies)|references?)(\s|[:\-–]|$)", re.I), "bibliography"),
+    (re.compile(r"^\s*\**\s*(further\s+reading)(\s|[:\-–]|$)", re.I), "bibliography"),
+    (re.compile(r"^\s*\**\s*glossary(\s|[:\-–]|$)", re.I), "glossary"),
+    (re.compile(r"^\s*\**\s*table\s+of\s+contents(\s|[:\-–]|$)", re.I), "toc"),
+    (re.compile(r"^\s*\**\s*contents\s*$", re.I), "toc"),
+    (re.compile(r"^\s*\**\s*(acknowledg(?:e?ments?)?|forewords?|prefaces?|"
+                r"about\s+the\s+author|dedication|copyright|colophon)(\s|[:\-–]|$)", re.I),
+     "front_matter"),
+    # Chinese
+    (re.compile(r"^\s*附\s*录(?:\s|[A-Z\d:：\-–]|$)"), "appendix"),
+    (re.compile(r"^\s*索\s*引\s*$"), "index"),
+    (re.compile(r"^\s*(参考文献|参考资料|引用文献|文献综述)\s*$"), "bibliography"),
+    (re.compile(r"^\s*(术语表|专有名词)\s*$"), "glossary"),
+    (re.compile(r"^\s*(目\s*录|目次)\s*$"), "toc"),
+    (re.compile(r"^\s*(致\s*谢|前\s*言|序\s*言|序|序章|致辞|版权页?)\s*$"), "front_matter"),
+]
+
+
+# Anchored at the start of the title — drop-caps only ever appear
+# at the title's first character. Allows leading non-letter / digit
+# / punctuation prefix (e.g. "5. R EMOVING THE CROP" — chapter
+# number ``5.`` — or "**INDEX" — markdown bold) before the dropcap
+# letter. ``[\W\d]*`` is "non-letter chars": digits, punctuation,
+# whitespace.
+_DROPCAP_PATTERN = re.compile(r"^([\W\d]*)([A-Z])\s+([A-Z]{2,})")
+
+
+def _normalize_dropcap_title(title: str) -> str:
+    """Heal MinerU's drop-cap OCR splits in headings.
+
+    PDFs that render the section title's first letter as an
+    enlarged decorative drop-cap make MinerU emit it as a separate
+    token, so "TABLE OF CONTENTS" comes out as "T ABLE OF
+    CONTENTS" and "INTRODUCTION" as "I NTRODUCTION". We re-join the
+    pattern ``<single uppercase letter> <all-caps word>`` at the
+    start of the title (only — drop-caps never occur mid-title) so
+    the regex whitelist below sees the un-mangled form.
+
+    Conservative match conditions:
+      * Single capital letter + whitespace + word of 2+ uppercase
+        letters. Skips e.g. "A Package" (lowercase tail) or "U S"
+        (single-letter tail) so non-dropcap titles aren't mangled.
+      * Anchored to title start (with optional leading punctuation /
+        markdown bold), so mid-title accidents like
+        "OF A COLONY" → "OFACOLONY" can't happen.
+    """
+    if not title:
+        return title
+    return _DROPCAP_PATTERN.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}", title, count=1)
+
+
+def _classify_role_by_title(title: str) -> str | None:
+    """Return a role if the title matches a known back-matter pattern.
+
+    Returns ``None`` for titles that don't match anything (caller
+    should keep whatever role the node already has, typically
+    ``main``). Only fires for high-confidence patterns; ambiguous
+    titles stay ``main``.
+    """
+    if not title:
+        return None
+    candidate = _normalize_dropcap_title(title)
+    for pat, role in _BACK_MATTER_PATTERNS:
+        if pat.match(candidate):
+            return role
+    return None
+
 from .schema import (
     Block,
     BlockType,
@@ -61,28 +163,89 @@ class TreeBuilder:
         # Post-process: subdivide oversized leaf nodes
         self._subdivide_large_nodes(tree, doc)
 
+        # Post-process: regex-fallback role classification for any
+        # node still on ``main`` whose title obviously says otherwise,
+        # and propagate inherited roles from parents (so a node under
+        # an ``index`` parent stays ``index`` even if its own title
+        # didn't match — common when LLM correctly tagged the root
+        # ``Index`` but the per-letter sub-headings ``A`` / ``B`` /
+        # ``C`` look meaningless on their own).
+        self._classify_node_roles(tree)
+
         log.info(
-            "tree_builder doc=%s method=%s nodes=%d quality=%.3f",
+            "tree_builder doc=%s method=%s nodes=%d quality=%.3f roles=%s",
             doc.doc_id,
             tree.generation_method,
             len(tree.nodes),
             tree.quality_score,
+            self._role_histogram(tree),
         )
         return tree
+
+    # ------------------------------------------------------------------
+    def _classify_node_roles(self, tree: DocTree) -> None:
+        """Two-pass role assignment.
+
+        Pass 1: regex whitelist — any node still on ``main`` whose
+                title matches a back-matter pattern gets retagged.
+        Pass 2: inheritance — a node whose parent has a non-main role
+                inherits that role unless the regex explicitly
+                assigned it a different one. Ensures sub-headings of
+                ``Index`` stay ``index`` etc.
+        """
+        # Pass 1: title-pattern fallback
+        for node in tree.nodes.values():
+            if node.role != "main":
+                continue
+            inferred = _classify_role_by_title(node.title)
+            if inferred is not None:
+                node.role = inferred
+
+        # Pass 2: inheritance via preorder walk — but ONLY for roles
+        # in ``_INHERIT_ROLES`` (toc / index / bibliography). Front
+        # matter is excluded because LLM page-groups commonly misgroup
+        # body chapters into a "Front Matter and Introduction" bucket,
+        # and unrestricted inheritance would silently mark all of
+        # Chapter 1 as front_matter → KG drops it. Glossary / appendix
+        # don't need inheritance (we keep their content for KG anyway).
+        root = tree.nodes.get(tree.root_id)
+        if not root:
+            return
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            for cid in reversed(node.children):
+                child = tree.nodes.get(cid)
+                if child is None:
+                    continue
+                if child.role == "main" and node.role in _INHERIT_ROLES:
+                    child.role = node.role
+                stack.append(child)
+
+    @staticmethod
+    def _role_histogram(tree: DocTree) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for n in tree.nodes.values():
+            out[n.role] = out.get(n.role, 0) + 1
+        return out
 
     # ------------------------------------------------------------------
     def _build_with_quality_competition(self, doc: ParsedDocument, ctx: _BuildContext) -> DocTree:
         """Build the best possible tree for LLM tree navigation.
 
-        Strategy:
-            - LLM enabled → always use LLM (page-group strategy).
-              TOC/headings are fed to LLM as hints, not used as
-              standalone strategies — they're too unreliable on real
-              documents (MinerU misclassifies headings, TOC page
-              numbers are often wrong).
-            - LLM not available → flat fallback. Tree navigation will
-              be disabled (tree_navigable=False), but chunking still
-              needs a tree structure to organize blocks.
+        Strategy (three tiers, best → worst):
+            1. LLM enabled + page-group strategy succeeds → semantic
+               sectioning the navigator can actually navigate.
+            2. LLM unavailable / failed → ``from_headings`` builds a
+               structural tree from MinerU's ``block.level`` field
+               (H1 → root child, H2 → grandchild, …). Free, fast,
+               loses the LLM's "Chapter 3 was really three sub-topics"
+               re-grouping but preserves every author-declared
+               section boundary so the chunker doesn't straddle them.
+            3. No headings detected at all (rare — short note files,
+               handwritten PDFs) → ``flat_fallback`` puts everything
+               under one "Document" node. Chunker still works; tree
+               navigation is degenerate.
         """
         if self.cfg.llm_enabled:
             # Collect structural hints from TOC/headings to feed the LLM
@@ -91,10 +254,36 @@ class TreeBuilder:
             tree.quality_score = _quality_score(tree, doc, self.cfg)
             return tree
 
-        # No LLM — flat fallback for chunking only
-        tree = ctx.flat_fallback()
+        # No LLM — try heading-based tree (uses MinerU's level field)
+        # and fall through to flat only if the doc genuinely has no
+        # heading structure.
+        tree = self._heading_or_flat_fallback(ctx)
         tree.quality_score = _quality_score(tree, doc, self.cfg)
         return tree
+
+    # ------------------------------------------------------------------
+    def _heading_or_flat_fallback(self, ctx: _BuildContext) -> DocTree:
+        """Prefer ``from_headings`` over ``flat_fallback``.
+
+        Falls through to flat only when the doc has effectively no
+        usable headings (≤1 non-root node after junk filtering), since
+        a 1-section "tree" is the same as flat anyway.
+        """
+        tree = ctx.from_headings()
+        non_root = sum(1 for nid in tree.nodes if nid != tree.root_id)
+        if non_root >= 2:
+            log.info(
+                "tree_builder: heading-based fallback produced %d nodes "
+                "(LLM unavailable)",
+                non_root,
+            )
+            return tree
+        log.info(
+            "tree_builder: no usable headings detected (%d non-root nodes); "
+            "using flat fallback",
+            non_root,
+        )
+        return ctx.flat_fallback()
 
     # ------------------------------------------------------------------
     def _collect_structural_hints(self, doc: ParsedDocument) -> str:
@@ -131,8 +320,19 @@ class TreeBuilder:
 
     # ------------------------------------------------------------------
     def _subdivide_large_nodes(self, tree: DocTree, doc: ParsedDocument) -> None:
-        """Split oversized leaf nodes into smaller sub-nodes by position."""
-        from .chunker import approx_tokens
+        """Split oversized leaf nodes into smaller sub-nodes.
+
+        Strategy (best → worst):
+            1. **Heading-aware split** — if the leaf contains ≥2
+               real headings, split at those heading boundaries and
+               name each sub-node with the heading text. Preserves
+               author-declared semantic structure even when a coarse
+               LLM grouping merged several sections into one node.
+            2. **Position split** — fall back when there are no
+               headings (or just one). Creates ``"X (part 1/2/...)"``
+               sub-nodes; degenerate but at least bounded.
+        """
+        from .chunker import _is_real_heading, approx_tokens
 
         threshold = self.cfg.max_tokens_per_node
         blocks_index = doc.blocks_by_id()
@@ -146,58 +346,168 @@ class TreeBuilder:
                 for bid in leaf.block_ids
                 if bid in blocks_index and not blocks_index[bid].excluded
             )
-            if total_tokens <= threshold:
-                continue
 
-            # Determine how many sub-nodes to create (2-4)
-            num_splits = min(4, max(2, total_tokens // threshold + 1))
             valid_bids = [bid for bid in leaf.block_ids if bid in blocks_index and not blocks_index[bid].excluded]
-            if len(valid_bids) < num_splits:
+
+            # Detect real headings inside this leaf — the trigger
+            # for hierarchical subdivision is heading presence, NOT
+            # token count. An L1 like "Bee Sting Reactions and
+            # Tolerance" might fit in 5K tokens but still contain
+            # 4 author-declared H4 subsections; flattening those
+            # into one leaf hides structure the user expects to see
+            # in the tree viewer.
+            heading_indices: list[int] = []
+            for i, bid in enumerate(valid_bids):
+                b = blocks_index.get(bid)
+                if b and _is_real_heading(b):
+                    heading_indices.append(i)
+
+            # Position-split fallback (no headings) only fires when
+            # the leaf is genuinely too big for downstream chunking.
+            # If the leaf fits AND has no headings, leave it flat.
+            if len(heading_indices) < 2 and total_tokens <= threshold:
                 continue
 
-            # Split block_ids evenly
-            chunk_size = max(1, len(valid_bids) // num_splits)
-            splits: list[list[str]] = []
-            for i in range(num_splits):
-                start = i * chunk_size
-                end = len(valid_bids) if i == num_splits - 1 else (i + 1) * chunk_size
-                splits.append(valid_bids[start:end])
+            if len(heading_indices) >= 2:
+                # Hierarchical heading-based split: build a stack of
+                # ancestors as we walk the leaf's blocks, so an H4
+                # appearing under an H3 becomes the H3 sub-node's
+                # CHILD, not its sibling. Mirrors ``from_headings``
+                # but scoped to one oversized leaf.
+                #
+                # Heading levels seen inside this leaf are normalised:
+                # the smallest observed level becomes depth 1 (the
+                # leaf's first generation of children). Levels not
+                # standing in for headings (sparse runs) keep their
+                # ordinal so we never *invent* hierarchy.
+                head_blocks = [
+                    blocks_index[valid_bids[i]] for i in heading_indices
+                ]
+                raw_levels = sorted({hb.level for hb in head_blocks if hb.level})
+                level_map = {lv: idx + 1 for idx, lv in enumerate(raw_levels)}
 
-            # Create sub-nodes, reusing leaf's _seq counter pattern
-            leaf.block_ids.clear()
-            leaf.children.clear()
-            for i, split_bids in enumerate(splits):
-                if not split_bids:
-                    continue
-                first_b = blocks_index.get(split_bids[0])
-                last_b = blocks_index.get(split_bids[-1])
-                sub_id = f"{leaf.node_id}:sub{i}"
-                sub_node = TreeNode(
-                    node_id=sub_id,
-                    doc_id=leaf.doc_id,
-                    parse_version=leaf.parse_version,
-                    parent_id=leaf.node_id,
-                    level=leaf.level + 1,
-                    title=f"{leaf.title} (part {i + 1})",
-                    page_start=first_b.page_no if first_b else leaf.page_start,
-                    page_end=last_b.page_no if last_b else leaf.page_end,
-                    block_ids=split_bids,
-                )
-                # Generate cheap summary from block text
-                texts = []
-                for bid in split_bids[:3]:
+                # Track ``stack[i] = (depth, parent_node)`` — depth 0
+                # is the leaf itself.
+                stack: list[tuple[int, TreeNode]] = [(0, leaf)]
+                # Pre-heading blocks (intro paragraph before the first
+                # real heading) attach to the leaf so we don't lose them.
+                # The walk loop below SKIPS indices < first_heading_idx
+                # — those have already been claimed by the leaf here.
+                # (Earlier version re-appended them in the loop's
+                # ``cur_node or leaf`` fallback, producing duplicate
+                # block_ids and 2× chunk content.)
+                first_heading_idx = heading_indices[0]
+                pre_heading_bids = valid_bids[:first_heading_idx]
+                leaf.block_ids = list(pre_heading_bids)
+                leaf.children = []
+
+                sub_seq = 0
+                cur_node: TreeNode | None = None  # node that accumulates body blocks
+                for i, bid in enumerate(valid_bids):
+                    if i < first_heading_idx:
+                        # Already attached to leaf above; skip to
+                        # avoid duplicate block_id.
+                        continue
                     b = blocks_index.get(bid)
-                    if b and b.text:
-                        texts.append(b.text[:100])
-                sub_node.summary = " ".join(texts)[:200] if texts else None
-                tree.nodes[sub_id] = sub_node
-                leaf.children.append(sub_id)
+                    if i in heading_indices and b is not None:
+                        depth = level_map.get(b.level, b.level or 1)
+                        # Pop until the stack top has strictly smaller depth.
+                        while stack and stack[-1][0] >= depth:
+                            stack.pop()
+                        parent = stack[-1][1] if stack else leaf
+                        sub_seq += 1
+                        sub_id = f"{leaf.node_id}:sub{sub_seq}"
+                        sub_node = TreeNode(
+                            node_id=sub_id,
+                            doc_id=leaf.doc_id,
+                            parse_version=leaf.parse_version,
+                            parent_id=parent.node_id,
+                            level=parent.level + 1,
+                            title=(b.text or "").strip() or "(untitled)",
+                            page_start=b.page_no,
+                            page_end=b.page_no,
+                            block_ids=[bid],
+                            # Only inherit specific roles — same logic
+                            # as ``_classify_node_roles`` Pass 2. See
+                            # ``_INHERIT_ROLES`` for the rationale.
+                            role=leaf.role if leaf.role in _INHERIT_ROLES else "main",
+                        )
+                        tree.nodes[sub_id] = sub_node
+                        parent.children.append(sub_id)
+                        stack.append((depth, sub_node))
+                        cur_node = sub_node
+                    else:
+                        # Body block — attach to current sub-node, or
+                        # leaf if we haven't entered any heading yet.
+                        target = cur_node or leaf
+                        target.block_ids.append(bid)
+                        if b is not None:
+                            target.page_end = max(target.page_end, b.page_no)
+                            # Bubble page_end up to the leaf so its
+                            # bbox stays consistent.
+                            for _, anc in stack:
+                                anc.page_end = max(anc.page_end, b.page_no)
+
+                # Cheap summary for sub-nodes
+                for sub_id in [n for n in tree.nodes if n.startswith(f"{leaf.node_id}:sub")]:
+                    sn = tree.nodes[sub_id]
+                    texts = []
+                    for sbid in sn.block_ids[:3]:
+                        sb = blocks_index.get(sbid)
+                        if sb and sb.text:
+                            texts.append(sb.text[:100])
+                    sn.summary = " ".join(texts)[:200] if texts else None
+
+                method_label = "heading-split-hierarchical"
+                sub_count = sum(1 for n in tree.nodes if n.startswith(f"{leaf.node_id}:sub"))
+            else:
+                # Position-based fallback (bounded "(part N)")
+                num_splits = min(4, max(2, total_tokens // threshold + 1))
+                if len(valid_bids) < num_splits:
+                    continue
+                chunk_size = max(1, len(valid_bids) // num_splits)
+                leaf.block_ids = []
+                leaf.children = []
+                for i in range(num_splits):
+                    start = i * chunk_size
+                    end = len(valid_bids) if i == num_splits - 1 else (i + 1) * chunk_size
+                    split_bids = valid_bids[start:end]
+                    if not split_bids:
+                        continue
+                    first_b = blocks_index.get(split_bids[0])
+                    last_b = blocks_index.get(split_bids[-1])
+                    sub_id = f"{leaf.node_id}:sub{i}"
+                    sub_node = TreeNode(
+                        node_id=sub_id,
+                        doc_id=leaf.doc_id,
+                        parse_version=leaf.parse_version,
+                        parent_id=leaf.node_id,
+                        level=leaf.level + 1,
+                        title=f"{leaf.title} (part {i + 1})",
+                        page_start=first_b.page_no if first_b else leaf.page_start,
+                        page_end=last_b.page_no if last_b else leaf.page_end,
+                        block_ids=split_bids,
+                        # Only inherit specific roles. See
+                        # ``_INHERIT_ROLES`` for rationale.
+                        role=leaf.role if leaf.role in _INHERIT_ROLES else "main",
+                    )
+                    texts = []
+                    for sbid in split_bids[:3]:
+                        sb = blocks_index.get(sbid)
+                        if sb and sb.text:
+                            texts.append(sb.text[:100])
+                    sub_node.summary = " ".join(texts)[:200] if texts else None
+                    tree.nodes[sub_id] = sub_node
+                    leaf.children.append(sub_id)
+                method_label = "position-split"
+                sub_count = len(leaf.children)
 
             log.info(
-                "subdivided node %s (%d tokens) into %d sub-nodes",
+                "subdivided node %s (%d tokens) into %d sub-nodes [%s]",
                 leaf.node_id,
                 total_tokens,
-                len(leaf.children),
+                sub_count,
+                method_label,
             )
 
 
@@ -456,8 +766,8 @@ class _BuildContext:
         """
         cfg = self.cfg
         if cfg is None or not cfg.model:
-            log.warning("LLM tree: no model configured; using flat fallback")
-            return self.flat_fallback()
+            log.warning("LLM tree: no model configured; using heading fallback")
+            return self.heading_or_flat_fallback()
 
         # Build a condensed text representation for the LLM
         reading = self.doc.reading_blocks()
@@ -496,8 +806,8 @@ class _BuildContext:
             log.info("LLM tree builder produced %d sections", len(sections))
             return tree
         except Exception as e:
-            log.warning("LLM tree builder failed (%s); using flat fallback", e)
-            return self.flat_fallback()
+            log.warning("LLM tree builder failed (%s); using heading fallback", e)
+            return self.heading_or_flat_fallback()
 
     def _build_block_summary(self, blocks: list[Block], max_chars: int = 12000) -> list[str]:
         """
@@ -532,8 +842,11 @@ class _BuildContext:
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.1,
-            "max_tokens": 4096,
             "timeout": 120,  # 2 min hard ceiling
+            # Same fix as KG extractor: drop max_tokens (DeepSeek
+            # truncates mid-JSON at the cap) + disable thinking
+            # (overhead for structured tasks).
+            "extra_body": {"thinking": {"type": "disabled"}},
         }
         api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
         if api_key:
@@ -647,8 +960,8 @@ class _BuildContext:
         """
         cfg = self.cfg
         if cfg is None or not cfg.model:
-            log.warning("page_groups: no LLM model configured; using flat fallback")
-            return self.flat_fallback()
+            log.warning("page_groups: no LLM model configured; using heading fallback")
+            return self.heading_or_flat_fallback()
 
         reading = self.doc.reading_blocks()
         if not reading:
@@ -716,11 +1029,12 @@ class _BuildContext:
                 structural_hints=structural_hints,
             )
         except Exception as e:
-            log.warning("page_group LLM call failed (%s); using flat fallback", e)
-            return self.flat_fallback()
+            log.warning("page_group LLM call failed (%s); using heading fallback", e)
+            return self.heading_or_flat_fallback()
 
         if not sections:
-            return self.flat_fallback()
+            log.warning("page_group LLM returned no sections; using heading fallback")
+            return self.heading_or_flat_fallback()
 
         # Step 4: Build tree from sections
         return self._page_group_sections_to_tree(sections, groups, reading)
@@ -753,13 +1067,26 @@ class _BuildContext:
             '  - "title": descriptive section title\n'
             '  - "groups": array of group numbers (1-based) that belong to this section\n'
             '  - "summary": 1-2 sentence summary of what this section covers\n'
-            '  - "level": hierarchy level (1 = top-level, 2 = sub-section)\n\n'
+            '  - "level": hierarchy level (1 = top-level, 2 = sub-section)\n'
+            '  - "role": one of "main", "front_matter", "toc", "glossary", '
+            '"appendix", "bibliography", "index". '
+            'Use "main" for body chapters/sections (the default). Use the '
+            'others ONLY when the section IS that thing:\n'
+            "      * front_matter: copyright, dedication, foreword, preface, acknowledgements\n"
+            "      * toc: table of contents\n"
+            "      * glossary: alphabetical list of term definitions\n"
+            "      * appendix: supplementary content typically at the end\n"
+            "      * bibliography: list of references / works cited\n"
+            "      * index: alphabetical index of terms with page numbers\n\n"
             "Rules:\n"
             "- Adjacent groups on the same topic SHOULD be merged into one section.\n"
             "- Every group number must appear in exactly one section.\n"
             "- Use 1-2 levels of hierarchy. Don't over-nest.\n"
             "- Titles should be descriptive (not 'Section 1').\n"
             "- Summaries should capture the key topics discussed.\n"
+            "- Pick role=\"main\" by default; only use a back/front-matter "
+            "role when the section is unambiguously that. When unsure, "
+            "use \"main\".\n"
             "- Return ONLY valid JSON, no markdown fences.\n"
         )
 
@@ -769,7 +1096,7 @@ class _BuildContext:
             f"{excerpts_text}"
             f"{hint_block}\n\n"
             f'Return JSON: {{"sections": [{{"title": "...", "groups": [1, 2], '
-            f'"summary": "...", "level": 1}}, ...]}}'
+            f'"summary": "...", "level": 1, "role": "main"}}, ...]}}'
         )
 
         # Check if we need to split into batches
@@ -784,8 +1111,13 @@ class _BuildContext:
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.1,
-            "max_tokens": 4096,
             "timeout": 120,
+            # Same fix as KG extractor: drop max_tokens (DeepSeek
+            # truncates at the cap mid-JSON; let the provider use its
+            # own model-side maximum instead) and disable thinking
+            # (pure overhead for structured-JSON tasks, costs 5-7×
+            # latency and burns output budget on never-read CoT).
+            "extra_body": {"thinking": {"type": "disabled"}},
         }
         api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
         if api_key:
@@ -846,9 +1178,13 @@ class _BuildContext:
                 "You are a document structure analyst. Given page-grouped text excerpts, "
                 "determine the logical section structure.\n"
                 'Return JSON: {"sections": [{"title": "...", "groups": [...], '
-                '"summary": "...", "level": 1}, ...]}\n'
-                "Rules: merge adjacent groups on same topic, descriptive titles, "
-                "1-2 sentence summaries. Groups in this batch: " + str(group_nums)
+                '"summary": "...", "level": 1, "role": "main"}, ...]}\n'
+                'Rules: merge adjacent groups on same topic, descriptive titles, '
+                '1-2 sentence summaries. Set "role" per section: '
+                '"main" (default body content), or one of '
+                '"front_matter", "toc", "glossary", "appendix", "bibliography", "index" '
+                "ONLY when the section unambiguously IS that. "
+                "Groups in this batch: " + str(group_nums)
             )
 
             user_msg = context + "\n\n".join(batch)
@@ -860,8 +1196,10 @@ class _BuildContext:
                     {"role": "user", "content": user_msg},
                 ],
                 "temperature": 0.1,
-                "max_tokens": 4096,
                 "timeout": 120,
+                # Same fix as KG extractor: drop max_tokens (DeepSeek
+                # truncates mid-JSON) + disable thinking.
+                "extra_body": {"thinking": {"type": "disabled"}},
             }
             api_key = resolve_api_key(api_key=cfg.api_key, api_key_env=cfg.api_key_env, context="tree_builder")
             if api_key:
@@ -1039,6 +1377,13 @@ class _BuildContext:
                 page_end=page_end,
             )
             node.summary = sec.get("summary") or None
+            # Pull LLM-given role; falls through to ``main`` (and the
+            # post-build ``_classify_node_roles`` will apply the regex
+            # whitelist for any node still carrying ``main`` whose
+            # title obviously says otherwise).
+            llm_role = str(sec.get("role", "")).strip().lower()
+            if llm_role in _VALID_ROLES:
+                node.role = llm_role
             nodes[node.node_id] = node
             parent.children.append(node.node_id)
             stack.append((level, node))
@@ -1095,6 +1440,20 @@ class _BuildContext:
             section.block_ids.append(block.block_id)
 
         return self._package(root=root, nodes=nodes, method="fallback")
+
+    def heading_or_flat_fallback(self) -> DocTree:
+        """Heading-based tree if MinerU detected at least 2 headings;
+        otherwise flat. Used as the LLM-failure landing pad inside
+        ``from_page_groups`` so a transient LLM error doesn't collapse
+        the tree to a single ``Document`` node — author-declared
+        section boundaries that MinerU already gave us are still
+        respected, and the chunker doesn't straddle them.
+        """
+        tree = self.from_headings()
+        non_root = sum(1 for nid in tree.nodes if nid != tree.root_id)
+        if non_root >= 2:
+            return tree
+        return self.flat_fallback()
 
     # ==================================================================
     # Helpers
@@ -1165,7 +1524,7 @@ def _finalize_node_enrichment(
         blocks_index = doc.blocks_by_id()
     types: set[str] = set()
     tables = 0
-    figures = 0
+    images = 0
     hasher = hashlib.sha1()
 
     for bid in node.block_ids:
@@ -1175,14 +1534,14 @@ def _finalize_node_enrichment(
         types.add(b.type.value)
         if b.type == BlockType.TABLE:
             tables += 1
-        elif b.type == BlockType.FIGURE:
-            figures += 1
+        elif b.type == BlockType.IMAGE:
+            images += 1
         hasher.update(b.text.encode("utf-8", errors="ignore"))
         hasher.update(b"\x00")
 
     node.element_types = sorted(types)
     node.table_count = tables
-    node.figure_count = figures
+    node.image_count = images
     node.content_hash = hasher.hexdigest()
 
 

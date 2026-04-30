@@ -71,9 +71,11 @@ def _block_out(row: dict) -> BlockOut:
         confidence=row["confidence"],
         table_html=row.get("table_html"),
         table_markdown=row.get("table_markdown"),
-        figure_storage_key=row.get("figure_storage_key"),
-        figure_caption=row.get("figure_caption"),
+        image_storage_key=row.get("image_storage_key"),
+        image_caption=row.get("image_caption"),
         formula_latex=row.get("formula_latex"),
+        code_text=row.get("code_text"),
+        code_language=row.get("code_language"),
         excluded=row["excluded"],
         excluded_reason=row.get("excluded_reason"),
         caption_of=row.get("caption_of"),
@@ -649,6 +651,23 @@ def reparse_document(
     if not file_id:
         raise HTTPException(400, "document has no file_id, cannot reparse")
 
+    # Reject if a reparse is already in flight. ``status`` is the
+    # overall document state — anything other than ``ready`` /
+    # ``error`` means the previous reparse hasn't finished (parsing,
+    # structuring, embedding, etc). Returning 409 lets the frontend
+    # leave its optimistic "Processing" state in place rather than
+    # double-queuing the job.
+    current_status = row.get("status")
+    kg_status = row.get("kg_status")
+    in_flight = current_status not in ("ready", "error", None) or (
+        current_status == "ready" and kg_status not in ("done", "skipped", "disabled", None)
+    )
+    if in_flight:
+        raise HTTPException(
+            409,
+            f"document is already being reparsed (status={current_status}, kg_status={kg_status})",
+        )
+
     pv = row["active_parse_version"]
 
     # ── Clean up old associated data ──
@@ -819,9 +838,10 @@ def get_tree(doc_id: str, state: AppState = Depends(get_state)):
             block_ids=n.get("block_ids", []),
             element_types=n.get("element_types", []),
             table_count=n.get("table_count", 0),
-            figure_count=n.get("figure_count", 0),
+            image_count=n.get("image_count", 0),
             summary=n.get("summary"),
             key_entities=n.get("key_entities", []),
+            role=n.get("role", "main"),
         )
     return TreeOut(
         doc_id=tree.get("doc_id", doc_id),
@@ -855,7 +875,8 @@ def get_tree_node(doc_id: str, node_id: str, state: AppState = Depends(get_state
         block_ids=n.get("block_ids", []),
         element_types=n.get("element_types", []),
         table_count=n.get("table_count", 0),
-        figure_count=n.get("figure_count", 0),
+        image_count=n.get("image_count", 0),
         summary=n.get("summary"),
         key_entities=n.get("key_entities", []),
+        role=n.get("role", "main"),
     )

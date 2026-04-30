@@ -8,9 +8,9 @@ Walks a DocTree in preorder and emits a list of Chunks that satisfy:
     - Chunk boundaries always coincide with block boundaries -- never
       splits a block in the middle. This is what makes citation
       highlighting precise: every chunk -> concrete bbox set.
-    - Tables, figures, and formulas are emitted as their own single-
-      block chunks so that embeddings of heterogeneous content stay
-      clean (controlled by ChunkerConfig.isolate_*).
+    - Tables, images, formulas, and code are emitted as their own
+      single-block chunks so that embeddings of heterogeneous content
+      stay clean (controlled by ChunkerConfig.isolate_*).
     - Text blocks are greedy-packed to target_tokens, never exceeding
       max_tokens, with small trailing chunks merged into their
       predecessor when possible.
@@ -48,9 +48,47 @@ log = logging.getLogger(__name__)
 # markers, stray punctuation/digits) are worthless as standalone chunks.
 _RE_NOISE_BLOCK = re.compile(r"^[\s\*_#`~\-=\+\|\\/\[\](){}<>!?@$%^&;:,.\d]*$")
 
+# Max char length for a heading we'll trust as a real section break.
+# MinerU occasionally misclassifies a leading body sentence as a
+# heading; gating at 100 chars keeps real H1-H4 (~60 chars max in
+# practice) while rejecting body text. tree_builder uses 200 chars
+# in ``_is_junk_heading``; we're stricter here because a false
+# positive at chunker-flush time directly fragments output, while
+# tree_builder can recover via majority structure.
+_HEADING_MAX_CHARS = 100
 
-# Category used internally to decide packing behavior
-_Category = Literal["text", "table", "figure", "formula"]
+
+def _is_real_heading(b: Block) -> bool:
+    """Heading-likeness gate used by the chunker's heading-aware flush.
+
+    A block must look authentically like a section header before we
+    let it force a chunk boundary. Three filters:
+      1. Type tagged HEADING by the parser.
+      2. Text exists and is at most ``_HEADING_MAX_CHARS`` chars
+         (catches body sentences mislabeled as headings).
+      3. Text is not pure formatting noise (catches ``***``, ``---``,
+         stray punctuation that MinerU sometimes promotes to H4).
+    """
+    if b.type != BlockType.HEADING:
+        return False
+    t = (b.text or "").strip()
+    if not t or len(t) > _HEADING_MAX_CHARS:
+        return False
+    return not _RE_NOISE_BLOCK.match(t)
+
+
+# Category used internally to decide packing behavior. Mirrors
+# ``Chunk.content_type`` minus ``mixed`` (which is computed at
+# emission time based on the actual block-type set).
+_Category = Literal["text", "table", "image", "formula", "code"]
+
+# Block types that count as "text-like" for the purpose of
+# ``mixed`` detection. A chunk made up entirely of these stays
+# ``text`` — heading + paragraph + list is the normal shape and
+# shouldn't be flagged as anything special.
+_TEXT_LIKE_TYPES = frozenset(
+    {BlockType.PARAGRAPH, BlockType.HEADING, BlockType.LIST, BlockType.CAPTION}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +156,7 @@ class _ChunkContext:
 
         out: list[Chunk] = []
         for category, run_blocks in runs:
-            if category in ("table", "figure", "formula"):
+            if category in ("table", "image", "formula", "code"):
                 for b in run_blocks:
                     out.append(
                         self._mk_chunk(
@@ -198,6 +236,20 @@ class _ChunkContext:
                     )
                 )
                 continue
+            # Heading-aware flush: a real heading should start a new
+            # chunk so embeddings respect author-declared section
+            # boundaries, BUT only flush if the current chunk has
+            # already accumulated >= ``min_tokens``. Without that
+            # guard, consecutive small headings (TOCs, chapter
+            # spreads) would each become a 5-token chunk. The
+            # ``_is_real_heading`` gate filters out MinerU misclas-
+            # sifications and noise so we never flush on garbage.
+            if (
+                _is_real_heading(b)
+                and current
+                and current_tokens >= cfg.min_tokens
+            ):
+                flush()
             if current and current_tokens + bt > cfg.target_tokens:
                 flush()
             current.append(b)
@@ -244,12 +296,14 @@ class _ChunkContext:
         _first = [b for b in blocks if b.page_no == page_start and b.bbox]
         y_sort = -max(b.bbox[3] for b in _first) if _first else 0.0
 
-        # Upgrade content_type to "mixed" if the block set is heterogeneous
-        # (can happen when cfg.isolate_formulas=False and a formula ended
-        # up inside a text chunk).
+        # Upgrade content_type to "mixed" only when a *structural*
+        # block (image / table / formula / code) leaks into a text
+        # run. heading + paragraph + list combinations are normal
+        # text chunks and stay ``text`` — the previous "any 2 types
+        # → mixed" rule flagged 60%+ of chunks unhelpfully.
         types = {b.type for b in blocks}
         ctype: str = content_type
-        if content_type == "text" and len(types) > 1:
+        if content_type == "text" and (types - _TEXT_LIKE_TYPES):
             ctype = "mixed"
 
         return Chunk(
@@ -266,6 +320,10 @@ class _ChunkContext:
             y_sort=y_sort,
             section_path=section_path,
             ancestor_node_ids=ancestor_ids,
+            # Inherited from owning tree node so KG extraction can
+            # filter out noise sources (Index / TOC / Bibliography /
+            # Front matter) without re-walking the tree.
+            role=node.role,
         )
 
     # ------------------------------------------------------------------
@@ -292,6 +350,7 @@ class _ChunkContext:
             y_sort=min(a.y_sort, b.y_sort),
             section_path=a.section_path,
             ancestor_node_ids=a.ancestor_node_ids,
+            role=a.role,
         )
 
 
@@ -323,10 +382,12 @@ def _segment_runs(blocks: list[Block], cfg: ChunkerConfig) -> list[tuple[_Catego
 def _classify(block: Block, cfg: ChunkerConfig) -> _Category:
     if block.type == BlockType.TABLE and cfg.isolate_tables:
         return "table"
-    if block.type == BlockType.FIGURE and cfg.isolate_figures:
-        return "figure"
+    if block.type == BlockType.IMAGE and cfg.isolate_images:
+        return "image"
     if block.type == BlockType.FORMULA and cfg.isolate_formulas:
         return "formula"
+    if block.type == BlockType.CODE and cfg.isolate_code:
+        return "code"
     return "text"
 
 
@@ -339,9 +400,9 @@ def _join_block_texts(blocks: list[Block], category: _Category) -> str:
     """
     Join block texts into the chunk body.
 
-    For text chunks we use a double newline between blocks so
-    paragraph boundaries are preserved. For tables / figures /
-    formulas we prefer structured payloads when present.
+    Text chunks use ``\\n\\n`` between blocks so paragraph boundaries
+    are preserved. Structural categories (table / image / formula /
+    code) prefer their typed payload when one is present.
     """
     if category == "table" and len(blocks) == 1:
         b = blocks[0]
@@ -349,10 +410,13 @@ def _join_block_texts(blocks: list[Block], category: _Category) -> str:
     if category == "formula" and len(blocks) == 1:
         b = blocks[0]
         return b.formula_latex or b.text
-    if category == "figure" and len(blocks) == 1:
+    if category == "image" and len(blocks) == 1:
         b = blocks[0]
-        caption = b.figure_caption or ""
-        return caption or b.text or f"[figure:{b.block_id}]"
+        caption = b.image_caption or ""
+        return caption or b.text or f"[image:{b.block_id}]"
+    if category == "code" and len(blocks) == 1:
+        b = blocks[0]
+        return b.code_text or b.text or ""
     return "\n\n".join(b.text for b in blocks if b.text)
 
 

@@ -195,24 +195,28 @@ function initSigma(g) {
     emit('entity-click', node)
   })
 
-  // Auto-layout: small forceAtlas2 burst then settle. Runs in a
-  // worker so the main thread stays responsive even on bigger
-  // graphs — the loading overlay below covers initial render until
-  // the first frame paints.
+  // Auto-layout: forceAtlas2 burst then settle, in a worker so the
+  // main thread stays responsive. We use TWO different parameter
+  // sets:
+  //   - filtered subgraph (chunk selected, ~10-30 nodes): strong
+  //     gravity + low scalingRatio packs the cluster tight so the
+  //     few nodes don't stay flung at the canvas corners.
+  //   - full-doc view (100+ nodes): plain forceAtlas2 defaults so
+  //     the layout reads as a normal force-directed graph instead
+  //     of a single dense blob.
   fa2 = new FA2Layout(g, {
-    settings: {
-      // Strong gravity + low scalingRatio packs the cluster tight
-      // (the previous defaults flung weakly-connected / orphan
-      // nodes to the canvas corners). ``strongGravityMode`` keeps
-      // pulling even the lightest-weight nodes toward the center
-      // so an isolated entity ends up next to its cluster instead
-      // of orbiting the pane.
-      gravity: 8,
-      strongGravityMode: true,
-      scalingRatio: 1.5,
-      slowDown: 8,
-      barnesHutOptimize: g.order > 100,
-    },
+    settings: filtered
+      ? {
+          gravity: 8,
+          strongGravityMode: true,
+          scalingRatio: 1.5,
+          slowDown: 8,
+          barnesHutOptimize: g.order > 100,
+        }
+      : {
+          // Defaults — let community structure emerge naturally.
+          barnesHutOptimize: g.order > 100,
+        },
   })
   fa2.start()
   // Settle window scales with node count: tiny filtered subgraphs
@@ -222,12 +226,13 @@ function initSigma(g) {
     if (fa2) {
       fa2.stop()
       sigma?.refresh()
-      // After fa2 settles, snap the camera back to a centered fit
-      // so the filtered subgraph (or full doc) sits inside the pane.
-      // Tighter camera fit (was 1.05 — left too much margin around
-      // the cluster). 0.85 zooms in slightly so labels are easier
-      // to read at this pane size.
-      sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 0.85, angle: 0 })
+      // Only snap the camera tight on the filtered subgraph (the
+      // small cluster benefits from a closer fit). For the full
+      // doc, leave sigma at its auto-fit ratio so the whole graph
+      // is visible end-to-end.
+      if (filtered) {
+        sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 0.85, angle: 0 })
+      }
     }
   }, settleMs)
 }

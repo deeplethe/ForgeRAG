@@ -43,13 +43,17 @@ class TestChunkToEmbeddingText:
         c = _chunk("c1", "hello world", "text")
         assert chunk_to_embedding_text(c) == "hello world"
 
-    def test_figure_prefix(self):
-        c = _chunk("c2", "system architecture diagram", "figure")
-        assert chunk_to_embedding_text(c).startswith("[figure] ")
+    def test_image_prefix(self):
+        c = _chunk("c2", "system architecture diagram", "image")
+        assert chunk_to_embedding_text(c).startswith("[image] ")
 
     def test_formula_prefix(self):
         c = _chunk("c3", "E = mc^2", "formula")
         assert chunk_to_embedding_text(c).startswith("[formula] ")
+
+    def test_code_prefix(self):
+        c = _chunk("c5", "def foo(): return 1", "code")
+        assert chunk_to_embedding_text(c).startswith("[code] ")
 
     def test_empty_returns_empty(self):
         c = _chunk("c4", "   ", "text")

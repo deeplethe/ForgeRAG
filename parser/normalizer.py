@@ -194,7 +194,7 @@ def _bind_captions(doc: ParsedDocument) -> None:
         blocks.sort(key=lambda x: x.seq)
         last_media: Block | None = None
         for b in blocks:
-            if b.type in (BlockType.FIGURE, BlockType.TABLE):
+            if b.type in (BlockType.IMAGE, BlockType.TABLE):
                 last_media = b
                 continue
             if b.excluded:
@@ -203,8 +203,8 @@ def _bind_captions(doc: ParsedDocument) -> None:
                 b.type = BlockType.CAPTION
                 if last_media is not None:
                     b.caption_of = last_media.block_id
-                    if last_media.type == BlockType.FIGURE and not last_media.figure_caption:
-                        last_media.figure_caption = b.text
+                    if last_media.type == BlockType.IMAGE and not last_media.image_caption:
+                        last_media.image_caption = b.text
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +291,11 @@ def _build_label_index(doc: ParsedDocument) -> dict[tuple[str, str], str]:
                     index.setdefault((kind, m.group(2)), target)
             continue
 
-        # Figures/tables may already have figure_caption populated via
+        # Images/tables may already have image_caption populated via
         # _bind_captions -- mine that too in case caption block is
         # excluded or missing.
-        if b.type in (BlockType.FIGURE, BlockType.TABLE):
-            cap = b.figure_caption or ""
+        if b.type in (BlockType.IMAGE, BlockType.TABLE):
+            cap = b.image_caption or ""
             m = _LABEL_DECLARE_RE.match(cap)
             if m:
                 kind = _normalize_label_kind(m.group(1))

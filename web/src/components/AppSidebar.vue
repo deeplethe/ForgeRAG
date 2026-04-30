@@ -10,7 +10,7 @@ const route = useRoute()
 
 // Pinned next to the wordmark so version + repo link are discoverable
 // without cluttering the user-settings menu.
-const version = import.meta.env.VITE_APP_VERSION || '0.2.2'
+const version = import.meta.env.VITE_APP_VERSION || '0.2.3'
 
 const props = defineProps({
   conversations: Array,

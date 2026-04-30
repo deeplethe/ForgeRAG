@@ -136,7 +136,10 @@ class TestBasicChunking:
         _, chunks = _build(doc)
         assert len(chunks) == 1
         c = chunks[0]
-        assert c.content_type == "mixed"
+        # heading + paragraph is the normal text shape — no longer
+        # flagged as ``mixed`` (that is reserved for runs that mix in
+        # non-text-like blocks, e.g. table/image/formula/code).
+        assert c.content_type == "text"
         assert len(c.block_ids) == 2
         assert c.page_start == 1 and c.page_end == 1
 
@@ -194,22 +197,22 @@ class TestBlockIsolation:
         assert table_chunks[0].content == "| a | b |"
         assert len(table_chunks[0].block_ids) == 1
 
-    def test_figure_gets_own_chunk_with_caption(self):
+    def test_image_gets_own_chunk_with_caption(self):
         blocks = [
             _block(1, 1, "Section", btype=BlockType.HEADING, level=1),
             _block(
                 1,
                 2,
                 "",
-                btype=BlockType.FIGURE,
-                figure_caption="Figure 1: diagram",
+                btype=BlockType.IMAGE,
+                image_caption="Figure 1: diagram",
             ),
         ]
         doc = _mk_doc(blocks=blocks, n_pages=1)
         _, chunks = _build(doc)
-        figure_chunks = [c for c in chunks if c.content_type == "figure"]
-        assert len(figure_chunks) == 1
-        assert "Figure 1: diagram" in figure_chunks[0].content
+        image_chunks = [c for c in chunks if c.content_type == "image"]
+        assert len(image_chunks) == 1
+        assert "Figure 1: diagram" in image_chunks[0].content
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +281,7 @@ class TestTextPacking:
 class TestCrossRefs:
     def test_block_cross_refs_become_chunk_cross_refs(self):
         # Build doc where para block references a figure block
-        fig = _block(1, 3, "", btype=BlockType.FIGURE, figure_caption="Figure 1: diagram")
+        fig = _block(1, 3, "", btype=BlockType.IMAGE, image_caption="Figure 1: diagram")
         ref_block = _block(
             1,
             4,
@@ -294,7 +297,7 @@ class TestCrossRefs:
         doc = _mk_doc(blocks=blocks, n_pages=1)
         _, chunks = _build(doc)
 
-        fig_chunk = next(c for c in chunks if c.content_type == "figure")
+        fig_chunk = next(c for c in chunks if c.content_type == "image")
         ref_chunk = next(c for c in chunks if ref_block.block_id in c.block_ids)
         assert fig_chunk.chunk_id in ref_chunk.cross_ref_chunk_ids
 

@@ -193,18 +193,18 @@ def get_blocks_by_page(
 @router.get("/blocks/{block_id}/image")
 def get_block_image(block_id: str, state: AppState = Depends(get_state)):
     """
-    Serve the extracted figure image for a block with figure_storage_key.
+    Serve the extracted image for a block with image_storage_key.
     Returns the raw image bytes with appropriate Content-Type.
     """
     row = state.store.get_block(block_id)
     if not row:
         raise HTTPException(404, "block not found")
-    key = row.get("figure_storage_key")
+    key = row.get("image_storage_key")
     if not key:
         raise HTTPException(404, "block has no image")
     try:
         data = state.blob.get(key)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "image blob not found")
-    mime = row.get("figure_mime") or "image/png"
+    mime = row.get("image_mime") or "image/png"
     return Response(content=data, media_type=mime)

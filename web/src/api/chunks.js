@@ -20,7 +20,7 @@ import { get } from './client'
  * @returns {Promise<{
  *   chunk_id: string, doc_id: string, parse_version: number,
  *   node_id: string, content: string,
- *   content_type: 'text'|'table'|'figure'|'formula'|'mixed',
+ *   content_type: 'text'|'table'|'image'|'formula'|'code'|'mixed',
  *   block_ids: string[], page_start: number, page_end: number,
  *   token_count: number, section_path: string[],
  *   ancestor_node_ids: string[], cross_ref_chunk_ids: string[]
@@ -84,11 +84,12 @@ export const getChunkByBlock = (blockId, docId) =>
  *   block_id: string, doc_id: string, parse_version: number,
  *   page_no: number, seq: number,
  *   bbox: { x0: number, y0: number, x1: number, y1: number },
- *   type: 'heading'|'paragraph'|'list'|'table'|'figure'|'formula'|'caption'|'header'|'footer',
+ *   type: 'heading'|'paragraph'|'list'|'table'|'image'|'formula'|'code'|'caption'|'header'|'footer',
  *   level: number|null, text: string, confidence: number,
  *   table_html: string|null, table_markdown: string|null,
- *   figure_storage_key: string|null, figure_caption: string|null,
- *   formula_latex: string|null, excluded: boolean,
+ *   image_storage_key: string|null, image_caption: string|null,
+ *   formula_latex: string|null, code_text: string|null, code_language: string|null,
+ *   excluded: boolean,
  *   excluded_reason: string|null, caption_of: string|null,
  *   cross_ref_targets: string[]
  * }>}
@@ -97,7 +98,7 @@ export const getBlock = (blockId) => get(`/api/v1/blocks/${blockId}`)
 
 /**
  * 获取 block 的提取图片 URL (用于 <img src>)
- * 仅 type=figure 且 figure_storage_key 非空的 block 有图片
+ * 仅 type=image 且 image_storage_key 非空的 block 有图片
  * @param {string} blockId
  * @returns {string} 图片 URL
  */

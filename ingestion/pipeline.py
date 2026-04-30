@@ -63,10 +63,17 @@ class _ChunkView:
     objects. ``run_kg_for_doc`` reloads chunks from the store as dict
     rows, then wraps each in this lightweight container so the existing
     extraction code path doesn't have to branch on input shape.
+
+    ``role`` is included so the role-based KG skip filter
+    (``_SKIP_ROLES`` in ``_run_kg_extraction``) sees the same field as
+    a real ``Chunk``. Defaults to ``"main"`` for callers that omit it
+    (e.g. legacy code paths reloading chunks before the role column
+    existed in storage).
     """
 
     chunk_id: str
     content: str
+    role: str = "main"
 
 
 class IngestionPipeline:
@@ -475,7 +482,10 @@ class IngestionPipeline:
         rows = self.rel.get_chunks(doc_id, parse_version)
         # Duck-typed view: ``_run_kg_extraction`` only reads ``.chunk_id``
         # and ``.content`` from each chunk.
-        chunks = [_ChunkView(r["chunk_id"], r.get("content") or "") for r in rows]
+        chunks = [
+            _ChunkView(r["chunk_id"], r.get("content") or "", r.get("role") or "main")
+            for r in rows
+        ]
         self._run_kg_extraction(doc_id, chunks)
 
     def _run_kg_extraction(self, doc_id: str, chunks: list) -> None:
@@ -534,7 +544,24 @@ class IngestionPipeline:
             # lets the extractor denormalize path onto Entity/Relation.source_paths.
             doc_row = self.rel.get_document(doc_id) or {}
             doc_path = doc_row.get("path") or "/"
-            chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content, "path": doc_path} for c in chunks]
+            # Skip noise sources by ``chunk.role`` — Index, TOC, and
+            # Bibliography consistently produce placeholder entities
+            # (page numbers, lone author names, title-only references)
+            # without real relations. Glossary, Appendix, and
+            # Front matter STAY in: definitions, supplementary prose,
+            # and Foreword/Preface bodies routinely carry real entities
+            # (authors, organizations, themes). Copyright/dedication
+            # pages are short enough that letting them through costs
+            # nothing. ``main`` is the default for body chapters.
+            _SKIP_ROLES = {"toc", "index", "bibliography"}
+            kg_chunks = [c for c in chunks if (c.role or "main") not in _SKIP_ROLES]
+            skipped = len(chunks) - len(kg_chunks)
+            if skipped:
+                log.info(
+                    "KG extraction: skipped %d chunks by role (TOC/Index/Bibliography)",
+                    skipped,
+                )
+            chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content, "path": doc_path} for c in kg_chunks]
             entities, relations = extractor.extract_batch(
                 chunk_dicts,
                 doc_id,
@@ -752,7 +779,6 @@ class IngestionPipeline:
                 api_key=img_cfg.api_key,
                 api_key_env=img_cfg.api_key_env,
                 api_base=img_cfg.api_base,
-                max_tokens=img_cfg.max_tokens,
             )
             from parser.blob_store import make_blob_store
 

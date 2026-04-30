@@ -95,8 +95,13 @@ class ChunkerConfig(BaseModel):
     # regardless of size, so structural integrity is preserved and
     # embeddings of heterogeneous content stay clean.
     isolate_tables: bool = True
-    isolate_figures: bool = True
+    isolate_images: bool = True  # was: isolate_figures
     isolate_formulas: bool = False  # inline formulas usually stay with text
+    # Code blocks (markdown ``` fences, monospace blocks). Default ON
+    # because code embedding semantics differ enough from prose that
+    # a separate chunk lets a code-aware embedder (or downstream
+    # syntax highlighter) handle it cleanly.
+    isolate_code: bool = True
 
     # Overlap strategy: N trailing blocks from chunk K become the first
     # N blocks of chunk K+1, improving recall at cost of duplication.

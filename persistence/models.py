@@ -183,10 +183,12 @@ class ParsedBlock(Base):
 
     table_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     table_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
-    figure_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    figure_mime: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    figure_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    image_mime: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    image_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     formula_latex: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     excluded_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -592,6 +594,12 @@ class ChunkRow(Base):
     section_path: Mapped[list] = mapped_column(JSON, default=list)
     ancestor_node_ids: Mapped[list] = mapped_column(JSON, default=list)
     cross_ref_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Inherited from owning ``TreeNode.role``. Drives KG-extraction
+    # filtering (skip ``toc``/``index``/``bibliography``/``front_matter``)
+    # and lets retrieval downweight supplementary content. ``main`` is
+    # the body-content default.
+    role: Mapped[str] = mapped_column(String(32), default="main", server_default="main")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

@@ -118,9 +118,9 @@ def _build_doc(
         page_no=1,
         seq=1,
         bbox=(72.0, 600.0, 520.0, 680.0),
-        type=BlockType.FIGURE,
+        type=BlockType.IMAGE,
         text="",
-        figure_caption=fig_caption,
+        image_caption=fig_caption,
     )
     body = Block(
         block_id=f"{doc_id}:1:1:2",
@@ -188,7 +188,7 @@ def _build_doc(
         node_id=section.node_id,
         block_ids=[fig.block_id],
         content=fig_caption,
-        content_type="figure",
+        content_type="image",
         page_start=1,
         page_end=1,
         token_count=5,
@@ -309,6 +309,6 @@ class TestPipeline:
         result = pipeline.retrieve("RRF fusion", overrides=_TEST_OVERRIDES)
         ctypes = {m.chunk.content_type for m in result.merged if m.chunk}
         # Body chunks are text; crossref expansion should also bring the
-        # figure chunk. If not directly, sibling expansion will (same node).
+        # image chunk. If not directly, sibling expansion will (same node).
         assert "text" in ctypes
-        assert "figure" in ctypes or any("expansion" in s for m in result.merged for s in m.sources)
+        assert "image" in ctypes or any("expansion" in s for m in result.merged for s in m.sources)

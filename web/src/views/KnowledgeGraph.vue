@@ -246,9 +246,9 @@ function onChunkPanelScroll(e) {
   }
 }
 
-/** Get image URLs for a figure chunk */
+/** Get image URLs for an image chunk */
 function chunkImageUrls(c) {
-  if (c.content_type !== 'figure' || !c.block_ids?.length) return []
+  if (c.content_type !== 'image' || !c.block_ids?.length) return []
   return c.block_ids.map(bid => blockImageUrl(bid))
 }
 
@@ -1041,7 +1041,7 @@ watch(isDark, () => {
                 <div class="text-[10px] text-t2 leading-relaxed mt-1" :class="expandedChunks[c.chunk_id] ? 'whitespace-pre-wrap' : 'line-clamp-1'">{{ c.content }}</div>
 
                 <!-- Expanded extras: images -->
-                <div v-if="expandedChunks[c.chunk_id] && c.content_type === 'figure' && chunkImageUrls(c).length" class="mt-2 flex flex-wrap gap-2">
+                <div v-if="expandedChunks[c.chunk_id] && c.content_type === 'image' && chunkImageUrls(c).length" class="mt-2 flex flex-wrap gap-2">
                   <img v-for="url in chunkImageUrls(c)" :key="url"
                     :src="url"
                     class="max-w-full max-h-52 rounded border border-line object-contain bg-white"

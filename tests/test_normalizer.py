@@ -180,10 +180,10 @@ class TestCrossPageMerge:
 
 
 class TestCaptionBinding:
-    def test_binds_figure_caption_after_figure(self):
+    def test_binds_image_caption_after_image(self):
         [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: Architecture diagram"),
             ]
         ] * 4  # pad to 4 pages so header/footer rules are harmless
@@ -192,7 +192,7 @@ class TestCaptionBinding:
         for p in range(1, 5):
             fresh_pages.append(
                 [
-                    _block(p, 1, "", btype=BlockType.FIGURE),
+                    _block(p, 1, "", btype=BlockType.IMAGE),
                     _block(p, 2, f"Figure {p}: A caption"),
                 ]
             )
@@ -204,13 +204,13 @@ class TestCaptionBinding:
         for cap in captions:
             assert cap.caption_of is not None
             fig = next(b for b in doc.blocks if b.block_id == cap.caption_of)
-            assert fig.type == BlockType.FIGURE
-            assert fig.figure_caption == cap.text
+            assert fig.type == BlockType.IMAGE
+            assert fig.image_caption == cap.text
 
     def test_chinese_caption_detected(self):
         pages = [
             [
-                _block(p, 1, "", btype=BlockType.FIGURE),
+                _block(p, 1, "", btype=BlockType.IMAGE),
                 _block(p, 2, f"图 {p}:系统整体架构"),
             ]
             for p in range(1, 5)
@@ -231,7 +231,7 @@ class TestReferenceResolution:
         # Fix: the list comp above yields wrong shapes. Rebuild cleanly:
         pages = [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: Overall architecture"),
                 _block(
                     1,
@@ -271,7 +271,7 @@ class TestReferenceResolution:
     def test_multiple_refs_deduped(self):
         pages = [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: Architecture"),
                 _block(
                     1,
@@ -291,7 +291,7 @@ class TestReferenceResolution:
     def test_unknown_label_ignored(self):
         pages = [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: Architecture"),
                 _block(1, 3, "As discussed in Figure 9, there is more."),
             ],
@@ -308,7 +308,7 @@ class TestReferenceResolution:
         # A caption block must not record itself as its own cross-ref.
         pages = [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: see Figure 1 for details"),
             ],
             [_block(2, 1, "body")],
@@ -327,7 +327,7 @@ class TestReferenceResolution:
 
         pages = [
             [
-                _block(1, 1, "", btype=BlockType.FIGURE),
+                _block(1, 1, "", btype=BlockType.IMAGE),
                 _block(1, 2, "Figure 1: Architecture"),
                 _block(1, 3, "See Figure 1 for the flow."),
             ],

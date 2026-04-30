@@ -97,10 +97,12 @@ def block_to_row(b: Block) -> dict[str, Any]:
         "confidence": b.confidence,
         "table_html": b.table_html,
         "table_markdown": b.table_markdown,
-        "figure_storage_key": b.figure_storage_key,
-        "figure_mime": b.figure_mime,
-        "figure_caption": b.figure_caption,
+        "image_storage_key": b.image_storage_key,
+        "image_mime": b.image_mime,
+        "image_caption": b.image_caption,
         "formula_latex": b.formula_latex,
+        "code_text": b.code_text,
+        "code_language": b.code_language,
         "excluded": b.excluded,
         "excluded_reason": b.excluded_reason,
         "caption_of": b.caption_of,
@@ -122,10 +124,12 @@ def row_to_block(r: dict[str, Any]) -> Block:
         confidence=r["confidence"],
         table_html=r["table_html"],
         table_markdown=r["table_markdown"],
-        figure_storage_key=r["figure_storage_key"],
-        figure_mime=r["figure_mime"],
-        figure_caption=r["figure_caption"],
+        image_storage_key=r.get("image_storage_key"),
+        image_mime=r.get("image_mime"),
+        image_caption=r.get("image_caption"),
         formula_latex=r["formula_latex"],
+        code_text=r.get("code_text"),
+        code_language=r.get("code_language"),
         excluded=r["excluded"],
         excluded_reason=r["excluded_reason"],
         caption_of=r["caption_of"],
@@ -175,11 +179,12 @@ def _node_to_dict(n: TreeNode) -> dict[str, Any]:
         "children": list(n.children),
         "element_types": list(n.element_types),
         "table_count": n.table_count,
-        "figure_count": n.figure_count,
+        "image_count": n.image_count,
         "content_hash": n.content_hash,
         "summary": n.summary,
         "key_entities": list(n.key_entities),
         "cross_reference_targets": list(n.cross_reference_targets),
+        "role": getattr(n, "role", "main"),
     }
 
 
@@ -197,11 +202,12 @@ def _node_from_dict(d: dict[str, Any]) -> TreeNode:
         children=list(d.get("children") or []),
         element_types=list(d.get("element_types") or []),
         table_count=d.get("table_count", 0),
-        figure_count=d.get("figure_count", 0),
+        image_count=d.get("image_count", 0),
         content_hash=d.get("content_hash", ""),
         summary=d.get("summary"),
         key_entities=list(d.get("key_entities") or []),
         cross_reference_targets=list(d.get("cross_reference_targets") or []),
+        role=d.get("role", "main"),
     )
 
 
@@ -226,6 +232,7 @@ def chunk_to_row(c: Chunk) -> dict[str, Any]:
         "section_path": list(c.section_path),
         "ancestor_node_ids": list(c.ancestor_node_ids),
         "cross_ref_chunk_ids": list(c.cross_ref_chunk_ids),
+        "role": getattr(c, "role", "main"),
     }
 
 
@@ -245,6 +252,7 @@ def row_to_chunk(r: dict[str, Any]) -> Chunk:
         section_path=list(r.get("section_path") or []),
         ancestor_node_ids=list(r.get("ancestor_node_ids") or []),
         cross_ref_chunk_ids=list(r.get("cross_ref_chunk_ids") or []),
+        role=r.get("role", "main"),
     )
 
 
