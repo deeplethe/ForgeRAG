@@ -370,44 +370,41 @@ def get_document(doc_id: str, state: AppState = Depends(get_state)):
 
 
 @router.delete("/{doc_id}", status_code=204)
-def delete_document(doc_id: str, state: AppState = Depends(get_state)):
+def delete_document(
+    doc_id: str,
+    hard: bool = Query(False, description="Skip trash and purge immediately"),
+    state: AppState = Depends(get_state),
+):
+    """Soft-delete by default — moves the document into ``/__trash__``.
+
+    - ``DELETE /documents/{id}``           → trash (recoverable, auto-purge after retention_days)
+    - ``DELETE /documents/{id}?hard=true`` → permanent delete, equivalent to old behaviour
+
+    The trash path stashes ``original_path`` in metadata; restore replays
+    it via ``FolderService.ensure_path`` (Windows Recycle Bin semantics).
+    Vector / KG / file blobs stay until permanent purge.
+    """
+    from persistence.trash_service import TrashService
+
     row = state.store.get_document(doc_id)
     if not row:
         raise HTTPException(404, "document not found")
-    pv = row["active_parse_version"]
-    file_id = row.get("file_id")
 
-    # Clean vector store BEFORE relational delete (need chunk_ids)
-    try:
-        chunks = state.store.get_chunks(doc_id, pv)
-        chunk_ids = [c["chunk_id"] for c in chunks]
-        if chunk_ids:
-            state.vector.delete_chunks(chunk_ids)
-    except Exception:
-        log.warning("vector cleanup failed for %s", doc_id)
+    svc = TrashService(state)
+    if hard:
+        # Permanent delete: route through TrashService.purge so the
+        # vector / KG / relational / file cleanup logic lives in one
+        # place. Purge gates on ``_doc_in_trash`` (a deliberate guard
+        # for the trash UI's per-item button), so a doc not yet in
+        # trash has to be moved there first — otherwise the call is a
+        # silent no-op and the route lies with 204. Idempotent: a doc
+        # already in trash just falls through.
+        if not row.get("path", "").startswith("/__trash__"):
+            svc.move_document_to_trash(doc_id)
+        svc.purge(doc_ids=[doc_id])
+        return
 
-    # Clean knowledge graph
-    if state.graph_store is not None:
-        try:
-            removed = state.graph_store.delete_by_doc(doc_id)
-            if removed:
-                log.info("KG cleanup: removed %d entities for %s", removed, doc_id)
-        except Exception:
-            log.warning("KG cleanup failed for %s", doc_id)
-
-    # Delete document (cascades to chunks, blocks, etc.)
-    state.store.delete_document(doc_id)
-    state.refresh_bm25()
-
-    # Delete associated file record if no other documents reference it
-    if file_id:
-        try:
-            all_docs = state.store.list_documents(limit=10000)
-            has_refs = any(d.get("file_id") == file_id for d in all_docs)
-            if not has_refs:
-                state.store.delete_file(file_id)
-        except Exception:
-            log.warning("file cleanup failed for %s", file_id)
+    svc.move_document_to_trash(doc_id)
 
 
 # ---------------------------------------------------------------------------

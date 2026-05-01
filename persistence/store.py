@@ -426,14 +426,42 @@ class Store:
             s.add(row)
 
     def update_document_status(self, doc_id: str, **fields) -> None:
-        """Update arbitrary status fields on a document."""
-        with self._session() as s:
-            row = s.get(Document, doc_id)
-            if row is None:
+        """Update arbitrary status fields on a document.
+
+        Hot path during high-concurrency ingestion: 10+ workers calling
+        this method back-to-back at every pipeline stage transition can
+        burst past SQLite's busy_timeout window. Wrap with bounded
+        retry so transient ``database is locked`` errors don't leave
+        a doc stuck mid-pipeline. PG would never hit this — the retry
+        is a no-op there because ``OperationalError`` from a healthy
+        PG is exceptional.
+        """
+        from sqlalchemy.exc import OperationalError
+
+        last_exc: Exception | None = None
+        for attempt in range(5):
+            try:
+                with self._session() as s:
+                    row = s.get(Document, doc_id)
+                    if row is None:
+                        return
+                    for k, v in fields.items():
+                        if hasattr(row, k):
+                            setattr(row, k, v)
                 return
-            for k, v in fields.items():
-                if hasattr(row, k):
-                    setattr(row, k, v)
+            except OperationalError as e:
+                msg = str(e).lower()
+                if "database is locked" not in msg and "locked" not in msg:
+                    raise
+                last_exc = e
+                # Exponential backoff with jitter floor: 0.2s, 0.4s,
+                # 0.8s, 1.6s, 3.2s (cumulative 6.2s) — comfortably
+                # outside the busy_timeout window of any single peer
+                # finishing its commit, while still capping total wait.
+                import time as _t
+                _t.sleep(0.2 * (2 ** attempt))
+        if last_exc is not None:
+            raise last_exc
 
     def get_document(self, doc_id: str) -> dict | None:
         with self._session() as s:

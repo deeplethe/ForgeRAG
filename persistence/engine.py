@@ -70,6 +70,13 @@ def make_engine(cfg: RelationalConfig) -> Engine:
             cur = dbapi_conn.cursor()
             cur.execute(f"PRAGMA journal_mode={sq.journal_mode}")
             cur.execute(f"PRAGMA synchronous={sq.synchronous}")
+            # Belt-and-suspenders busy_timeout: ``connect_args.timeout``
+            # already maps to ``sqlite3_busy_timeout`` via the pysqlite
+            # driver, but setting the PRAGMA explicitly survives in
+            # contexts that only inspect PRAGMAs (debug tooling, sub-
+            # connections opened by extensions). ``timeout`` is in
+            # seconds for connect_args, milliseconds for the PRAGMA.
+            cur.execute(f"PRAGMA busy_timeout={int(sq.timeout * 1000)}")
             cur.execute("PRAGMA foreign_keys=ON")
             cur.close()
 

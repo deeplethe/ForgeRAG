@@ -17,7 +17,21 @@
           :disabled="item.disabled"
           @click="onClick(item)"
         >
-          <span class="ctx-icon">{{ item.icon || '' }}</span>
+          <!-- ``icon`` is a Vue component imported by the parent. Lucide
+               accepts ``size`` + ``stroke-width`` props directly; passing
+               them here keeps the call sites declarative (just ``icon:
+               Folder``). 1.5 stroke matches Vercel/Geist; 14px matches
+               the menu's icon column. Heroicons ignore both props
+               harmlessly so the same template works for either family.
+               String fallback retained for any legacy emoji icons. -->
+          <component
+            v-if="typeof item.icon === 'object' || typeof item.icon === 'function'"
+            :is="item.icon"
+            class="ctx-icon ctx-icon--svg"
+            :size="14"
+            :stroke-width="1.5"
+          />
+          <span v-else class="ctx-icon">{{ item.icon || '' }}</span>
           <span class="ctx-label">{{ item.label }}</span>
           <span v-if="item.shortcut" class="ctx-shortcut">{{ item.shortcut }}</span>
         </button>
@@ -120,7 +134,21 @@ watch(() => [props.open, props.x, props.y], async () => {
 .ctx-item--danger:hover:not(.ctx-item--disabled) {
   background: color-mix(in srgb, #dc2626 14%, var(--color-bg));
 }
-.ctx-icon { width: 14px; flex-shrink: 0; text-align: center; }
+.ctx-icon {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--color-t2);
+}
+/* Heroicons render as inline SVG; constrain to a 14px square so the
+   menu's vertical rhythm doesn't bow out. ``currentColor`` lets us
+   reuse the disabled/danger color overrides without per-icon styling. */
+.ctx-icon--svg {
+  width: 14px;
+  height: 14px;
+}
+.ctx-item--danger .ctx-icon { color: inherit; }
+.ctx-item--disabled .ctx-icon { color: var(--color-t3); }
 .ctx-label { flex: 1; }
 .ctx-shortcut { font-size: 9px; color: var(--color-t3); }
 </style>

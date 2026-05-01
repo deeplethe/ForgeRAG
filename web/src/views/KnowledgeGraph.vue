@@ -4,10 +4,10 @@
 // in prod — defineOptions makes it deterministic.
 defineOptions({ name: 'KnowledgeGraph' })
 
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
-import { useRouter, useRoute, onBeforeRouteLeave } from 'vue-router'
+import { ref, computed, watch, onActivated, onDeactivated, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { getGraphStats, getFullGraph, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
-import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon, ArrowsPointingOutIcon } from '@heroicons/vue/24/outline'
+import { Search, X, RefreshCw, Maximize2 } from 'lucide-vue-next'
 import Spinner from '@/components/Spinner.vue'
 import { useTheme } from '@/composables/useTheme'
 
@@ -623,24 +623,30 @@ function onClickOutside(e) {
 
 let cameraObserver = null
 
+// Lifecycle split for <KeepAlive>:
+//   onMounted          — first time only: load data, init sigma
+//   onActivated        — every time visible (incl. first): bind window listeners
+//   onDeactivated      — every time hidden: unbind listeners; sigma stays alive
+//   onUnmounted        — cache evicted (rare): full teardown
+//
+// Sigma's WebGL context survives detachment because the canvas DOM
+// node is preserved by KeepAlive (it's part of the component's
+// rendered tree, just moved out of the active route view). This
+// avoids the previous "kill on every leave" cycle that the
+// onBeforeRouteLeave cover-flash hack was working around.
 onMounted(async () => {
-  window.addEventListener('keydown', onKeyDown)
-  window.addEventListener('click', onClickOutside)
-
   await loadStats()
   if (stats.value.backend && stats.value.backend !== 'none') {
     await loadGraph()
     await nextTick()
-    // Track zoom level
     if (sigma) {
       updateZoom()
       cameraObserver = () => updateZoom()
       sigma.getCamera().on('updated', cameraObserver)
     }
-    // Restore selection from URL query (?node=xxx)
+    // Restore selection from URL query (?node=xxx) — let FA2 settle first
     const nodeId = route.query.node
     if (nodeId && graph.value?.hasNode(nodeId)) {
-      // Wait for FA2 to settle so positions are stable
       setTimeout(() => focusNode(nodeId), 1500)
     }
   } else {
@@ -648,51 +654,26 @@ onMounted(async () => {
   }
 })
 
+onActivated(() => {
+  // Re-bind window listeners only while visible — otherwise pressing
+  // Escape on another tab would still close the KG entity panel.
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('click', onClickOutside)
+  // Sigma may have stopped rendering while detached; nudge it.
+  if (sigma) sigma.refresh()
+})
+
+onDeactivated(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('click', onClickOutside)
+  // Don't destroy sigma — keep the layout + cached graph alive so a
+  // tab return is instant. Sigma stops drawing automatically when its
+  // canvas is detached from the DOM tree.
+})
+
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('click', onClickOutside)
-  if (sigma && cameraObserver) {
-    try { sigma.getCamera().removeListener('updated', cameraObserver) } catch {}
-  }
-  destroySigma()
-})
-
-/**
- * Pre-leave teardown.
- *
- * Killing sigma's WebGL canvas during navigation produces a one-frame
- * compositor flash (GPU layer evict before underlying paint). Previous
- * attempts using a Vue v-if cover failed because Vue's reactivity is
- * async — the cover never actually rendered before sigma kill.
- *
- * THIS approach bypasses Vue entirely:
- *   1. Inject a raw <div> cover into the graph area via direct DOM
- *   2. Read offsetHeight to force a synchronous layout/paint
- *   3. Wait two animation frames so the browser commits the cover tile
- *   4. ONLY THEN kill sigma — the canvas vanishes behind our solid div
- *   5. Navigation continues; the entire KG component unmounts shortly
- *      after, taking the cover with it.
- */
-onBeforeRouteLeave(async () => {
-  const graphArea = document.querySelector('.kg-graph-area')
-  if (graphArea) {
-    const cover = document.createElement('div')
-    cover.setAttribute('data-kg-cover', '')
-    cover.style.cssText = [
-      'position:absolute',
-      'inset:0',
-      'z-index:50',
-      // Read directly from CSS variables so theme is honored
-      'background:var(--color-bg2)',
-      'pointer-events:none',
-    ].join(';')
-    graphArea.appendChild(cover)
-    // Force synchronous layout — guarantees the cover hits the layout tree
-    void cover.offsetHeight
-    // Two frames: first commits paint, second confirms compositor has it
-    await new Promise((r) => requestAnimationFrame(r))
-    await new Promise((r) => requestAnimationFrame(r))
-  }
   if (sigma && cameraObserver) {
     try { sigma.getCamera().removeListener('updated', cameraObserver) } catch {}
   }
@@ -749,7 +730,7 @@ watch(isDark, () => {
              length crosses the 2-char threshold; click a result to
              focus that node. ``Ctrl+K`` focuses the input. -->
         <div class="search-wrap">
-          <MagnifyingGlassIcon class="search-icon" />
+          <Search class="search-icon" :size="14" :stroke-width="1.5" />
           <input
             ref="searchInput"
             v-model="searchQuery"
@@ -811,11 +792,11 @@ watch(isDark, () => {
 
         <button @click="reheat" title="Re-layout"
           class="p-1.5 rounded-md text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
-          <ArrowPathIcon class="w-4 h-4" />
+          <RefreshCw class="w-4 h-4" :stroke-width="1.5" />
         </button>
         <button @click="fitToScreen" title="Fit to screen"
           class="p-1.5 rounded-md text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
-          <ArrowsPointingOutIcon class="w-4 h-4" />
+          <Maximize2 class="w-4 h-4" :stroke-width="1.5" />
         </button>
       </div>
     </div>
@@ -903,7 +884,7 @@ watch(isDark, () => {
                 <span class="text-[12px] font-semibold text-t1 truncate">{{ selectedNode.name }}</span>
               </div>
               <button @click="clearSelection" class="p-1 text-t3 hover:text-t1 transition-colors shrink-0 rounded hover:bg-bg-hover">
-                <XMarkIcon class="w-3.5 h-3.5" />
+                <X class="w-3.5 h-3.5" :stroke-width="1.5" />
               </button>
             </div>
             <div class="flex items-center gap-2 mt-1.5">
@@ -1009,7 +990,7 @@ watch(isDark, () => {
                 </div>
               </div>
               <button @click="closeChunkPanel" class="p-1 text-t3 hover:text-t1 transition-colors shrink-0 rounded hover:bg-bg-hover ml-2">
-                <XMarkIcon class="w-3.5 h-3.5" />
+                <X class="w-3.5 h-3.5" :stroke-width="1.5" />
               </button>
             </div>
           </div>

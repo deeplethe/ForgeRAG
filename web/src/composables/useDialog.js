@@ -65,11 +65,21 @@ function _closeDialog(value) {
 
 function _addToast(message, opts = {}) {
   const id = ++_toastSeq
-  const ttl = opts.ttl ?? 4000
+  // Default TTL: action toasts get a longer window (8s) so the user can
+  // actually click Undo. Loading toasts persist (ttl=0) until the caller
+  // dismisses them — they represent an in-flight operation, not a status
+  // update.
+  let ttl
+  if (opts.ttl != null) ttl = opts.ttl
+  else if (opts.variant === 'loading') ttl = 0
+  else if (opts.action) ttl = 8000
+  else ttl = 4000
+
   const item = {
     id,
     message,
-    variant: opts.variant || 'info', // 'info' | 'success' | 'error' | 'warn'
+    variant: opts.variant || 'info', // 'info' | 'success' | 'error' | 'warn' | 'loading'
+    action: opts.action || null,     // optional { label, onClick }
   }
   _toasts.push(item)
   if (ttl > 0) {
@@ -96,5 +106,9 @@ export function useDialog() {
     confirm: (opts) => _openDialog({ ...opts, type: 'confirm' }),
     alert:   (opts) => _openDialog({ ...opts, type: 'alert' }),
     toast:   _addToast,
+    // For loading toasts (ttl: 0) the caller needs to dismiss when the
+    // operation finishes — exposed so callers don't have to reach into
+    // the underscore-prefixed internals.
+    dismissToast: _dismissToast,
   }
 }

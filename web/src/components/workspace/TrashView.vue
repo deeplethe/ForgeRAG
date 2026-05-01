@@ -54,14 +54,14 @@
               @click="$emit('restore', item)"
               title="Restore"
             >
-              <ArrowUturnLeftIcon class="w-3.5 h-3.5" />
+              <Undo2 class="w-3.5 h-3.5" :stroke-width="1.5" />
             </button>
             <button
               class="icon-btn icon-btn--danger"
               @click="$emit('purge', item)"
               title="Delete forever"
             >
-              <TrashIcon class="w-3.5 h-3.5" />
+              <Trash2 class="w-3.5 h-3.5" :stroke-width="1.5" />
             </button>
           </td>
         </tr>
@@ -71,7 +71,7 @@
 </template>
 
 <script setup>
-import { ArrowUturnLeftIcon, TrashIcon } from '@heroicons/vue/24/outline'
+import { Undo2, Trash2 } from 'lucide-vue-next'
 import FileIcon from './FileIcon.vue'
 
 defineProps({
@@ -183,8 +183,16 @@ table {
   transition: background 0.12s, color 0.12s;
 }
 .icon-btn:hover { background: var(--color-bg3); color: var(--color-t1); }
+/* Destructive variant — matches the context-menu Delete colour at
+   rest (red text always visible, signalling the action's nature
+   before the user hovers) and gets a stronger red wash on hover.
+   14% mix matches ContextMenu.ctx-item--danger so the two reads
+   identically across the workspace. */
+.icon-btn--danger {
+  color: var(--color-err-fg, #dc2626);
+}
 .icon-btn--danger:hover {
-  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 12%, transparent);
+  background: color-mix(in srgb, var(--color-err-fg, #dc2626) 14%, transparent);
   color: var(--color-err-fg, #dc2626);
 }
 </style>

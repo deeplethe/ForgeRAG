@@ -13,6 +13,9 @@ const route = useRoute()
 const router = useRouter()
 
 const convs = ref([])
+const convsLoading = ref(false)        // true on first load only — drives sidebar skeleton
+const convsLoaded = ref(false)
+const deletingConvs = ref(new Set())   // optimistic-delete in-flight set
 const convId = ref(null)
 const benchmarkRunning = ref(false)
 const me = ref(null)
@@ -21,7 +24,17 @@ const showForcedPwd = ref(false)
 const isPublicRoute = computed(() => !!route.meta?.public)
 
 async function loadConvs() {
-  try { convs.value = (await listConversations({ limit: 100 })).items || [] } catch {}
+  // Show the skeleton only on the very first load — refreshes after
+  // user actions (new chat / delete) keep the existing list visible to
+  // avoid an annoying re-flicker.
+  if (!convsLoaded.value) convsLoading.value = true
+  try {
+    convs.value = (await listConversations({ limit: 100 })).items || []
+  } catch {
+  } finally {
+    convsLoading.value = false
+    convsLoaded.value = true
+  }
 }
 
 /* 401 interceptor — any authed call failing redirects to /login */
@@ -72,13 +85,36 @@ provide('benchmarkRunning', benchmarkRunning)
 function selectConv(id) { convId.value = id }
 function newChat() { convId.value = null }
 async function delConv(id) {
-  try { await deleteConversation(id) } catch {}
+  if (deletingConvs.value.has(id)) return        // already in flight, ignore double-click
+  // Optimistic: drop the row immediately, also navigate off if we're
+  // viewing it. Snapshot for rollback so a server-side failure
+  // restores it instead of leaving the UI inconsistent.
+  const snapshot = convs.value
+  const idx = convs.value.findIndex(c => c.conversation_id === id)
+  const removed = idx >= 0 ? convs.value[idx] : null
+  if (idx >= 0) convs.value = [...convs.value.slice(0, idx), ...convs.value.slice(idx + 1)]
   if (convId.value === id) convId.value = null
-  loadConvs()
+
+  const next = new Set(deletingConvs.value); next.add(id); deletingConvs.value = next
+  try {
+    await deleteConversation(id)
+    // Server-side delete confirmed — silently sync (no flicker since
+    // the row is already gone optimistically).
+    loadConvs()
+  } catch {
+    // Rollback: put the row back. Re-fetch from server in case the
+    // backend state diverged for some other reason.
+    if (removed) convs.value = snapshot
+    loadConvs()
+  } finally {
+    const after = new Set(deletingConvs.value); after.delete(id); deletingConvs.value = after
+  }
 }
 
 provide('convId', convId)
 provide('convs', convs)
+provide('convsLoading', convsLoading)
+provide('deletingConvs', deletingConvs)
 provide('loadConvs', loadConvs)
 </script>
 
@@ -92,6 +128,8 @@ provide('loadConvs', loadConvs)
   <div v-else class="flex w-full h-screen">
     <AppSidebar
       :conversations="convs"
+      :conversations-loading="convsLoading"
+      :deleting-convs="deletingConvs"
       :currentConvId="convId"
       :benchmarkRunning="benchmarkRunning"
       :me="me"
@@ -101,19 +139,18 @@ provide('loadConvs', loadConvs)
     />
     <!-- Content host with cached pages. KeepAlive preserves component
          instances on navigation — state, scroll, DOM all survive. User
-         coming back to Workspace / Metrics / Tokens etc. sees them
-         instantly with prior data, no skeleton flicker.
-
-         KnowledgeGraph is EXCLUDED: its sigma WebGL teardown logic runs
-         in onBeforeRouteLeave + onUnmounted, and re-initialization needs
-         a real fresh mount. Caching it would tangle the lifecycle.
+         coming back to any tab sees it instantly with prior data, no
+         skeleton flicker. KnowledgeGraph included: its sigma instance
+         survives across tab switches via onActivated/onDeactivated
+         (window listeners bind/unbind on visibility; sigma + the graph
+         it's rendering live as long as the cached component does).
 
          No <Transition> wrapper — instant route swaps. A fade animation
          on tab switches felt sluggish for a dashboard; cached pages
          already pop in with their prior state, which is the real win. -->
     <div class="flex-1 min-w-0 h-full route-host">
       <RouterView v-slot="{ Component }">
-        <KeepAlive :exclude="['KnowledgeGraph']">
+        <KeepAlive>
           <component :is="Component" />
         </KeepAlive>
       </RouterView>

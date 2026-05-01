@@ -4,6 +4,7 @@ POST /api/v1/query — retrieval + answer generation (normal + SSE streaming)
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 
@@ -133,11 +134,35 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
     Frontend usage (JS):
         const es = new EventSource(...)   // or fetch + ReadableStream
         // see below for fetch-based approach since POST isn't supported by EventSource
+
+    Decoupled producer/consumer: the heavy lifting (retrieval + LLM
+    generation + DB persistence) runs in a background thread. The HTTP
+    response streams events out of a Queue. When the client disconnects
+    mid-stream, only the consumer dies — the producer thread keeps
+    iterating ``ask_stream`` to completion so the answer + trace + turn
+    save still happen. The user can close the tab and the answer will
+    be in the DB when they come back.
     """
+
+    import queue as _q
+    import threading
 
     from retrieval.pipeline import RetrievalError
 
-    def _generate():
+    # Reasonable cap so a runaway producer can't OOM us if the consumer
+    # is gone and events keep accumulating. If full, ``put`` blocks; the
+    # producer just slows down to whatever rate events are being drained
+    # at — and once the consumer is detached the consumer thread (route
+    # generator) is gone, so the queue saturates and ``put`` waits
+    # forever. To avoid that, drop oldest events on overflow when no
+    # consumer is reading: see ``client_alive``.
+    Q_MAX = 256
+    events_q: _q.Queue = _q.Queue(maxsize=Q_MAX)
+    SENTINEL = object()
+    client_alive = threading.Event()
+    client_alive.set()
+
+    def _producer():
         try:
             for event in state.answering.ask_stream(
                 req.query,
@@ -146,26 +171,59 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
                 overrides=req.overrides,
                 gen_overrides=req.generation_overrides,
             ):
-                event_type = event.get("event", "delta")
-                data = json.dumps(event.get("data", {}), ensure_ascii=False, default=str)
-                yield f"event: {event_type}\ndata: {data}\n\n"
+                if client_alive.is_set():
+                    # Block briefly; if the consumer is still reading
+                    # and just hasn't drained yet, this throttles us
+                    # without dropping anything.
+                    try:
+                        events_q.put(event, timeout=5)
+                    except _q.Full:
+                        # Consumer has stalled; drop to keep producer
+                        # alive (its own finally will still persist).
+                        pass
+                # else: consumer gone — silently discard events but
+                # KEEP iterating so ask_stream's finally block runs and
+                # persists the assistant message + trace.
         except RetrievalError as e:
-            # SSE can't change HTTP status mid-stream, so we emit a
-            # structured error event and let the client decide. The
-            # ``path`` field tells the UI which component died.
             log.warning("stream retrieval path %r failed: %s", e.path, e)
-            error_data = json.dumps(
-                {
-                    "error": "retrieval_failed",
-                    "path": e.path,
-                    "message": str(e),
-                }
-            )
-            yield f"event: error\ndata: {error_data}\n\n"
+            if client_alive.is_set():
+                with contextlib.suppress(_q.Full):
+                    events_q.put(("__error__", {
+                        "error": "retrieval_failed",
+                        "path": e.path,
+                        "message": str(e),
+                    }), timeout=1)
         except Exception as e:
-            log.exception("stream query failed")
-            error_data = json.dumps({"error": "internal", "message": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
+            log.exception("stream query failed in producer")
+            if client_alive.is_set():
+                with contextlib.suppress(_q.Full):
+                    events_q.put(("__error__", {
+                        "error": "internal",
+                        "message": str(e),
+                    }), timeout=1)
+        finally:
+            with contextlib.suppress(_q.Full):
+                events_q.put(SENTINEL, timeout=1)
+
+    threading.Thread(target=_producer, daemon=True, name="ask_stream_producer").start()
+
+    def _generate():
+        try:
+            while True:
+                item = events_q.get()
+                if item is SENTINEL:
+                    return
+                if isinstance(item, tuple) and item and item[0] == "__error__":
+                    yield f"event: error\ndata: {json.dumps(item[1])}\n\n"
+                    continue
+                event_type = item.get("event", "delta")
+                data = json.dumps(item.get("data", {}), ensure_ascii=False, default=str)
+                yield f"event: {event_type}\ndata: {data}\n\n"
+        finally:
+            # Mark consumer dead so producer drops further events instead
+            # of blocking on a full queue. Producer keeps running to
+            # completion regardless.
+            client_alive.clear()
 
     return StreamingResponse(
         _generate(),

@@ -22,10 +22,9 @@
         <span>Drop files to upload to <code>{{ ws.currentPath.value }}</code></span>
       </div>
     </div>
-    <!-- Doc detail overlay — takes over when ?doc=X. New 3-col layout
-         (Tree / PDF / KG-mini + Chunks) lives in DocDetail.vue; the
-         standalone /repository route still uses the original
-         Repository.vue for backwards compat. -->
+    <!-- Doc detail overlay — takes over when ?doc=X. 3-col layout
+         (Tree / PDF / KG-mini + Chunks) lives in DocDetail.vue.
+         /repository legacy URL redirects here via router. -->
     <div v-if="focusedDocId" class="workspace__doc-detail">
       <DocDetail
         :doc-id="focusedDocId"
@@ -42,6 +41,7 @@
       :view-mode="ws.viewMode.value"
       :trash-count="trashCount"
       :viewing-trash="viewingTrash"
+      :emptying-trash="emptyingTrash"
       v-model:search="searchQuery"
       @new-folder="onNewFolder"
       @upload="onUpload"
@@ -70,7 +70,22 @@
           @navigate="navigate"
           @drop-into="onSidebarDrop"
           @retry="ws.loadTree()"
+          @context-menu="openContextMenu"
         />
+        <!-- Root drop zone — surfaces only during an active drag so the
+             sidebar isn't permanently cluttered. Releasing here moves
+             the dragged items to the top level (path "/"). Same A-style
+             highlight as the other drop targets when hovered. -->
+        <div
+          v-if="dragInProgress"
+          class="root-drop-zone"
+          :class="{ 'root-drop-zone--over': isDragOverRoot }"
+          @dragover.prevent="onRootDropZoneOver"
+          @dragleave="onRootDropZoneLeave"
+          @drop.prevent="onRootDropZoneDrop"
+        >
+          <span>Drop here to move to top level</span>
+        </div>
       </aside>
 
       <!-- Main content area -->
@@ -118,6 +133,7 @@
               @open-folder="navigate"
               @open-document="onOpenDocument"
               @context-menu="openContextMenu"
+              @drop-onto-folder="onDropOntoFolder"
               @confirm-create="onCreateFolderInline"
               @cancel-create="creatingFolder = false"
               @confirm-rename="onConfirmRename"
@@ -139,6 +155,16 @@
       @action="onContextAction"
     />
 
+    <!-- Move-to picker (replaces the old window.prompt path input) -->
+    <FolderPickerDialog
+      v-model:open="movePickerOpen"
+      :title="movePickerTitle"
+      :initial-path="ws.currentPath.value"
+      :exclude-paths="movePickerExclude"
+      confirm-text="Move here"
+      @select="onMoveTargetPicked"
+    />
+
     <!-- Hidden file input for uploads -->
     <input
       ref="fileInput"
@@ -151,7 +177,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
 import { useWorkspace } from '@/composables/useWorkspace'
@@ -166,11 +192,33 @@ import FileList from '@/components/workspace/FileList.vue'
 import ContextMenu from '@/components/workspace/ContextMenu.vue'
 import MarqueeSelection from '@/components/workspace/MarqueeSelection.vue'
 import TrashView from '@/components/workspace/TrashView.vue'
+import FolderPickerDialog from '@/components/FolderPickerDialog.vue'
+// Context-menu action icons — trial run of Lucide for Vercel/Geist feel.
+// Lucide's stroke geometry is closer to Geist (thin, geometric, sharp
+// corners) than Heroicons solid. ContextMenu passes ``stroke-width=1.5``
+// and ``size=14`` at the use site so the line weight reads cleanly at
+// the 14px icon column. If we keep this we'll roll Lucide out across
+// toast / picker / toolbar; otherwise we can revert this file alone.
+import {
+  ArrowRightFromLine,
+  ClipboardPaste,
+  Copy,
+  Eye,
+  FolderOpen,
+  FolderPlus,
+  MessageSquare,
+  PenLine,
+  RefreshCw,
+  Scissors,
+  Search,
+  Trash2,
+  Upload,
+} from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
 const ws = useWorkspace()
-const { confirm, toast } = useDialog()
+const { confirm, toast, dismissToast } = useDialog()
 
 // ── OS drag-and-drop file upload ─────────────────────────────────
 // Counter pattern: dragenter/leave fire for every child element nested
@@ -266,10 +314,19 @@ const focusedDocId = computed(() => {
   return typeof d === 'string' && d ? d : ''
 })
 
-function onDocDetailClose() {
+function onDocDetailClose(payload) {
   const q = { ...route.query }
   // Clear the doc + its side-state (tab, pipeline, node, chunk, pdf)
   delete q.doc; delete q.pipeline; delete q.node; delete q.chunk; delete q.pdf
+  // Optional: route the workspace back to a specific folder. Sent by
+  // the back arrow + the breadcrumb segments in DocDetail so closing
+  // lands on the doc's parent folder by default rather than wherever
+  // the workspace was idling. Falls through to ``q.path`` (kept by
+  // onOpenDocument) when no explicit target is given.
+  const toPath = payload && typeof payload === 'object' ? payload.toPath : null
+  if (typeof toPath === 'string' && toPath.startsWith('/')) {
+    if (toPath === '/') delete q.path; else q.path = toPath
+  }
   router.replace({ path: route.path, query: q })
 }
 
@@ -281,6 +338,12 @@ const viewingTrash = ref(false)
 // we sync it to ``trashItems.length`` after each list/restore/purge.
 const trashCount = ref(0)
 const trashItems = ref([])
+
+// Tracks doc_ids with a delete request in flight, so the menu can
+// disable "Delete" for that item and a quick second click can't fire
+// a duplicate DELETE while the first is in-flight or its confirm
+// dialog is still open.
+const deletingDocs = reactive(new Set())
 const trashLoading = ref(false)
 const fileInput = ref(null)
 
@@ -300,14 +363,15 @@ function onCrumbNavigate(path) {
 }
 
 // ── Context menu ──────────────────────────────────────────────────
-const ctx = reactive({ open: false, x: 0, y: 0, item: null })
-const ctxItems = computed(() => buildContextItems(ctx.item))
+const ctx = reactive({ open: false, x: 0, y: 0, item: null, source: '' })
+const ctxItems = computed(() => buildContextItems(ctx.item, ctx.source))
 
-function openContextMenu({ x, y, item }) {
+function openContextMenu({ x, y, item, source = '' }) {
   ctx.open = true
   ctx.x = x
   ctx.y = y
   ctx.item = item
+  ctx.source = source     // '' = grid/list, 'tree' = sidebar
 }
 
 function onMainContextMenu(e) {
@@ -315,51 +379,89 @@ function onMainContextMenu(e) {
   openContextMenu({ x: e.clientX, y: e.clientY, item: null })
 }
 
-function buildContextItems(item) {
+function buildContextItems(item, source = '') {
   if (!item) {
     // Background items
     return [
-      { label: 'New folder',    icon: '⊕', shortcut: 'Ctrl+N', action: 'new-folder' },
-      { label: 'Upload file',   icon: '⬆',                     action: 'upload' },
+      { label: 'New folder',    icon: FolderPlus,      shortcut: 'Ctrl+N', action: 'new-folder' },
+      { label: 'Upload file',   icon: Upload,                              action: 'upload' },
       { divider: true },
       {
         label: 'Paste',
-        icon: '📥',
+        icon: ClipboardPaste,
         shortcut: 'Ctrl+V',
         action: 'paste',
         disabled: !ws.hasClipboard.value,
       },
       { divider: true },
-      { label: 'Refresh', icon: '↻', action: 'refresh' },
+      { label: 'Refresh', icon: RefreshCw, action: 'refresh' },
     ]
   }
   if (item.type === 'folder') {
+    // Tree-source menu drops Rename (no inline edit slot in the
+    // sidebar) and the Cut/Copy clipboard pair (paste-target ambiguous
+    // when the source isn't the user's current view). Open / Search /
+    // Move / Delete carry the load — same set Windows Explorer surfaces
+    // on a tree row.
+    if (source === 'tree') {
+      return [
+        { label: 'Open',           icon: FolderOpen,           action: 'open' },
+        { label: 'Search inside',  icon: Search,               action: 'scope-chat' },
+        { divider: true },
+        { label: 'Move to…',       icon: ArrowRightFromLine,                       action: 'move' },
+        { divider: true },
+        { label: 'Delete',         icon: Trash2,               shortcut: 'Del',    action: 'delete', danger: true },
+      ]
+    }
     return [
-      { label: 'Open',           icon: '📂', action: 'open' },
-      { label: 'Search inside',  icon: '🔍', action: 'scope-chat' },
+      { label: 'Open',           icon: FolderOpen,           action: 'open' },
+      { label: 'Search inside',  icon: Search,               action: 'scope-chat' },
       { divider: true },
-      { label: 'Cut',            icon: '✂', shortcut: 'Ctrl+X', action: 'cut' },
-      { label: 'Copy',           icon: '📋', shortcut: 'Ctrl+C', action: 'copy' },
+      { label: 'Cut',            icon: Scissors,             shortcut: 'Ctrl+X', action: 'cut' },
+      { label: 'Copy',           icon: Copy,                 shortcut: 'Ctrl+C', action: 'copy' },
       { divider: true },
-      { label: 'Rename',         icon: '✏', shortcut: 'F2', action: 'rename' },
-      { label: 'Move to…',       icon: '➡',                   action: 'move' },
+      { label: 'Rename',         icon: PenLine,              shortcut: 'F2',     action: 'rename' },
+      { label: 'Move to…',       icon: ArrowRightFromLine,                       action: 'move' },
       { divider: true },
-      { label: 'Delete',         icon: '🗑', shortcut: 'Del', action: 'delete', danger: true },
+      { label: 'Delete',         icon: Trash2,               shortcut: 'Del',    action: 'delete', danger: true },
     ]
   }
   // document
+  // In-flight ingestion: hide every action that would mutate or use
+  // the doc's content (it's incomplete, so cut/copy/rename/move/scope
+  // would land in inconsistent state). Delete becomes "Cancel & delete"
+  // — wired via ``source: 'in-flight'`` so onDelete routes to the
+  // hard-purge path instead of the recycle bin (no point recovering a
+  // partial parse).
+  if (_isDocInFlight(item)) {
+    return [
+      { label: 'Preview',           icon: Eye,    action: 'preview' },
+      { divider: true },
+      { label: 'Cancel & delete',   icon: Trash2, shortcut: 'Del', action: 'delete', danger: true },
+    ]
+  }
   return [
-    { label: 'Preview',         icon: '👁', action: 'preview' },
-    { label: 'Ask in Chat',     icon: '💬', action: 'scope-chat' },
+    { label: 'Preview',         icon: Eye,                  action: 'preview' },
+    { label: 'Ask in Chat',     icon: MessageSquare,        action: 'scope-chat' },
     { divider: true },
-    { label: 'Cut',             icon: '✂', shortcut: 'Ctrl+X', action: 'cut' },
-    { label: 'Copy',            icon: '📋', shortcut: 'Ctrl+C', action: 'copy' },
+    { label: 'Cut',             icon: Scissors,             shortcut: 'Ctrl+X', action: 'cut' },
+    { label: 'Copy',            icon: Copy,                 shortcut: 'Ctrl+C', action: 'copy' },
     { divider: true },
-    { label: 'Rename',          icon: '✏', shortcut: 'F2', action: 'rename' },
-    { label: 'Move to…',        icon: '➡',                   action: 'move' },
+    { label: 'Rename',          icon: PenLine,              shortcut: 'F2',     action: 'rename' },
+    { label: 'Move to…',        icon: ArrowRightFromLine,                       action: 'move' },
     { divider: true },
-    { label: 'Delete',          icon: '🗑', shortcut: 'Del', action: 'delete', danger: true },
+    { label: 'Delete',          icon: Trash2,               shortcut: 'Del',    action: 'delete', danger: true },
   ]
+}
+
+// Single source of truth for "is this doc still ingesting?" — read
+// from the ``inFlight`` flag the FileGrid/FileList already computed
+// (they have the full doc record with all four sub-status fields:
+// status, embed_status, enrich_status, kg_status). Using their
+// pre-computed flag keeps the answer consistent across the meta line
+// pill, the drag-blocking guard, and this menu/delete logic.
+function _isDocInFlight(item) {
+  return item?.type === 'document' && !!item.inFlight
 }
 
 async function onContextAction(action) {
@@ -386,6 +488,19 @@ async function navigate(path) {
   // being edited may not exist in the new path's list.
   renamingKey.value = ''
   creatingFolder.value = false
+  // Flip the URL FIRST, before the await — clicking a folder should
+  // feel instant in the address bar / breadcrumb. ``ws.navigate`` then
+  // wipes child arrays + flips loading on synchronously, so the file
+  // grid swaps to the loading skeleton in the same tick. The actual
+  // fetch resolves later; if the user clicks again before it returns,
+  // the generation guard inside useWorkspace drops the stale response
+  // (see ``_loadGen`` there).
+  const desired = path === '/' ? undefined : path
+  if (route.query.path !== desired) {
+    const q = { ...route.query }
+    if (desired) q.path = desired; else delete q.path
+    router.replace({ path: route.path, query: q })
+  }
   await ws.navigate(path)
 }
 
@@ -461,15 +576,27 @@ async function onPurgeItem(item) {
   const body = item.type === 'folder'
     ? { folder_paths: [item.path] }
     : { doc_ids: [item.doc_id] }
+  // Single-item purge can still be slow when the doc has thousands of
+  // chunks (vector + KG cascade); show a loading toast so the UI never
+  // looks frozen.
+  const loadingId = toast(`Deleting "${name}"…`, { variant: 'loading' })
   try {
     await purgeTrashItems(body)
     await loadTrashItems()
+    dismissToast(loadingId)
+    toast(`Deleted "${name}"`, { variant: 'success' })
   } catch (e) {
+    dismissToast(loadingId)
     toast('Delete failed: ' + e.message, { variant: 'error' })
   }
 }
 
+// Tracks an in-flight Empty bin call. Bound to the Toolbar's button so
+// the user can't double-fire the (slow, vector + KG + relational) purge.
+const emptyingTrash = ref(false)
+
 async function onEmptyTrash() {
+  if (emptyingTrash.value) return
   const n = trashItems.value.length || trashCount.value
   const ok = await confirm({
     title: 'Empty the recycle bin?',
@@ -478,12 +605,24 @@ async function onEmptyTrash() {
     variant: 'destructive',
   })
   if (!ok) return
+
+  emptyingTrash.value = true
+  // Persistent loading toast — the purge can take many seconds (vector
+  // store + KG + per-doc cascade). Without this the UI feels frozen.
+  const loadingId = toast(`Emptying recycle bin (${n} item${n === 1 ? '' : 's'})…`, {
+    variant: 'loading',
+  })
   try {
     await emptyTrash()
     trashItems.value = []
     trashCount.value = 0
+    dismissToast(loadingId)
+    toast(`Recycle bin emptied`, { variant: 'success' })
   } catch (e) {
+    dismissToast(loadingId)
     toast('Empty bin failed: ' + e.message, { variant: 'error' })
+  } finally {
+    emptyingTrash.value = false
   }
 }
 
@@ -563,44 +702,149 @@ async function onConfirmRename({ oldName, newName }) {
   }
 }
 
-async function onMoveDialog(item) {
-  const target = window.prompt(`Move "${item.name}" to which folder path?`, ws.currentPath.value)
-  if (!target) return
+// Move-to flow: open the folder picker, then dispatch a single
+// ``opBulkMoveDocuments`` + per-folder ``opMoveFolder`` once the user
+// picks a destination. Selection-aware via ``buildClipboardItems`` —
+// right-clicking an item that's part of a multi-selection moves the
+// whole selection.
+const movePickerOpen = ref(false)
+const movePickerTitle = ref('')
+const movePickerExclude = ref([])
+let movePendingItems = []  // captured before the dialog opens; restored on confirm
+
+function onMoveDialog(item) {
+  const items = buildClipboardItems(item).filter(Boolean)
+  if (!items.length) return
+  movePendingItems = items
+  // Hide only what cannot be a valid destination:
+  //   - The trash (system).
+  //   - Each folder being moved (and its subtree) — moving a folder
+  //     into itself or any descendant is a cycle.
+  // Note: the source's *parent* folder is NOT excluded. Picking it
+  // back is a no-op and the backend handles that gracefully — much
+  // better than hiding the parent's whole subtree, which made
+  // every cousin invisible (was: "/agriculture" excluded → user at
+  // "/" couldn't see agriculture even though most of its children
+  // were valid destinations).
+  movePickerExclude.value = [
+    '/__trash__',
+    ...items.filter(i => i.type === 'folder').map(i => i.path),
+  ]
+  movePickerTitle.value = items.length === 1
+    ? `Move "${items[0].name}" to…`
+    : `Move ${items.length} items to…`
+  movePickerOpen.value = true
+}
+
+async function onMoveTargetPicked(target) {
+  const items = movePendingItems
+  movePendingItems = []
+  if (!items.length || !target) return
   try {
-    if (item.type === 'folder') await ws.opMoveFolder(item.path, target)
-    else await ws.opMoveDocument(item.doc_id, target)
+    const docIds = items.filter(i => i.type === 'document').map(i => i.doc_id)
+    if (docIds.length) await ws.opBulkMoveDocuments(docIds, target)
+    for (const i of items.filter(i => i.type === 'folder')) {
+      await ws.opMoveFolder(i.path, target)
+    }
+    ws.clearSelection()
+    toast(
+      items.length === 1
+        ? `Moved “${items[0].name}” to ${target}`
+        : `Moved ${items.length} items to ${target}`,
+      { variant: 'success' },
+    )
   } catch (e) {
     toast('Move failed: ' + e.message, { variant: 'error' })
   }
 }
 
 async function onDelete(item) {
-  const name = item.name
-  if (item.type === 'folder') {
-    const ok = await confirm({
-      title: `Move "${name}" to recycle bin?`,
-      description: 'Items in the recycle bin can be restored later.',
-      confirmText: 'Move to bin',
-    })
-    if (!ok) return
-    try { await ws.opDeleteFolder(item.path) }
-    catch (e) { toast('Delete failed: ' + e.message, { variant: 'error' }) }
-    return
-  }
-  // Documents: hard-delete (no soft-delete for individual docs yet).
+  // Batch-aware: when the right-clicked item is part of the current
+  // multi-selection, operate on the whole selection. Mirrors the
+  // ``buildClipboardItems`` rule used by cut/copy.
+  const items = buildClipboardItems(item).filter(Boolean)
+  if (!items.length) return
+
+  const docs = items.filter(i => i.type === 'document')
+  const folders = items.filter(i => i.type === 'folder')
+  const n = items.length
+
+  // In-flight docs (status not in {ready, error}) are abandoned
+  // mid-pipeline rather than soft-deleted: a partial parse has no
+  // value to recover, and keeping it in the recycle bin would just
+  // confuse the user. Routes via ``?hard=true`` which short-circuits
+  // the trash detour and goes straight to vector + KG + relational
+  // purge. Folders never use this path (they're never "in flight").
+  const inFlightDocs = docs.filter(_isDocInFlight)
+  const normalDocs = docs.filter(d => !_isDocInFlight(d))
+  const purgeOnly = inFlightDocs.length > 0 && normalDocs.length === 0 && folders.length === 0
+
+  const title = purgeOnly
+    ? (n === 1 ? `Cancel ingestion of "${items[0].name}"?` : `Cancel ingestion of ${n} items?`)
+    : (n === 1 ? `Move "${items[0].name}" to recycle bin?` : `Move ${n} items to recycle bin?`)
+  const description = purgeOnly
+    ? 'Ingestion will be aborted and any partial data will be deleted permanently.'
+    : 'Items in the recycle bin can be restored later.'
   const ok = await confirm({
-    title: `Permanently delete "${name}"?`,
-    description: 'This document will be deleted with no recycle bin. Cannot be undone.',
-    confirmText: 'Delete forever',
-    variant: 'destructive',
+    title,
+    description,
+    confirmText: purgeOnly ? 'Cancel & delete' : 'Move to bin',
+    variant: purgeOnly ? 'destructive' : undefined,
   })
   if (!ok) return
+
+  const docIds = docs.map(d => d.doc_id)
+  docIds.forEach(id => deletingDocs.add(id))
+
   try {
     const { request } = await import('@/api/client')
-    await request(`/api/v1/documents/${item.doc_id}`, { method: 'DELETE' })
+    // Parallel DELETEs — backend serializes via the DB, but client-side
+    // parallelism saves an N×roundtrip stall on large selections.
+    // In-flight docs go to ``?hard=true`` (purge straight through);
+    // normal docs go through trash; folders go through opDeleteFolder.
+    await Promise.all([
+      ...inFlightDocs.map(d =>
+        request(`/api/v1/documents/${d.doc_id}?hard=true`, { method: 'DELETE' })
+      ),
+      ...normalDocs.map(d => request(`/api/v1/documents/${d.doc_id}`, { method: 'DELETE' })),
+      ...folders.map(f => ws.opDeleteFolder(f.path)),
+    ])
     await refresh()
+    ws.clearSelection()
+
+    const message = purgeOnly
+      ? (n === 1 ? `Cancelled “${items[0].name}”` : `Cancelled ${n} items`)
+      : (n === 1 ? `Moved “${items[0].name}” to recycle bin` : `Moved ${n} items to recycle bin`)
+
+    // Undo only meaningful for soft-deleted docs (trash), never for
+    // hard-purged in-flight ones (the data is gone for good) and never
+    // for folders (their trashed paths aren't easily recoverable
+    // post-DELETE; user can recover via recycle bin UI).
+    const undoEligibleIds = normalDocs.map(d => d.doc_id)
+    const action = (undoEligibleIds.length > 0 && folders.length === 0 && inFlightDocs.length === 0)
+      ? {
+          label: 'Undo',
+          onClick: async () => {
+            try {
+              await restoreFromTrash({ doc_ids: undoEligibleIds })
+              await refresh()
+              toast(
+                undoEligibleIds.length === 1
+                  ? `Restored “${normalDocs[0].name}”`
+                  : `Restored ${undoEligibleIds.length} items`,
+                { variant: 'info' },
+              )
+            } catch (e) {
+              toast('Restore failed: ' + e.message, { variant: 'error' })
+            }
+          },
+        }
+      : undefined
+    toast(message, { variant: 'success', action })
   } catch (e) {
     toast('Delete failed: ' + e.message, { variant: 'error' })
+  } finally {
+    docIds.forEach(id => deletingDocs.delete(id))
   }
 }
 
@@ -659,11 +903,94 @@ async function onPaste() {
 function onDropOntoFolder({ items, targetPath }) { doDropMove(items, targetPath) }
 function onSidebarDrop({ items, targetPath }) { doDropMove(items, targetPath) }
 
+// Drag-in-progress tracking — drives the visibility of the
+// "Drop here for top-level" zone in the sidebar's empty area. Only
+// surfaces while an actual workspace drag is happening so the
+// sidebar isn't permanently cluttered. We listen on ``window``
+// instead of using a Vue prop so any drag source (tree, grid,
+// list, even a future drag overlay) automatically lights up the
+// zone with no per-source plumbing.
+const dragInProgress = ref(false)
+const isDragOverRoot = ref(false)
+function onWindowDragStart(e) {
+  if (e.dataTransfer?.types?.includes('application/x-forgerag-item')) {
+    dragInProgress.value = true
+  }
+}
+function onWindowDragEnd() {
+  dragInProgress.value = false
+  isDragOverRoot.value = false
+}
+function onRootDropZoneOver(e) {
+  if (e.dataTransfer.types.includes('application/x-forgerag-item')) {
+    e.dataTransfer.dropEffect = 'move'
+    isDragOverRoot.value = true
+  }
+}
+function onRootDropZoneLeave() {
+  isDragOverRoot.value = false
+}
+function onRootDropZoneDrop(e) {
+  isDragOverRoot.value = false
+  dragInProgress.value = false
+  const raw = e.dataTransfer.getData('application/x-forgerag-item')
+  if (!raw) return
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { return }
+  const items = Array.isArray(parsed?.items) ? parsed.items : []
+  if (!items.length) return
+  doDropMove(items, '/')
+}
+// Bubbling phase (no third arg / ``false``) — capture phase runs
+// BEFORE the source element's ``@dragstart`` handler, which is exactly
+// when Vue's ``onDragStart`` calls ``dataTransfer.setData(...)``. With
+// capture, our window listener saw an empty ``types`` and the
+// ``dragInProgress`` flag never flipped, so the root-drop zone stayed
+// hidden. Bubbling sees the MIME and lights up the zone correctly.
+onMounted(() => {
+  window.addEventListener('dragstart', onWindowDragStart)
+  window.addEventListener('dragend', onWindowDragEnd)
+  window.addEventListener('drop', onWindowDragEnd)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('dragstart', onWindowDragStart)
+  window.removeEventListener('dragend', onWindowDragEnd)
+  window.removeEventListener('drop', onWindowDragEnd)
+})
+
+function _pathParent(p) {
+  if (!p || p === '/') return '/'
+  const i = p.lastIndexOf('/')
+  return i <= 0 ? '/' : p.slice(0, i)
+}
+
 async function doDropMove(items, targetPath) {
+  // Drop no-ops at the source so we never round-trip a request the
+  // server would just reject or silently ignore. Three cases:
+  //   - folder onto itself                 (same folder)
+  //   - folder onto its own subtree        (cycle — server rejects)
+  //   - folder/document onto current parent (already there)
+  // ``items`` is the unwrapped array from FileGrid/FileList/FolderTreeNode.
+  const effective = (items || []).filter(i => {
+    if (!i || !i.path) return false
+    if (i.type === 'folder') {
+      if (i.path === targetPath) return false
+      if (targetPath === i.path || targetPath.startsWith(i.path + '/')) return false
+      if (_pathParent(i.path) === targetPath) return false
+      return true
+    }
+    if (i.type === 'document') {
+      if (_pathParent(i.path) === targetPath) return false
+      return true
+    }
+    return false
+  })
+  if (!effective.length) return
+
   try {
-    const docIds = items.filter(i => i.type === 'document').map(i => i.doc_id)
+    const docIds = effective.filter(i => i.type === 'document').map(i => i.doc_id)
     if (docIds.length) await ws.opBulkMoveDocuments(docIds, targetPath)
-    for (const i of items) {
+    for (const i of effective) {
       if (i.type === 'folder') await ws.opMoveFolder(i.path, targetPath)
     }
   } catch (e) {
@@ -681,7 +1008,14 @@ function scopeChatTo(path) {
 }
 
 function onOpenDocument(doc) {
-  router.push({ path: '/workspace', query: { doc: doc.doc_id } })
+  // Preserve ``path`` (and any other query params) so the back arrow's
+  // default close (no explicit toPath) returns the user to the same
+  // folder they came from. Without this, opening a doc wiped the path
+  // query and back navigation always landed at the root.
+  router.push({
+    path: '/workspace',
+    query: { ...route.query, doc: doc.doc_id },
+  })
 }
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────
@@ -739,8 +1073,55 @@ function firstSelectedItem() {
 // ── Lifecycle ─────────────────────────────────────────────────────
 onMounted(async () => {
   await ws.loadTree()
-  await ws.loadContents('/')
+  // Restore folder from the URL (?path=/agriculture) so refresh /
+  // bookmark / direct-link land on the same view. Sanity-checks: must
+  // begin with "/" and not target the trash subtree (trash has its
+  // own UI flow).
+  const seedPath = route.query.path
+  const initial = (typeof seedPath === 'string'
+    && seedPath.startsWith('/')
+    && !seedPath.startsWith('/__trash__'))
+    ? seedPath
+    : '/'
+  await ws.loadContents(initial)
+  // Keep ws.currentPath in sync with the URL — loadContents alone
+  // doesn't update it. Use the same navigate() the user-facing
+  // breadcrumb/click paths go through so URL writeback stays
+  // single-pathed.
+  if (initial !== '/') {
+    await ws.navigate(initial)
+  }
   await refreshTrashCount()
+})
+
+// React to external URL changes (back / forward / direct link tweak).
+// Only respond when path actually differs from current view.
+watch(
+  () => route.query.path,
+  async (newPath) => {
+    const target = (typeof newPath === 'string' && newPath.startsWith('/')) ? newPath : '/'
+    if (target === ws.currentPath.value || viewingTrash.value) return
+    await ws.navigate(target)
+  },
+)
+
+// KeepAlive re-activation: returning to /workspace from another tab
+// (sidebar nav fires a router-link to bare ``/workspace``, no query).
+// Without this, the path-watcher above would see ``query.path =
+// undefined`` and reset state to root — losing the user's place. Push
+// the cached state BACK INTO the URL instead, so the watcher sees a
+// consistent (current === target) and stays put. Also reasserts the
+// trash view if the user was looking at it.
+onActivated(() => {
+  const cur = ws.currentPath.value
+  const inTrash = viewingTrash.value
+  const urlPath = route.query.path
+  const desired = inTrash ? undefined : (cur === '/' ? undefined : cur)
+  if (urlPath !== desired) {
+    const q = { ...route.query }
+    if (desired) q.path = desired; else delete q.path
+    router.replace({ path: route.path, query: q })
+  }
 })
 </script>
 
@@ -807,6 +1188,28 @@ onMounted(async () => {
   border-right: 1px solid var(--color-line);
   overflow-y: auto;
   background: var(--color-bg2);   /* canvas — matches outer body */
+}
+/* Root-drop zone — appears only during an active drag (parent toggles
+   ``v-if`` based on ``dragInProgress``). Idle look: hairline dashed
+   placeholder so it reads as "this slot is currently inactive". On
+   drag-over: switches to the same A-style fill + solid outline used by
+   tree rows / file cards / list rows, so the visual contract is
+   identical across the whole workspace. */
+.root-drop-zone {
+  margin: 8px 8px 12px;
+  padding: 18px 12px;
+  border: 1px dashed var(--color-line2, var(--color-line));
+  border-radius: 6px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-t3);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.root-drop-zone--over {
+  background: color-mix(in srgb, var(--color-t1) 10%, transparent);
+  border-style: solid;
+  border-color: var(--color-t1);
+  color: var(--color-t1);
 }
 .workspace__main {
   flex: 1;

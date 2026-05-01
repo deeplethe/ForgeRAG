@@ -267,10 +267,17 @@ async function _loadAndPoll(id) {
 
   // If the last message is from the user, the backend is still processing.
   // Show a waiting indicator and poll DB until the assistant reply lands.
+  // 3-minute cap so a generation that was lost server-side (e.g. process
+  // restart between user message persist and assistant message persist)
+  // doesn't leave the spinner running forever — at the cap we surface
+  // a synthetic "interrupted" message instead.
   const lastMsg = msgs.value[msgs.value.length - 1]
   if (lastMsg?.role === 'user') {
     streaming.value = true; streamText.value = ''
     stopPoll()
+    const POLL_INTERVAL_MS = 2000
+    const POLL_CAP_MS = 3 * 60 * 1000
+    const pollStartedAt = Date.now()
     _pollTimer = setInterval(async () => {
       if (convId.value !== id) { stopPoll(); return }
       try {
@@ -284,9 +291,30 @@ async function _loadAndPoll(id) {
           streaming.value = false; streamText.value = ''
           enrichHistoricalCitations()
           scroll()
+          return
         }
       } catch {}
-    }, 2000)
+      // Cap the wait — beyond 3 minutes we assume the generation was
+      // lost (process crash / OOM kill / network swallowed the stream
+      // never to complete). Show a recoverable placeholder so the user
+      // can retry instead of staring at a perpetual spinner.
+      if (Date.now() - pollStartedAt > POLL_CAP_MS) {
+        stopPoll()
+        streaming.value = false; streamText.value = ''
+        msgs.value = [
+          ...msgs.value,
+          {
+            role: 'assistant',
+            content: '_(Answer was interrupted — please re-send the question.)_',
+            citations: null,
+            thinking: null,
+            traceId: null,
+            _interrupted: true,
+          },
+        ]
+        scroll()
+      }
+    }, POLL_INTERVAL_MS)
   }
 }
 

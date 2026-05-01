@@ -28,14 +28,18 @@
       v-for="f in folders"
       :key="'f:' + f.folder_id"
       class="file-card"
-      :class="{ 'file-card--selected': isSelected('f:' + f.folder_id) }"
+      :class="{
+        'file-card--selected': isSelected('f:' + f.folder_id),
+        'file-card--drop': dragOverKey === 'f:' + f.folder_id,
+      }"
       :data-selkey="'f:' + f.folder_id"
       :draggable="!isRenaming(f)"
       @click.stop="onSelect('f:' + f.folder_id, $event)"
       @dblclick.stop="onFolderDblClick(f)"
       @contextmenu.prevent.stop="onContext($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
       @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
-      @dragover.prevent
+      @dragover.prevent="onFolderDragOver($event, 'f:' + f.folder_id)"
+      @dragleave="onFolderDragLeave('f:' + f.folder_id)"
       @drop.prevent="onDropOntoFolder($event, f)"
     >
       <div class="file-card__icon"><FileIcon kind="folder" :size="36" /></div>
@@ -66,24 +70,31 @@
         'file-card--pending': d.status && !['ready', 'error'].includes(d.status),
       }"
       :data-selkey="'d:' + d.doc_id"
-      :draggable="!isRenamingDoc(d)"
+      :draggable="!isRenamingDoc(d) && !isDocInFlight(d)"
       @click.stop="onSelect('d:' + d.doc_id, $event)"
       @dblclick.stop="onDocDblClick(d)"
-      @contextmenu.prevent.stop="onContext($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
+      @contextmenu.prevent.stop="onContext($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name, inFlight: isDocInFlight(d) })"
       @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
     >
       <div class="file-card__icon">
         <FileIcon kind="file" :name="d.filename || d.file_name" :size="36" />
+        <!-- Error: tiny solid red dot. Carries colour because failure
+             is the one state that must be impossible to miss. -->
         <span
           v-if="d.status === 'error'"
           class="status-badge status-badge--error"
           :title="d.error_message || 'Ingestion failed'"
-        >!</span>
-        <span
-          v-else-if="d.status && !['ready', 'error'].includes(d.status)"
-          class="status-badge status-badge--pending"
-          :title="d.status"
-        >⟳</span>
+        ></span>
+        <!-- In-flight: bare spinner overlaid on the corner — no
+             coloured disc behind it. Vercel-style: monochrome currentColor,
+             only the motion conveys "active". -->
+        <Loader2
+          v-else-if="isDocInFlight(d)"
+          class="status-spinner"
+          :title="inFlightStage(d)"
+          :size="11"
+          :stroke-width="2"
+        />
       </div>
       <input
         v-if="isRenamingDoc(d)"
@@ -104,6 +115,13 @@
         <template v-if="d.status === 'error'">
           <span class="meta-error" :title="d.error_message || ''">failed</span>
         </template>
+        <template v-else-if="isDocInFlight(d)">
+          <!-- Plain inline label — Vercel-style: no chip, no fill,
+               neutral muted color (the badge spinner above already
+               signals motion). Lowercase to read as a status word
+               rather than a button. -->
+          <span class="meta-pending">{{ inFlightStage(d) }}</span>
+        </template>
         <template v-else-if="d.file_size_bytes">{{ fmtSize(d.file_size_bytes) }}</template>
         <template v-else-if="d.format">{{ d.format }}</template>
       </div>
@@ -118,6 +136,7 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue'
+import { Loader2 } from 'lucide-vue-next'
 
 import FileIcon from './FileIcon.vue'
 
@@ -164,6 +183,34 @@ function confirmCreate() {
 const renameInput = ref(null)
 function isRenaming(f) { return props.renamingKey === 'f:' + f.folder_id }
 function isRenamingDoc(d) { return props.renamingKey === 'd:' + d.doc_id }
+// In-flight = ANY of the four pipeline sub-states (parse, embed,
+// enrich, kg) is still running. ``status`` covers parse-side phases
+// (parsing/structuring/chunking); the other three are independent
+// async jobs that finish AFTER ``status=ready``. A doc with
+// ``status=ready`` but ``kg_status=running`` is still ingesting from
+// the user's perspective — KG-driven features (graph view, kg-aware
+// retrieval) won't see this doc until kg_status flips to ``done``.
+const _DOC_TERMINAL_STATUSES = new Set(['ready', 'error'])
+const _SUB_TERMINAL_STATUSES = new Set(['done', 'error', 'skipped', null, undefined, ''])
+function _stageInFlight(s, terminalSet) {
+  if (s == null) return false                  // not started → treat as terminal
+  return !terminalSet.has(s)
+}
+function isDocInFlight(d) {
+  return _stageInFlight(d.status, _DOC_TERMINAL_STATUSES)
+      || _stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)
+      || _stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)
+      || _stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)
+}
+function inFlightStage(d) {
+  // Pick the most informative non-terminal stage to surface in the
+  // meta line. Order matters: parse → embed → enrich → kg.
+  if (_stageInFlight(d.status, _DOC_TERMINAL_STATUSES)) return d.status
+  if (_stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)) return 'embedding'
+  if (_stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)) return 'enriching'
+  if (_stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)) return 'building graph'
+  return null
+}
 watch(() => props.renamingKey, async (key) => {
   if (!key) return
   await nextTick()
@@ -229,7 +276,25 @@ function onDragStart(event, item) {
   emit('drag-start', { items: [item], keys: selectedKeys })
 }
 
+// Single-key drag-over state — at most one card can be the drop target
+// at a time. A ref<string> is enough; using a Set would let stale
+// ``dragenter`` events leave multiple cards highlighted if leave fires
+// out of order, which is a real problem because dragenter/leave on a
+// nested element can fire in either order.
+const dragOverKey = ref('')
+
+function onFolderDragOver(e, key) {
+  if (e.dataTransfer.types.includes('application/x-forgerag-item')) {
+    e.dataTransfer.dropEffect = 'move'
+    dragOverKey.value = key
+  }
+}
+function onFolderDragLeave(key) {
+  if (dragOverKey.value === key) dragOverKey.value = ''
+}
+
 function onDropOntoFolder(event, folder) {
+  dragOverKey.value = ''
   const raw = event.dataTransfer.getData('application/x-forgerag-item')
   if (!raw) return
   let payload
@@ -299,6 +364,16 @@ function fmtSize(n) {
 .file-card--selected:hover {
   background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg3));
 }
+/* Drop-target highlight — neutral white-on-dark / black-on-light pair
+   keyed off ``--color-t1``. Shared visual contract with
+   ``.tree-row--drop`` so the same gesture (dragging onto a folder)
+   reads identically in the sidebar and the grid. */
+.file-card--drop,
+.file-card--drop.file-card--selected {
+  background: color-mix(in srgb, var(--color-t1) 10%, transparent);
+  outline: 1px solid var(--color-t1);
+  outline-offset: -1px;
+}
 .file-card__icon {
   font-size: 32px;
   line-height: 1;
@@ -321,9 +396,28 @@ function fmtSize(n) {
   cursor: help;
 }
 .status-badge--error   { background: var(--color-err-fg); }
-.status-badge--pending { background: var(--color-run-fg); font-size: 8px; }
+/* Bare spinner overlaid on the file icon's corner — amber so the
+   in-flight cards pop visually against ready ones. ``--color-warn-fg``
+   keeps it theme-adaptive (amber-400 dark / amber-700 light). */
+.status-spinner {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  color: var(--color-warn-fg);
+  background: var(--color-bg2);
+  border-radius: 50%;
+  padding: 1px;
+  animation: status-spin 0.9s linear infinite;
+}
+@keyframes status-spin { to { transform: rotate(360deg); } }
 .file-card--error .file-card__title { color: var(--color-err-fg); }
 .meta-error { color: var(--color-err-fg); cursor: help; }
+/* In-flight label — amber so it scans clearly amongst neutral file
+   sizes. No italics: italic + tiny + amber together read as
+   apologetic; amber alone is enough emphasis. */
+.meta-pending {
+  color: var(--color-warn-fg);
+}
 
 /* Inline new-folder editor — the input itself carries the focus ring,
    so the card stays on the same neutral tint as a hovered card.

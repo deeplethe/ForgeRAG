@@ -9,7 +9,7 @@
  *   highlightBlocks - array of { page_no, bbox: {x0,y0,x1,y1} } to highlight
  */
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { MagnifyingGlassPlusIcon, MagnifyingGlassMinusIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
+import { ZoomIn, ZoomOut, Download } from 'lucide-vue-next'
 import * as pdfjsLib from 'pdfjs-dist'
 import { TextLayer } from 'pdfjs-dist'
 
@@ -313,11 +313,11 @@ defineExpose({ scrollToPage: (p) => { applyHighlightsAndScroll() } })
       <div class="flex items-center gap-1">
         <!-- Zoom controls -->
         <button @click="zoomOut" class="p-0.5 rounded hover:bg-bg2 transition-colors" title="Zoom out">
-          <MagnifyingGlassMinusIcon class="w-3.5 h-3.5" />
+          <ZoomOut class="w-3.5 h-3.5" :stroke-width="1.5" />
         </button>
         <span class="w-8 text-center tabular-nums">{{ scalePercent }}%</span>
         <button @click="zoomIn" class="p-0.5 rounded hover:bg-bg2 transition-colors" title="Zoom in">
-          <MagnifyingGlassPlusIcon class="w-3.5 h-3.5" />
+          <ZoomIn class="w-3.5 h-3.5" :stroke-width="1.5" />
         </button>
         <button @click="zoomReset" class="px-1 py-0.5 rounded hover:bg-bg2 transition-colors text-[8px]" title="Fit width">Fit</button>
 
@@ -327,14 +327,14 @@ defineExpose({ scrollToPage: (p) => { applyHighlightsAndScroll() } })
         <!-- Download PDF -->
         <a v-if="downloadUrl" :href="downloadUrl" target="_blank"
            class="p-0.5 rounded hover:bg-bg2 transition-colors flex items-center gap-0.5" title="Download PDF">
-          <ArrowDownTrayIcon class="w-3.5 h-3.5" />
+          <Download class="w-3.5 h-3.5" :stroke-width="1.5" />
           <span>PDF</span>
         </a>
 
         <!-- Download source (only if different from PDF) -->
         <a v-if="sourceDownloadUrl" :href="sourceDownloadUrl" target="_blank"
            class="p-0.5 rounded hover:bg-bg2 transition-colors flex items-center gap-0.5" :title="'Download ' + (sourceLabel || 'source')">
-          <ArrowDownTrayIcon class="w-3.5 h-3.5" />
+          <Download class="w-3.5 h-3.5" :stroke-width="1.5" />
           <span>{{ sourceLabel || 'Source' }}</span>
         </a>
       </div>

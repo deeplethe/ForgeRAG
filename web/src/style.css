@@ -157,9 +157,13 @@
   --color-brand-bg:    #0c1e3a;   /* darkened tint for selected rows */
   --color-brand-light: #5aa8ff;
 
-  /* Status pairs — dark mode tints (Tailwind dark-* range, but Vercel-toned) */
+  /* Status pairs — dark mode tints (Tailwind dark-* range, but Vercel-toned).
+     Err uses red-500 (saturated) instead of red-300 (washed-out pink) so
+     destructive cues read as actually red on dark canvas — was: #fca5a5,
+     which made Empty bin / trash buttons look like a polite suggestion
+     rather than a destructive action. */
   --color-ok-fg:   #34d399;  --color-ok-bg:   #022c22;
-  --color-err-fg:  #fca5a5;  --color-err-bg:  #450a0a;
+  --color-err-fg:  #ef4444;  --color-err-bg:  #450a0a;
   --color-warn-fg: #fbbf24;  --color-warn-bg: #451a03;
   --color-run-fg:  #60a5fa;  --color-run-bg:  #0c1e3a;
 
@@ -207,6 +211,16 @@ body {
 }
 code, pre, .font-mono {
   font-family: 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* Buttons are controls, not content — no double-click highlight, no
+   accidental drag-select when the user lassoes near a button. The
+   cursor stays a pointer, the label stays inert. Matches Vercel /
+   Linear / GitHub. ``user-select: text`` overrides on a per-button
+   basis if anyone ever wants the label copyable. */
+button, [role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ============================================================

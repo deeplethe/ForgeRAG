@@ -25,6 +25,7 @@
         @toggle="toggleExpand"
         @click-folder="$emit('navigate', $event)"
         @drop-into="$emit('drop-into', $event)"
+        @context-menu="$emit('context-menu', $event)"
       />
       <div
         v-if="!topChildren.length"
@@ -48,7 +49,7 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: null },
 })
-defineEmits(['navigate', 'drop-into', 'retry'])
+defineEmits(['navigate', 'drop-into', 'retry', 'context-menu'])
 
 // Skip the implicit "/" root and surface its first-level children. Filter
 // out system folders (trash) — those are accessed through dedicated UI.

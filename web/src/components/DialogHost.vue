@@ -29,19 +29,18 @@
       </div>
     </Transition>
 
-    <!-- Toast stack — fixed bottom-right, stacks upward -->
+    <!-- Toast stack — fixed bottom-right, stacks upward. Each row is
+         its own component so the visual + interaction logic is reusable
+         and easy to swap when the design system evolves. -->
     <div class="toast-stack">
       <TransitionGroup name="toast">
-        <div
+        <ToastItem
           v-for="t in toasts"
           :key="t.id"
-          :class="['toast', 'toast-' + t.variant]"
-          @click="dismiss(t.id)"
-          role="status"
-        >
-          <span class="toast-dot" />
-          <span class="toast-msg">{{ t.message }}</span>
-        </div>
+          :item="t"
+          @action="onAction(t)"
+          @dismiss="dismiss(t.id)"
+        />
       </TransitionGroup>
     </div>
   </Teleport>
@@ -50,6 +49,7 @@
 <script setup>
 import { nextTick, ref, watch } from 'vue'
 import { useDialog } from '@/composables/useDialog'
+import ToastItem from './ToastItem.vue'
 
 const { _dialogState: d, _toastList: toasts, _closeDialog, _dismissToast } = useDialog()
 const dialogEl = ref(null)
@@ -58,6 +58,11 @@ const confirmBtn = ref(null)
 function onConfirm() { _closeDialog(true) }
 function onCancel() { _closeDialog(false) }
 function dismiss(id) { _dismissToast(id) }
+function onAction(t) {
+  // Fire the action then immediately dismiss — the user has answered
+  // the prompt, the toast no longer needs to claim screen space.
+  try { t.action?.onClick?.() } finally { _dismissToast(t.id) }
+}
 
 // Esc closes dialog (browser default doesn't fire on a div without focus)
 watch(() => d.open, async (open) => {
@@ -152,6 +157,8 @@ window.addEventListener('keydown', onKey)
 }
 
 /* ── Toast stack ────────────────────────────────────────────────── */
+/* Layout-only — each row is rendered by <ToastItem> with its own
+   self-contained styles. */
 .toast-stack {
   position: fixed;
   bottom: 36px;        /* above the upload bar (26px) + a 10px gap */
@@ -162,39 +169,6 @@ window.addEventListener('keydown', onKey)
   gap: 8px;
   pointer-events: none;
 }
-.toast {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 220px;
-  max-width: 380px;
-  padding: 9px 14px;
-  font-size: 12px;
-  color: var(--color-t1);
-  background: var(--color-bg);
-  border: 1px solid var(--color-line);
-  border-radius: var(--r-md);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
-  cursor: pointer;
-}
-.toast-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-t3);
-}
-.toast-info    .toast-dot { background: var(--color-run-fg); }
-.toast-success .toast-dot { background: var(--color-ok-fg); }
-.toast-error   .toast-dot { background: var(--color-err-fg); }
-.toast-warn    .toast-dot { background: var(--color-warn-fg); }
-
-.toast-error   { border-color: color-mix(in srgb, var(--color-err-fg) 30%, var(--color-line)); }
-.toast-success { border-color: color-mix(in srgb, var(--color-ok-fg) 30%, var(--color-line)); }
-.toast-warn    { border-color: color-mix(in srgb, var(--color-warn-fg) 30%, var(--color-line)); }
-.toast-msg { line-height: 1.4; }
-
 .toast-enter-active, .toast-leave-active { transition: all 0.18s ease; }
 .toast-enter-from { opacity: 0; transform: translateX(20px); }
 .toast-leave-to   { opacity: 0; transform: translateX(20px); }

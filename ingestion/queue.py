@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from queue import Queue
@@ -243,16 +244,33 @@ class IngestionQueue:
             )
         except Exception as exc:
             log.exception("ingestion job failed doc_id=%s", doc_id)
-            # pipeline.ingest already sets status="error" + error_message, but be defensive
-            try:
-                msg = str(exc)[:500] if str(exc) else type(exc).__name__
-                self.pipeline.rel.update_document_status(
-                    doc_id,
-                    status="error",
-                    error_message=msg,
-                )
-            except Exception:
-                pass
+            # pipeline.ingest already sets status="error" + error_message,
+            # but be defensive: retry the error-marker update a few times
+            # because the original failure was OFTEN a transient SQLite
+            # "database is locked" — and the very call we're about to
+            # make is ALSO a write, so a single attempt can run into the
+            # same lock and leave the doc stuck in its mid-stage status
+            # forever (the user-facing symptom: "stuck in 'structuring'"
+            # with no error message). Three attempts × 0.5s backoff
+            # comfortably outlasts the window where the lock holder is
+            # finishing its own commit.
+            msg = str(exc)[:500] if str(exc) else type(exc).__name__
+            for attempt in range(3):
+                try:
+                    self.pipeline.rel.update_document_status(
+                        doc_id,
+                        status="error",
+                        error_message=msg,
+                    )
+                    break
+                except Exception as e2:
+                    if attempt == 2:
+                        log.error(
+                            "failed to mark doc_id=%s as error after %d attempts: %s",
+                            doc_id, attempt + 1, e2,
+                        )
+                    else:
+                        time.sleep(0.5 * (attempt + 1))
             if job.on_complete:
                 with contextlib.suppress(Exception):
                     job.on_complete(doc_id, exc)

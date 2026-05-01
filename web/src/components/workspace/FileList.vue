@@ -57,13 +57,19 @@
           v-for="f in sortedFolders"
           :key="'f:' + f.folder_id"
           class="list-row"
-          :class="{ 'list-row--selected': isSelected('f:' + f.folder_id) }"
+          :class="{
+            'list-row--selected': isSelected('f:' + f.folder_id),
+            'list-row--drop': dragOverKey === 'f:' + f.folder_id,
+          }"
           :data-selkey="'f:' + f.folder_id"
           :draggable="!isRenaming(f)"
           @click.stop="onSelect('f:' + f.folder_id, $event)"
           @dblclick.stop="onFolderDblClick(f)"
           @contextmenu.prevent.stop="onContext($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
           @dragstart="onDragStart($event, { type: 'folder', folder_id: f.folder_id, path: f.path, name: f.name })"
+          @dragover.prevent="onFolderDragOver($event, 'f:' + f.folder_id)"
+          @dragleave="onFolderDragLeave('f:' + f.folder_id)"
+          @drop.prevent="onDropOntoFolder($event, f)"
         >
           <td>
             <div class="name-cell">
@@ -97,10 +103,10 @@
             'list-row--error': d.status === 'error',
           }"
           :data-selkey="'d:' + d.doc_id"
-          :draggable="!isRenamingDoc(d)"
+          :draggable="!isRenamingDoc(d) && !isDocInFlight(d)"
           @click.stop="onSelect('d:' + d.doc_id, $event)"
           @dblclick.stop="onDocDblClick(d)"
-          @contextmenu.prevent.stop="onContext($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
+          @contextmenu.prevent.stop="onContext($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name, inFlight: isDocInFlight(d) })"
           @dragstart="onDragStart($event, { type: 'document', doc_id: d.doc_id, path: d.path, name: d.filename || d.file_name })"
         >
           <td>
@@ -125,10 +131,13 @@
                 :title="d.error_message || 'Ingestion failed'"
               >failed</span>
               <span
-                v-else-if="d.status && !['ready', 'error'].includes(d.status)"
-                class="status-chip status-chip--pending"
-                :title="d.status"
-              >{{ d.status }}</span>
+                v-else-if="isDocInFlight(d)"
+                class="status-pending"
+                :title="inFlightStage(d)"
+              >
+                <Loader2 class="status-pending__spinner" :size="11" :stroke-width="2" />
+                <span>{{ inFlightStage(d) }}</span>
+              </span>
             </div>
           </td>
           <td>{{ fmtType(d.filename || d.file_name) }}</td>
@@ -146,6 +155,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
+import { Loader2 } from 'lucide-vue-next'
 
 import FileIcon from './FileIcon.vue'
 
@@ -160,6 +170,7 @@ const props = defineProps({
 })
 const emit = defineEmits([
   'select', 'open-folder', 'open-document', 'context-menu', 'drag-start',
+  'drop-onto-folder',
   'confirm-create', 'cancel-create',
   'confirm-rename', 'cancel-rename',
 ])
@@ -187,6 +198,31 @@ function confirmCreate() {
 const renameInput = ref(null)
 function isRenaming(f) { return props.renamingKey === 'f:' + f.folder_id }
 function isRenamingDoc(d) { return props.renamingKey === 'd:' + d.doc_id }
+// Mirrors FileGrid.isDocInFlight — checks every pipeline sub-status
+// (parse / embed / enrich / kg) so a doc with ``status=ready`` but
+// ``kg_status=running`` is still considered in-flight (the user
+// would expect KG-aware features not to apply to it yet).
+const _DOC_TERMINAL_STATUSES = new Set(['ready', 'error'])
+const _SUB_TERMINAL_STATUSES = new Set(['done', 'error', 'skipped', null, undefined, ''])
+function _stageInFlight(s, terminalSet) {
+  if (s == null) return false
+  return !terminalSet.has(s)
+}
+function isDocInFlight(d) {
+  return _stageInFlight(d.status, _DOC_TERMINAL_STATUSES)
+      || _stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)
+      || _stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)
+      || _stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)
+}
+// Same stage-picker the grid uses, so the chip label is consistent
+// across list / grid views (parsing → embedding → enriching → graph).
+function inFlightStage(d) {
+  if (_stageInFlight(d.status, _DOC_TERMINAL_STATUSES)) return d.status
+  if (_stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)) return 'embedding'
+  if (_stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)) return 'enriching'
+  if (_stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)) return 'building graph'
+  return null
+}
 watch(() => props.renamingKey, async (key) => {
   if (!key) return
   await nextTick()
@@ -242,6 +278,32 @@ function onDragStart(event, item) {
   event.dataTransfer.setData('application/x-forgerag-item', payload)
   event.dataTransfer.effectAllowed = 'move'
   emit('drag-start', { items: [item], keys: selectedKeys })
+}
+
+// Folder rows act as drop targets so the user can move items within the
+// list view without round-tripping through the sidebar tree. Same shape
+// as FileGrid (single-key dragOverKey + the highlight class).
+const dragOverKey = ref('')
+function onFolderDragOver(e, key) {
+  if (e.dataTransfer.types.includes('application/x-forgerag-item')) {
+    e.dataTransfer.dropEffect = 'move'
+    dragOverKey.value = key
+  }
+}
+function onFolderDragLeave(key) {
+  if (dragOverKey.value === key) dragOverKey.value = ''
+}
+function onDropOntoFolder(event, folder) {
+  dragOverKey.value = ''
+  const raw = event.dataTransfer.getData('application/x-forgerag-item')
+  if (!raw) return
+  let payload
+  try { payload = JSON.parse(raw) } catch { return }
+  // Skip self-drop (dragging a folder onto itself is a no-op the server
+  // would reject; cheaper to short-circuit client-side).
+  const items = Array.isArray(payload?.items) ? payload.items : []
+  if (items.some(it => it?.type === 'folder' && it?.path === folder.path)) return
+  emit('drop-onto-folder', { items, targetPath: folder.path })
 }
 
 const sortKey = ref('name')
@@ -374,6 +436,21 @@ function fmtType(name) {
 .list-row--selected:hover {
   background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg3));
 }
+/* Drop-target highlight — neutral pair keyed off ``--color-t1``.
+   Shared visual contract with ``.tree-row--drop`` and
+   ``.file-card--drop``; flips automatically with theme. The outline
+   can't use ``outline-offset: -1px`` cleanly on a ``<tr>`` (table
+   rows don't render outlines reliably across browsers), so we use a
+   thick top + bottom box-shadow inset to fake an outline that lives
+   inside the row. */
+.list-row--drop,
+.list-row--drop.list-row--selected {
+  background: color-mix(in srgb, var(--color-t1) 10%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--color-t1),
+    inset 0 -1px 0 var(--color-t1);
+  color: var(--color-t1);
+}
 .list-empty { padding: 32px; text-align: center; color: var(--color-t3); }
 
 /* Inline new-folder editor row */
@@ -441,5 +518,20 @@ function fmtType(name) {
   vertical-align: middle;
 }
 .status-chip--error   { background: var(--color-err-bg); color: var(--color-err-fg); }
-.status-chip--pending { background: var(--color-run-bg); color: var(--color-run-fg); }
+/* In-flight label — amber so it scans clearly in the row. No italic
+   (italic + tiny + amber together looked apologetic; the colour and
+   spinner alone are enough emphasis). */
+.status-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  color: var(--color-warn-fg);
+  font-size: 11px;
+}
+.status-pending__spinner {
+  color: var(--color-warn-fg);
+  animation: status-pending-spin 0.9s linear infinite;
+}
+@keyframes status-pending-spin { to { transform: rotate(360deg); } }
 </style>

@@ -9,9 +9,8 @@ const router = createRouter({
     { path: '/workspace', component: () => import('@/views/Workspace.vue') },
     {
       // Legacy redirect: old /repository?doc=X links land on /workspace?doc=X.
-      // The doc detail view lives inline inside Workspace now (Repository.vue
-      // is still used as the embedded component; only the standalone route
-      // is retired).
+      // Workspace embeds DocDetail.vue for the focused-doc view; the
+      // original Repository.vue component has been removed.
       path: '/repository',
       redirect: (to) => ({ path: '/workspace', query: to.query }),
     },

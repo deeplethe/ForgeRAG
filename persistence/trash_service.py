@@ -19,9 +19,10 @@ from .folder_service import (
     TRASH_PATH,
     FolderService,
     join_path,
+    parent_of,
     unique_document_path,
 )
-from .models import AuditLogRow, Document, Folder
+from .models import AuditLogRow, ChunkRow, Document, Folder
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +84,73 @@ class TrashService:
                 items.append(_doc_to_trash_item(d))
         return {"items": items, "count": len(items)}
 
+    # ── Soft-delete (single document) ──────────────────────────────
+
+    def move_document_to_trash(self, doc_id: str) -> dict:
+        """Send a single document into /__trash__.
+
+        Path-based, Windows-style: stash ``original_path`` in metadata so
+        ``restore`` can rebuild the original parent chain even if the
+        folder was permanently deleted in the meantime. Vector / KG /
+        chunk rows stay in place — retrieval already filters trash by
+        ``Document.path LIKE '/__trash__/%'`` (see retrieval.pipeline),
+        and the nightly auto-purge handles the eventual cleanup.
+
+        Idempotent: a doc already in trash is returned unchanged.
+        """
+        from datetime import datetime as _dt
+
+        from sqlalchemy import update
+
+        with self.store.transaction() as sess:
+            doc = sess.get(Document, doc_id)
+            if doc is None:
+                return {"doc_id": doc_id, "error": "not found"}
+            if _doc_in_trash(doc):
+                return {"doc_id": doc_id, "path": doc.path, "already_trashed": True}
+
+            original_path = doc.path
+            original_filename = doc.filename or original_path.rsplit("/", 1)[-1]
+
+            trash_folder = sess.get(Folder, TRASH_FOLDER_ID)
+            ts = _dt.utcnow().strftime("%Y%m%dT%H%M%S")
+            trash_filename = f"{ts}_{original_filename}"
+            new_path = unique_document_path(sess, trash_folder, trash_filename)
+
+            doc.folder_id = TRASH_FOLDER_ID
+            doc.path = new_path
+            doc.trashed_metadata = {
+                "original_path": original_path,
+                "trashed_at": _dt.utcnow().isoformat(),
+                "trashed_by": self.actor_id,
+            }
+
+            # Mirror path into chunks so PG-side scope queries that filter
+            # by ChunkRow.path stay in sync. Retrieval's trashed-doc filter
+            # uses Document.path so this is belt-and-suspenders, but the
+            # path mirror is a documented invariant elsewhere.
+            sess.execute(update(ChunkRow).where(ChunkRow.doc_id == doc_id).values(path=new_path))
+
+            sess.add(
+                AuditLogRow(
+                    actor_id=self.actor_id,
+                    action="document.trash",
+                    target_type="document",
+                    target_id=doc_id,
+                    details={"original_path": original_path, "new_path": new_path},
+                )
+            )
+
+        # BM25 rebuild so the trashed doc disappears from keyword hits
+        # without waiting for the next periodic refresh.
+        try:
+            if hasattr(self.state, "refresh_bm25"):
+                self.state.refresh_bm25()
+        except Exception:
+            log.warning("post-trash bm25 refresh failed for %s", doc_id)
+
+        return {"doc_id": doc_id, "path": new_path}
+
     # ── Restore ────────────────────────────────────────────────────
 
     def restore(
@@ -107,16 +175,33 @@ class TrashService:
                     errors.append({"doc_id": doc_id, "error": "not in trash"})
                     continue
                 meta = doc.trashed_metadata or {}
-                original_folder_id = meta.get("original_folder_id") or ROOT_FOLDER_ID
-                target_folder = sess.get(Folder, original_folder_id)
-                if target_folder is None or _folder_in_trash(target_folder):
-                    target_folder = sess.get(Folder, ROOT_FOLDER_ID)
+                original_path = meta.get("original_path") or ""
 
-                filename = doc.filename or doc.path.rsplit("/", 1)[-1]
-                new_path = unique_document_path(sess, target_folder, filename)
+                # Windows Recycle Bin semantics: rebuild the original
+                # parent chain if it's missing. Folder rename / move
+                # produces a "two-folder" outcome — same as Windows.
+                # Falls back to root only when ``original_path`` is
+                # missing (legacy rows trashed before path was stored).
+                if original_path:
+                    parent_path = parent_of(original_path)
+                    target_folder = svc.ensure_path(parent_path)
+                    original_filename = original_path.rsplit("/", 1)[-1] or doc.filename
+                else:
+                    target_folder = sess.get(Folder, ROOT_FOLDER_ID)
+                    original_filename = doc.filename or doc.path.rsplit("/", 1)[-1]
+
+                new_path = unique_document_path(sess, target_folder, original_filename)
                 doc.folder_id = target_folder.folder_id
                 doc.path = new_path
+                doc.filename = original_filename
                 doc.trashed_metadata = None
+
+                # Mirror path back into chunks to keep ChunkRow.path
+                # consistent with Document.path for scope queries.
+                from sqlalchemy import update as _update
+
+                sess.execute(_update(ChunkRow).where(ChunkRow.doc_id == doc_id).values(path=new_path))
+
                 restored.append({"doc_id": doc_id, "path": new_path})
                 sess.add(
                     AuditLogRow(
@@ -213,11 +298,24 @@ class TrashService:
         purge_doc_ids = sorted(set(purge_doc_ids))
         purge_folder_ids = sorted(set(purge_folder_ids))
 
+        # Snapshot per-doc metadata BEFORE deletion: we need
+        # ``active_parse_version`` to find chunk_ids for vector cleanup
+        # (previous code hardcoded ``1`` which silently missed any doc
+        # that had been reparsed) and ``file_id`` for orphan-blob cleanup.
+        doc_meta: dict[str, dict] = {}
+        for did in purge_doc_ids:
+            row = self.store.get_document(did) or {}
+            doc_meta[did] = {
+                "active_parse_version": row.get("active_parse_version") or 1,
+                "file_id": row.get("file_id"),
+            }
+
         # Perform per-doc cleanup (outside the relational transaction so
         # failures don't block each other). Order: vector → KG → relational.
         for did in purge_doc_ids:
+            pv = doc_meta[did]["active_parse_version"]
             try:
-                chunk_ids = [c["chunk_id"] for c in self.store.get_chunks(did, 1)]
+                chunk_ids = [c["chunk_id"] for c in self.store.get_chunks(did, pv)]
                 if chunk_ids and hasattr(self.state, "vector"):
                     self.state.vector.delete_chunks(chunk_ids)
             except Exception as e:
@@ -231,6 +329,22 @@ class TrashService:
                 self.store.delete_document(did)
             except Exception as e:
                 log.warning("relational delete failed for %s: %s", did, e)
+
+        # File-blob cleanup: drop the underlying file row only when no
+        # other document still references it (multiple parse_versions
+        # of the same upload share a file_id).
+        purged_file_ids = {m["file_id"] for m in doc_meta.values() if m.get("file_id")}
+        if purged_file_ids:
+            try:
+                surviving = self.store.list_documents(limit=10000)
+                still_referenced = {d.get("file_id") for d in surviving if d.get("file_id")}
+                for fid in purged_file_ids - still_referenced:
+                    try:
+                        self.store.delete_file(fid)
+                    except Exception as e:
+                        log.warning("file cleanup failed for %s: %s", fid, e)
+            except Exception as e:
+                log.warning("file orphan-scan failed: %s", e)
 
         # Drop trashed folders (only after their contents are gone)
         with self.store.transaction() as sess:

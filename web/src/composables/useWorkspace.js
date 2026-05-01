@@ -117,12 +117,23 @@ export function useWorkspace() {
     }
   }
 
+  // Generation counter — every ``loadContents`` call captures the
+  // current value at the start; on resolve it only commits its results
+  // if the captured value is still ``_loadGen.value``. Any newer call
+  // bumps ``_loadGen``, which silently invalidates the older one's
+  // results so a stale response from a slower folder fetch can't
+  // overwrite a faster click. No need to actually abort the in-flight
+  // request — the response just gets dropped on arrival.
+  let _loadGen = 0
+
   async function loadContents(path = currentPath.value) {
+    const gen = ++_loadGen
     contentsLoading.value = true
     try {
       // Child folders via the tree endpoint (depth=1 = direct children)
       const node = await getFolderTree(path, 1, false)
-      childFolders.value = (node?.children || []).filter(c => !c.is_system || c.path === path)
+      if (gen !== _loadGen) return    // user navigated away mid-flight
+      const folders = (node?.children || []).filter(c => !c.is_system || c.path === path)
       // Direct-child documents via server-side path_filter — paginated,
       // no more "pull 500 and filter client-side" hack.
       const docs = await listDocuments({
@@ -131,13 +142,19 @@ export function useWorkspace() {
         limit: 200,
         offset: 0,
       })
+      if (gen !== _loadGen) return
+      childFolders.value = folders
       childDocuments.value = docs?.items || []
     } catch (e) {
+      if (gen !== _loadGen) return
       console.error('loadContents failed:', e)
       childFolders.value = []
       childDocuments.value = []
     } finally {
-      contentsLoading.value = false
+      // Only the latest generation gets to flip the loading flag off;
+      // older generations finishing late shouldn't claim "done" while
+      // the newer one is still fetching.
+      if (gen === _loadGen) contentsLoading.value = false
     }
   }
 
@@ -147,6 +164,12 @@ export function useWorkspace() {
     if (!force && path === currentPath.value && !contentsLoading.value) return
     currentPath.value = path
     clearSelection()
+    // Wipe old contents BEFORE the await so the file grid / list don't
+    // linger on the previous folder's data while the new fetch is in
+    // flight.
+    childFolders.value = []
+    childDocuments.value = []
+    contentsLoading.value = true
     await loadContents(path)
   }
 

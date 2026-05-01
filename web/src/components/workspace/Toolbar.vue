@@ -20,15 +20,17 @@
          sense while the user is looking at deleted items. -->
     <template v-if="!viewingTrash">
       <button class="toolbar-btn" @click="$emit('new-folder')" title="New folder (Ctrl+N)">
-        📁 <span>New folder</span>
+        <FolderPlus :size="14" :stroke-width="1.5" />
+        <span>New folder</span>
       </button>
       <button class="toolbar-btn" @click="$emit('upload')" title="Upload file">
-        ⬆ <span>Upload</span>
+        <Upload :size="14" :stroke-width="1.5" />
+        <span>Upload</span>
       </button>
 
       <!-- Search — filters the current folder's children -->
       <div class="search-wrap ml-2">
-        <MagnifyingGlassIcon class="search-icon" />
+        <Search class="search-icon" :size="14" :stroke-width="1.5" />
         <input
           :value="search"
           @input="$emit('update:search', $event.target.value)"
@@ -40,7 +42,7 @@
           class="search-clear"
           @click="$emit('update:search', '')"
           title="Clear"
-        >✕</button>
+        ><X :size="12" :stroke-width="1.5" /></button>
       </div>
 
       <!-- View mode switcher -->
@@ -50,13 +52,13 @@
           :class="{ 'view-btn--active': viewMode === 'grid' }"
           @click="$emit('set-view', 'grid')"
           title="Grid view (Ctrl+1)"
-        >⊞</button>
+        ><LayoutGrid :size="14" :stroke-width="1.5" /></button>
         <button
           class="view-btn"
           :class="{ 'view-btn--active': viewMode === 'list' }"
           @click="$emit('set-view', 'list')"
           title="List view (Ctrl+2)"
-        >☰</button>
+        ><List :size="14" :stroke-width="1.5" /></button>
       </div>
 
       <!-- Trash shortcut -->
@@ -65,7 +67,8 @@
         @click="$emit('show-trash')"
         title="Recycle bin"
       >
-        🗑 <span v-if="trashCount">{{ trashCount }}</span>
+        <Trash2 :size="14" :stroke-width="1.5" />
+        <span v-if="trashCount">{{ trashCount }}</span>
       </button>
     </template>
 
@@ -82,29 +85,33 @@
       </span>
       <button
         class="toolbar-btn toolbar-btn--danger ml-2"
-        :disabled="!trashCount"
+        :disabled="!trashCount || emptyingTrash"
         @click="$emit('empty-trash')"
         title="Permanently delete every item in the recycle bin"
-      >Empty bin</button>
+      >{{ emptyingTrash ? 'Emptying…' : 'Empty bin' }}</button>
       <button
         class="toolbar-btn ml-2"
         @click="$emit('exit-trash')"
         title="Back to workspace"
       >
-        <ArrowLeftIcon class="w-3.5 h-3.5" />
+        <ArrowLeft class="w-3.5 h-3.5" :stroke-width="1.5" />
       </button>
     </template>
   </div>
 </template>
 
 <script setup>
-import { ArrowLeftIcon, MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
+import { ArrowLeft, FolderPlus, LayoutGrid, List, Search, Trash2, Upload, X } from 'lucide-vue-next'
 
 defineProps({
   viewMode: { type: String, required: true },
   trashCount: { type: Number, default: 0 },
   search: { type: String, default: '' },
   viewingTrash: { type: Boolean, default: false },
+  // While Empty bin is in flight (slow vector + KG + relational purge),
+  // the parent flips this on; the button disables to prevent a double
+  // fire and the label flips to communicate progress.
+  emptyingTrash: { type: Boolean, default: false },
 })
 defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 'empty-trash', 'exit-trash'])
 </script>

@@ -24,7 +24,7 @@
 -->
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { ArrowLeftIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
 import {
   blockImageUrl,
   fileDownloadUrl,
@@ -107,6 +107,34 @@ const breadcrumb = computed(() => {
   const path = doc.value?.path || ''
   return path.split('/').filter(Boolean)
 })
+
+// Path of the doc's parent folder — the "Back" arrow targets this so
+// closing the detail returns the user to where they came from rather
+// than wherever the workspace was last left.
+const parentFolderPath = computed(() => {
+  const p = doc.value?.path || ''
+  if (!p || !p.includes('/')) return '/'
+  const parent = p.slice(0, p.lastIndexOf('/'))
+  return parent || '/'
+})
+
+// Resolve the path of a clicked breadcrumb segment.
+//   ``i = 0`` is the root ``/``; we render that separately.
+//   ``i >= 1`` are filesystem segments. Folder segments (everything
+//   except the final filename) navigate; the filename segment is
+//   inert (last crumb).
+function crumbPathAtIndex(i) {
+  const segs = breadcrumb.value
+  if (i < 0) return '/'
+  if (i >= segs.length - 1) return null  // filename → no-op
+  return '/' + segs.slice(0, i + 1).join('/')
+}
+
+function onCrumbClick(i) {
+  const target = crumbPathAtIndex(i)
+  if (target == null) return       // last crumb (filename) is inert
+  emit('close', { toPath: target })
+}
 
 const fmtSize = (n) => {
   if (!n) return ''
@@ -385,8 +413,8 @@ function scrollToChunk(chunkId) {
 
 async function onPdfClick({ page_no, x, y }) {
   // Hit-test against the block list cached at load time. Bbox is in
-  // PDF coordinates (origin bottom-left). Same logic Repository.vue
-  // has — kept inline (no shared util) until a third caller appears.
+  // PDF coordinates (origin bottom-left). Kept inline (no shared util)
+  // until a second caller appears.
   if (!allBlocks.value.length || !doc.value) return
   let hit = null
   for (const b of allBlocks.value) {
@@ -462,16 +490,20 @@ watch(() => props.docId, loadAll, { immediate: true })
          TOP BAR — same shape as Workspace toolbar / KG topbar
          ═══════════════════════════════════════════════════════════ -->
     <header class="doc-detail__top">
-      <!-- Breadcrumb. Clicking ``/`` exits to workspace root; the
-           filename segment is just a label (last crumb). -->
+      <!-- Breadcrumb. Clicking ``/`` exits to workspace root; folder
+           segments exit and navigate the workspace to that folder; the
+           filename segment is the doc itself, inert. ``close`` carries
+           an optional ``toPath`` so the workspace can land the user
+           back at the right folder instead of wherever they last were. -->
       <nav class="doc-detail__crumbs">
-        <button class="crumb" @click="emit('close')">/</button>
+        <button class="crumb" @click="emit('close', { toPath: '/' })">/</button>
         <template v-for="(seg, i) in breadcrumb" :key="i">
           <span class="crumb-sep">›</span>
           <button
             class="crumb"
             :class="{ 'crumb--active': i === breadcrumb.length - 1 }"
-            @click="emit('close')"
+            :disabled="i === breadcrumb.length - 1"
+            @click="onCrumbClick(i)"
           >{{ seg }}</button>
         </template>
       </nav>
@@ -509,18 +541,19 @@ watch(() => props.docId, loadAll, { immediate: true })
           @click="onReparse"
           :title="inFlight ? 'Processing — please wait' : 'Reparse this document'"
         >
-          <ArrowPathIcon
+          <RefreshCw
             class="w-3.5 h-3.5"
             :class="{ 'animate-spin': inFlight }"
+            :stroke-width="1.5"
           />
           <span>{{ inFlight ? 'Processing' : 'Reparse' }}</span>
         </button>
         <button
           class="toolbar-btn ml-2"
-          @click="emit('close')"
-          title="Back to workspace"
+          @click="emit('close', { toPath: parentFolderPath })"
+          :title="`Back to ${parentFolderPath}`"
         >
-          <ArrowLeftIcon class="w-3.5 h-3.5" />
+          <ArrowLeft class="w-3.5 h-3.5" :stroke-width="1.5" />
         </button>
       </div>
     </header>
@@ -666,9 +699,8 @@ watch(() => props.docId, loadAll, { immediate: true })
                 :class="{ 'chunk-row__body--clamp': !expandedChunks[c.chunk_id] }"
               >{{ c.content }}</div>
 
-              <!-- Inline image preview when expanded. Same
-                   ``blockImageUrl`` endpoint Repository.vue uses
-                   for the standalone view. -->
+              <!-- Inline image preview when expanded. Uses the
+                   ``blockImageUrl`` endpoint to fetch the image crop. -->
               <div
                 v-if="expandedChunks[c.chunk_id] && c.content_type === 'image'"
                 class="chunk-row__figs"
@@ -772,6 +804,9 @@ watch(() => props.docId, loadAll, { immediate: true })
 .chip-text { color: var(--color-t3); }
 .chip-status--ready { color: #10b981; }
 .chip-status--error { color: #f43f5e; }
+/* In-flight stages — amber so they pop against the page chrome and
+   match the workspace file grid's pending indicators. ``--color-warn-fg``
+   is theme-adaptive (amber-400 dark / amber-700 light). */
 .chip-status--pending,
 .chip-status--processing,
 .chip-status--parsing,
@@ -779,7 +814,7 @@ watch(() => props.docId, loadAll, { immediate: true })
 .chip-status--structuring,
 .chip-status--chunking,
 .chip-status--embedding,
-.chip-status--building-graph { color: #f59e0b; }
+.chip-status--building-graph { color: var(--color-warn-fg); }
 
 /* In-flight stage indicator: pulsing amber dot before the label so
    the user perceives liveness even when the same word stays for a
@@ -816,7 +851,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: var(--color-warn-fg);
   animation: chip-pulse 1.4s ease-in-out infinite;
   flex-shrink: 0;
 }

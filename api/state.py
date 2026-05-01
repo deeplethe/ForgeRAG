@@ -210,13 +210,34 @@ class AppState:
             kg_extraction_cfg=cfg.retrieval.kg_extraction,
         )
 
+        # SQLite is a single-writer engine; even with WAL + busy_timeout
+        # we observed ``database is locked`` failures under N-way parallel
+        # ingestion (each worker fires multiple status / chunk / block
+        # writes per pipeline stage, and 12 workers easily stack past the
+        # 30s busy window). Clamp both pools to a single worker when the
+        # relational backend is SQLite — Postgres keeps the configured
+        # parallelism. This trades wall-clock for reliability; users who
+        # want concurrency should switch to the PG backend.
+        is_sqlite = cfg.persistence.relational.backend == "sqlite"
+        ingest_workers = 1 if is_sqlite else cfg.parser.ingest_max_workers
+        kg_workers = 1 if is_sqlite else cfg.parser.kg_max_workers
+        if is_sqlite and (
+            cfg.parser.ingest_max_workers > 1 or cfg.parser.kg_max_workers > 1
+        ):
+            log.info(
+                "SQLite backend: clamping ingest workers %d→%d, KG workers %d→%d "
+                "(switch to backend=postgres for parallel ingestion)",
+                cfg.parser.ingest_max_workers, ingest_workers,
+                cfg.parser.kg_max_workers, kg_workers,
+            )
+
         # KG-extraction worker pool — separate from the parse/embed pool
         # so long-running KG jobs (minutes per doc) can't starve incoming
         # parse jobs. Created before ingest_queue so we can wire its
         # submit callback into the pipeline.
         self.kg_queue = KGQueue(
             self.ingestion.run_kg_for_doc,
-            max_workers=cfg.parser.kg_max_workers,
+            max_workers=kg_workers,
         )
         self.kg_queue.start()
         self.ingestion.kg_submit = self.kg_queue.submit
@@ -224,7 +245,7 @@ class AppState:
         # Background parse/embed queue
         self.ingest_queue = IngestionQueue(
             self.ingestion,
-            max_workers=cfg.parser.ingest_max_workers,
+            max_workers=ingest_workers,
             on_complete=self._on_ingest_complete,
         )
         self.ingest_queue.start()

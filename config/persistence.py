@@ -52,8 +52,16 @@ class PostgresConfig(BaseModel):
 
 class SQLiteConfig(BaseModel):
     path: str = "./storage/forgerag.db"
-    # sqlite3 connection kwargs
-    timeout: float = 10.0
+    # sqlite3 connection kwargs.
+    # ``timeout`` is the SQLite busy_timeout (seconds) — how long a
+    # waiting writer sleeps before giving up with "database is locked".
+    # 30s is generous but matches the worst-case contention we observed
+    # under 12-way parallel ingestion (each worker commits status
+    # updates after parse / structure / chunk / embed / KG, and SQLite
+    # serializes writers via WAL; with N workers you can briefly stack
+    # N×commit-time before the queue drains). Bumping to 30 absorbed
+    # those bursts without any visible queueing on the user side.
+    timeout: float = 30.0
     # WAL mode gives much better concurrency
     journal_mode: Literal["delete", "truncate", "wal", "memory"] = "wal"
     synchronous: Literal["off", "normal", "full"] = "normal"

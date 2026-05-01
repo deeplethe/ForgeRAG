@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import UserMenu from './UserMenu.vue'
+import Skeleton from './Skeleton.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -14,6 +15,13 @@ const version = import.meta.env.VITE_APP_VERSION || '0.2.3'
 
 const props = defineProps({
   conversations: Array,
+  conversationsLoading: { type: Boolean, default: false },
+  // Set<string> of conversation_ids currently being deleted — those
+  // rows hide their trash button to prevent a double-fire while the
+  // optimistic removal is in flight (the row itself disappears from
+  // ``conversations`` immediately, but Set membership outlives any
+  // race where the row is briefly re-added on rollback).
+  deletingConvs: { type: Object, default: () => new Set() },
   currentConvId: String,
   benchmarkRunning: { type: Boolean, default: false },
   me: { type: Object, default: null },
@@ -122,6 +130,17 @@ function isTabActive(tab) {
       >{{ t('sidebar.new_chat') }}</button>
     </div>
     <div class="flex-1 overflow-y-auto px-3 space-y-px">
+      <!-- Skeleton on first load — same Skeleton primitive + shimmer
+           pattern as the workspace folder tree, so visual language is
+           consistent across the app. Hidden once we have data;
+           refreshes after a user action don't replay it (parent only
+           flips ``conversationsLoading`` on the very first fetch). -->
+      <div v-if="conversationsLoading && !(conversations && conversations.length)" class="conv-skel-list">
+        <Skeleton
+          v-for="(w, i) in [80, 60, 90, 50, 75, 55]" :key="i"
+          block :w="w + '%'" :h="14" class="conv-skel-row"
+        />
+      </div>
       <div
         v-for="c in conversations" :key="c.conversation_id"
         class="group flex items-center px-3 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
@@ -132,6 +151,7 @@ function isTabActive(tab) {
       >
         <span class="flex-1 truncate">{{ c.title || t('sidebar.untitled') }}</span>
         <button
+          v-if="!deletingConvs.has(c.conversation_id)"
           class="opacity-0 group-hover:opacity-40 hover:!opacity-100 text-[10px] ml-1"
           @click.stop="emit('delete-conv', c.conversation_id)"
         >✕</button>
@@ -146,3 +166,19 @@ function isTabActive(tab) {
     </div>
   </nav>
 </template>
+
+<style scoped>
+/* Conversation-list skeleton — uses the shared <Skeleton> primitive
+   (same shimmer animation as the workspace FolderTree). Vertical rhythm
+   mirrors a real conversation row's px-3 py-2 padding so the layout
+   doesn't reflow when the data lands. */
+.conv-skel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 12px 4px;
+}
+.conv-skel-row {
+  border-radius: 4px;
+}
+</style>

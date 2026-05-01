@@ -4,7 +4,10 @@
       class="tree-row"
       :class="{ 'tree-row--active': node.path === currentPath, 'tree-row--drop': isDragOver }"
       :style="{ paddingLeft: (depth * 12 + 4) + 'px' }"
+      :draggable="!node.is_system"
       @click.stop="onClick"
+      @contextmenu.prevent.stop="onContextMenu"
+      @dragstart="onDragStart"
       @dragover.prevent="onDragOver"
       @dragleave="isDragOver = false"
       @drop.prevent="onDrop"
@@ -29,6 +32,7 @@
         @toggle="$emit('toggle', $event)"
         @click-folder="$emit('click-folder', $event)"
         @drop-into="$emit('drop-into', $event)"
+        @context-menu="$emit('context-menu', $event)"
       />
     </div>
   </div>
@@ -45,7 +49,7 @@ const props = defineProps({
   expanded: { type: Set, required: true },
   depth: { type: Number, default: 0 },
 })
-const emit = defineEmits(['toggle', 'click-folder', 'drop-into'])
+const emit = defineEmits(['toggle', 'click-folder', 'drop-into', 'context-menu'])
 
 const isExpanded = computed(() => props.expanded.has(props.node.path))
 // Guard: children may be undefined / null / non-array from a malformed response
@@ -75,6 +79,40 @@ function onClick() {
   emit('click-folder', props.node.path)
 }
 
+function onDragStart(e) {
+  // Mirror FileGrid/FileList payload shape so the existing drop handlers
+  // (sidebar, folder rows, file lists) accept tree drags transparently —
+  // the consumer reads ``items`` and doesn't care about the source.
+  const item = {
+    type: 'folder',
+    folder_id: props.node.folder_id,
+    path: props.node.path,
+    name: props.node.name,
+  }
+  const key = 'f:' + item.folder_id
+  const payload = JSON.stringify({ items: [item], keys: [key] })
+  e.dataTransfer.setData('application/x-forgerag-item', payload)
+  e.dataTransfer.effectAllowed = 'move'
+}
+
+function onContextMenu(e) {
+  // Bubble up an item-shaped payload identical to what FileGrid/FileList
+  // emit on right-click, plus ``source: 'tree'`` so Workspace can drop
+  // operations that need inline UI (Rename) — tree rows have no editable
+  // input slot, so triggering Rename from here would silently no-op.
+  emit('context-menu', {
+    x: e.clientX,
+    y: e.clientY,
+    source: 'tree',
+    item: {
+      type: 'folder',
+      folder_id: props.node.folder_id,
+      path: props.node.path,
+      name: props.node.name,
+    },
+  })
+}
+
 function onDragOver(e) {
   // Accept file-manager items (JSON payload with type+path)
   if (e.dataTransfer.types.includes('application/x-forgerag-item')) {
@@ -87,14 +125,20 @@ function onDrop(e) {
   isDragOver.value = false
   const raw = e.dataTransfer.getData('application/x-forgerag-item')
   if (!raw) return
-  let items
-  try { items = JSON.parse(raw) } catch { return }
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { return }
+  // Unwrap the inner array — the dataTransfer envelope is
+  // ``{ items: [...], keys: [...] }`` (mirroring FileGrid/FileList) but
+  // the consumer (``doDropMove``) expects a flat array of items. Was
+  // emitting the whole envelope, which crashed downstream as soon as
+  // sidebar→sidebar drags started flowing through here.
+  const payload = Array.isArray(parsed?.items) ? parsed.items : []
+  if (!payload.length) return
   // Reject the obvious self-drop; the server catches subtree-into-self too
   // but we save a round-trip for the most common mistake.
   const targetPath = props.node.path
-  const payload = Array.isArray(items?.items) ? items.items : []
   if (payload.some(it => it?.type === 'folder' && it?.path === targetPath)) return
-  emit('drop-into', { items, targetPath })
+  emit('drop-into', { items: payload, targetPath })
 }
 </script>
 
@@ -122,7 +166,17 @@ function onDrop(e) {
 .tree-row--active:hover {
   background: color-mix(in srgb, var(--color-bg-selected) 75%, var(--color-bg2));
 }
-.tree-row--drop { outline: 1.5px dashed var(--color-brand); outline-offset: -2px; }
+/* Drop-target highlight — Vercel-style neutral white outline + tint.
+   Brand blue is reserved for selection / primary CTAs in this design
+   system, so using it for drag-over confused with the active row. The
+   white pair reads as a deferential "this row will accept the drop"
+   without competing for attention. */
+.tree-row--drop {
+  background: color-mix(in srgb, var(--color-t1) 10%, transparent);
+  outline: 1px solid var(--color-t1);
+  outline-offset: -1px;
+  color: var(--color-t1);
+}
 .tree-toggle {
   display: inline-block;
   width: 10px;
