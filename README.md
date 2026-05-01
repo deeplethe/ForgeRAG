@@ -2,253 +2,240 @@
   <img src="web/public/text_logo_padding.png" alt="ForgeRAG" height="64">
 </p>
 
-<h2 align="center">Production-Ready RAG with Structure-Aware Reasoning</h2>
+<h3 align="center">RAG that thinks like a domain expert.</h3>
 
 <p align="center">
-  <strong>LLM Tree Reasoning</strong> ◦ <strong>Knowledge Graph Multi-Hop</strong> ◦ <strong>Pixel-Precise Citations</strong> ◦ <strong>Unmatched Performance</strong>
+  Most RAG retrieves chunks. ForgeRAG <strong>navigates document trees</strong>, <strong>traverses knowledge graphs</strong>, and <strong>cites the exact pixels</strong> behind every claim.
 </p>
 
 <p align="center">
   <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.3-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://github.com/deeplethe/ForgeRAG"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge" alt="Stars"></a>
+  <a href="https://github.com/deeplethe/ForgeRAG/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>
-  <a href="docs/"><img src="https://img.shields.io/badge/Docs-docs%2F-blue?style=for-the-badge" alt="Docs"></a>
-  <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-Join-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-join-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
-  <a href="#technical-approach">Technical Approach</a> •
-  <a href="docs/">Docs</a> •
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-why-forgerag">Why</a> ·
+  <a href="#-how-it-works">How</a> ·
+  <a href="#-benchmark">Benchmark</a> ·
+  <a href="docs/">Docs</a> ·
   <a href="./README_CN.md">中文</a>
 </p>
 
 ---
 
-<p align="center"><img src="docs/images/architecture.png" alt="ForgeRAG Architecture" width="700"></p>
+## ✨ Why ForgeRAG
 
-### The Problem with Existing Approaches
+Existing RAG systems each fail in their own way:
 
-Many approaches have been proposed to go beyond naive chunk-and-embed RAG, but each has fundamental limitations:
+| Approach | Strength | Where it breaks |
+|---|---|---|
+| **Naive embedding** RAG | Fast semantic search | Similarity ≠ relevance — misses exact matches and section context |
+| **GraphRAG** (Microsoft) | Cross-doc entity links | Concept skeleton without source-text grounding |
+| **LightRAG** (HKUDS) | Dual-level graph retrieval | Answers synthesized from KG summaries — high hallucination risk |
+| **PageIndex** | Tree reasoning, single-doc accuracy | Latency scales linearly with doc count — not production |
 
-| Approach | Strength | Limitation |
-|----------|----------|------------|
-| **Embedding-based** (e.g. naive RAG) | Fast semantic search | Similarity ≠ relevance; misses exact-match and structural context |
-| **Graph-based** (e.g. GraphRAG) | Cross-document entity linking | Concept skeleton without source-text evidence; extraction loses details |
-| **Hybrid graph** (e.g. LightRAG) | Dual-level retrieval (local + global) | Answers synthesized from KG summaries, not grounded in original text; higher hallucination risk |
-| **Reasoning-based** (e.g. PageIndex) | High single-doc accuracy | Query latency scales linearly with document count; not production-ready |
+**ForgeRAG fuses all four**: BM25 + vector for fast pre-filter, LLM tree navigation for structural reasoning, knowledge graph for multi-hop, RRF fusion for the merge — every claim grounded back to a **page + bbox** the user can click and verify.
 
-### Our Approach: Think Like a Domain Expert
+---
 
-When a domain expert encounters a question, they don't scan every page — they instantly recall where relevant information lives, draw on their mental map of how concepts connect, then synthesize a grounded answer from multiple sources. ForgeRAG mirrors this workflow: **BM25 + vector search** surfaces candidate regions in milliseconds, a **knowledge graph** provides the conceptual connections across documents, and **LLM tree navigation** reasons over document structure to pinpoint the exact sections that matter — all fused into a single answer with traceable citations.
+## 🧠 How it works
 
-To handle **multi-hop questions** (e.g. *"Which suppliers of Apple also supply Samsung?"*), we introduce a **knowledge graph** path that extracts entities and relations at ingestion time, then runs dual-level retrieval at query time: **local** (query entities → neighborhood traversal) and **global** (keywords → fuzzy / cross-lingual entity match via name embeddings), plus **relation-semantic** search over relation-description embeddings. Inspired by LightRAG's context assembly, the KG path injects **synthesized entity and relation descriptions** directly into the generation prompt — giving the LLM a "distilled knowledge layer" on top of raw text chunks.
+```mermaid
+flowchart LR
+    Q([❓ Question]) --> QU[Query Understanding]
+    QU --> BM25[🔤 BM25]
+    QU --> VEC[📐 Vector]
+    QU --> KG[🕸️ Knowledge Graph<br/>local · global · relation]
+    QU --> TREE[🌳 LLM Tree Nav<br/>verify · expand · sibling-pull]
+    BM25 --> M((RRF<br/>Merge))
+    VEC --> M
+    KG --> M
+    TREE --> M
+    M --> RR[🔁 Rerank]
+    RR --> ANS[💬 Answer<br/>+ pixel-precise citations]
+    ANS --> A([📝 Page + bbox])
 
-### Benchmark: ForgeRAG vs LightRAG
+    style Q fill:#0e1116,stroke:#3291ff,color:#fff
+    style A fill:#0e1116,stroke:#10b981,color:#fff
+    style M fill:#1f1f1f,stroke:#fbbf24,color:#fbbf24
+```
 
-We evaluate against [LightRAG](https://github.com/HKUDS/LightRAG) using the **UltraDomain** benchmark methodology (LLM-as-judge pairwise comparison). Win rates shown as **ForgeRAG% / LightRAG%**.
+**Two reasoning lanes**, fused. BM25 + vector handles the fast 80% (literal + semantic recall). The KG + tree-nav lanes handle the hard 20% — multi-hop questions like _"Which suppliers of Apple also supply Samsung?"_ — by traversing entity-relation neighborhoods (KG) and verifying section relevance via LLM-driven tree walks (PageIndex-style, but reused over a tree the LLM only builds **once at ingestion**, not per query).
 
-> 🚧 **More comprehensive benchmarks against additional RAG systems, domains, and metrics are in progress.**
+A retrieval trace UI shows every path's contribution per query — see what BM25 caught, what the KG added, what the rerank dropped.
 
-| Domain | Comprehensiveness | Diversity | Empowerment | Overall |
-|--------|:-----------------:|:---------:|:-----------:|:-------:|
-| **Agriculture** | **58.6** / 41.4 | 47.1 / **52.9** | **52.9** / 47.1 | **56.4** / 43.6 |
-| **CS** | **55.6** / 44.4 | 48.4 / **51.6** | **54.0** / 46.0 | **54.8** / 45.2 |
-| **Legal** | **57.0** / 43.0 | 46.5 / **53.5** | **53.5** / 46.5 | **55.6** / 44.4 |
-| **Mix** | **56.3** / 43.7 | 47.8 / **52.2** | **54.3** / 45.7 | **55.1** / 44.9 |
+---
 
-<sub>Judge: qwen3-max · [Reproduce](scripts/compare_bench.py)</sub>
+## 📸 What you get
 
-> **Note on Faithfulness:** The UltraDomain benchmark evaluates Comprehensiveness, Diversity, and Empowerment — but not factual accuracy. ForgeRAG provides pixel-precise `[c_N]` citations for every claim, enabling verification against source text. LightRAG synthesizes answers from knowledge graph summaries without traceable citations, which scores well on breadth but carries higher hallucination risk.
+> **Screenshots:** see [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md) for the current set. Drop new ones into `docs/screenshots/` to refresh — no other file changes needed.
 
-## Features
+| | |
+|---|---|
+| **Workspace** | File-manager UX with drag-and-drop, recycle bin, Windows-style restore. Live ingestion status per file (parsing → embedding → building graph). |
+| **Chat** | Streaming answers with `[c_N]` citations. Click any citation → opens the source PDF at the exact bbox. |
+| **Document Detail** | 3-pane: tree navigator + PDF viewer + chunks/KG-mini. Hover a chunk → highlights its source region. |
+| **Knowledge Graph** | Sigma-rendered force-directed view. Filter by document, search entities, click an edge to see the supporting chunk. |
 
-<p align="center"><img src="docs/images/chat_demo.gif" alt="ForgeRAG Demo" width="700"></p>
+---
 
-Compared to heavier platforms like RAGFlow, ForgeRAG focuses on **core pipeline design** — a lean retrieval-answering chain with composable building blocks.
-
-🔍 **Dual-reasoning retrieval** · BM25 + vector pre-filter → LLM tree nav + KG, fused via RRF
-
-📌 **Pixel-precise citations** · Every claim links to exact page + bounding box, click to highlight
-
-🔗 **Full retrieval tracing** · Inspect path scores, expansion decisions, and merge logic per query
-
-💬 **Multi-turn conversations** · Context-aware follow-ups with conversation history
-
-📄 **Multi-format ingestion** · PDF, DOCX, PPTX, XLSX, HTML, Markdown, TXT
-
-⚙️ **YAML-first config** · One file, one restart — no hidden runtime state
-
-🎛️ **Per-request overrides** · Toggle retrieval paths / top-ks / rerank per query via `QueryOverrides` (great for SDK + A/B)
-
-🏆 **Outperforms LightRAG** · 55.48% overall win rate on UltraDomain benchmark
-
-<details>
-<summary><strong><font size="4">📸 Screenshots</font></strong></summary>
-<br/>
-
-**Chat** · Structured answers with pixel-precise citations
-
-<img src="docs/screenshots/chat_sample.png" alt="Chat" width="700">
-
-**Ingestion** · Document processing pipeline with tree building
-
-<img src="docs/screenshots/ingest_demo.png" alt="Ingestion" width="700">
-
-**Knowledge Graph** · Entity-relation visualization
-
-<img src="docs/screenshots/kg_demo.png" alt="Knowledge Graph" width="700">
-
-</details>
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+ (for building the frontend)
-- An LLM API key (OpenAI, DeepSeek, or any LiteLLM-compatible provider)
-- Recommended: 4+ CPU cores, 8GB+ RAM (16GB+ for large documents with KG extraction)
-
-### Option A: Local Development
+## 🚀 Quick Start
 
 ```bash
 git clone https://github.com/deeplethe/ForgeRAG.git
 cd ForgeRAG
 
-# 1. Core Python dependencies (small — the heavy backend packages are
-#    installed lazily in step 3 based on what your config actually picks).
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 2. Frontend
 cd web && npm install && npm run build && cd ..
 
-# 3. Configure: interactive wizard generates forgerag.yaml AND auto-pip-installs
-#    the backend-specific deps your choices need (e.g. chromadb, neo4j, mineru).
-#    To re-sync deps after a manual yaml edit: python scripts/setup.py --sync-deps forgerag.yaml
-python scripts/setup.py
-
-# 4. Run — defaults to a single worker (safe with the wizard's default
-#    SQLite + ChromaDB-persistent + NetworkX backends).
-python main.py
+python scripts/setup.py    # interactive wizard: backends + LLM keys + auto-pip
+python main.py             # http://localhost:8000
 ```
 
-Open [http://localhost:8000](http://localhost:8000) — the web UI is served automatically.
+The setup wizard is bilingual (EN/中文), checkpointed (Ctrl+C resumable), and **only installs the backend deps your config picks** — don't memorize pip names per database.
 
-> **Note:** Document ingestion involves heavy LLM calls (tree building, KG extraction, embedding). For a responsive UI under concurrent ingestion, scale to multiple workers — but `--workers >1` requires multi-process-safe backends (PostgreSQL + Neo4j + a non-persistent ChromaDB / Qdrant / Milvus / Weaviate / pgvector). Starting with `--workers >1` against single-process backends (SQLite, NetworkX, persistent ChromaDB) exits with code 2 to avoid silent data corruption.
+> **Docker?** `python scripts/docker_setup.py && docker compose up -d` — PostgreSQL + pgvector + ForgeRAG, one command.
 
-### Option B: Docker Deployment
+> **Tip:** Enable [MinerU](https://github.com/opendatalab/MinerU) in the web Settings panel for a step-change in PDF parsing quality on tables, formulas, and complex layouts.
 
-```bash
-git clone https://github.com/deeplethe/ForgeRAG.git
-cd ForgeRAG
+---
 
-python scripts/docker_setup.py   # Interactive wizard: pick provider, set keys, done
-docker compose up -d             # PostgreSQL + pgvector + ForgeRAG, ready to go
+## 📊 Benchmark
+
+[UltraDomain](https://github.com/HKUDS/LightRAG) methodology · LLM-as-judge pairwise · win % shown as **ForgeRAG / LightRAG**:
+
+| Domain | Comprehensiveness | Diversity | Empowerment | **Overall** |
+|---|:---:|:---:|:---:|:---:|
+| Agriculture | **58.6** / 41.4 | 47.1 / **52.9** | **52.9** / 47.1 | **56.4** / 43.6 |
+| Computer Science | **55.6** / 44.4 | 48.4 / **51.6** | **54.0** / 46.0 | **54.8** / 45.2 |
+| Legal | **57.0** / 43.0 | 46.5 / **53.5** | **53.5** / 46.5 | **55.6** / 44.4 |
+| Mix | **56.3** / 43.7 | 47.8 / **52.2** | **54.3** / 45.7 | **55.1** / 44.9 |
+
+<sub>Judge: qwen3-max · Reproduce: [`scripts/compare_bench.py`](scripts/compare_bench.py) · ForgeRAG additionally provides verifiable `[c_N]` citations the benchmark doesn't score for.</sub>
+
+🚧 _More benchmarks (vs RAGFlow, GraphRAG, vanilla RAG, on more domains and metrics) in progress._
+
+---
+
+## 🏗️ Built on
+
+```mermaid
+flowchart TB
+    subgraph "Frontend (Vue 3)"
+        UI[Workspace · Chat · Knowledge Graph · DocDetail]
+    end
+    subgraph "Backend (FastAPI · Python 3.10+)"
+        API[REST + SSE]
+        ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
+        RET[Retrieval Pipeline<br/>BM25 · vector · KG · tree-nav · merge]
+        ANS[Answer Pipeline<br/>generate · cite]
+    end
+    subgraph "Pluggable Backends"
+        REL[(SQLite · PostgreSQL · MySQL)]
+        VEC[(ChromaDB · pgvector · Qdrant · Milvus · Weaviate)]
+        BLOB[(Local · S3 · OSS)]
+        KGS[(NetworkX · Neo4j)]
+        PARSE[PyMuPDF · MinerU · MinerU-VLM]
+        LLM[Any LiteLLM provider]
+    end
+    UI --> API
+    API --> ING
+    API --> RET
+    RET --> ANS
+    ING -.-> REL & VEC & BLOB & KGS
+    ING --> PARSE
+    ING --> LLM
+    RET --> LLM
+    ANS --> LLM
 ```
 
-Open [http://localhost:8000](http://localhost:8000). See [Deployment Guide](docs/deployment.md) for details.
+Every component is a config swap — pick your stack at the wizard, change later by editing `forgerag.yaml` and re-running `setup.py --sync-deps`.
 
-> **Tip:** We strongly recommend enabling **MinerU** — it significantly improves document structure parsing accuracy, especially for PDFs with complex layouts, tables, and formulas. Enable it in the web UI settings after startup.
+---
 
-### Supported Backends
+## ⚙️ Highlights
 
-| Component | Options |
-|-----------|---------|
-| **PDF Parser** | One explicit choice: `pymupdf` (fast, default) / `mineru` (layout-aware, tables/formulas) / `mineru-vlm` (vision-language for scanned & complex layouts) |
-| **Relational DB** | SQLite (default), PostgreSQL, MySQL |
-| **Vector Store** | ChromaDB (default), pgvector (PostgreSQL), Qdrant, Milvus, Weaviate |
-| **Blob Storage** | Local filesystem (default), Amazon S3, Alibaba OSS |
-| **Graph Store** | NetworkX in-memory (default), Neo4j |
-| **LLM / Embeddings** | Any [LiteLLM](https://docs.litellm.ai/docs/providers)-supported provider: OpenAI, Azure, Anthropic, Ollama, DeepSeek, Cohere, etc. |
+- **🎯 Pixel-precise citations** — every `[c_N]` carries `doc_id + page + bbox`; click highlights in PDF viewer
+- **🛤️ Full retrieval trace** — see which path scored what, what got expanded, what got rerank-dropped
+- **🧱 Tree-aware chunking** — chunk boundaries respect document structure (chapters, sections, tables/figures isolated)
+- **🌐 Knowledge graph w/ embeddings** — entity name embeddings for cross-lingual fuzzy match; relation-description embeddings for relation-semantic search
+- **🔁 RRF fusion** — Reciprocal Rank Fusion merges 4 retrieval paths; sibling/descendant/cross-ref expansion before rerank
+- **🎛️ Per-request overrides** — `QueryOverrides` on `POST /query` toggles paths, top-ks, rerank — great for A/B and SDK
+- **🗑️ Recycle bin + Undo** — soft-delete, Windows-style restore (rebuilds missing parent folders), 30-day auto-purge
+- **⚡ SQLite single-process · PG multi-process** — startup checks prevent foot-guns; clamps workers automatically
+- **🌍 Multi-format** — PDF, DOCX, PPTX, XLSX, HTML, Markdown, TXT; everything normalizes through the same parse → tree → chunk pipeline
 
-### CLI Options
+---
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--config` | auto-detect | Path to `forgerag.yaml` |
-| `--host` | `0.0.0.0` | Bind address (or `$FORGERAG_HOST`) |
-| `--port` | `8000` | Bind port (or `$FORGERAG_PORT`) |
-| `--reload` | off | Hot-reload for development |
-| `--workers` | `1` | Uvicorn workers. Values > 1 require multi-process-safe backends (PostgreSQL + Neo4j + non-persistent vector store); startup exits 2 otherwise. |
-
-## Architecture
-
-The diagram above shows the complete data flow. For detailed pipeline documentation with per-node annotations, see [Architecture Overview](docs/architecture.md).
-
-## API
-
-The REST API is available at `/api/v1/`. Interactive docs:
-
-- Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
-- ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
-Key endpoints:
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/v1/query` | Ask a question (streaming SSE or sync) — accepts `path_filter` + `overrides` for per-request tuning |
-| `POST /api/v1/documents/upload-and-ingest` | Upload into a folder (multipart; `folder_path` form field) |
-| `GET  /api/v1/documents?path_filter=…&recursive=…` | List docs under a folder |
-| `GET  /api/v1/documents/{id}/tree` | Document hierarchical structure |
-| `GET  /api/v1/graph` | Knowledge graph visualization |
-| `GET  /api/v1/settings` | Read-only snapshot of effective cfg (yaml is authoritative) |
-
-## Documentation
-
-- **[Getting Started](docs/getting-started.md)** — Installation, first document, step-by-step guide
-- **[Architecture Overview](docs/architecture.md)** — How ingestion, retrieval, and answering pipelines work
-- **[Configuration Reference](docs/configuration.md)** — Every config option with defaults and examples
-- **[API Reference](docs/api-reference.md)** — REST API endpoints, request/response formats, SSE streaming
-- **[Deployment Guide](docs/deployment.md)** — Docker deploy, production checklist, Nginx, Ollama
-- **[Development Guide](docs/development.md)** — Dev setup, testing, adding new backends
-- **[Auth & Sessions](docs/auth.md)** — Single-admin password + SK tokens, web management UI, CLI playbook
-
-## Project Structure
+## 🗂️ Project Layout
 
 ```
 ForgeRAG/
-├── api/              # FastAPI routes and schemas
-├── answering/        # Answer generation pipeline
-├── config/           # Pydantic configuration models
-├── embedder/         # Embedding backends (LiteLLM, sentence-transformers)
-├── graph/            # Knowledge graph stores (NetworkX, Neo4j)
-├── ingestion/        # Document ingestion pipeline + format conversion
-├── parser/           # PDF parsing, chunking, tree building
-├── persistence/      # Database layer (relational, vector, blob)
-├── retrieval/        # Retrieval pipeline (BM25, vector, tree, KG, merge)
-├── scripts/          # CLI utilities (setup wizard, Docker setup, batch ingest)
-├── web/              # Vue 3 frontend
-├── docs/             # Detailed documentation
-├── main.py           # Application entry point
-└── forgerag.yaml     # Your local config (git-ignored)
+├── api/             FastAPI routes + Pydantic schemas
+├── answering/       Answer + citation pipeline
+├── ingestion/       Parse → tree → chunk → embed → KG
+├── parser/          PDF parsing, chunking, tree building
+├── retrieval/       BM25 / vector / KG / tree-nav / RRF merge
+├── embedder/        Embedding backends (LiteLLM, sentence-transformers)
+├── graph/           KG stores (NetworkX, Neo4j)
+├── persistence/     Relational + vector + blob layer
+├── config/          Pydantic config models, YAML schema
+├── web/             Vue 3 frontend
+└── docs/            Architecture, configuration, API reference
 ```
 
-## Roadmap
+---
 
-- [ ] 🧪 More benchmarks against additional RAG systems and domains
-- [ ] 🔄 Scale to 1M+ documents · incremental indexing, async KG
-- [ ] 🌐 Multi-language retrieval · cross-lingual query and document support
-- [ ] 📦 Python SDK · `pip install forgerag-sdk`
-- [ ] 🛠️ Config panel hints & diagnostics · Missing provider warnings, validation feedback
-- [ ] ⚡ Performance optimization · Faster ingestion, query caching, async embedding
+## 📚 Docs
 
-## Contributing
+- **[Getting Started](docs/getting-started.md)** — install, first ingest, first query
+- **[Architecture](docs/architecture.md)** — full ingestion + retrieval + answering walkthroughs (with diagrams)
+- **[Configuration](docs/configuration.md)** — every YAML option with defaults
+- **[API Reference](docs/api-reference.md)** — REST + SSE streaming
+- **[Deployment](docs/deployment.md)** — Docker, production checklist, Nginx
+- **[Development](docs/development.md)** — dev setup, testing, adding backends
+- **[Auth](docs/auth.md)** — single-admin password + SK tokens
 
-We welcome contributions of all kinds — bug fixes, new features, documentation improvements, and more.
+---
 
-Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a pull request.
+## 🗺️ Roadmap
 
-## Related Projects
+- [ ] Comprehensive benchmark suite (vs RAGFlow / GraphRAG / vanilla, additional domains)
+- [ ] Scale to 1M+ documents — incremental indexing, async KG, sharded vector store
+- [ ] Multi-language retrieval — cross-lingual query/document support
+- [ ] Python SDK (`pip install forgerag-sdk`)
+- [ ] Config panel diagnostics (missing-provider warnings, validation feedback)
+- [ ] Performance: faster ingestion, query caching, async embedding
 
-- [LightRAG](https://github.com/HKUDS/LightRAG) — Graph-based RAG with dual-level (local + global) retrieval
+---
+
+## 📈 Star history
+
+<a href="https://star-history.com/#deeplethe/ForgeRAG&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=deeplethe/ForgeRAG&type=Date&theme=dark" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=deeplethe/ForgeRAG&type=Date" />
+  </picture>
+</a>
+
+---
+
+## 🤝 Contributing
+
+Bug reports, features, and docs improvements all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Stop by [Discord](https://discord.gg/XJadJHvxdQ) for design discussions.
+
+## 🔗 Related work
+
+- [LightRAG](https://github.com/HKUDS/LightRAG) — graph-based RAG with dual-level retrieval
 - [GraphRAG](https://github.com/microsoft/graphrag) — Microsoft's graph-powered RAG with community summaries
-- [PageIndex](https://github.com/VectifyAI/PageIndex) — Reasoning-based vectorless retrieval
+- [PageIndex](https://github.com/VectifyAI/PageIndex) — reasoning-based vectorless retrieval
+- [MinerU](https://github.com/opendatalab/MinerU) — document parsing engine ForgeRAG uses for rich layouts
 
 ## License
 
-[MIT License](LICENSE)
+[MIT](LICENSE)

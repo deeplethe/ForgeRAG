@@ -757,8 +757,8 @@ The frontend (Vue 3 + TailwindCSS) provides these pages:
 | Page | Description |
 |------|-------------|
 | **Chat** | Q&A interface with streaming progress, inline citations, PDF viewer with bbox highlights, trace inspection |
-| **Workspace** | Folder-centric file manager (tree sidebar + grid/list view) — upload into a specific folder, rename, move, trash/restore |
-| **Repository** | Flat document list — upload, browse tree structure, view chunks, track ingestion pipeline, retry/delete |
+| **Workspace** | Folder-centric file manager (tree sidebar + grid/list view) — upload, rename, move, trash/restore (Windows-style with auto-rebuild of missing parents) |
+| **Document Detail** | Three-pane: tree navigator + PDF viewer + chunks/KG mini panel. Hover a chunk to see its source bbox |
 | **Knowledge Graph** | Visual graph exploration with Sigma.js — entities, relations, subgraph queries |
 
 See [Configuration Reference](configuration.md) for all available options.
