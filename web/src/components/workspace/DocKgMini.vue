@@ -481,22 +481,27 @@ function initSigma(g) {
   }, settleMs)
 }
 
-// Sigma renders to multiple stacked <canvas> layers. By default
-// the order is: edges → edgeLabels → nodes → labels → hovers →
-// hoverNodes → mouse, so the edge canvas sits *under* the node
-// canvas and dim non-neighbour nodes occlude focusEdge lines
-// crossing them. The fix: reorder the edges canvas to sit between
-// nodes and labels while a selection is active, restore on clear.
-// This is the only way — sigma's zIndex setting only orders
-// within edges or within nodes, not across them.
+// Sigma renders to 7 stacked <canvas> layers. Default order
+// (bottom→top): edges, edgeLabels, nodes, labels, hovers,
+// hoverNodes, mouse — both edges AND edgeLabels sit BELOW nodes,
+// so dim non-neighbour discs occlude both focus edges and their
+// labels during selection. Fix: reorder the edges + edgeLabels
+// canvases above nodes while a selection is active. Sigma's
+// per-edge / per-node zIndex setting only orders within a single
+// layer, never across them.
 function liftEdgesAboveNodes() {
   if (!sigma) return
   const c = sigma.getCanvases()
   if (c.labels && c.edges) c.labels.before(c.edges)
+  if (c.labels && c.edgeLabels) c.labels.before(c.edgeLabels)
 }
 function restoreEdgesBelowNodes() {
   if (!sigma) return
   const c = sigma.getCanvases()
+  // Order matters: prepend edgeLabels first, then edges. Each
+  // ``prepend`` puts the element at idx 0; the second one pushes
+  // the first to idx 1. End state: [edges, edgeLabels, nodes, ...].
+  if (c.edgeLabels && sigma.container) sigma.container.prepend(c.edgeLabels)
   if (c.edges && sigma.container) sigma.container.prepend(c.edges)
 }
 

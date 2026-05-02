@@ -539,7 +539,18 @@ function initSigma(g) {
     sigma.getCamera().enable()
   })
 
-  // ── Start ForceAtlas2 layout in WebWorker ──
+  // ── Initial layout = circle pack ──
+  // Hierarchical packing by entityType produces visually separable
+  // type-clusters instantly, no force-settle wait. ForceAtlas2 is
+  // still wired up below so the layout switcher can use it; we just
+  // don't auto-run it on first load any more — for the 500-node
+  // default fetch FA2 takes 4–5s of layout churn before producing a
+  // meaningful read, and the result is usually a single dense blob
+  // (high-degree nodes clump in the centre, no type separation).
+  circlepack.assign(g, {
+    hierarchyAttributes: ['entityType'],
+    scale: 200,
+  })
   fa2 = new FA2Layout(g, {
     settings: {
       gravity: 1,
@@ -551,27 +562,36 @@ function initSigma(g) {
       outboundAttractionDistribution: true,
     },
   })
-  fa2.start()
-
-  // Stop FA2 after convergence
-  setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 5000)
 }
 
-// Sigma stacks its 7 canvas layers in DOM order; the edges canvas
-// sits below the nodes canvas by default, so dim non-neighbours
-// occlude focusEdge lines crossing them. zIndex on individual
-// edges/nodes only orders WITHIN a layer, never across them — the
-// only fix is to reorder the canvas elements themselves while a
-// selection is active. Restore on clear so the resting view keeps
-// its normal "lines under nodes" feel.
+// Sigma stacks its 7 canvas layers in DOM order. By default
+// (bottom→top): edges, edgeLabels, nodes, labels, hovers,
+// hoverNodes, mouse — meaning both the edges canvas AND the edge
+// label canvas sit BELOW the nodes canvas. Two visible artefacts
+// during focus selection:
+//   1. dim non-neighbour discs occlude focus edge lines crossing
+//      them (the original occlusion bug)
+//   2. dim non-neighbour discs occlude edge label text painted
+//      onto the edgeLabels canvas (visible on the user's screenshot
+//      where "Howard"/"Farm" tiles cover "reason for importance"
+//      and "believed it" labels)
+// Both are fixed by reordering canvases while a selection is
+// active. Restore on clear so the resting view keeps its normal
+// "lines under nodes" feel.
 function liftEdgesAboveNodes() {
   if (!sigma) return
   const c = sigma.getCanvases()
   if (c.labels && c.edges) c.labels.before(c.edges)
+  if (c.labels && c.edgeLabels) c.labels.before(c.edgeLabels)
 }
 function restoreEdgesBelowNodes() {
   if (!sigma) return
   const c = sigma.getCanvases()
+  // Order matters: prepend edgeLabels first, then edges. Each
+  // ``prepend`` puts the element at idx 0; the second one pushes
+  // the first to idx 1. End state: [edges, edgeLabels, nodes, ...]
+  // — sigma's original layer order.
+  if (c.edgeLabels && sigma.container) sigma.container.prepend(c.edgeLabels)
   if (c.edges && sigma.container) sigma.container.prepend(c.edges)
 }
 
@@ -638,7 +658,7 @@ function reheat() {
 }
 
 /* ── Layout switcher ── */
-const activeLayout = ref('Force Atlas')
+const activeLayout = ref('Circle Pack')
 const showLayoutMenu = ref(false)
 const LAYOUTS = ['Force Atlas', 'Force Directed', 'Circular', 'Circle Pack', 'Random', 'Noverlap']
 
