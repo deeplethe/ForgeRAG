@@ -17,7 +17,7 @@
 import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import Graph from 'graphology'
 import Sigma from 'sigma'
-import { EdgeDoubleArrowProgram } from 'sigma/rendering'
+import { EdgeDoubleArrowProgram, drawDiscNodeHover } from 'sigma/rendering'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { circlepack, circular } from 'graphology-layout'
 import { getGraphByDoc } from '@/api'
@@ -295,12 +295,13 @@ function buildGraph(rawNodes, rawEdges) {
       type: bidirectional ? 'doubleArrow' : 'arrow',
       size: 0.6,
       color: edgeColor,
-      // Pass the full keyword unchanged when filtered — sigma's
-      // ``drawStraightEdgeLabel`` measures the actual edge pixel
-      // length and ellipsizes only when the text doesn't fit. Our
-      // own pre-truncation was double-clipping (always at 17 chars)
-      // and stomped on edges where the full keyword would have fit.
-      label: filtered ? mergedKw : '',
+      // Always carry the full keyword as ``label`` — the edgeReducer
+      // gates per-render whether sigma should actually render it
+      // (only on focus edges when an entity is selected, or on all
+      // edges when chunk-filtered into a small subgraph).
+      // ``drawStraightEdgeLabel`` then ellipsizes at the real edge
+      // pixel length; our old hard-truncate was double-clipping.
+      label: mergedKw,
       keywords: mergedKw,
       description: mergedDesc,
       source_chunk_ids: [...entry.srcChunks],
@@ -313,8 +314,12 @@ function buildGraph(rawNodes, rawEdges) {
 }
 
 function initSigma(g) {
-  // Edge labels: on when filtering (a small subgraph benefits from
-  // seeing relation keywords), off on the full doc view (would clutter).
+  // Edge labels are always allowed at the renderer level; the
+  // edgeReducer below decides per edge whether to show the label
+  // (focus edge during entity selection, OR every edge when in the
+  // small chunk-filtered subgraph). On the default top-N view with
+  // no entity selected, labels are stripped entirely to avoid
+  // clutter on a 1500-edge canvas.
   const filtered = !!props.activeChunkId
   const c = graphColors()
   sigma = new Sigma(g, containerRef.value, {
@@ -328,7 +333,7 @@ function initSigma(g) {
     edgeProgramClasses: {
       doubleArrow: EdgeDoubleArrowProgram,
     },
-    renderEdgeLabels: filtered,
+    renderEdgeLabels: true,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
     edgeLabelSize: 10,
     edgeLabelColor: { color: c.label },
@@ -343,6 +348,15 @@ function initSigma(g) {
     hideEdgesOnMove: false,
     hideLabelsOnMove: false,
     zIndex: true,
+    // Custom hover painter — sigma calls this for every
+    // ``highlighted: true`` node onto the 2D ``hovers`` canvas
+    // (separate pass from the WebGL hover-canvas re-render).
+    // We only want the halo + label-pill on nodes flagged
+    // ``withHalo`` (selected anchor / mouse-hovered); neighbours
+    // get the silent WebGL re-render only.
+    defaultDrawNodeHover: (ctx, data, settings) => {
+      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
+    },
   })
 
   // ── Reducers: dim non-neighbours when an entity is selected ──
@@ -352,13 +366,28 @@ function initSigma(g) {
   // moved above the nodes canvas (see ``liftEdgesAboveNodes``) so
   // focusEdge lines from selected to neighbours are no longer
   // occluded by these dim circles.
+  // ``withHalo`` is a custom flag distinguishing nodes that should
+  // get the 2D halo + label-pill (selected / mouse-hovered) from
+  // nodes that just need the WebGL hover-canvas re-render to sit
+  // above edges (neighbours). The custom ``defaultDrawNodeHover``
+  // below reads it and skips the halo for plain neighbours.
   sigma.setSetting('nodeReducer', (node, data) => {
     const res = { ...data }
     if (selectedNodeId) {
       if (node === selectedNodeId) {
         res.highlighted = true
+        res.withHalo = true
         res.zIndex = 2
       } else if (neighborSet.has(node)) {
+        // Highlight neighbours so they render via sigma's
+        // ``hoverNodes`` canvas (top of stack, above the lifted
+        // edges canvas). Without this the edge body would run
+        // visibly through the neighbour disc on short edges —
+        // EdgeArrowProgram only offsets the arrowhead to the node
+        // edge, the line itself goes center-to-center. ``withHalo``
+        // is intentionally NOT set so neighbours don't get the
+        // bright halo / label-pill.
+        res.highlighted = true
         res.zIndex = 1
       } else {
         res.color = graphColors().dimNode
@@ -368,9 +397,20 @@ function initSigma(g) {
     }
     if (hoveredNode && node === hoveredNode) {
       res.highlighted = true
+      res.withHalo = true
     }
     return res
   })
+  // Edge label gating:
+  //   • selectedNodeId set + edge touches it → keep label (merged
+  //     keyword from buildGraph)
+  //   • selectedNodeId set + edge doesn't touch it → hidden, label
+  //     null (won't render anyway)
+  //   • no selection but chunk-filtered → small subgraph, keep all
+  //     labels so the structural reading "X — verb-phrase — Y" works
+  //   • no selection and no chunk filter → 1500-edge default view,
+  //     strip every label (would be unreadable clutter otherwise)
+  const filteredView = !!props.activeChunkId
   sigma.setSetting('edgeReducer', (edge, data) => {
     const res = { ...data }
     if (selectedNodeId) {
@@ -380,10 +420,14 @@ function initSigma(g) {
         res.color = graphColors().focusEdge
         res.size = 2
         res.zIndex = 1
+        // keep res.label = merged keyword
       } else {
         res.color = graphColors().dimEdge
         res.hidden = true
+        res.label = null
       }
+    } else if (!filteredView) {
+      res.label = null
     }
     return res
   })

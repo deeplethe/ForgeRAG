@@ -38,6 +38,7 @@ const router = useRouter()
 const route = useRoute()
 import Graph from 'graphology'
 import Sigma from 'sigma'
+import { EdgeDoubleArrowProgram, drawDiscNodeHover } from 'sigma/rendering'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { circular, circlepack, random } from 'graphology-layout'
 import noverlap from 'graphology-layout-noverlap'
@@ -320,20 +321,54 @@ function buildGraph(rawNodes, rawEdges) {
     })
   }
 
-  // Deduplicate edges (sigma doesn't allow duplicate keys)
-  const edgeSet = new Set()
+  // Edge build with bidirectional folding: when both A→B and B→A
+  // exist, collapse them into a single edge rendered with arrowheads
+  // on both ends (sigma's ``EdgeDoubleArrowProgram``). Keywords are
+  // joined with ``↔``, descriptions with ``|``, weights summed.
+  // ``label`` is the merged keyword — sigma renders edge labels on
+  // selection (see edgeReducer below).
+  const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`)
+  const buckets = new Map()
   for (const e of rawEdges) {
     if (!g.hasNode(e.source) || !g.hasNode(e.target)) continue
-    const key = `${e.source}->${e.target}`
-    if (edgeSet.has(key)) continue
-    edgeSet.add(key)
-    g.addEdge(e.source, e.target, {
-      keywords: e.keywords || '',
-      description: e.description || '',
-      weight: e.weight || 1,
-      type: 'arrow',
+    const k = pairKey(e.source, e.target)
+    let entry = buckets.get(k)
+    if (!entry) {
+      entry = {
+        a: e.source < e.target ? e.source : e.target,
+        b: e.source < e.target ? e.target : e.source,
+        fwdKw: '',
+        bwdKw: '',
+        fwdDesc: '',
+        bwdDesc: '',
+        weight: 0,
+      }
+      buckets.set(k, entry)
+    }
+    const isForward = e.source === entry.a
+    if (isForward) {
+      entry.fwdKw = e.keywords || entry.fwdKw
+      entry.fwdDesc = e.description || entry.fwdDesc
+    } else {
+      entry.bwdKw = e.keywords || entry.bwdKw
+      entry.bwdDesc = e.description || entry.bwdDesc
+    }
+    entry.weight += e.weight || 1
+  }
+  for (const entry of buckets.values()) {
+    const bidir = entry.fwdKw !== '' && entry.bwdKw !== ''
+    const mergedKw = bidir ? `${entry.fwdKw} ↔ ${entry.bwdKw}` : entry.fwdKw || entry.bwdKw
+    const mergedDesc = bidir
+      ? `${entry.fwdDesc} | ${entry.bwdDesc}`.trim()
+      : entry.fwdDesc || entry.bwdDesc
+    g.addEdge(entry.a, entry.b, {
+      keywords: mergedKw,
+      description: mergedDesc,
+      weight: entry.weight,
+      type: bidir ? 'doubleArrow' : 'arrow',
       size: 1,
       color: graphColors().defaultEdge,
+      label: mergedKw,
     })
   }
 
@@ -351,7 +386,16 @@ function initSigma(g) {
     defaultNodeColor: c.defaultNode,
     defaultEdgeColor: c.defaultEdge,
     defaultEdgeType: 'arrow',
-    renderEdgeLabels: false,
+    // Sigma merges this with built-in arrow/line/rectangle, so the
+    // default ``arrow`` keeps working — we only add doubleArrow.
+    edgeProgramClasses: {
+      doubleArrow: EdgeDoubleArrowProgram,
+    },
+    // Always allow edge labels — the edgeReducer below decides per
+    // edge whether to expose the label (only on focus edges when a
+    // node is selected; nothing otherwise to avoid clutter on the
+    // 500-node default view).
+    renderEdgeLabels: true,
     labelFont: 'Geist, Inter, system-ui, sans-serif',
     labelSize: 11,
     labelWeight: '500',
@@ -367,6 +411,16 @@ function initSigma(g) {
     hideLabelsOnMove: false,
     // zIndex to layer selected on top
     zIndex: true,
+    // Suppress sigma's default halo + label-pill on every
+    // ``highlighted: true`` node — we want the cheap WebGL
+    // hover-canvas re-render (which puts the node above the
+    // lifted edges canvas) but NOT the bright glow that gets
+    // applied to every neighbour during a focus selection.
+    // ``withHalo`` is a custom reducer flag we only set on the
+    // selected anchor + the mouse-hovered node.
+    defaultDrawNodeHover: (ctx, data, settings) => {
+      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
+    },
   })
 
   // ── Node reducers for highlight / dim ──
@@ -374,13 +428,29 @@ function initSigma(g) {
   // colour is dimmed and the label dropped. Occlusion of focus
   // edges by these dim circles is solved at the canvas-stacking
   // level (see ``liftEdgesAboveNodes``) rather than here.
+  //
+  // Neighbours also get ``highlighted: true`` — sigma's
+  // ``renderHighlightedNodes`` re-renders highlighted nodes onto
+  // the ``hoverNodes`` WebGL canvas, which sits above the (lifted)
+  // edges canvas. Without that re-render, the edge body would
+  // visibly run through a neighbour's disc on short edges (the
+  // arrow program clamps only the arrow HEAD to the node edge,
+  // not the line).
+  //
+  // The ``withHalo`` custom flag distinguishes nodes that should
+  // ALSO get the 2D halo + label-pill drawing (selected /
+  // mouse-hovered) from nodes that just need the WebGL re-render
+  // (neighbours). The custom ``defaultDrawNodeHover`` setting
+  // below reads this flag and skips the halo for plain neighbours.
   sigma.setSetting('nodeReducer', (node, data) => {
     const res = { ...data }
     if (selectedId) {
       if (node === selectedId) {
         res.highlighted = true
+        res.withHalo = true
         res.zIndex = 2
       } else if (neighborSet.has(node)) {
+        res.highlighted = true
         res.zIndex = 1
       } else {
         res.color = graphColors().dimNode
@@ -388,14 +458,17 @@ function initSigma(g) {
         res.zIndex = 0
       }
     }
-    if (hoveredNode) {
-      if (node === hoveredNode) {
-        res.highlighted = true
-      }
+    if (hoveredNode && node === hoveredNode) {
+      res.highlighted = true
+      res.withHalo = true
     }
     return res
   })
 
+  // Edge label gating: only expose ``label`` on focus edges (those
+  // touching the selected anchor) so the keyword reads cleanly next
+  // to the relevant edge. With no selection the 500-node default
+  // view would be drowning in ~3800 labels — strip them all.
   sigma.setSetting('edgeReducer', (edge, data) => {
     const res = { ...data }
     if (selectedId) {
@@ -405,10 +478,14 @@ function initSigma(g) {
         res.color = graphColors().focusEdge
         res.size = 2
         res.zIndex = 1
+        // keep res.label (= merged keyword from buildGraph)
       } else {
         res.color = graphColors().dimEdge
         res.hidden = true
+        res.label = null
       }
+    } else {
+      res.label = null
     }
     return res
   })
