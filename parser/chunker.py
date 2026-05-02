@@ -90,6 +90,41 @@ _TEXT_LIKE_TYPES = frozenset(
     {BlockType.PARAGRAPH, BlockType.HEADING, BlockType.LIST, BlockType.CAPTION}
 )
 
+# A chunk's longest single paragraph (split on blank lines) needs to
+# clear this many chars to count as "prose". TOC / index / citation
+# fragments are typically ≤ 100 chars per line; even a long
+# bibliography entry rarely passes 200 unbroken. Body paragraphs
+# routinely cross 400+.
+_PROSE_PARA_MIN_CHARS = 200
+
+# Roles a chunk is allowed to inherit blindly. Anything outside this
+# set is checked against ``_PROSE_PARA_MIN_CHARS`` and demoted to
+# ``main`` if the chunk is clearly running prose.
+_NOISE_ROLES = frozenset({"toc", "index", "bibliography", "front_matter"})
+
+
+def _override_role_if_prose(node_role: str | None, content: str) -> str | None:
+    """Force role back to ``main`` when a noise-tagged chunk is
+    actually long-form text the tree builder mis-grouped.
+
+    The LLM tree builder occasionally extends a TOC / front-matter
+    node past where the real TOC ends, sweeping body chapters into
+    it. Without this override those chunks would be skipped by the
+    KG extractor's ``_SKIP_ROLES`` filter. Real list-of-titles or
+    citation chunks have short fragmented paragraphs and stay
+    untouched.
+    """
+    if not node_role or node_role not in _NOISE_ROLES:
+        return node_role
+    longest = 0
+    for para in re.split(r"\n\s*\n", content or ""):
+        n = len(para.strip())
+        if n > longest:
+            longest = n
+            if longest >= _PROSE_PARA_MIN_CHARS:
+                return "main"
+    return node_role
+
 
 # ---------------------------------------------------------------------------
 # Public entry
@@ -306,6 +341,21 @@ class _ChunkContext:
         if content_type == "text" and (types - _TEXT_LIKE_TYPES):
             ctype = "mixed"
 
+        # Inherit role from owning tree node so KG extraction can
+        # filter noise (Index / TOC / Bibliography / Front matter).
+        # SAFETY NET: the LLM tree builder occasionally pulls real
+        # body content into a TOC/front-matter node — observed e.g.
+        # in 11_growing_gourmet_mushrooms where the "Contents" node
+        # had ``page_end=10`` and swallowed the Foreword,
+        # Acknowledgments, Introduction, and the start of Chapter 1.
+        # Inheriting blindly would cause those prose chunks to be
+        # skipped during KG extraction. If the chunk's content
+        # contains a long-prose paragraph (≥ 200 chars unbroken),
+        # the chunk is overwhelmingly text, not a TOC / index
+        # listing, so we override the inherited role back to
+        # ``main``. Real TOC / index / bibliography fragments stay
+        # well below the threshold.
+        role = _override_role_if_prose(node.role, content)
         return Chunk(
             chunk_id=self._new_id(),
             doc_id=self.doc.doc_id,
@@ -320,10 +370,7 @@ class _ChunkContext:
             y_sort=y_sort,
             section_path=section_path,
             ancestor_node_ids=ancestor_ids,
-            # Inherited from owning tree node so KG extraction can
-            # filter out noise sources (Index / TOC / Bibliography /
-            # Front matter) without re-walking the tree.
-            role=node.role,
+            role=role,
         )
 
     # ------------------------------------------------------------------
@@ -350,7 +397,7 @@ class _ChunkContext:
             y_sort=min(a.y_sort, b.y_sort),
             section_path=a.section_path,
             ancestor_node_ids=a.ancestor_node_ids,
-            role=a.role,
+            role=_override_role_if_prose(a.role, merged_content),
         )
 
 
