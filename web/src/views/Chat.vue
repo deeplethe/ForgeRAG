@@ -849,12 +849,14 @@ function onTraceClick(m) {
       <!-- MESSAGES -->
       <template v-else>
         <div ref="chatEl" class="flex-1 overflow-y-auto pl-6 pr-14 py-6">
-          <!-- ``pl-4`` mirrors the input box's ``px-4`` internal
-               padding below so message body text + input textarea
-               text + chip strip all start at the same X. Without it
-               the rounded-bordered input visually inset 17px right
-               of the messages and felt unbalanced. -->
-          <div class="max-w-2xl mx-auto space-y-4 pl-4">
+          <!-- All three visual columns — message blocks, chip strip,
+               and input box — share the same OUTER left edge inside
+               ``max-w-2xl mx-auto``. The textarea text inside the
+               input box is offset another 16px+1px right by its own
+               ``px-4`` + border, but the user reads visual-container
+               boundaries (where the rounded box edge sits) more
+               than text-glyph positions, so we leave that be. -->
+          <div class="max-w-2xl mx-auto space-y-4">
             <div v-for="(m, i) in msgs" :key="i" class="fadein">
               <!-- User -->
               <div v-if="m.role === 'user'" class="flex justify-end mb-2">
@@ -1008,11 +1010,11 @@ function onTraceClick(m) {
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
           <div class="max-w-2xl mx-auto pt-3">
-            <!-- Scope + Tools chips above the input. ``pl-4`` aligns
-                 the chip row with the input textarea text below
-                 (which sits at +16px due to the box's ``px-4``) and
-                 with the message body text above (also pl-4). -->
-            <div class="mb-1.5 pl-4 flex items-center gap-1.5">
+            <!-- Scope + Tools chips above the input. Aligned to the
+                 input box's outer left edge (no leading padding) so
+                 the chip cards form a single straight visual rail
+                 with the rounded input box below. -->
+            <div class="mb-1.5 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
               <ThinkingPicker v-model="thinkingValue" />
               <!-- Web search placeholder. Disabled chip until a
