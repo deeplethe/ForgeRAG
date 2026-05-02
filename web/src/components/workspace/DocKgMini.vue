@@ -18,8 +18,9 @@ import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import Graph from 'graphology'
 import Sigma from 'sigma'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
-import { circular } from 'graphology-layout'
+import { circlepack, circular } from 'graphology-layout'
 import { getGraphByDoc } from '@/api'
+import { useTheme } from '@/composables/useTheme'
 
 const props = defineProps({
   docId: { type: String, required: true },
@@ -34,6 +35,35 @@ let sigma = null
 let fa2 = null
 const loading = ref(false)
 const error = ref('')
+
+// ── Click-focus state (mirrors KnowledgeGraph.vue) ──────────────
+// Clicking an entity dims everyone outside its 1-hop neighbourhood.
+// Held outside the reactive system because it's read by sigma's
+// reducers on every frame and we don't want Vue tracking to run
+// each time — a manual ``sigma.refresh()`` is cheaper.
+let selectedNodeId = null
+let neighborSet = new Set()
+let hoveredNode = null
+
+// ── Theme-aware palette (mirror KnowledgeGraph.vue) ──────────────
+const { isDark } = useTheme()
+function graphColors() {
+  return isDark.value
+    ? {
+        defaultEdge: '#3f3f46',
+        label:       '#a1a1a1',
+        dimNode:     '#1f1f1f',
+        focusEdge:   '#ededed',
+        dimEdge:     '#1f1f1f',
+      }
+    : {
+        defaultEdge: '#d1d5db',
+        label:       '#374151',
+        dimNode:     '#d0d0d0',
+        focusEdge:   '#3d3d3d',
+        dimEdge:     '#e2e2e2',
+      }
+}
 
 // ── Type → color (mirror KnowledgeGraph.vue) ─────────────────────
 const TYPE_COLORS = {
@@ -83,21 +113,40 @@ async function load() {
   }
 }
 
-// Filter the cached raw graph to either:
-//   (a) every entity from this doc — when no chunk is selected, or
-//   (b) only entities whose ``source_chunk_ids`` contains the active
-//       chunk + the relations among them.
+// Default-view sizing knobs. Anchors are the high-degree "structural"
+// entities; halo expands the rendered set to one hop out from the
+// anchor set so anchors actually have neighbours on the canvas to
+// light up when clicked. Without halo, capping by degree alone
+// shreds the edge set (high-degree nodes mostly connect to
+// low-degree ones in scale-free networks), and click-focus has
+// nothing to highlight.
+const DEFAULT_ANCHORS = 200
+const DEFAULT_TOTAL_CAP = 800
+
+// Filter the cached raw graph for the current view mode:
 //
-// Then rebuild graphology + sigma from scratch. Cheaper to throw
-// out the old sigma instance and rebuild than to mutate the graph
-// in place — forceAtlas2 has to re-settle either way once the node
-// set changes, and the small filtered subgraph (5–30 nodes) is fast
-// to rebuild.
+//   • No chunk selected → top-N anchors by degree, plus 1-hop halo
+//     reachable through any edge (capped to ``DEFAULT_TOTAL_CAP``
+//     by halo degree). Keep every edge whose endpoints are in the
+//     visible set. Density now matches the main /knowledge-graph
+//     page closely enough that the reducer-based click-focus
+//     actually has neighbours to light up.
+//
+//   • Chunk selected → strict filter: only entities whose
+//     ``source_chunk_ids`` contains the active chunk + relations.
 function rebuildForCurrentFilter() {
+  const cid = props.activeChunkId
   let nodes = rawNodes.value
   let edges = rawEdges.value
-  const cid = props.activeChunkId
+
   if (cid) {
+    // Strict chunk filter: nodes whose extraction sourced this chunk,
+    // AND edges whose extraction sourced this chunk too. The old
+    // version only filtered nodes — every relation between them was
+    // kept regardless of provenance, so the panel showed dozens of
+    // cross-doc relations that had nothing to do with the chunk.
+    // Now that the API exposes ``source_chunk_ids`` on edges, we can
+    // be honest: only show what was actually extracted from here.
     const activeIds = new Set(
       nodes
         .filter((n) => (n.source_chunk_ids || []).includes(cid))
@@ -105,10 +154,57 @@ function rebuildForCurrentFilter() {
     )
     nodes = nodes.filter((n) => activeIds.has(n.id))
     edges = edges.filter(
-      (e) => activeIds.has(e.source) && activeIds.has(e.target),
+      (e) =>
+        activeIds.has(e.source) &&
+        activeIds.has(e.target) &&
+        (e.source_chunk_ids || []).includes(cid),
+    )
+  } else if (nodes.length > DEFAULT_ANCHORS) {
+    // Pick anchor set: top by degree, ties broken by ownership.
+    const ranked = [...nodes].sort((a, b) => {
+      const da = a.degree || 0
+      const db = b.degree || 0
+      if (db !== da) return db - da
+      const oa = (a.source_doc_ids || []).includes(props.docId) ? 1 : 0
+      const ob = (b.source_doc_ids || []).includes(props.docId) ? 1 : 0
+      return ob - oa
+    })
+    const anchors = new Set(
+      ranked.slice(0, DEFAULT_ANCHORS).map((n) => n.id),
+    )
+    // Halo: any node connected to an anchor via at least one edge.
+    const halo = new Set()
+    for (const e of edges) {
+      if (anchors.has(e.source) && !anchors.has(e.target)) halo.add(e.target)
+      else if (anchors.has(e.target) && !anchors.has(e.source)) halo.add(e.source)
+    }
+    // Cap halo by degree so the panel doesn't drown in 5k nodes.
+    const cap = Math.max(0, DEFAULT_TOTAL_CAP - anchors.size)
+    let haloKept = halo
+    if (halo.size > cap) {
+      const haloRanked = nodes
+        .filter((n) => halo.has(n.id))
+        .sort((a, b) => (b.degree || 0) - (a.degree || 0))
+        .slice(0, cap)
+      haloKept = new Set(haloRanked.map((n) => n.id))
+    }
+    const keep = new Set([...anchors, ...haloKept])
+    nodes = nodes.filter((n) => keep.has(n.id))
+    edges = edges.filter(
+      (e) => keep.has(e.source) && keep.has(e.target),
     )
   }
-  counts.value = { entities: nodes.length, relations: edges.length }
+
+  // Drop click-focus state so the reducer doesn't dim against a
+  // node id that may not even be in the new visible set.
+  selectedNodeId = null
+  neighborSet = new Set()
+
+  counts.value = {
+    entities: nodes.length,
+    relations: edges.length,
+    total: rawNodes.value.length,
+  }
   emit('counts-change', counts.value)
   buildGraph(nodes, edges)
 }
@@ -120,6 +216,7 @@ function buildGraph(rawNodes, rawEdges) {
     return
   }
 
+  const filtered = !!props.activeChunkId
   const g = new Graph()
   for (const n of rawNodes) {
     const degree = n.degree || 0
@@ -135,14 +232,28 @@ function buildGraph(rawNodes, rawEdges) {
       color: typeFill(n.type),
     })
   }
-  // Spread evenly first so forceAtlas2 has a non-degenerate start.
-  circular.assign(g, { scale: 100 })
+  // Default (no chunk selected): D3-style circle pack via
+  // ``graphology-layout``'s ``circlepack``, hierarchically grouped
+  // by ``entityType``. Same layout the main /knowledge-graph page
+  // uses — each type gets its own packed circle of nodes, then the
+  // type-circles pack against each other. Visually separable
+  // type-clusters with no force-settle wait. Force-directed layouts
+  // (FA2) collapse 200+ entities into an unreadable blob.
+  if (!filtered) {
+    circlepack.assign(g, {
+      hierarchyAttributes: ['entityType'],
+      scale: 200,
+    })
+  } else {
+    // Filtered subgraph (5-30 nodes) — circular seed, FA2 takes over.
+    circular.assign(g, { scale: 100 })
+  }
 
   // When the filter is active we surface relation keywords as edge
   // labels so the tiny subgraph reads as "X — verb-phrase — Y"
   // instead of just "two dots and a line". Labels are off in the
   // full-doc view (would clutter on a 50+ edge graph).
-  const filtered = !!props.activeChunkId
+  const edgeColor = graphColors().defaultEdge
   const edgeKeys = new Set()
   for (const e of rawEdges) {
     if (!g.hasNode(e.source) || !g.hasNode(e.target)) continue
@@ -152,9 +263,7 @@ function buildGraph(rawNodes, rawEdges) {
     g.addEdge(e.source, e.target, {
       type: 'arrow',
       size: 0.6,
-      color: filtered
-        ? 'rgba(180, 180, 180, 0.65)'
-        : 'rgba(120, 120, 120, 0.35)',
+      color: edgeColor,
       label: filtered ? truncate(e.keywords || e.description) : '',
       keywords: e.keywords || '',
       description: e.description || '',
@@ -169,18 +278,19 @@ function initSigma(g) {
   // Edge labels: on when filtering (a small subgraph benefits from
   // seeing relation keywords), off on the full doc view (would clutter).
   const filtered = !!props.activeChunkId
+  const c = graphColors()
   sigma = new Sigma(g, containerRef.value, {
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(120, 120, 120, 0.35)',
+    defaultEdgeColor: c.defaultEdge,
     defaultEdgeType: 'arrow',
     renderEdgeLabels: filtered,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
     edgeLabelSize: 10,
-    edgeLabelColor: { color: '#9aa0a6' },
+    edgeLabelColor: { color: c.label },
     labelFont: 'Geist, Inter, system-ui, sans-serif',
     labelSize: 12,
     labelWeight: '500',
-    labelColor: { color: '#cccccc' },
+    labelColor: { color: c.label },
     // Show labels even on small / dim nodes — the small pane needs
     // every node labeled to be useful.
     labelDensity: 1,
@@ -190,54 +300,147 @@ function initSigma(g) {
     zIndex: true,
   })
 
-  // Click → emit
-  sigma.on('clickNode', ({ node }) => {
-    emit('entity-click', node)
+  // ── Reducers: dim non-neighbours when an entity is selected ──
+  // Same focus pattern as /knowledge-graph. Non-neighbours keep
+  // their full size + label so the surrounding context stays
+  // readable; they only get the dim colour. The edges canvas is
+  // moved above the nodes canvas (see ``liftEdgesAboveNodes``) so
+  // focusEdge lines from selected to neighbours are no longer
+  // occluded by these dim circles.
+  sigma.setSetting('nodeReducer', (node, data) => {
+    const res = { ...data }
+    if (selectedNodeId) {
+      if (node === selectedNodeId) {
+        res.highlighted = true
+        res.zIndex = 2
+      } else if (neighborSet.has(node)) {
+        res.zIndex = 1
+      } else {
+        res.color = graphColors().dimNode
+        res.label = null
+        res.zIndex = 0
+      }
+    }
+    if (hoveredNode && node === hoveredNode) {
+      res.highlighted = true
+    }
+    return res
+  })
+  sigma.setSetting('edgeReducer', (edge, data) => {
+    const res = { ...data }
+    if (selectedNodeId) {
+      const src = g.source(edge)
+      const tgt = g.target(edge)
+      if (src === selectedNodeId || tgt === selectedNodeId) {
+        res.color = graphColors().focusEdge
+        res.size = 2
+        res.zIndex = 1
+      } else {
+        res.color = graphColors().dimEdge
+        res.hidden = true
+      }
+    }
+    return res
   })
 
-  // Auto-layout: forceAtlas2 burst then settle, in a worker so the
-  // main thread stays responsive. We use TWO different parameter
-  // sets:
-  //   - filtered subgraph (chunk selected, ~10-30 nodes): strong
-  //     gravity + low scalingRatio packs the cluster tight so the
-  //     few nodes don't stay flung at the canvas corners.
-  //   - full-doc view (100+ nodes): plain forceAtlas2 defaults so
-  //     the layout reads as a normal force-directed graph instead
-  //     of a single dense blob.
+  // Hover (matches main KG page).
+  sigma.on('enterNode', ({ node }) => {
+    hoveredNode = node
+    sigma.refresh()
+  })
+  sigma.on('leaveNode', () => {
+    hoveredNode = null
+    sigma.refresh()
+  })
+  // Click on a node selects it; click on empty stage clears.
+  sigma.on('clickNode', ({ node }) => {
+    selectNode(node)
+    emit('entity-click', node)
+  })
+  sigma.on('clickStage', () => {
+    clearSelection()
+  })
+
+  if (!filtered) {
+    // Default view: positions were assigned synchronously in
+    // buildGraph (circular-pack + noverlap). Skip force layout
+    // entirely — for hundreds of entities, FA2 collapses them into
+    // an unreadable blob and never settles in the small pane.
+    return
+  }
+
+  // Filtered subgraph (~5-30 nodes): forceAtlas2 in a worker for a
+  // tight, organic cluster. Strong gravity packs nodes near center
+  // so the few entities don't fling to the canvas corners.
   fa2 = new FA2Layout(g, {
-    settings: filtered
-      ? {
-          gravity: 8,
-          strongGravityMode: true,
-          scalingRatio: 1.5,
-          slowDown: 8,
-          barnesHutOptimize: g.order > 100,
-        }
-      : {
-          // Defaults — let community structure emerge naturally.
-          barnesHutOptimize: g.order > 100,
-        },
+    settings: {
+      gravity: 8,
+      strongGravityMode: true,
+      scalingRatio: 1.5,
+      slowDown: 8,
+      barnesHutOptimize: g.order > 100,
+    },
   })
   fa2.start()
-  // Settle window scales with node count: tiny filtered subgraphs
-  // converge in <500ms, full-doc graphs (100+ nodes) take longer.
   const settleMs = Math.min(2500, 500 + g.order * 12)
   setTimeout(() => {
     if (fa2) {
       fa2.stop()
       sigma?.refresh()
-      // Only snap the camera tight on the filtered subgraph (the
-      // small cluster benefits from a closer fit). For the full
-      // doc, leave sigma at its auto-fit ratio so the whole graph
-      // is visible end-to-end.
-      if (filtered) {
-        sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 0.85, angle: 0 })
-      }
+      sigma?.getCamera().setState({ x: 0.5, y: 0.5, ratio: 0.85, angle: 0 })
     }
   }, settleMs)
 }
 
+// Sigma renders to multiple stacked <canvas> layers. By default
+// the order is: edges → edgeLabels → nodes → labels → hovers →
+// hoverNodes → mouse, so the edge canvas sits *under* the node
+// canvas and dim non-neighbour nodes occlude focusEdge lines
+// crossing them. The fix: reorder the edges canvas to sit between
+// nodes and labels while a selection is active, restore on clear.
+// This is the only way — sigma's zIndex setting only orders
+// within edges or within nodes, not across them.
+function liftEdgesAboveNodes() {
+  if (!sigma) return
+  const c = sigma.getCanvases()
+  if (c.labels && c.edges) c.labels.before(c.edges)
+}
+function restoreEdgesBelowNodes() {
+  if (!sigma) return
+  const c = sigma.getCanvases()
+  if (c.edges && sigma.container) sigma.container.prepend(c.edges)
+}
+
+// Click a node → set selection state, sigma reducers handle the
+// dim/highlight. Mirrors /knowledge-graph; no graph rebuild because
+// the halo expansion in ``rebuildForCurrentFilter`` already keeps
+// 1-hop neighbours on the canvas.
+function selectNode(nodeId) {
+  selectedNodeId = nodeId
+  neighborSet = new Set()
+  if (graph.value?.hasNode(nodeId)) {
+    graph.value.forEachNeighbor(nodeId, (n) => neighborSet.add(n))
+  }
+  neighborSet.add(nodeId)
+  liftEdgesAboveNodes()
+  sigma?.refresh()
+}
+
+function clearSelection() {
+  if (!selectedNodeId) return
+  selectedNodeId = null
+  neighborSet = new Set()
+  restoreEdgesBelowNodes()
+  sigma?.refresh()
+}
+
 function destroySigma() {
+  // Drop selection state along with the sigma instance — otherwise
+  // the next graph build inherits a selection pointing at a node
+  // that no longer exists, and the reducer dims everything.
+  selectedNodeId = null
+  neighborSet = new Set()
+  hoveredNode = null
   try { fa2?.stop() } catch {}
   fa2 = null
   try { sigma?.kill() } catch {}
@@ -249,6 +452,10 @@ watch(() => props.docId, load, { immediate: true })
 // and re-runs forceAtlas2) instead of dimming. Cheaper conceptually
 // and makes the camera land tightly on the filtered cluster.
 watch(() => props.activeChunkId, rebuildForCurrentFilter)
+// Theme toggle: rebuild so edge/label colours pick up the new
+// palette. Cheaper than the main KG page's reducer-tweak path
+// because the small panel rebuilds quickly anyway.
+watch(isDark, rebuildForCurrentFilter)
 
 onBeforeUnmount(destroySigma)
 </script>

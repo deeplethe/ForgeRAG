@@ -370,6 +370,10 @@ function initSigma(g) {
   })
 
   // ── Node reducers for highlight / dim ──
+  // Non-neighbours keep their full size + colour family — only the
+  // colour is dimmed and the label dropped. Occlusion of focus
+  // edges by these dim circles is solved at the canvas-stacking
+  // level (see ``liftEdgesAboveNodes``) rather than here.
   sigma.setSetting('nodeReducer', (node, data) => {
     const res = { ...data }
     if (selectedId) {
@@ -476,6 +480,24 @@ function initSigma(g) {
   setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 5000)
 }
 
+// Sigma stacks its 7 canvas layers in DOM order; the edges canvas
+// sits below the nodes canvas by default, so dim non-neighbours
+// occlude focusEdge lines crossing them. zIndex on individual
+// edges/nodes only orders WITHIN a layer, never across them — the
+// only fix is to reorder the canvas elements themselves while a
+// selection is active. Restore on clear so the resting view keeps
+// its normal "lines under nodes" feel.
+function liftEdgesAboveNodes() {
+  if (!sigma) return
+  const c = sigma.getCanvases()
+  if (c.labels && c.edges) c.labels.before(c.edges)
+}
+function restoreEdgesBelowNodes() {
+  if (!sigma) return
+  const c = sigma.getCanvases()
+  if (c.edges && sigma.container) sigma.container.prepend(c.edges)
+}
+
 function selectNode(nodeId) {
   selectedId = nodeId
   // Build neighbor set
@@ -496,6 +518,7 @@ function selectNode(nodeId) {
     source_doc_ids: attrs?.sourceDocIds || [],
   }
   loadEntityDetail(nodeId)
+  liftEdgesAboveNodes()
   sigma?.refresh()
   // Sync to URL
   router.replace({ query: { node: nodeId } })
@@ -507,6 +530,7 @@ function clearSelection() {
   selectedNode.value = null
   selectedDetail.value = null
   closeChunkPanel()
+  restoreEdgesBelowNodes()
   sigma?.refresh()
   router.replace({ query: {} })
 }
