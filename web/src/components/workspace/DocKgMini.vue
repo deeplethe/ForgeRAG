@@ -17,6 +17,7 @@
 import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import Graph from 'graphology'
 import Sigma from 'sigma'
+import { EdgeDoubleArrowProgram } from 'sigma/rendering'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { circlepack, circular } from 'graphology-layout'
 import { getGraphByDoc } from '@/api'
@@ -80,13 +81,6 @@ const TYPE_COLORS = {
 }
 function typeFill(type) {
   return TYPE_COLORS[(type || '').toUpperCase()] || '#6b7280'
-}
-
-// Truncate keyword/description text used as an edge label so even a
-// dense subgraph stays legible in the small pane.
-function truncate(s, n = 18) {
-  if (!s) return ''
-  return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
 const counts = ref({ entities: 0, relations: 0 })
@@ -249,24 +243,68 @@ function buildGraph(rawNodes, rawEdges) {
     circular.assign(g, { scale: 100 })
   }
 
-  // When the filter is active we surface relation keywords as edge
-  // labels so the tiny subgraph reads as "X — verb-phrase — Y"
-  // instead of just "two dots and a line". Labels are off in the
-  // full-doc view (would clutter on a 50+ edge graph).
+  // Edge build with bidirectional folding: when both A→B and B→A
+  // exist (with possibly different keywords), we collapse them into
+  // a single edge rendered with arrowheads on both ends so the two
+  // directions don't visually overlap on the same line. Keywords
+  // are joined; provenance (source_chunk_ids / source_doc_ids) is
+  // unioned so the chunk-strict filter still finds the merged edge
+  // when either original direction sourced this chunk.
   const edgeColor = graphColors().defaultEdge
-  const edgeKeys = new Set()
+  const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`)
+  const buckets = new Map() // pairKey -> { a, b, fwdKw, bwdKw, srcChunks, srcDocs }
   for (const e of rawEdges) {
     if (!g.hasNode(e.source) || !g.hasNode(e.target)) continue
-    const k = `${e.source}->${e.target}`
-    if (edgeKeys.has(k)) continue
-    edgeKeys.add(k)
-    g.addEdge(e.source, e.target, {
-      type: 'arrow',
+    const k = pairKey(e.source, e.target)
+    let entry = buckets.get(k)
+    if (!entry) {
+      entry = {
+        a: e.source < e.target ? e.source : e.target,
+        b: e.source < e.target ? e.target : e.source,
+        fwdKw: '', // a → b
+        bwdKw: '', // b → a
+        srcChunks: new Set(),
+        srcDocs: new Set(),
+        fwdDesc: '',
+        bwdDesc: '',
+      }
+      buckets.set(k, entry)
+    }
+    const isForward = e.source === entry.a
+    if (isForward) {
+      entry.fwdKw = e.keywords || entry.fwdKw
+      entry.fwdDesc = e.description || entry.fwdDesc
+    } else {
+      entry.bwdKw = e.keywords || entry.bwdKw
+      entry.bwdDesc = e.description || entry.bwdDesc
+    }
+    for (const cid of e.source_chunk_ids || []) entry.srcChunks.add(cid)
+    for (const did of e.source_doc_ids || []) entry.srcDocs.add(did)
+  }
+  for (const entry of buckets.values()) {
+    const bidirectional = entry.fwdKw !== '' && entry.bwdKw !== ''
+    // For bidirectional, join with " ↔ " so the label reads cleanly;
+    // single-direction edges keep their original keyword unchanged.
+    const mergedKw = bidirectional
+      ? `${entry.fwdKw} ↔ ${entry.bwdKw}`
+      : entry.fwdKw || entry.bwdKw
+    const mergedDesc = bidirectional
+      ? `${entry.fwdDesc} | ${entry.bwdDesc}`.trim()
+      : entry.fwdDesc || entry.bwdDesc
+    g.addEdge(entry.a, entry.b, {
+      type: bidirectional ? 'doubleArrow' : 'arrow',
       size: 0.6,
       color: edgeColor,
-      label: filtered ? truncate(e.keywords || e.description) : '',
-      keywords: e.keywords || '',
-      description: e.description || '',
+      // Pass the full keyword unchanged when filtered — sigma's
+      // ``drawStraightEdgeLabel`` measures the actual edge pixel
+      // length and ellipsizes only when the text doesn't fit. Our
+      // own pre-truncation was double-clipping (always at 17 chars)
+      // and stomped on edges where the full keyword would have fit.
+      label: filtered ? mergedKw : '',
+      keywords: mergedKw,
+      description: mergedDesc,
+      source_chunk_ids: [...entry.srcChunks],
+      source_doc_ids: [...entry.srcDocs],
     })
   }
 
@@ -283,6 +321,13 @@ function initSigma(g) {
     defaultNodeColor: '#6b7280',
     defaultEdgeColor: c.defaultEdge,
     defaultEdgeType: 'arrow',
+    // Register the bidirectional renderer so edges of ``type:
+    // 'doubleArrow'`` (used after pair-folding above) draw with
+    // arrowheads on both ends. Sigma merges this with its built-in
+    // edge program map (arrow/line/rectangle stay available).
+    edgeProgramClasses: {
+      doubleArrow: EdgeDoubleArrowProgram,
+    },
     renderEdgeLabels: filtered,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
     edgeLabelSize: 10,
