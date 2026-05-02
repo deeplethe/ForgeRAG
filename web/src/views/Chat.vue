@@ -848,14 +848,18 @@ function onTraceClick(m) {
 
       <!-- MESSAGES -->
       <template v-else>
-        <div ref="chatEl" class="flex-1 overflow-y-auto pl-6 pr-14 py-6">
-          <!-- All three visual columns — message blocks, chip strip,
-               and input box — share the same OUTER left edge inside
-               ``max-w-2xl mx-auto``. The textarea text inside the
-               input box is offset another 16px+1px right by its own
-               ``px-4`` + border, but the user reads visual-container
-               boundaries (where the rounded box edge sits) more
-               than text-glyph positions, so we leave that be. -->
+        <!-- ``scrollbar-gutter: stable both-edges`` makes the
+             vertical scrollbar reserve space on BOTH sides of the
+             scroll container (10px on each, even when not scrolling).
+             Without it the scrollbar eats 10px from the right of the
+             content area, and the centred ``max-w-2xl`` inner wrapper
+             sits 5px (= half the scrollbar width) LEFT of the input
+             box's inner wrapper below — visible as a tiny but
+             noticeable misalignment between message blocks and input
+             box edges. ``both-edges`` symmetrises the padding so the
+             two centred wrappers land at exactly the same X. -->
+        <div ref="chatEl" class="flex-1 overflow-y-auto pl-6 pr-14 py-6"
+             style="scrollbar-gutter: stable both-edges">
           <div class="max-w-2xl mx-auto space-y-4">
             <div v-for="(m, i) in msgs" :key="i" class="fadein">
               <!-- User -->
