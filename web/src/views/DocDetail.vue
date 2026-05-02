@@ -23,8 +23,9 @@
   iteration that will render entities scoped to this document.
 -->
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import {
   blockImageUrl,
   fileDownloadUrl,
@@ -91,6 +92,7 @@ const kgCounts = ref(null)
 const expandedChunks = reactive({})
 function toggleChunkExpand(chunkId) {
   expandedChunks[chunkId] = !expandedChunks[chunkId]
+  invalidateChunkSize(chunkId)
 }
 function chunkImageUrls(c) {
   // Image-type chunks have one or more block_ids that point to
@@ -294,10 +296,11 @@ async function pollOnce() {
     const fetches = []
     if (phases.value.parsed && allBlocks.value.length === 0) fetches.push(loadBlocks())
     if (phases.value.structured && !tree.value) fetches.push(loadTree())
-    // Always refresh chunks while not fully ready — count grows in
-    // chunks during ingest, and chunk role tags can change after KG
-    // post-processing.
-    if (!fullyReady.value) fetches.push(loadChunks())
+    // While the doc isn't fully ready, fetch only the chunks past
+    // what's already loaded (append-only during ingest). The KG-done
+    // watcher below issues a one-shot full reload to pick up role
+    // tags that get backfilled when KG extraction finishes.
+    if (!fullyReady.value) fetches.push(loadChunks({ incremental: true }))
     if (fetches.length) await Promise.all(fetches)
   } catch (e) {
     console.warn('poll failed:', e)
@@ -313,15 +316,32 @@ async function loadTree() {
   }
 }
 
-async function loadChunks() {
+// `incremental: true` only fetches chunks past what's already loaded
+// (uses ``offset = chunks.value.length``). Safe during ingest because
+// chunks are append-only — no reordering, no deletion mid-pipeline.
+// The default (`incremental: false`) does a full reload, which we
+// trigger once on initial open and once on KG completion (chunk role
+// tags get backfilled at that boundary).
+async function loadChunks({ incremental = false } = {}) {
   try {
-    // Pull the full set so chunk-by-page filtering / cross-panel
-    // navigation has every entry available client-side.
+    if (incremental) {
+      const off = chunks.value.length
+      const r = await listChunks(props.docId, { limit: 500, offset: off })
+      const items = r.items || []
+      const total = r.total || 0
+      // Defensive: if server reports fewer rows than we have locally,
+      // a reparse must have wiped + restarted. Drop to a full reload.
+      if (total < chunks.value.length) {
+        return loadChunks({ incremental: false })
+      }
+      if (items.length) chunks.value = chunks.value.concat(items)
+      // If more remain after this batch, schedule another incremental
+      // fetch on the next poll tick (rather than blocking here).
+      return
+    }
     const all = []
     let off = 0
     const BATCH = 500
-    // Hard cap loop iterations as a defensive measure against a
-    // malformed total field (shouldn't happen, but keeps us safe).
     for (let i = 0; i < 100; i++) {
       const r = await listChunks(props.docId, { limit: BATCH, offset: off })
       all.push(...(r.items || []))
@@ -330,7 +350,7 @@ async function loadChunks() {
     }
     chunks.value = all
   } catch {
-    chunks.value = []
+    if (!incremental) chunks.value = []
   }
 }
 
@@ -398,17 +418,56 @@ function toggleNode(nodeId) {
   else collapsedNodes.add(nodeId)
 }
 
-// Track chunk-row DOM refs so we can scroll the chunks pane to the
-// chunk a PDF click resolved to.
-const chunkRefs = new Map()
-function setChunkRef(chunkId, el) {
-  if (el) chunkRefs.set(chunkId, el)
-  else chunkRefs.delete(chunkId)
+// ── Virtualized chunks list ─────────────────────────────────────
+// Off-screen rows aren't in the DOM, so the old chunkRefs-based
+// scroll-into-view doesn't work for arbitrary targets. The
+// virtualizer's ``scrollToIndex`` handles this — it figures out
+// where the row will be (using cached or estimated heights) and
+// scrolls there, then re-measures once the row is mounted.
+const chunksScrollRef = ref(null)
+// IMPORTANT: pass options as a `computed` so reactive deps (here:
+// ``chunks.value.length`` driving ``count``) trigger the
+// virtualizer's internal ``setOptions`` watcher. Passing
+// ``count: computed(...)`` directly does NOT work — the library
+// only ``unref``s the outer options, leaving inner ComputedRefs
+// un-unwrapped, and the virtualizer gets ``count: undefined``.
+const chunksVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: chunks.value.length,
+    getScrollElement: () => chunksScrollRef.value,
+    // ~70px is a reasonable median for a clamped chunk row (header
+    // strip + 2 lines of body + action row + 1px border). Real rows
+    // are auto-measured on mount via ``measureElement`` ref below,
+    // so this only affects pre-render layout estimates.
+    estimateSize: () => 70,
+    overscan: 8,
+  })),
+)
+function measureChunkEl(el) {
+  if (el) chunksVirtualizer.value.measureElement(el)
 }
 function scrollToChunk(chunkId) {
-  const el = chunkRefs.get(chunkId)
-  if (!el) return
-  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  const idx = chunks.value.findIndex((c) => c.chunk_id === chunkId)
+  if (idx < 0) return
+  // ``align: 'center'`` keeps the target away from sticky edges; the
+  // virtualizer falls back to a sane no-op if the scroll element
+  // isn't mounted yet (e.g. the chunks pane is still in skeleton).
+  chunksVirtualizer.value.scrollToIndex(idx, { align: 'center' })
+}
+// When a chunk row's expanded state flips, its measured height
+// changes — tell the virtualizer to invalidate the cached size on
+// the next tick, otherwise the abs-positioned siblings overlap.
+function invalidateChunkSize(chunkId) {
+  const idx = chunks.value.findIndex((c) => c.chunk_id === chunkId)
+  if (idx < 0) return
+  nextTick(() => {
+    const v = chunksVirtualizer.value
+    // ``measureElement`` covers visible rows automatically; the
+    // explicit re-measure here keeps the height cache consistent
+    // for chunks the user just collapsed but is still scrolling
+    // past.
+    if (v?.resizeItem) v.resizeItem(idx)
+  })
 }
 
 async function onPdfClick({ page_no, x, y }) {
@@ -480,6 +539,37 @@ async function onReparse() {
 watch(fullyReady, (v) => {
   if (v) _optimisticReparse.value = false
 })
+
+// One-shot full reload when KG extraction transitions to done — chunk
+// role tags get backfilled at that boundary, and the incremental
+// poll path only appends, never re-fetches existing rows.
+watch(
+  () => phases.value.kgDone,
+  (now, prev) => {
+    if (now && !prev && doc.value && chunks.value.length) {
+      loadChunks({ incremental: false })
+    }
+  },
+)
+
+// Reparse safety: when the active parse version changes, the old
+// chunks (from the previous parse) are no longer the source of
+// truth — clear the array and trigger a full reload. Without this,
+// the incremental poll path would graft new-version chunks onto a
+// stale prefix from the old version.
+watch(
+  () => doc.value?.active_parse_version,
+  (now, prev) => {
+    if (now != null && prev != null && now !== prev) {
+      chunks.value = []
+      allBlocks.value = []
+      tree.value = null
+      loadChunks({ incremental: false })
+      loadBlocks()
+      loadTree()
+    }
+  },
+)
 
 watch(() => props.docId, loadAll, { immediate: true })
 </script>
@@ -636,7 +726,12 @@ watch(() => props.docId, loadAll, { immediate: true })
           <div class="pane-hdr">
             <span class="pane-title">Knowledge graph</span>
             <span class="pane-meta">
-              {{ kgCounts?.entities ?? doc?.kg_entity_count ?? 0 }} entities ·
+              <template v-if="kgCounts?.total != null && kgCounts.total > kgCounts.entities">
+                {{ kgCounts.entities }}/{{ kgCounts.total }} entities ·
+              </template>
+              <template v-else>
+                {{ kgCounts?.entities ?? doc?.kg_entity_count ?? 0 }} entities ·
+              </template>
               {{ kgCounts?.relations ?? doc?.kg_relation_count ?? 0 }} relations
             </span>
           </div>
@@ -660,13 +755,20 @@ watch(() => props.docId, loadAll, { immediate: true })
           </div>
         </section>
 
-        <!-- Chunks list -->
+        <!-- Chunks list — virtualized via @tanstack/vue-virtual.
+             Only rows in the visible window (+ overscan) are mounted,
+             which keeps DOM size O(viewport) regardless of how many
+             chunks the doc has. Heights are auto-measured via
+             ``measureChunkEl`` so variable-length chunks lay out
+             correctly. ``scrollToChunk(chunkId)`` (used by the PDF
+             click handler) calls ``virtualizer.scrollToIndex`` and
+             re-measures on land. -->
         <section class="pane pane--chunks">
           <div class="pane-hdr">
             <span class="pane-title">Chunks</span>
             <span class="pane-meta">{{ chunks.length }} total</span>
           </div>
-          <div class="pane-body pane-body--scroll">
+          <div ref="chunksScrollRef" class="pane-body pane-body--scroll">
             <div
               v-if="!chunks.length && inFlight && !phases.chunked"
               class="pane-empty"
@@ -679,56 +781,64 @@ watch(() => props.docId, loadAll, { immediate: true })
             <div v-else-if="loading && !chunks.length" class="pane-empty">Loading…</div>
             <div v-else-if="!chunks.length" class="pane-empty">No chunks</div>
             <div
-              v-for="c in chunks"
-              :key="c.chunk_id"
-              :ref="(el) => setChunkRef(c.chunk_id, el)"
-              class="chunk-row group"
-              :class="{
-                'chunk-row--active': activeChunkId === c.chunk_id,
-                'chunk-row--expanded': expandedChunks[c.chunk_id],
-              }"
-              @click="onClickChunk(c)"
+              v-else
+              class="chunks-virt-spacer"
+              :style="{ height: `${chunksVirtualizer.getTotalSize()}px` }"
             >
-              <div class="chunk-row__hdr">
-                <span class="chunk-row__page">p.{{ c.page_start }}<template v-if="c.page_end && c.page_end !== c.page_start">–{{ c.page_end }}</template></span>
-                <span v-if="c.content_type && c.content_type !== 'text'" class="chunk-row__type">{{ c.content_type }}</span>
-                <span class="chunk-row__tok">{{ c.token_count }}t</span>
-              </div>
               <div
-                class="chunk-row__body"
-                :class="{ 'chunk-row__body--clamp': !expandedChunks[c.chunk_id] }"
-              >{{ c.content }}</div>
-
-              <!-- Inline image preview when expanded. Uses the
-                   ``blockImageUrl`` endpoint to fetch the image crop. -->
-              <div
-                v-if="expandedChunks[c.chunk_id] && c.content_type === 'image'"
-                class="chunk-row__figs"
+                v-for="vRow in chunksVirtualizer.getVirtualItems()"
+                :key="vRow.key"
+                :data-index="vRow.index"
+                :ref="measureChunkEl"
+                class="chunks-virt-row chunk-row group"
+                :class="{
+                  'chunk-row--active': activeChunkId === chunks[vRow.index].chunk_id,
+                  'chunk-row--expanded': expandedChunks[chunks[vRow.index].chunk_id],
+                }"
+                :style="{ transform: `translateY(${vRow.start}px)` }"
+                @click="onClickChunk(chunks[vRow.index])"
               >
-                <img
-                  v-for="url in chunkImageUrls(c)"
-                  :key="url"
-                  :src="url"
-                  class="chunk-row__fig"
-                  loading="lazy"
-                  @error="$event.target.style.display = 'none'"
-                />
-              </div>
+                <div class="chunk-row__hdr">
+                  <span class="chunk-row__page">p.{{ chunks[vRow.index].page_start }}<template v-if="chunks[vRow.index].page_end && chunks[vRow.index].page_end !== chunks[vRow.index].page_start">–{{ chunks[vRow.index].page_end }}</template></span>
+                  <span v-if="chunks[vRow.index].content_type && chunks[vRow.index].content_type !== 'text'" class="chunk-row__type">{{ chunks[vRow.index].content_type }}</span>
+                  <span class="chunk-row__tok">{{ chunks[vRow.index].token_count }}t</span>
+                </div>
+                <div
+                  class="chunk-row__body"
+                  :class="{ 'chunk-row__body--clamp': !expandedChunks[chunks[vRow.index].chunk_id] }"
+                >{{ chunks[vRow.index].content }}</div>
 
-              <!-- Hover-revealed expand / collapse affordance.
-                   Stays out of the way at rest; click reveals the
-                   full chunk content + any attached image crops. -->
-              <div class="chunk-row__action">
-                <button
-                  v-show="!expandedChunks[c.chunk_id]"
-                  class="chunk-row__view-btn"
-                  @click.stop="toggleChunkExpand(c.chunk_id)"
-                >view detail</button>
-                <button
-                  v-show="expandedChunks[c.chunk_id]"
-                  class="chunk-row__close-btn"
-                  @click.stop="toggleChunkExpand(c.chunk_id)"
-                >collapse</button>
+                <!-- Inline image preview when expanded. Uses the
+                     ``blockImageUrl`` endpoint to fetch the image crop. -->
+                <div
+                  v-if="expandedChunks[chunks[vRow.index].chunk_id] && chunks[vRow.index].content_type === 'image'"
+                  class="chunk-row__figs"
+                >
+                  <img
+                    v-for="url in chunkImageUrls(chunks[vRow.index])"
+                    :key="url"
+                    :src="url"
+                    class="chunk-row__fig"
+                    loading="lazy"
+                    @error="$event.target.style.display = 'none'"
+                  />
+                </div>
+
+                <!-- Hover-revealed expand / collapse affordance.
+                     Stays out of the way at rest; click reveals the
+                     full chunk content + any attached image crops. -->
+                <div class="chunk-row__action">
+                  <button
+                    v-show="!expandedChunks[chunks[vRow.index].chunk_id]"
+                    class="chunk-row__view-btn"
+                    @click.stop="toggleChunkExpand(chunks[vRow.index].chunk_id)"
+                  >view detail</button>
+                  <button
+                    v-show="expandedChunks[chunks[vRow.index].chunk_id]"
+                    class="chunk-row__close-btn"
+                    @click.stop="toggleChunkExpand(chunks[vRow.index].chunk_id)"
+                  >collapse</button>
+                </div>
               </div>
             </div>
           </div>
@@ -998,6 +1108,23 @@ watch(() => props.docId, loadAll, { immediate: true })
   align-items: center;
   justify-content: center;
   padding: 24px;
+}
+
+/* Virtualized scrolling: the spacer is the full virtual height (so
+   the scrollbar is sized correctly), and rows are absolutely
+   positioned inside it via translateY from the virtualizer. */
+.chunks-virt-spacer {
+  position: relative;
+  width: 100%;
+}
+.chunks-virt-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* ``transition: background`` from .chunk-row stays; transform is
+     applied per-frame by the virtualizer and shouldn't animate. */
+  will-change: transform;
 }
 
 /* Chunk row */
