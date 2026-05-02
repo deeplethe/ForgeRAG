@@ -860,7 +860,12 @@ function onTraceClick(m) {
              two centred wrappers land at exactly the same X. -->
         <div ref="chatEl" class="flex-1 overflow-y-auto pl-6 pr-14 py-6"
              style="scrollbar-gutter: stable both-edges">
-          <div class="max-w-2xl mx-auto space-y-4">
+          <!-- Slightly wider than the default ``max-w-2xl`` (672px)
+               so message text and tables breathe a bit. The input
+               wrapper below sits one notch wider still (744 vs 720),
+               so the input box visually frames the conversation —
+               ChatGPT-style. -->
+          <div class="max-w-[720px] mx-auto space-y-4">
             <div v-for="(m, i) in msgs" :key="i" class="fadein">
               <!-- User -->
               <div v-if="m.role === 'user'" class="flex justify-end mb-2">
@@ -1013,7 +1018,10 @@ function onTraceClick(m) {
 
         <!-- Bottom input -->
         <div class="pl-6 pr-14 pb-4 border-t border-line bg-bg">
-          <div class="max-w-2xl mx-auto pt-3">
+          <!-- 744px = 24px wider than the messages column (720px),
+               12px on each side. Subtle visual cue that the input
+               sits "around" the conversation rather than inside it. -->
+          <div class="max-w-[744px] mx-auto pt-3">
             <!-- Scope + Tools chips above the input. Aligned to the
                  input box's outer left edge (no leading padding) so
                  the chip cards form a single straight visual rail
