@@ -636,7 +636,9 @@ class Neo4jGraphStore(GraphStore):
             [r IN rels  | {source: startNode(r).entity_id,
                            target: endNode(r).entity_id,
                            keywords: r.keywords,
-                           weight: r.weight}] AS edges
+                           weight: r.weight,
+                           source_doc_ids: r.source_doc_ids,
+                           source_chunk_ids: r.source_chunk_ids}] AS edges
         """
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, entity_ids=entity_ids)
@@ -669,7 +671,9 @@ class Neo4jGraphStore(GraphStore):
                            target: endNode(r).entity_id,
                            keywords: r.keywords,
                            description: r.description,
-                           weight: r.weight}] AS edges
+                           weight: r.weight,
+                           source_doc_ids: r.source_doc_ids,
+                           source_chunk_ids: r.source_chunk_ids}] AS edges
         """
         with self._driver.session(database=self._database) as s:
             result = s.run(cypher, limit=limit)

@@ -413,6 +413,8 @@ class NetworkXGraphStore(GraphStore):
                             "target": rel.target_entity,
                             "keywords": rel.keywords,
                             "weight": rel.weight,
+                            "source_doc_ids": sorted(rel.source_doc_ids),
+                            "source_chunk_ids": sorted(rel.source_chunk_ids),
                         }
                     )
 
@@ -457,6 +459,8 @@ class NetworkXGraphStore(GraphStore):
                             "keywords": rel.keywords,
                             "description": rel.description,
                             "weight": rel.weight,
+                            "source_doc_ids": sorted(rel.source_doc_ids),
+                            "source_chunk_ids": sorted(rel.source_chunk_ids),
                         }
                     )
 
