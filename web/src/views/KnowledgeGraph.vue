@@ -69,14 +69,15 @@ const selectedNode = ref(null)
 const selectedDetail = ref(null)
 const detailLoading = ref(false)
 
-// Right-edge offset for the legend so it never tucks under the
-// right detail / chunk panels. ``0.75rem`` matches ``right-3`` for
-// the empty-panel case; +18rem for the detail panel (w-72) and
-// another +24rem for the chunk panel (w-96) when both are open.
+// Right-edge offset for the legend strip. With no panel open, the
+// strip runs all the way to the canvas edge (right: 0). When a
+// panel is open, the strip ends exactly at the panel's left border
+// — no gap, no overlap, the two surfaces share the vertical line.
+// 18rem = w-72 detail panel, +24rem when chunk panel is also open.
 const legendRight = computed(() => {
-  if (chunkPanelDocId.value && selectedNode.value) return 'calc(0.75rem + 18rem + 24rem)'
-  if (selectedNode.value) return 'calc(0.75rem + 18rem)'
-  return '0.75rem'
+  if (chunkPanelDocId.value && selectedNode.value) return 'calc(18rem + 24rem)'
+  if (selectedNode.value) return '18rem'
+  return '0'
 })
 
 // Relations sorted by weight desc — strongest connections float to
@@ -218,6 +219,7 @@ async function loadGraph() {
 function applyTypeFilter(type) {
   entityTypeFilter.value = type   // null clears the filter
   showTypeMenu.value = false
+  showLayoutMenu.value = false
   loadGraph()
 }
 
@@ -623,6 +625,15 @@ function initSigma(g) {
       outboundAttractionDistribution: true,
     },
   })
+  // Default layout is Force Atlas — kick FA2 off after the
+  // circlepack seed so users land on a force-settled view. The
+  // seed gives an instant first paint; FA2 then refines for ~4 s
+  // before stopping itself. If the user picked a different layout
+  // before the fetch returned, respect that.
+  if (activeLayout.value === 'Force Atlas') {
+    fa2.start()
+    setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 4000)
+  }
 }
 
 // Sigma stacks its 7 canvas layers in DOM order. By default
@@ -719,13 +730,14 @@ function reheat() {
 }
 
 /* ── Layout switcher ── */
-const activeLayout = ref('Circle Pack')
+const activeLayout = ref('Force Atlas')
 const showLayoutMenu = ref(false)
 const LAYOUTS = ['Force Atlas', 'Force Directed', 'Circular', 'Circle Pack', 'Random', 'Noverlap']
 
 function applyLayout(name) {
   activeLayout.value = name
   showLayoutMenu.value = false
+  showTypeMenu.value = false
   const g = graph.value
   if (!g || !sigma) return
 
@@ -786,16 +798,38 @@ function onKeyDown(e) {
     searchInput.value?.select?.()
   }
   if (e.key === 'Escape') {
-    if (showLayoutMenu.value) showLayoutMenu.value = false
+    if (showLayoutMenu.value || showTypeMenu.value) {
+      showLayoutMenu.value = false
+      showTypeMenu.value = false
+    }
     else if (searchQuery.value) searchQuery.value = ''
     else if (chunkPanelDocId.value) closeChunkPanel()
     else if (selectedNode.value) clearSelection()
   }
 }
 
+// Open one of the toolbar dropdowns and close any other that's
+// open. Avoids the "two menus open at once" bug where the Layout
+// list and the Type list could overlap each other.
+function toggleLayoutMenu() {
+  const next = !showLayoutMenu.value
+  showLayoutMenu.value = next
+  if (next) showTypeMenu.value = false
+}
+function toggleTypeMenu() {
+  const next = !showTypeMenu.value
+  showTypeMenu.value = next
+  if (next) showLayoutMenu.value = false
+}
+
 function onClickOutside(e) {
-  if (showLayoutMenu.value && !e.target.closest('.relative')) {
+  // Click outside ANY ``.kg-dropdown`` wrapper closes whichever menu
+  // is open. ``.relative`` was too broad — every relative ancestor
+  // counted as "inside", so clicking inside the Type wrapper used
+  // to leave the Layout menu open.
+  if ((showLayoutMenu.value || showTypeMenu.value) && !e.target.closest('.kg-dropdown')) {
     showLayoutMenu.value = false
+    showTypeMenu.value = false
   }
 }
 
@@ -949,8 +983,8 @@ watch(isDark, () => {
         <div class="w-px h-4 bg-line mx-1"></div>
 
         <!-- Layout selector -->
-        <div class="relative">
-          <button @click="showLayoutMenu = !showLayoutMenu"
+        <div class="kg-dropdown relative">
+          <button @click="toggleLayoutMenu"
             class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
             <span>{{ activeLayout }}</span>
             <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -975,8 +1009,8 @@ watch(isDark, () => {
              every type seen in the unfiltered load + an "All"
              reset. Backend re-fetch on change so anchors are picked
              from the filtered pool, not just dimmed client-side. -->
-        <div class="relative" v-if="availableTypes.length > 1">
-          <button @click="showTypeMenu = !showTypeMenu"
+        <div class="kg-dropdown relative" v-if="availableTypes.length > 1">
+          <button @click="toggleTypeMenu"
             class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] hover:bg-bg-hover transition-colors"
             :class="entityTypeFilter ? 'text-t1' : 'text-t3 hover:text-t1'">
             <span v-if="entityTypeFilter" class="w-1.5 h-1.5 rounded-full" :style="{ background: typeFill(entityTypeFilter) }"></span>
@@ -1070,26 +1104,33 @@ watch(isDark, () => {
              onBeforeRouteLeave — bypasses Vue's async reactivity so the
              cover is guaranteed to paint before sigma is killed.) -->
 
-        <!-- Legend — anchored bottom with both ``left`` and ``right``
-             constraints so flex-wrap can wrap inside the visible
-             canvas area instead of running under the right detail
-             panel. ``right`` shifts dynamically when a panel is open
-             (panel = 18rem = 288px; +chunk panel = 24rem on top of
-             that). Without the right constraint, the chip strip
-             extended under the panel and got clipped. -->
+        <!-- Legend — flush bottom strip, edge-to-edge along the
+             canvas (left:0 = aligned with the sidebar's right edge,
+             which the user-card in the sidebar bottom also sits at;
+             right shifts dynamically to stop at the detail / chunk
+             panel's left border so the two surfaces meet cleanly
+             instead of leaving an awkward floating-pill gap).
+             ``border-t`` only — matches the upload-bar idiom
+             ("Vercel uses a crisp 1px border instead"). -->
         <div v-if="entityTypes.length"
-          class="kg-legend absolute bottom-3 left-3 backdrop-blur-sm border border-line rounded-md px-3 py-2 z-10 pointer-events-none"
+          class="kg-legend absolute bottom-0 left-0 border-t border-line bg-bg/80 backdrop-blur-sm pl-4 pr-3 py-2 z-10 pointer-events-none flex items-center gap-3"
           :style="{ right: legendRight }">
-          <div class="flex flex-wrap gap-x-3 gap-y-1">
+          <!-- Type chips wrap on narrow widths; zoom pill stays
+               anchored on the right of the strip via ``ml-auto``. -->
+          <div class="flex flex-wrap gap-x-3 gap-y-1 flex-1 min-w-0">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
               <span class="text-[9px] text-t3 uppercase tracking-wide font-medium">{{ t }}</span>
             </div>
           </div>
+          <span class="text-[9px] text-t3 font-mono tabular-nums shrink-0 ml-auto">{{ zoomLevel }}%</span>
         </div>
 
-        <!-- Zoom -->
-        <div class="kg-overlay-pill absolute bottom-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
+        <!-- Standalone zoom pill — only when the legend strip isn't
+             rendered (entityTypes empty). Otherwise zoom lives
+             inline on the right of the strip above. -->
+        <div v-if="!entityTypes.length"
+          class="kg-overlay-pill absolute bottom-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
