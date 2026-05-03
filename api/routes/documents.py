@@ -37,6 +37,12 @@ router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
 def _doc_out(row: dict, state: AppState | None = None) -> DocumentOut:
     out = DocumentOut(**{k: row[k] for k in DocumentOut.model_fields if k in row})
+    # Surface pages_json as a structured ``pages`` field. Spreadsheet
+    # docs need the sheet-name metadata for the frontend tab strip;
+    # PDFs return raw geometry which the viewer ignores.
+    pages = row.get("pages_json")
+    if isinstance(pages, list):
+        out.pages = pages
     if state is not None:
         pv = row.get("active_parse_version", 1)
         doc_id = row["doc_id"]

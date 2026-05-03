@@ -113,6 +113,11 @@ class DocumentOut(BaseModel):
     num_chunks: int | None = None
     file_name: str | None = None
     file_size_bytes: int | None = None
+    # Per-page metadata. Populated from ``pages_json`` on the
+    # document row. Spreadsheet docs use this to expose sheet names
+    # for the frontend tab strip; PDFs return the bare list with
+    # ``name=None``.
+    pages: list[dict] | None = None
 
 
 class IngestResponse(BaseModel):
