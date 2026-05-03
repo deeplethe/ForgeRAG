@@ -1113,24 +1113,20 @@ watch(isDark, () => {
              ``border-t`` only — matches the upload-bar idiom
              ("Vercel uses a crisp 1px border instead"). -->
         <div v-if="entityTypes.length"
-          class="kg-legend absolute bottom-0 left-0 border-t border-line bg-bg/80 backdrop-blur-sm pl-4 pr-3 py-2 z-10 pointer-events-none flex items-center gap-3"
+          class="kg-legend absolute bottom-0 left-0 border-t border-line bg-bg/80 backdrop-blur-sm px-4 py-2 z-10 pointer-events-none"
           :style="{ right: legendRight }">
-          <!-- Type chips wrap on narrow widths; zoom pill stays
-               anchored on the right of the strip via ``ml-auto``. -->
-          <div class="flex flex-wrap gap-x-3 gap-y-1 flex-1 min-w-0">
+          <div class="flex flex-wrap gap-x-3 gap-y-1">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
               <span class="text-[9px] text-t3 uppercase tracking-wide font-medium">{{ t }}</span>
             </div>
           </div>
-          <span class="text-[9px] text-t3 font-mono tabular-nums shrink-0 ml-auto">{{ zoomLevel }}%</span>
         </div>
 
-        <!-- Standalone zoom pill — only when the legend strip isn't
-             rendered (entityTypes empty). Otherwise zoom lives
-             inline on the right of the strip above. -->
-        <div v-if="!entityTypes.length"
-          class="kg-overlay-pill absolute bottom-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
+        <!-- Zoom % — top-right, mirrors the "showing N of M" pill in
+             the top-left so the canvas stats are bookended at the
+             top instead of crowding the bottom legend strip. -->
+        <div class="kg-overlay-pill absolute top-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
@@ -1362,14 +1358,18 @@ watch(isDark, () => {
   transform: translateX(100%);
   opacity: 0;
 }
-/* Chunk panel transition: was width-based when the panel was a
-   flex sibling; switched to transform now that it's absolute (width
-   is fixed at w-96, no layout reflow during the animation). */
+/* Chunk panel transition — short-travel fade. The previous
+   ``translateX(100%)`` slid the entire 384 px panel from outside
+   the viewport, sweeping over the detail panel before settling.
+   That read as flashy when the panel actually emerges right next
+   to where the user clicked (a doc tile inside the detail panel
+   immediately to its right). 12 px translate + opacity gives a
+   subtle "appears here" cue without the dramatic sweep. */
 .slide-chunk-enter-active, .slide-chunk-leave-active {
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition: transform 0.16s ease, opacity 0.14s ease;
 }
 .slide-chunk-enter-from, .slide-chunk-leave-to {
-  transform: translateX(100%);
+  transform: translateX(12px);
   opacity: 0;
 }
 .fade-enter-active, .fade-leave-active {
