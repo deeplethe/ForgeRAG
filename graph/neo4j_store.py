@@ -281,6 +281,40 @@ class Neo4jGraphStore(GraphStore):
         with self._driver.session(database=self._database) as s:
             s.run(cypher, entity_id=entity_id, description=description).consume()
 
+    def update_relation_description(
+        self,
+        relation_id: str,
+        description: str,
+        description_embedding: list[float] | None = None,
+    ) -> None:
+        """Replace a relation's description (+ optionally its embedding).
+
+        Refreshes ``description_embedding`` in the same Cypher write
+        when provided so the vector index sees the new vector
+        atomically with the new text. The relation_id is unique by
+        construction, so we match on the property regardless of
+        endpoint identity.
+        """
+        if description_embedding is not None:
+            cypher = """
+            MATCH ()-[r:RELATES_TO {relation_id: $relation_id}]-()
+            SET r.description = $description,
+                r.description_embedding = $description_embedding
+            """
+            params: dict[str, Any] = {
+                "relation_id": relation_id,
+                "description": description,
+                "description_embedding": description_embedding,
+            }
+        else:
+            cypher = """
+            MATCH ()-[r:RELATES_TO {relation_id: $relation_id}]-()
+            SET r.description = $description
+            """
+            params = {"relation_id": relation_id, "description": description}
+        with self._driver.session(database=self._database) as s:
+            s.run(cypher, **params).consume()
+
     def upsert_relation(self, relation: Relation) -> None:
         cypher = """
         MATCH (src:KGEntity {entity_id: $source_entity})

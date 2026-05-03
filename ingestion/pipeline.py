@@ -568,28 +568,12 @@ class IngestionPipeline:
                 max_workers=kg_cfg.max_workers,
             )
 
-            frag_thresh = getattr(kg_cfg, "merge_description_threshold", 6)
-            char_thresh = getattr(kg_cfg, "merge_description_max_chars", 2000)
-            if frag_thresh > 0:
-                from ingestion.kg_extractor import consolidate_descriptions
-
-                ent_m, rel_m = consolidate_descriptions(
-                    entities,
-                    relations,
-                    model=kg_cfg.model,
-                    api_key=kg_cfg.api_key,
-                    api_base=kg_cfg.api_base,
-                    timeout=kg_cfg.timeout,
-                    fragment_threshold=frag_thresh,
-                    char_threshold=char_thresh,
-                    max_workers=kg_cfg.max_workers,
-                )
-                if ent_m or rel_m:
-                    log.info(
-                        "KG description merge: %d entities, %d relations consolidated",
-                        ent_m,
-                        rel_m,
-                    )
+            # NOTE: pre-upsert consolidation was previously run here
+            # against the per-doc extraction batch — but a single doc
+            # rarely produces ≥6 fragments per entity, so it was almost
+            # always a no-op. The post-upsert summarise phase
+            # (``_summarize_phase`` below) reads from the cumulative
+            # graph state where the bloat actually accumulates.
 
             # Always embed entity names + relation descriptions when an
             # embedder is available — the dependent retrieval features
@@ -626,16 +610,21 @@ class IngestionPipeline:
                     self.graph_store.upsert_entity(e)
                 for r in relations:
                     self.graph_store.upsert_relation(r)
-
-                if frag_thresh > 0:
-                    self._consolidate_graph_descriptions(
-                        entities,
-                        kg_cfg,
-                        frag_thresh=frag_thresh,
-                        char_thresh=char_thresh,
-                    )
             finally:
                 self.graph_store.end_batch()
+
+            # Post-upsert: compact descriptions that grew across docs.
+            # Reads from the cumulative graph state, not the per-doc
+            # batch — the cross-doc accumulation is exactly the bloat
+            # we care about. Runs OUTSIDE ``begin_batch`` so the LLM
+            # latency doesn't extend the file-backed-store batch
+            # window (NetworkX would otherwise defer the on-disk JSON
+            # rewrite for the duration of the summarise phase).
+            self._summarize_phase(
+                [e.entity_id for e in entities],
+                [r.relation_id for r in relations],
+                kg_cfg,
+            )
 
             self.rel.update_document_status(
                 doc_id,
@@ -670,55 +659,219 @@ class IngestionPipeline:
                     error_message=f"KG: {err_msg}",
                 )
 
-    def _consolidate_graph_descriptions(
+    @staticmethod
+    def _resolve_summary_env(env_var: str | None) -> str | None:
+        """Look up an env var referenced from the summary config.
+
+        Mirrors ``ingestion.kg_extractor._resolve_env`` — kept local
+        so the pipeline doesn't reach into a private helper of a
+        sibling module.
+        """
+        if not env_var:
+            return None
+        import os
+        return os.environ.get(env_var)
+
+    def _summarize_phase(
         self,
-        entities: list,
+        entity_ids: list[str],
+        relation_ids: list[str],
         kg_cfg,
-        *,
-        frag_thresh: int = 6,
-        char_thresh: int = 2000,
     ) -> None:
-        """Re-read entities from graph store after upsert and consolidate
-        descriptions that have grown too long from cross-document merges."""
+        """Post-upsert description compaction (LightRAG-style).
+
+        Re-reads each entity / relation touched by the current ingest
+        from the cumulative graph state, checks if its description has
+        crossed the summary threshold (``KGSummaryConfig`` knobs), and
+        if so calls the LLM to compact the fragment list into one
+        canonical paragraph. Re-embeds relation descriptions after
+        compaction so vector search stays consistent.
+
+        Runs outside the store's ``begin_batch`` window because the
+        LLM round-trips would otherwise extend the file-backed-store
+        flush deadline by minutes on large ingests. Concurrent: each
+        entity / relation is independent, so we fan out via a
+        ``ThreadPoolExecutor`` capped at ``summary.max_workers``.
+        """
         if self.graph_store is None:
             return
-        from ingestion.kg_extractor import _count_fragments, consolidate_descriptions
-
-        needs_merge = []
-        for e in entities:
-            stored = self.graph_store.get_entity(e.entity_id)
-            if stored is None:
-                continue
-            if _count_fragments(stored.description) >= frag_thresh or len(stored.description) >= char_thresh:
-                needs_merge.append(stored)
-
-        if not needs_merge:
+        s_cfg = getattr(kg_cfg, "summary", None)
+        if s_cfg is None or not s_cfg.enabled:
             return
 
-        ent_m, _ = consolidate_descriptions(
-            needs_merge,
-            [],
-            model=kg_cfg.model,
-            api_key=kg_cfg.api_key,
-            api_base=kg_cfg.api_base,
-            timeout=kg_cfg.timeout,
-            fragment_threshold=frag_thresh,
-            char_threshold=char_thresh,
-            max_workers=kg_cfg.max_workers,
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from graph.summarize import (
+            SummarizeConfig,
+            needs_summary,
+            split_fragments,
+            summarize_descriptions,
         )
-        # Write back consolidated descriptions via dedicated method
-        # (avoids double-append that upsert_entity would cause)
-        if ent_m > 0:
-            for e in needs_merge:
-                self.graph_store.update_entity_description(
-                    e.entity_id,
-                    e.description,
-                )
+
+        # Build the dataclass cfg from the pydantic model. ``model``
+        # falls back to the KG extraction model when unset so the
+        # default deployment uses one provider.
+        sum_cfg = SummarizeConfig(
+            enabled=s_cfg.enabled,
+            trigger_tokens=s_cfg.trigger_tokens,
+            force_on_count=s_cfg.force_on_count,
+            max_output_tokens=s_cfg.max_output_tokens,
+            context_size=s_cfg.context_size,
+            max_iterations=s_cfg.max_iterations,
+            model=s_cfg.model or kg_cfg.model,
+            api_key=s_cfg.api_key or self._resolve_summary_env(s_cfg.api_key_env) or kg_cfg.api_key,
+            api_base=s_cfg.api_base or kg_cfg.api_base,
+            timeout=s_cfg.timeout,
+            language=s_cfg.language,
+        )
+
+        # ----- Entities -----
+        ent_targets: list = []  # list[Entity]
+        for eid in dict.fromkeys(entity_ids):  # de-dupe, preserve order
+            stored = self.graph_store.get_entity(eid)
+            if stored is None:
+                continue
+            frags = split_fragments(stored.description)
+            if needs_summary(frags, sum_cfg):
+                ent_targets.append((stored, frags))
+
+        # ----- Relations -----
+        rel_targets: list = []  # list[(Relation, fragments)]
+        for rid in dict.fromkeys(relation_ids):
+            rel = self._get_relation_by_id(rid)
+            if rel is None:
+                continue
+            frags = split_fragments(rel.description)
+            if needs_summary(frags, sum_cfg):
+                rel_targets.append((rel, frags))
+
+        if not ent_targets and not rel_targets:
+            return
+
+        log.info(
+            "summarise phase: %d entities + %d relations need compaction",
+            len(ent_targets),
+            len(rel_targets),
+        )
+
+        # Concurrency: cap at the configured worker count.
+        ent_done = 0
+        rel_done = 0
+        with ThreadPoolExecutor(max_workers=max(1, s_cfg.max_workers)) as pool:
+            ent_futures = {
+                pool.submit(
+                    summarize_descriptions,
+                    name=ent.name,
+                    kind="entity",
+                    fragments=frags,
+                    cfg=sum_cfg,
+                ): ent
+                for ent, frags in ent_targets
+            }
+            rel_futures = {
+                pool.submit(
+                    summarize_descriptions,
+                    name=rel.keywords or f"{rel.source_entity[:8]}→{rel.target_entity[:8]}",
+                    kind="relation",
+                    fragments=frags,
+                    cfg=sum_cfg,
+                ): rel
+                for rel, frags in rel_targets
+            }
+
+            for fut in as_completed(ent_futures):
+                ent = ent_futures[fut]
+                try:
+                    summary = fut.result()
+                    if summary and summary != ent.description:
+                        self.graph_store.update_entity_description(
+                            ent.entity_id, summary
+                        )
+                        ent_done += 1
+                except Exception as exc:
+                    log.warning(
+                        "summarise entity '%s' failed: %s; keeping verbatim",
+                        ent.name,
+                        exc,
+                    )
+
+            for fut in as_completed(rel_futures):
+                rel = rel_futures[fut]
+                try:
+                    summary = fut.result()
+                    if not summary or summary == rel.description:
+                        continue
+                    # Re-embed the new description so relation-semantic
+                    # search reflects the canonical text. Failure here
+                    # is non-fatal — write the description anyway and
+                    # let the embedding go stale rather than skip the
+                    # compaction.
+                    new_emb: list[float] | None = None
+                    if self.embedder is not None:
+                        try:
+                            new_emb = self.embedder.embed_texts([summary])[0]
+                        except Exception:
+                            log.warning(
+                                "relation re-embed failed for %s",
+                                rel.relation_id,
+                            )
+                    self.graph_store.update_relation_description(
+                        rel.relation_id, summary, new_emb
+                    )
+                    rel_done += 1
+                except Exception as exc:
+                    log.warning(
+                        "summarise relation '%s' failed: %s; keeping verbatim",
+                        rel.keywords or rel.relation_id[:8],
+                        exc,
+                    )
+
+        if ent_done or rel_done:
             log.info(
-                "cross-document description merge: %d/%d entities consolidated",
-                ent_m,
-                len(needs_merge),
+                "summarise phase done: %d/%d entities, %d/%d relations compacted",
+                ent_done,
+                len(ent_targets),
+                rel_done,
+                len(rel_targets),
             )
+
+    def _get_relation_by_id(self, relation_id: str):
+        """Look up a relation by id across the configured graph store.
+
+        Neo4j: indexed lookup via Cypher. NetworkX: linear scan over
+        edges (no relation_id index, but post-upsert summarise hits
+        only relations actually mutated this ingest, so the scan is
+        bounded). Returns ``None`` if the relation is gone (e.g.
+        deleted between upsert and summarise — very rare).
+        """
+        gs = self.graph_store
+        if gs is None:
+            return None
+
+        # Neo4j: direct Cypher
+        if hasattr(gs, "_driver") and hasattr(gs, "_database"):
+            cypher = """
+            MATCH ()-[r:RELATES_TO {relation_id: $relation_id}]-()
+            RETURN r LIMIT 1
+            """
+            try:
+                with gs._driver.session(database=gs._database) as s:
+                    rec = s.run(cypher, relation_id=relation_id).single()
+                    if rec is None:
+                        return None
+                    from graph.neo4j_store import _relation_from_record
+
+                    return _relation_from_record(dict(rec["r"]))
+            except Exception:
+                return None
+
+        # NetworkX: scan edges
+        if hasattr(gs, "_graph"):
+            for _u, _v, data in gs._graph.edges(data=True):
+                rel = data.get("relation")
+                if rel is not None and rel.relation_id == relation_id:
+                    return rel
+        return None
 
     def _enrich_summaries(self, tree, parsed) -> int:
         """Run LLM summary enrichment using batch mode (fewer API calls)."""
