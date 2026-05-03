@@ -336,6 +336,34 @@ class IngestionPipeline:
                 self._ensure_cheap_summaries(tree, parsed)
                 self.rel.update_document_status(doc_id, enrich_status="skipped")
 
+            # ── Phase 3.5: Table enrichment ──
+            # Mirror of image_enrichment for spreadsheet uploads.
+            # Each ``BlockType.TABLE`` block (one per sheet, emitted
+            # by SpreadsheetBackend) gets an LLM-generated description
+            # written to ``block.text``. That description is what the
+            # chunker picks up; it's the only thing that reaches the
+            # embedder / KG. The full table markdown stays on
+            # ``block.table_markdown`` for the viewer + future agent
+            # tools (not embedded, not searched).
+            #
+            # Runs independently of ``do_summary``. spreadsheet
+            # uploads were gated at upload time on
+            # ``table_enrichment.enabled``, so when this fires for a
+            # spreadsheet doc the LLM is always configured. For
+            # non-spreadsheet docs there are no TABLE blocks (PDF
+            # tables are extracted by mineru as TEXT-with-table-html
+            # blocks, not BlockType.TABLE), so this is a no-op.
+            try:
+                from ingestion.table_enrichment import enrich_tables
+
+                tcfg = getattr(self.parser.cfg, "table_enrichment", None)
+                if tcfg is not None:
+                    enriched = enrich_tables(parsed, tcfg)
+                    if enriched:
+                        log.info("enriched %d table block(s) with LLM descriptions", enriched)
+            except Exception as e:
+                log.warning("table_enrichment failed (non-fatal): %s", e)
+
             # ── Phase 4: Chunk (after enrichment, so chunks contain
             #    VLM image descriptions + enriched text) ──
             chunks = self.chunker.chunk(parsed, tree)
@@ -482,6 +510,59 @@ class IngestionPipeline:
         ]
         self._run_kg_extraction(doc_id, chunks)
 
+    def _collect_table_chunks(
+        self,
+        doc_id: str,
+        parse_version: int,
+        doc_row: dict,
+    ) -> dict[str, tuple[dict, str]]:
+        """Build a ``chunk_id -> (block_row, sheet_name)`` map for spreadsheet
+        TABLE blocks owned by *doc_id*.
+
+        Used by ``_run_kg_extraction`` to (a) excise TABLE chunks from
+        LLM-driven KG extraction (their content is already a synthesised
+        description, not source prose) and (b) deterministically inject
+        one ``entity_type="TABLE"`` entity per sheet afterwards.
+
+        Returns ``{}`` for non-spreadsheet docs — there are no
+        ``BlockType.TABLE`` blocks in PDF/DOCX outputs (those tables
+        come through as TEXT-with-table-html), so this is a no-op.
+        """
+        try:
+            blocks = self.rel.get_blocks(doc_id, parse_version)
+        except Exception as e:
+            log.warning("collect_table_chunks: get_blocks failed for %s: %s", doc_id, e)
+            return {}
+        table_blocks = [b for b in blocks if b.get("type") == "table"]
+        if not table_blocks:
+            return {}
+
+        # page_no → human-readable sheet name; falls back to "Sheet N".
+        page_names: dict[int, str] = {}
+        for p in (doc_row.get("pages_json") or []):
+            name = p.get("name") if isinstance(p, dict) else None
+            if name:
+                page_names[p["page_no"]] = name
+
+        out: dict[str, tuple[dict, str]] = {}
+        for blk in table_blocks:
+            try:
+                chunk = self.rel.find_chunk_by_block_id(
+                    doc_id, parse_version, blk["block_id"]
+                )
+            except Exception as e:
+                log.warning(
+                    "collect_table_chunks: lookup for block %s failed: %s",
+                    blk.get("block_id"),
+                    e,
+                )
+                continue
+            if not chunk:
+                continue
+            sheet_name = page_names.get(blk["page_no"], f"Sheet {blk['page_no']}")
+            out[chunk["chunk_id"]] = (blk, sheet_name)
+        return out
+
     def _run_kg_extraction(self, doc_id: str, chunks: list) -> None:
         """
         Extract and persist KG entities/relations for *doc_id* against the
@@ -538,6 +619,22 @@ class IngestionPipeline:
             # lets the extractor denormalize path onto Entity/Relation.source_paths.
             doc_row = self.rel.get_document(doc_id) or {}
             doc_path = doc_row.get("path") or "/"
+            parse_version = doc_row.get("active_parse_version") or 1
+
+            # Spreadsheet TABLE-block chunks are special: their
+            # ``chunk.content`` is already an LLM-generated description,
+            # so re-running KG extraction on it would invent entities
+            # the description happened to mention without grounding to
+            # actual rows. We instead inject one ``entity_type="TABLE"``
+            # entity per sheet deterministically — see below post-extract.
+            #
+            # Pre-compute the chunk_id → (block, sheet_name) map now so
+            # we can both (a) exclude TABLE chunks from the LLM batch and
+            # (b) iterate the same map to inject entities afterward.
+            table_chunk_map: dict[str, tuple[dict, str]] = self._collect_table_chunks(
+                doc_id, parse_version, doc_row
+            )
+
             # Skip noise sources by ``chunk.role`` — Index, TOC, and
             # Bibliography consistently produce placeholder entities
             # (page numbers, lone author names, title-only references)
@@ -548,12 +645,22 @@ class IngestionPipeline:
             # pages are short enough that letting them through costs
             # nothing. ``main`` is the default for body chapters.
             _SKIP_ROLES = {"toc", "index", "bibliography"}
-            kg_chunks = [c for c in chunks if (c.role or "main") not in _SKIP_ROLES]
-            skipped = len(chunks) - len(kg_chunks)
-            if skipped:
+            kg_chunks = [
+                c for c in chunks
+                if (c.role or "main") not in _SKIP_ROLES
+                and c.chunk_id not in table_chunk_map
+            ]
+            skipped_role = sum(1 for c in chunks if (c.role or "main") in _SKIP_ROLES)
+            skipped_table = sum(1 for c in chunks if c.chunk_id in table_chunk_map)
+            if skipped_role:
                 log.info(
                     "KG extraction: skipped %d chunks by role (TOC/Index/Bibliography)",
-                    skipped,
+                    skipped_role,
+                )
+            if skipped_table:
+                log.info(
+                    "KG extraction: skipped %d TABLE chunks (deterministic injection instead)",
+                    skipped_table,
                 )
             chunk_dicts = [{"chunk_id": c.chunk_id, "content": c.content, "path": doc_path} for c in kg_chunks]
             entities, relations = extractor.extract_batch(
@@ -561,6 +668,32 @@ class IngestionPipeline:
                 doc_id,
                 max_workers=kg_cfg.max_workers,
             )
+
+            # Inject one Entity per TABLE block (entity_type="TABLE").
+            # Description = ``block.text`` (the LLM description written
+            # by ``ingestion.table_enrichment``). No relations — sheets
+            # don't have row-level entities to relate yet.
+            if table_chunk_map:
+                from graph.base import Entity
+
+                for chunk_id, (blk, sheet_name) in table_chunk_map.items():
+                    description = blk.get("text") or ""
+                    if not description.strip():
+                        continue
+                    entities.append(
+                        Entity(
+                            name=sheet_name,
+                            entity_type="TABLE",
+                            description=description,
+                            source_doc_ids={doc_id},
+                            source_chunk_ids={chunk_id},
+                            source_paths={doc_path},
+                        )
+                    )
+                log.info(
+                    "KG: injected %d TABLE entities (one per sheet)",
+                    len(table_chunk_map),
+                )
 
             # NOTE: pre-upsert consolidation was previously run here
             # against the per-doc extraction batch — but a single doc
