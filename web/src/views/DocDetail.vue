@@ -38,6 +38,7 @@ import {
   reparseDocument,
 } from '@/api'
 import DocKgMini from '@/components/workspace/DocKgMini.vue'
+import ImageViewer from '@/components/ImageViewer.vue'
 import PdfViewer from '@/components/PdfViewer.vue'
 import TreeNode from '@/components/TreeNode.vue'
 
@@ -153,10 +154,40 @@ const fileType = computed(() => {
   return m ? m[1].toUpperCase() : (doc.value.format || '').toUpperCase()
 })
 
+// Image-as-document file extensions. A document with one of these
+// formats is rendered with ``<ImageViewer>`` (raw ``<img>`` + zoom)
+// instead of the PDF viewer — image uploads aren't wrapped in a PDF.
+// See ``parser/backends/image.py`` for the parser-side counterpart.
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'])
+
+const isImage = computed(() => {
+  const d = doc.value
+  if (!d) return false
+  const fmt = (d.format || '').toLowerCase()
+  return IMAGE_EXTS.has(fmt)
+})
+
 const isPdf = computed(() => {
   const d = doc.value
   if (!d) return false
+  // ``isImage`` short-circuits because image docs may also have a
+  // ``pdf_file_id`` set in some edge cases (we never actually do
+  // that, but guard for it) and we never want to dispatch them to
+  // the PDF viewer.
+  if (isImage.value) return false
   return d.format === 'pdf' || !!d.pdf_file_id
+})
+
+const imageUrl = computed(() => {
+  const d = doc.value
+  if (!d || !isImage.value) return ''
+  return d.file_id ? filePreviewUrl(d.file_id) : ''
+})
+
+const imageDownloadUrl = computed(() => {
+  const d = doc.value
+  if (!d || !isImage.value) return ''
+  return d.file_id ? fileDownloadUrl(d.file_id) : ''
 })
 
 const pdfUrl = computed(() => {
@@ -691,7 +722,10 @@ watch(() => props.docId, loadAll, { immediate: true })
         </div>
       </aside>
 
-      <!-- CENTER: PDF -->
+      <!-- CENTER: PDF or Image viewer (mutually exclusive). Image
+           docs render through <ImageViewer> with the raw blob URL —
+           no PDF wrapping, no bbox highlights (the IMAGE block has
+           a sentinel zero bbox; nothing meaningful to highlight). -->
       <main class="pane pane--pdf">
         <PdfViewer
           v-if="doc && isPdf && pdfUrl && phases.parsed"
@@ -704,6 +738,12 @@ watch(() => props.docId, loadAll, { immediate: true })
           :sourceLabel="sourceLabel"
           @pdf-click="onPdfClick"
         />
+        <ImageViewer
+          v-else-if="doc && isImage && imageUrl"
+          :url="imageUrl"
+          :downloadUrl="imageDownloadUrl"
+          :filename="doc.filename || doc.file_name || ''"
+        />
         <div v-else-if="inFlight && !phases.parsed" class="pane-empty pane-empty--center">
           <span class="pane-skeleton">
             <span class="pane-skeleton__dot" />
@@ -712,7 +752,7 @@ watch(() => props.docId, loadAll, { immediate: true })
         </div>
         <div v-else class="pane-empty pane-empty--center">
           <span v-if="loading">Loading…</span>
-          <span v-else>No PDF preview</span>
+          <span v-else>No preview</span>
         </div>
       </main>
 

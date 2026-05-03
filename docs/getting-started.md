@@ -109,7 +109,9 @@ python main.py [OPTIONS]
 ## Your First Document
 
 1. Navigate to the **Workspace** tab in the web UI
-2. Drag and drop a PDF (or DOCX, PPTX, XLSX, HTML, Markdown) onto the page, or click the **+** icon to select files. Drop into a specific folder by dragging onto its tile
+2. Drag and drop a PDF (or DOCX, PPTX, XLSX, HTML, Markdown, or an image — PNG/JPG/WEBP/GIF/BMP/TIFF) onto the page, or click the **+** icon to select files. Drop into a specific folder by dragging onto its tile
+
+   > Image uploads need `image_enrichment.enabled = true` in `forgerag.yaml` — without a VLM the image is stored but never described, so retrieval can't find it. The wizard configures this if you pick a vision model.
 3. The document is queued for ingestion. The card shows an amber chip with the current pipeline stage (parsing → embedding → building graph)
 4. Once the chip clears to **ready**, switch to the **Chat** tab
 5. Ask a question about the document. ForgeRAG returns a streaming answer with `[c_N]` citations — click any citation to jump to the source PDF at the exact bounding box

@@ -168,7 +168,7 @@ flowchart TB
 - **🎛️ 单查询级 override** —— `QueryOverrides` 切换路径、top-k、rerank —— A/B 和 SDK 友好
 - **🗑️ 回收站 + Undo** —— 软删，Windows 式恢复（缺失父目录会重建），30 天自动彻底清理
 - **⚡ SQLite 单进程 · PG 多进程** —— 启动检查防止脚枪；自动 clamp workers
-- **🌍 多格式** —— PDF / DOCX / PPTX / XLSX / HTML / Markdown / TXT，统一走 parse → tree → chunk 管线
+- **🌍 多格式** —— PDF / DOCX / PPTX / XLSX / HTML / Markdown / TXT，以及图片（PNG/JPG/WEBP/GIF/BMP/TIFF）作为一类原生单块文档 —— VLM 给图片生成描述，描述跟文本 chunk 一样进入检索和 KG
 
 ---
 

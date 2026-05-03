@@ -120,29 +120,47 @@ class ParserPipeline:
     ) -> ParsedDocument:
         """Parse a single document end-to-end."""
         path_str = str(path)
-        log.info("parse start doc_id=%s path=%s backend=%s", doc_id, path_str, self.backend.name)
 
         # 1. Quick profile (page count + format)
         profile = _quick_profile(path_str)
 
-        # 2. Single-backend parse
+        # 2. Pick backend by format. PDFs (and anything previously
+        # converted to PDF upstream) use the configured backend
+        # (pymupdf / mineru / mineru-vlm). Image-as-document uploads
+        # bypass the PDF backends and go straight through
+        # ``ImageBackend`` — a one-block parser that stores the
+        # original bytes via the BlobStore and emits a single
+        # ``BlockType.IMAGE`` block. The image_enrichment phase later
+        # in the ingest pipeline fills the block's ``text`` with a
+        # VLM-generated description; that description is what enters
+        # retrieval / KG.
+        if profile.format == DocFormat.IMAGE:
+            from .backends.image import ImageBackend
+
+            backend = ImageBackend(self.blob_store)
+        else:
+            backend = self.backend
+
+        log.info("parse start doc_id=%s path=%s backend=%s", doc_id, path_str, backend.name)
+
+        # 3. Single-backend parse
         t0 = time.time()
         try:
-            result = self.backend.parse(
+            result = backend.parse(
                 path=path_str,
                 doc_id=doc_id,
                 parse_version=parse_version,
                 profile=profile,
             )
         except BackendUnavailable as e:
-            log.error("backend %s unavailable: %s", self.backend.name, e)
+            log.error("backend %s unavailable: %s", backend.name, e)
             raise
         duration_ms = int((time.time() - t0) * 1000)
-        result.parse_trace = ParseTrace(backend=self.backend.name, duration_ms=duration_ms)
+        result.parse_trace = ParseTrace(backend=backend.name, duration_ms=duration_ms)
         log.info(
             "parse done doc_id=%s backend=%s blocks=%d duration=%dms",
             doc_id,
-            self.backend.name,
+            backend.name,
             len(result.blocks),
             duration_ms,
         )
