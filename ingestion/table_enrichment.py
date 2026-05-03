@@ -101,34 +101,34 @@ def _describe_one_table(
 
     try:
         if estimated <= cfg.context_size:
-            # Small table — single-pass call. Wrap the whole
+            # Small enough for a single-pass call. Wrap the whole
             # markdown as one "fragment" and let
             # summarize_descriptions handle it (it'll go through
             # the single-pass branch since len(fragments) == 1
             # falls under force_on_count).
-            return summarize_descriptions(
+            description = summarize_descriptions(
                 name=sheet_name,
                 kind="table",
                 fragments=[md],
                 cfg=sum_cfg,
             )
-
-        # Large table — split into row-groups and let the
-        # map-reduce loop in summarize_descriptions take over.
-        fragments = split_table_into_row_groups(md, rows_per_group=cfg.rows_per_group)
-        log.info(
-            "table_enrichment: %s ~%d tokens > context %d → map-reduce on %d fragments",
-            sheet_name,
-            estimated,
-            cfg.context_size,
-            len(fragments),
-        )
-        return summarize_descriptions(
-            name=sheet_name,
-            kind="table",
-            fragments=fragments,
-            cfg=sum_cfg,
-        )
+        else:
+            # Too big for one call — split into row-groups and let the
+            # map-reduce loop in summarize_descriptions take over.
+            fragments = split_table_into_row_groups(md, rows_per_group=cfg.rows_per_group)
+            log.info(
+                "table_enrichment: %s ~%d tokens > context %d → map-reduce on %d fragments",
+                sheet_name,
+                estimated,
+                cfg.context_size,
+                len(fragments),
+            )
+            description = summarize_descriptions(
+                name=sheet_name,
+                kind="table",
+                fragments=fragments,
+                cfg=sum_cfg,
+            )
     except Exception as exc:
         log.warning(
             "table_enrichment failed for sheet %r (%d tokens): %s",
@@ -137,6 +137,26 @@ def _describe_one_table(
             exc,
         )
         return None
+
+    if not description or not description.strip():
+        return None
+
+    # Verbatim-data path: tiny tables get the full markdown appended
+    # AFTER the LLM description so the chunk content carries both a
+    # narrative summary (semantic match) AND every cell value
+    # (lexical match + answer-LLM has the numbers in context).
+    # Threshold guards the embedder context window — above it we
+    # keep description-only to stay safely under 8K tokens.
+    if estimated <= cfg.verbatim_max_tokens:
+        log.debug(
+            "table_enrichment: %s ~%d tokens ≤ verbatim threshold %d → "
+            "appending full markdown after description",
+            sheet_name,
+            estimated,
+            cfg.verbatim_max_tokens,
+        )
+        return f"{description.strip()}\n\n{md.strip()}"
+    return description
 
 
 def enrich_tables(parsed: ParsedDocument, cfg: TableEnrichmentConfig) -> int:

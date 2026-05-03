@@ -134,6 +134,81 @@ def test_enrichment_overwrites_block_text_for_each_sheet():
     assert "Forecast data" in by_id["d:1:2:0"].text
 
 
+def test_small_table_appends_verbatim_markdown_after_description():
+    """For tiny tables (markdown ≤ verbatim_max_tokens), block.text
+    should carry BOTH the LLM description AND the full markdown so
+    the chunk content gets:
+
+      * narrative summary  → semantic embedding match for "what is this"
+      * cell values         → BM25 lexical match for "EMEA Q1 1200"
+      * raw rows in context → answer LLM can quote actual numbers
+                              without a follow-up agent call.
+
+    The verbatim suffix is appended AFTER the LLM description, so the
+    description-level retrieval signal is preserved unchanged.
+    """
+    parsed = _make_parsed_with_two_tables()
+    cfg = TableEnrichmentConfig(
+        enabled=True, model="stub", api_key="test",
+        verbatim_max_tokens=10000,  # huge, so both fixtures qualify
+    )
+
+    def fake_summarize(*, name, kind, fragments, cfg):
+        return f"Summary of {name} sheet."
+
+    with patch(
+        "ingestion.table_enrichment.summarize_descriptions",
+        side_effect=fake_summarize,
+    ):
+        n = enrich_tables(parsed, cfg)
+
+    assert n == 2
+    by_id = {b.block_id: b for b in parsed.blocks}
+    sales = by_id["d:1:1:0"]
+    # Heading prepended by enrich_tables ↦ description ↦ markdown.
+    assert sales.text.startswith("## Sheet: Sales")
+    assert "Summary of Sales sheet." in sales.text
+    # Critical: actual cell values must be present (this is the new behavior).
+    assert "EMEA" in sales.text
+    assert "1200" in sales.text
+    # Markdown header preserved verbatim.
+    assert "| region | quarter | revenue |" in sales.text
+
+
+def test_large_table_keeps_description_only():
+    """Tables above verbatim_max_tokens fall back to description-only
+    so chunk content stays under embedder context limits. Without
+    this gate a 5K-row spreadsheet would emit a chunk so large the
+    embedder silently truncates it.
+    """
+    parsed = _make_parsed_with_two_tables()
+    # Inflate one block's markdown to push it past the threshold.
+    parsed.blocks[0].table_markdown = (
+        "| col |\n|---|\n" + "| value |\n" * 5000   # ~5000 rows
+    )
+    cfg = TableEnrichmentConfig(
+        enabled=True, model="stub", api_key="test",
+        verbatim_max_tokens=500,  # lower than the 5K-row markdown
+    )
+
+    def fake_summarize(*, name, kind, fragments, cfg):
+        return f"Summary of {name}."
+
+    with patch(
+        "ingestion.table_enrichment.summarize_descriptions",
+        side_effect=fake_summarize,
+    ):
+        enrich_tables(parsed, cfg)
+
+    big = next(b for b in parsed.blocks if b.block_id == "d:1:1:0")
+    # Description present, markdown NOT appended (would have been "value" rows).
+    assert "Summary of Sales." in big.text
+    # The second sheet (Forecast) is small so it DOES get verbatim — verify
+    # the threshold is applied per-block, not globally.
+    small = next(b for b in parsed.blocks if b.block_id == "d:1:2:0")
+    assert "5000" in small.text  # cell value from the small Forecast table
+
+
 def test_enrichment_uses_sheet_name_in_summarize_call():
     """The sheet name is the retrieval anchor — table_enrichment must
     pass it to summarize_descriptions so it lands in the LLM prompt
