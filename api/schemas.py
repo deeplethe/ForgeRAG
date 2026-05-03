@@ -442,3 +442,13 @@ class HealthResponse(BaseModel):
     version: str = "1"
     components: dict[str, str]
     counts: dict[str, int] | None = None
+    # Per-feature capability flags + lists. Populated from cfg at the
+    # /health route so the frontend can pre-flight uploads etc. without
+    # a separate capabilities endpoint. Keys defined so far:
+    #
+    #   image_upload          (bool)  — image-as-document uploads work
+    #                                   (image_enrichment.enabled + a
+    #                                    VLM model + reachable creds)
+    #   image_upload_extensions (list) — extensions to accept when the
+    #                                    above is True. Empty when off.
+    features: dict[str, object] | None = None

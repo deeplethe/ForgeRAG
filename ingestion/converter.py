@@ -34,19 +34,32 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Extensions that need conversion to PDF before parsing
+# Extensions that need conversion to PDF before parsing.
+#
+# Office formats: only the OOXML variants (``.docx`` / ``.pptx`` /
+# ``.xlsx``) are supported. The legacy binary formats (``.doc`` /
+# ``.ppt`` / ``.xls``) are NOT here because ``python-docx`` /
+# ``python-pptx`` / ``openpyxl`` are all OOXML-only — they cannot
+# read the OLE Compound Document binary format. Earlier versions
+# pretended to handle them with the comment "best-effort; may not
+# parse" but the converter would always raise ``zipfile.BadZipFile``
+# at import time. The upload route now rejects them with HTTP 415
+# and a clear "save as .docx / .pptx / .xlsx" message instead of
+# letting the ingest fail confusingly mid-pipeline.
 CONVERTIBLE_EXTENSIONS = {
     ".docx",
-    ".doc",
     ".pptx",
-    ".ppt",
     ".xlsx",
-    ".xls",
     ".html",
     ".htm",
     ".md",
     ".txt",
 }
+
+# Legacy Office binary formats — explicitly unsupported. Surfaced as
+# its own constant so the upload route can match against it for a
+# targeted error message rather than the generic "unsupported file".
+LEGACY_OFFICE_EXTENSIONS = (".doc", ".ppt", ".xls")
 
 
 def needs_conversion(path: str | Path) -> bool:
@@ -79,11 +92,8 @@ def convert_to_pdf(
 
     converters = {
         ".docx": _convert_docx,
-        ".doc": _convert_docx,  # best-effort; .doc may not parse
         ".pptx": _convert_pptx,
-        ".ppt": _convert_pptx,  # best-effort
         ".xlsx": _convert_xlsx,
-        ".xls": _convert_xlsx,  # best-effort
         ".html": _convert_html,
         ".htm": _convert_html,
         ".md": _convert_markdown,

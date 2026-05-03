@@ -4,6 +4,7 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { listConversations, deleteConversation, getBenchmarkStatus } from '@/api'
 import { onUnauthorized } from '@/api/client'
 import { getMe } from '@/api/auth'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import AppSidebar from '@/components/AppSidebar.vue'
 import ChangePasswordModal from '@/components/ChangePasswordModal.vue'
 import DialogHost from '@/components/DialogHost.vue'
@@ -71,10 +72,15 @@ async function pollBenchmark() {
     benchmarkRunning.value = ['generating', 'running', 'scoring'].includes(s?.status)
   } catch { benchmarkRunning.value = false }
 }
+const capabilities = useCapabilitiesStore()
+
 onMounted(() => {
   probeMe()
   pollBenchmark()
   _bmPoll = setInterval(pollBenchmark, 3000)
+  // Fetch /health features once so the upload UI can pre-flight
+  // image / legacy-office gates without a per-upload round-trip.
+  capabilities.refresh()
 })
 onUnmounted(() => { if (_bmPoll) clearInterval(_bmPoll) })
 
