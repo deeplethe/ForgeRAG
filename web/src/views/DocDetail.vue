@@ -40,6 +40,7 @@ import {
 import DocKgMini from '@/components/workspace/DocKgMini.vue'
 import ImageViewer from '@/components/ImageViewer.vue'
 import PdfViewer from '@/components/PdfViewer.vue'
+import SpreadsheetViewer from '@/components/SpreadsheetViewer.vue'
 import TreeNode from '@/components/TreeNode.vue'
 
 const props = defineProps({
@@ -159,6 +160,12 @@ const fileType = computed(() => {
 // instead of the PDF viewer — image uploads aren't wrapped in a PDF.
 // See ``parser/backends/image.py`` for the parser-side counterpart.
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'])
+// Spreadsheet-as-document file extensions. Rendered through
+// ``<SpreadsheetViewer>`` against the parsed TABLE blocks (one per
+// sheet); never wrapped in a PDF. See ``parser/backends/spreadsheet.py``
+// for the parser-side counterpart and ``docs/roadmaps/spreadsheet-as-document.md``
+// for the description-only architecture.
+const SPREADSHEET_EXTS = new Set(['xlsx', 'csv', 'tsv'])
 
 const isImage = computed(() => {
   const d = doc.value
@@ -167,14 +174,21 @@ const isImage = computed(() => {
   return IMAGE_EXTS.has(fmt)
 })
 
+const isSpreadsheet = computed(() => {
+  const d = doc.value
+  if (!d) return false
+  const fmt = (d.format || '').toLowerCase()
+  return SPREADSHEET_EXTS.has(fmt)
+})
+
 const isPdf = computed(() => {
   const d = doc.value
   if (!d) return false
-  // ``isImage`` short-circuits because image docs may also have a
-  // ``pdf_file_id`` set in some edge cases (we never actually do
-  // that, but guard for it) and we never want to dispatch them to
-  // the PDF viewer.
-  if (isImage.value) return false
+  // ``isImage`` / ``isSpreadsheet`` short-circuit because those docs
+  // may also have a ``pdf_file_id`` set in some edge cases (we never
+  // actually do that, but guard for it) and we never want to dispatch
+  // them to the PDF viewer.
+  if (isImage.value || isSpreadsheet.value) return false
   return d.format === 'pdf' || !!d.pdf_file_id
 })
 
@@ -187,6 +201,37 @@ const imageUrl = computed(() => {
 const imageDownloadUrl = computed(() => {
   const d = doc.value
   if (!d || !isImage.value) return ''
+  return d.file_id ? fileDownloadUrl(d.file_id) : ''
+})
+
+// ── Spreadsheet wiring ──────────────────────────────────────────
+// One TABLE block per sheet, ordered by ``page_no`` (mirrors the
+// SpreadsheetBackend invariant). Empty list during the parse window
+// — the viewer's empty-state covers it.
+const tableBlocks = computed(() => {
+  if (!isSpreadsheet.value) return []
+  return allBlocks.value
+    .filter((b) => b.type === 'table')
+    .slice()
+    .sort((a, b) => (a.page_no || 0) - (b.page_no || 0))
+})
+
+// ``page_no -> sheet name`` map sourced from ``DocumentOut.pages``.
+// Falls back to ``Sheet N`` inside the viewer when missing — but
+// every spreadsheet doc populates ``Page.name`` (sheet display name
+// for xlsx, ``"data"`` placeholder for csv/tsv).
+const sheetNames = computed(() => {
+  const pages = doc.value?.pages || []
+  const out = {}
+  for (const p of pages) {
+    if (p && p.page_no != null && p.name) out[p.page_no] = p.name
+  }
+  return out
+})
+
+const spreadsheetDownloadUrl = computed(() => {
+  const d = doc.value
+  if (!d || !isSpreadsheet.value) return ''
   return d.file_id ? fileDownloadUrl(d.file_id) : ''
 })
 
@@ -742,6 +787,13 @@ watch(() => props.docId, loadAll, { immediate: true })
           v-else-if="doc && isImage && imageUrl"
           :url="imageUrl"
           :downloadUrl="imageDownloadUrl"
+          :filename="doc.filename || doc.file_name || ''"
+        />
+        <SpreadsheetViewer
+          v-else-if="doc && isSpreadsheet && phases.parsed"
+          :tableBlocks="tableBlocks"
+          :sheetNames="sheetNames"
+          :downloadUrl="spreadsheetDownloadUrl"
           :filename="doc.filename || doc.file_name || ''"
         />
         <div v-else-if="inFlight && !phases.parsed" class="pane-empty pane-empty--center">

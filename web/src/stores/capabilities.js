@@ -9,6 +9,14 @@
  *   imageExtensions      (array) — accepted image extensions when
  *                                  the above is true; empty list
  *                                  otherwise
+ *   spreadsheetUpload    (bool)  — spreadsheet-as-document uploads
+ *                                  work (requires table_enrichment
+ *                                  LLM configured)
+ *   spreadsheetExtensions (array) — accepted spreadsheet extensions
+ *                                   when spreadsheetUpload is true
+ *   spreadsheetMaxCells  (number) — hard upload limit on cell count;
+ *                                   used to short-circuit huge file
+ *                                   uploads before bytes are sent
  *   legacyOfficeExtensions (array) — extensions ALWAYS rejected by
  *                                    the backend (.doc / .ppt /
  *                                    .xls); UI uses this to surface
@@ -31,6 +39,9 @@ export const useCapabilitiesStore = defineStore('capabilities', {
     loaded: false,
     imageUpload: false,
     imageExtensions: [],
+    spreadsheetUpload: false,
+    spreadsheetExtensions: [],
+    spreadsheetMaxCells: 0,
     legacyOfficeExtensions: [],
   }),
 
@@ -46,6 +57,13 @@ export const useCapabilitiesStore = defineStore('capabilities', {
         this.imageExtensions = Array.isArray(f.image_upload_extensions)
           ? f.image_upload_extensions.map((e) => e.toLowerCase())
           : []
+        this.spreadsheetUpload = !!f.spreadsheet_upload
+        this.spreadsheetExtensions = Array.isArray(f.spreadsheet_upload_extensions)
+          ? f.spreadsheet_upload_extensions.map((e) => e.toLowerCase())
+          : []
+        this.spreadsheetMaxCells = Number.isFinite(f.spreadsheet_max_cells)
+          ? f.spreadsheet_max_cells
+          : 0
         this.legacyOfficeExtensions = Array.isArray(f.legacy_office_extensions)
           ? f.legacy_office_extensions.map((e) => e.toLowerCase())
           : []
@@ -62,9 +80,10 @@ export const useCapabilitiesStore = defineStore('capabilities', {
     /**
      * Classify a File against the current capabilities.
      * Returns one of:
-     *   {ok: true}                                   — pass through
-     *   {ok: false, reason: 'legacy_office', ...}    — old .doc/.ppt/.xls
-     *   {ok: false, reason: 'image_disabled', ...}   — image but no VLM
+     *   {ok: true}                                       — pass through
+     *   {ok: false, reason: 'legacy_office', ...}        — old .doc/.ppt/.xls
+     *   {ok: false, reason: 'image_disabled', ...}       — image but no VLM
+     *   {ok: false, reason: 'spreadsheet_disabled', ...} — spreadsheet but no LLM
      */
     classify(file) {
       const name = (file && file.name) || ''
@@ -84,6 +103,13 @@ export const useCapabilitiesStore = defineStore('capabilities', {
       ]
       if (ALL_IMAGE_EXTS.includes(ext) && !this.imageUpload) {
         return { ok: false, reason: 'image_disabled', ext }
+      }
+      // Spreadsheet extensions — gated on table_enrichment LLM. Mirror
+      // of the image-no-VLM gate: without an LLM, the pipeline can't
+      // generate a TABLE description and the doc would be unretrievable.
+      const ALL_SPREADSHEET_EXTS = ['.xlsx', '.csv', '.tsv']
+      if (ALL_SPREADSHEET_EXTS.includes(ext) && !this.spreadsheetUpload) {
+        return { ok: false, reason: 'spreadsheet_disabled', ext }
       }
       return { ok: true }
     },
