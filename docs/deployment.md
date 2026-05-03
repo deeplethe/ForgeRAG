@@ -298,7 +298,7 @@ alembic upgrade head
 alembic revision --autogenerate -m "description"
 ```
 
-Migrations are automatically applied on startup for SQLite. For PostgreSQL/MySQL, run them manually before upgrading ForgeRAG.
+Migrations are automatically applied on startup for SQLite. For PostgreSQL, run them manually before upgrading ForgeRAG.
 
 ---
 

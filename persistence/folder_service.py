@@ -576,7 +576,7 @@ def unique_document_path(sess: Session, folder: Folder, filename: str) -> str:
     two parallel uploads of the same filename to the same folder serialise
     on the lock instead of both picking the same suffix and writing
     duplicate paths. SQLite ignores ``with_for_update`` (single writer
-    anyway via WAL); Postgres / MySQL honour it.
+    anyway via WAL); Postgres honours it.
     """
     # Lock the parent folder row so concurrent uploads to the same folder
     # serialize through this path-allocation step.

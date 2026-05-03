@@ -67,9 +67,6 @@ markdown>=3.6
 # ── Optional: pgvector (use with PostgreSQL) ─────────────────────────────────
 # psycopg[binary]>=3.1
 
-# ── Optional: MySQL backend ──────────────────────────────────────────────────
-# pymysql>=1.1
-
 # ── Optional: Neo4j graph store ──────────────────────────────────────────────
 # neo4j>=5.0
 

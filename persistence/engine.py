@@ -3,8 +3,8 @@ SQLAlchemy Engine factory.
 
 Builds a connection URL from RelationalConfig and returns a
 configured sync Engine. Backend-specific quirks (WAL on SQLite,
-utf8mb4 on MySQL, pool sizing on Postgres) are handled here so
-the Store class stays dialect-agnostic.
+pool sizing on Postgres) are handled here so the Store class
+stays dialect-agnostic.
 """
 
 from __future__ import annotations

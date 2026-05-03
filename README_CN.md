@@ -136,7 +136,7 @@ flowchart TB
         ANS[Answer Pipeline<br/>generate · cite]
     end
     subgraph "可插拔后端"
-        REL[(SQLite · PostgreSQL · MySQL)]
+        REL[(SQLite · PostgreSQL)]
         VEC[(ChromaDB · pgvector · Qdrant · Milvus · Weaviate)]
         BLOB[(Local · S3 · OSS)]
         KGS[(NetworkX · Neo4j)]
