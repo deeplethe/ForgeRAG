@@ -750,7 +750,7 @@ class Neo4jGraphStore(GraphStore):
         WHERE $doc_id IN e.source_doc_ids
         RETURN e.entity_id AS entity_id
         """
-        with self._driver.session(database=self._db) as session:
+        with self._driver.session(database=self._database) as session:
             result = session.run(cypher, doc_id=doc_id)
             ids = [r["entity_id"] for r in result]
         if not ids:
