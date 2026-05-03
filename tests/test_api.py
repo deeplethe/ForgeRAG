@@ -63,6 +63,19 @@ def client(tmp_path, sample_pdf):
         mode="local",
         local=LocalStorageModel(root=str(tmp_path / "blobs"), public_base_url=None),
     )
+    # Pin the graph store to the test's tmp dir so AppState construction
+    # doesn't try to load the production ./storage/kg.json (1.95GB on
+    # the dev workstation; previously it MemoryError'd fast-fail, now
+    # the streaming loader actually finishes — ~30s per fixture spin
+    # if we leave the path on the prod default).
+    cfg.graph.networkx.path = str(tmp_path / "kg.json")
+    # Disable the LLM disk cache for tests — the production cache
+    # directory ``./storage/llm_cache`` is a SQLite database that the
+    # running dev backend also holds open, and two processes opening
+    # the same diskcache concurrently produces SQLite lock contention
+    # that hangs the fixture for minutes. Tests don't exercise the
+    # cache path; bypass it entirely.
+    cfg.cache.llm.enabled = False
     cfg.files = FilesConfig()
     cfg.embedder.dimension = 4
     cfg.persistence.vector.pgvector.dimension = 4
