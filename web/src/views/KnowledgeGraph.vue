@@ -193,8 +193,13 @@ async function loadGraph() {
     })
     const rawNodes = data.nodes || []
     const rawEdges = data.edges || []
-    nodeCount.value = rawNodes.length
-    edgeCount.value = rawEdges.length
+    // Counts are populated AFTER ``buildGraph`` from ``g.order`` /
+    // ``g.size`` instead of ``rawNodes.length`` / ``rawEdges.length``
+    // so they reflect what graphology actually retained — a default
+    // ``Graph()`` is a simple-mixed graph and silently drops parallel
+    // edges between the same two nodes. Reading from ``g`` keeps the
+    // overlay in sync with on-canvas reality, especially after
+    // ``pullEntityToCanvas`` adds new nodes/edges.
     // Refresh the type chip list from the loaded set when no filter
     // is active. Once filtered, we'd only see one type — keep the
     // last full list in that case.
@@ -204,6 +209,11 @@ async function loadGraph() {
       availableTypes.value = [...seen].sort()
     }
     buildGraph(rawNodes, rawEdges)
+    // Sync the count overlay to graphology's view of the graph.
+    if (graph.value) {
+      nodeCount.value = graph.value.order
+      edgeCount.value = graph.value.size
+    }
   } catch (e) {
     if (e.message?.includes('404')) {
       error.value = 'Knowledge graph not configured. Enable retrieval.kg_extraction.enabled in forgerag.yaml and restart.'
@@ -231,6 +241,25 @@ async function loadEntityDetail(entityId) {
   try {
     const detail = await getEntityDetail(entityId)
     selectedDetail.value = detail
+    // Hydrate ``selectedNode`` from the API response when the entity
+    // isn't on the canvas — the focusNode() stub had a placeholder
+    // name and the default 'UNKNOWN' type. Without this, off-canvas
+    // entities (e.g. clicked from the relations list) show a panel
+    // header with no name and "0 connections".
+    if (selectedNode.value?.offCanvas && detail.entity) {
+      const e = detail.entity
+      selectedNode.value = {
+        ...selectedNode.value,
+        name: e.name || entityId,
+        type: e.entity_type || 'UNKNOWN',
+        color: typeFill(e.entity_type),
+        description: e.description || '',
+        source_doc_ids: e.source_doc_ids || [],
+        // ``relations.length`` is the live degree from the API —
+        // accurate even though the entity isn't in the canvas.
+        degree: detail.relations?.length || 0,
+      }
+    }
     // Load source doc metadata + source chunks in background
     loadSourceData(detail.entity)
   } catch {
@@ -339,22 +368,125 @@ watch(searchQuery, (q) => {
   }, 300)
 })
 
-function focusNode(entityId) {
+async function focusNode(entityId) {
   searchQuery.value = ''
   if (!sigma) return
-  if (graph.value?.hasNode(entityId)) {
-    selectNode(entityId)
-    const dd = sigma.getNodeDisplayData(entityId)
-    if (!dd) return
-    sigma.getCamera().animate(
-      { x: dd.x, y: dd.y, ratio: 0.15 },
-      { duration: 400 },
-    )
-  } else {
-    // Entity not in the visible graph — just load its detail panel
-    selectedNode.value = { id: entityId, label: entityId }
-    loadEntityDetail(entityId)
+  // Pull the entity onto the canvas if it isn't already there.
+  // Off-canvas entities used to render only as a detail-panel
+  // header with a "not on canvas" tag — UX-bad: the user clicked
+  // a relation expecting to SEE the connection, not just read
+  // about it. Now we lazily inject the node + its edges to
+  // already-visible entities, then run the normal select +
+  // camera-focus path.
+  if (!graph.value?.hasNode(entityId)) {
+    const pulled = await pullEntityToCanvas(entityId)
+    if (!pulled) {
+      // Fallback for genuine load failure (404, network) — show
+      // the panel with what we know. ``offCanvas`` flag drives
+      // the small hint badge in the header.
+      selectedNode.value = {
+        id: entityId,
+        name: entityId,
+        type: 'UNKNOWN',
+        degree: 0,
+        color: '#6b7280',
+        source_doc_ids: [],
+        offCanvas: true,
+      }
+      loadEntityDetail(entityId)
+      return
+    }
   }
+  selectNode(entityId)
+  const dd = sigma.getNodeDisplayData(entityId)
+  if (!dd) return
+  sigma.getCamera().animate(
+    { x: dd.x, y: dd.y, ratio: 0.15 },
+    { duration: 400 },
+  )
+}
+
+/**
+ * Inject a single entity (and its edges to already-visible
+ * entities) into the live graph. Used when the user navigates to
+ * an entity that's outside the current anchor+halo set — search
+ * results, relation-list clicks, deep links via ``?node=…``.
+ *
+ * Returns true on success, false if the API call failed.
+ *
+ * Edges are only drawn against nodes already on the canvas — we
+ * deliberately don't recursively pull in the new node's other
+ * neighbours, otherwise one click could explode the visible set.
+ */
+async function pullEntityToCanvas(entityId) {
+  let detail
+  try {
+    detail = await getEntityDetail(entityId)
+  } catch {
+    return false
+  }
+  const entity = detail?.entity
+  const g = graph.value
+  if (!entity || !g) return false
+
+  if (!g.hasNode(entityId)) {
+    const degree = (detail.relations || []).length
+    // Seed near the centre so FA2 / camera focus has something
+    // sensible to grab; FA2's force-settle will reposition.
+    g.addNode(entityId, {
+      label: entity.name || entityId,
+      entityType: entity.entity_type || 'UNKNOWN',
+      description: entity.description || '',
+      degree,
+      sourceDocIds: entity.source_doc_ids || [],
+      x: (Math.random() - 0.5) * 30,
+      y: (Math.random() - 0.5) * 30,
+      size: Math.max(3, Math.min(15, 3 + degree * 0.5)),
+      color: typeFill(entity.entity_type),
+    })
+    nodeCount.value = g.order
+  }
+
+  // Connect to already-visible neighbours only.
+  let addedEdges = 0
+  const edgeColor = graphColors().defaultEdge
+  for (const r of detail.relations || []) {
+    const otherId = r.source_entity === entityId ? r.target_entity : r.source_entity
+    if (!g.hasNode(otherId)) continue
+    const ekey = r.relation_id || `${r.source_entity}__${r.target_entity}`
+    if (g.hasEdge(ekey)) continue
+    // Some graphs already have an unkeyed edge between the two
+    // endpoints from the original load — ``addEdgeWithKey``
+    // tolerates parallels in a multigraph; in a simple graph it
+    // throws, in which case we just skip.
+    try {
+      g.addEdgeWithKey(ekey, r.source_entity, r.target_entity, {
+        type: 'arrow',
+        size: 0.6,
+        color: edgeColor,
+        label: r.keywords || '',
+        keywords: r.keywords || '',
+        description: r.description || '',
+        weight: r.weight || 0,
+        source_chunk_ids: r.source_chunk_ids || [],
+        source_doc_ids: r.source_doc_ids || [],
+      })
+      addedEdges++
+    } catch {
+      /* duplicate / parallel edge in a simple graph — fine */
+    }
+  }
+  edgeCount.value = g.size
+
+  // Brief FA2 pulse so the new node + its edges find a sensible
+  // resting position relative to the existing layout. Bounded
+  // (1.2 s) so the canvas doesn't keep shaking for new clicks.
+  if (fa2 && addedEdges > 0) {
+    if (fa2.isRunning()) fa2.stop()
+    fa2.start()
+    setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 1200)
+  }
+  return true
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -859,9 +991,12 @@ onMounted(async () => {
       cameraObserver = () => updateZoom()
       sigma.getCamera().on('updated', cameraObserver)
     }
-    // Restore selection from URL query (?node=xxx) — let FA2 settle first
+    // Restore selection from URL query (?node=xxx) — let FA2 settle
+    // first. ``focusNode`` itself handles the off-canvas case by
+    // pulling the entity in, so we don't need to gate on
+    // ``hasNode`` here any more.
     const nodeId = route.query.node
-    if (nodeId && graph.value?.hasNode(nodeId)) {
+    if (nodeId) {
       setTimeout(() => focusNode(nodeId), 1500)
     }
   } else {
@@ -1172,6 +1307,15 @@ watch(isDark, () => {
                 {{ selectedNode.type }}
               </span>
               <span class="text-[9px] text-t3">{{ selectedNode.degree }} connections</span>
+              <!-- "Not on canvas" hint: this entity isn't part of
+                   the current visible graph (clicked from search or
+                   the relations list, but pulls outside the
+                   anchor+halo set). Without the hint users wonder
+                   why no node lights up. -->
+              <span v-if="selectedNode.offCanvas"
+                class="text-[9px] text-t3 px-1.5 py-0.5 rounded border border-line">
+                not on canvas
+              </span>
             </div>
           </div>
 
