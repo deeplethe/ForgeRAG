@@ -92,6 +92,7 @@ export {
   getEntityDetail,
   getSubgraph,
   getFullGraph,
+  getGraphExplore,
   getGraphByDoc,
 } from './graph'
 

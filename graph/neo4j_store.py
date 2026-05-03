@@ -757,6 +757,96 @@ class Neo4jGraphStore(GraphStore):
             return {"nodes": [], "edges": []}
         return self.get_subgraph(ids)
 
+    def explore(
+        self,
+        *,
+        anchors: int = 200,
+        halo_cap: int = 600,
+        doc_id: str | None = None,
+        entity_type: str | None = None,
+    ) -> dict:
+        """Neo4j override — single Cypher round-trip for the whole
+        anchor + halo computation. The base implementation walks
+        ``get_all_entities`` + ``get_all_relations`` in Python; that's
+        O(N) memory and several Bolt round-trips per call. This pushes
+        the same logic server-side so the wire payload is just the
+        final node/edge set.
+
+        Strategy: degree(e) via ``COUNT { (e)--() }`` (Neo4j 5+ replaced
+        the legacy ``size((e)--())`` form for pattern expressions).
+        ORDER BY DESC LIMIT N gives the anchors. A second MATCH expands
+        one hop, ORDER BY halo degree, LIMIT halo_cap. The final
+        projection inlines node + edge collection so the result is
+        bounded — calling ``get_subgraph(ids)`` would re-expand one
+        more hop and blow the cap (e.g. 30 ids → 4k nodes on a dense
+        graph). We project just the nodes in the id list and the edges
+        whose both endpoints are in the list.
+        """
+        # Filter clause for the anchor MATCH. Built up as a Cypher
+        # snippet because parametric ``WHERE $foo IS NULL OR ...``
+        # patterns force Neo4j into a full scan even with indexes —
+        # cheaper to just emit only the predicates we need.
+        clauses: list[str] = []
+        if doc_id is not None:
+            clauses.append("$doc_id IN e.source_doc_ids")
+        if entity_type is not None:
+            clauses.append("e.entity_type = $entity_type")
+        where_anchor = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        cypher = f"""
+        // 1. Pick top-`anchors` entities by degree (filtered).
+        MATCH (e:KGEntity)
+        {where_anchor}
+        WITH e, COUNT {{ (e)--() }} AS deg
+        ORDER BY deg DESC
+        LIMIT $anchors
+        WITH collect(e) AS anchors_list
+        // 2. Halo: 1-hop neighbours of anchors, ranked by their own
+        //    degree, capped to `halo_cap`. Doc filter respected;
+        //    entity_type filter intentionally NOT applied to halo —
+        //    if you ask for "all PERSONs" you still want to see the
+        //    ORGANIZATION nodes they connect to.
+        UNWIND anchors_list AS a
+        OPTIONAL MATCH (a)--(n:KGEntity)
+        WHERE NOT n IN anchors_list
+          AND ($doc_id IS NULL OR $doc_id IN n.source_doc_ids)
+        WITH anchors_list, n, COUNT {{ (n)--() }} AS n_deg
+        ORDER BY n_deg DESC
+        WITH anchors_list, collect(DISTINCT n)[..$halo_cap] AS halo
+        // 3. Union into one bounded node list, then project nodes +
+        //    only the edges whose endpoints are both in that list.
+        WITH [x IN anchors_list + halo WHERE x IS NOT NULL] AS all_nodes
+        UNWIND all_nodes AS n
+        OPTIONAL MATCH (n)-[r:RELATES_TO]-(m:KGEntity)
+        WHERE m IN all_nodes
+        WITH all_nodes, collect(DISTINCT r) AS rels
+        RETURN
+            [n IN all_nodes | {{id: n.entity_id, name: n.name,
+                                type: n.entity_type,
+                                description: n.description,
+                                degree: COUNT {{ (n)--() }},
+                                source_doc_ids: n.source_doc_ids,
+                                source_chunk_ids: n.source_chunk_ids}}] AS nodes,
+            [r IN rels  | {{source: startNode(r).entity_id,
+                            target: endNode(r).entity_id,
+                            keywords: r.keywords,
+                            description: r.description,
+                            weight: r.weight,
+                            source_doc_ids: r.source_doc_ids,
+                            source_chunk_ids: r.source_chunk_ids}}] AS edges
+        """
+        with self._driver.session(database=self._database) as session:
+            rec = session.run(
+                cypher,
+                anchors=anchors,
+                halo_cap=halo_cap,
+                doc_id=doc_id,
+                entity_type=entity_type,
+            ).single()
+        if rec is None:
+            return {"nodes": [], "edges": []}
+        return {"nodes": list(rec["nodes"]), "edges": list(rec["edges"])}
+
     # -- deletion -----------------------------------------------------------
 
     def delete_by_doc(self, doc_id: str) -> int:

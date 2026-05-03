@@ -222,6 +222,47 @@ def get_graph_by_doc(doc_id: str, state: AppState = Depends(get_state)):
     )
 
 
+@router.get("/explore", response_model=SubgraphOut)
+def explore_graph(
+    anchors: int = Query(200, ge=1, le=2000, description="Top-N entities by degree as anchors"),
+    halo_cap: int = Query(600, ge=0, le=5000, description="Max 1-hop halo entities"),
+    doc_id: str | None = Query(None, description="Restrict anchors to entities sourced from this doc"),
+    entity_type: str | None = Query(None, description="Restrict anchors to a single entity type"),
+    state: AppState = Depends(get_state),
+):
+    """Anchor + halo subgraph — what /knowledge-graph actually wants.
+
+    ``/full?limit=N`` returns top-N entities and the edges between
+    them, but in scale-free graphs that drops most edges (high-degree
+    anchors mostly connect to low-degree nodes outside the top-N).
+    The result is a sparse canvas where focus-on-click can't find
+    neighbours to highlight.
+
+    ``/explore`` returns the same anchors plus their 1-hop halo, so
+    every anchor has its real local neighbourhood on the canvas. The
+    halo is capped (default 600) so the total stays bounded.
+
+    Optional filters narrow the anchor selection to a doc and / or an
+    entity_type — useful for the "show me only Persons" / "show me
+    this paper's KG" UI affordances.
+    """
+    gs = _require_graph(state)
+    try:
+        result = gs.explore(
+            anchors=anchors,
+            halo_cap=halo_cap,
+            doc_id=doc_id,
+            entity_type=entity_type,
+        )
+    except Exception as e:
+        log.exception("graph explore failed")
+        raise HTTPException(502, f"graph store error: {e}")
+    return SubgraphOut(
+        nodes=result.get("nodes", []),
+        edges=result.get("edges", []),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orphan cleanup
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ defineOptions({ name: 'KnowledgeGraph' })
 
 import { ref, computed, watch, onActivated, onDeactivated, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getGraphStats, getFullGraph, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
+import { getGraphStats, getGraphExplore, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
 import { Search, X, RefreshCw, Maximize2 } from 'lucide-vue-next'
 import Spinner from '@/components/Spinner.vue'
 import { useTheme } from '@/composables/useTheme'
@@ -20,6 +20,11 @@ function graphColors() {
         defaultNode: '#71717a',
         defaultEdge: '#3f3f46',
         label:       '#a1a1a1',
+        // Edge labels (relation keywords) get a brighter token than
+        // node labels — they sit on top of the dim ``defaultEdge``
+        // line and need extra contrast to read at the canvas zoom
+        // levels users actually use.
+        edgeLabel:   '#d4d4d4',
         dimNode:     '#1f1f1f',
         focusEdge:   '#ededed',
         dimEdge:     '#1f1f1f',
@@ -28,6 +33,7 @@ function graphColors() {
         defaultNode: '#9ca3af',
         defaultEdge: '#d1d5db',
         label:       '#374151',
+        edgeLabel:   '#1f2937',
         dimNode:     '#d0d0d0',
         focusEdge:   '#3d3d3d',
         dimEdge:     '#e2e2e2',
@@ -54,10 +60,47 @@ const error = ref('')
 const nodeCount = ref(0)
 const edgeCount = ref(0)
 
+// Entity-type filter for /explore. ``null`` = no filter (anchors
+// drawn from the whole graph). When set, only entities of that type
+// are eligible to be anchors; the halo can still pull in other types
+// (so a "show me PERSONs" view still includes the ORG / WORK nodes
+// they connect to). Available types accumulate from each load —
+// after the first unfiltered load we know every type the KG holds.
+const entityTypeFilter = ref(null)
+const availableTypes = ref([])
+const showTypeMenu = ref(false)
+
 // Detail panel
 const selectedNode = ref(null)
 const selectedDetail = ref(null)
 const detailLoading = ref(false)
+
+// Right-edge offset for the legend strip. Only the first-tier
+// detail panel reshapes the legend — the second-tier chunk panel
+// is allowed to OVERLAY it (z-20 > legend's z-10) so opening a
+// chunk doesn't recompute the legend wrap-points and shove its
+// chips around. UX feels stacked rather than constantly resizing.
+const legendRight = computed(() => {
+  if (selectedNode.value) return '18rem'  // w-72 detail panel
+  return '0'
+})
+
+// Relations sorted by weight desc — strongest connections float to
+// the top of the panel. Backend returns them in storage order which
+// is roughly insertion-order; without sorting, the panel buries the
+// most important neighbours under noise.
+const sortedRelations = computed(() => {
+  const rels = selectedDetail.value?.relations
+  if (!rels?.length) return []
+  return [...rels].sort((a, b) => (b.weight || 0) - (a.weight || 0))
+})
+// Max weight in the current relation set — denominator for the
+// inline weight bar so the strongest relation always reads as full.
+const maxRelationWeight = computed(() => {
+  const rels = selectedDetail.value?.relations
+  if (!rels?.length) return 1
+  return Math.max(1, ...rels.map((r) => r.weight || 0))
+})
 
 // Source documents & chunks for detail panel
 const sourceDocs = ref({})          // { doc_id: { ...docMeta } }
@@ -143,12 +186,40 @@ async function loadGraph() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getFullGraph(500)
+    // ``/explore`` returns top-N anchors by degree + their 1-hop
+    // halo. Strictly bounded (anchors + halo_cap) so the canvas
+    // stays performant; the halo gives anchors actual neighbours
+    // to highlight on click — ``/full?limit=N`` without a halo
+    // drops most edges in scale-free graphs because high-degree
+    // anchors mostly link out to low-degree non-anchors.
+    const data = await getGraphExplore({
+      anchors: 200,
+      halo_cap: 600,
+      entity_type: entityTypeFilter.value,
+    })
     const rawNodes = data.nodes || []
     const rawEdges = data.edges || []
-    nodeCount.value = rawNodes.length
-    edgeCount.value = rawEdges.length
+    // Counts are populated AFTER ``buildGraph`` from ``g.order`` /
+    // ``g.size`` instead of ``rawNodes.length`` / ``rawEdges.length``
+    // so they reflect what graphology actually retained — a default
+    // ``Graph()`` is a simple-mixed graph and silently drops parallel
+    // edges between the same two nodes. Reading from ``g`` keeps the
+    // overlay in sync with on-canvas reality, especially after
+    // ``pullEntityToCanvas`` adds new nodes/edges.
+    // Refresh the type chip list from the loaded set when no filter
+    // is active. Once filtered, we'd only see one type — keep the
+    // last full list in that case.
+    if (!entityTypeFilter.value) {
+      const seen = new Set()
+      for (const n of rawNodes) if (n.type) seen.add(n.type)
+      availableTypes.value = [...seen].sort()
+    }
     buildGraph(rawNodes, rawEdges)
+    // Sync the count overlay to graphology's view of the graph.
+    if (graph.value) {
+      nodeCount.value = graph.value.order
+      edgeCount.value = graph.value.size
+    }
   } catch (e) {
     if (e.message?.includes('404')) {
       error.value = 'Knowledge graph not configured. Enable retrieval.kg_extraction.enabled in forgerag.yaml and restart.'
@@ -160,6 +231,13 @@ async function loadGraph() {
   }
 }
 
+function applyTypeFilter(type) {
+  entityTypeFilter.value = type   // null clears the filter
+  showTypeMenu.value = false
+  showLayoutMenu.value = false
+  loadGraph()
+}
+
 async function loadEntityDetail(entityId) {
   detailLoading.value = true
   sourceDocs.value = {}
@@ -169,6 +247,25 @@ async function loadEntityDetail(entityId) {
   try {
     const detail = await getEntityDetail(entityId)
     selectedDetail.value = detail
+    // Hydrate ``selectedNode`` from the API response when the entity
+    // isn't on the canvas — the focusNode() stub had a placeholder
+    // name and the default 'UNKNOWN' type. Without this, off-canvas
+    // entities (e.g. clicked from the relations list) show a panel
+    // header with no name and "0 connections".
+    if (selectedNode.value?.offCanvas && detail.entity) {
+      const e = detail.entity
+      selectedNode.value = {
+        ...selectedNode.value,
+        name: e.name || entityId,
+        type: e.entity_type || 'UNKNOWN',
+        color: typeFill(e.entity_type),
+        description: e.description || '',
+        source_doc_ids: e.source_doc_ids || [],
+        // ``relations.length`` is the live degree from the API —
+        // accurate even though the entity isn't in the canvas.
+        degree: detail.relations?.length || 0,
+      }
+    }
     // Load source doc metadata + source chunks in background
     loadSourceData(detail.entity)
   } catch {
@@ -277,22 +374,162 @@ watch(searchQuery, (q) => {
   }, 300)
 })
 
-function focusNode(entityId) {
+async function focusNode(entityId) {
   searchQuery.value = ''
   if (!sigma) return
-  if (graph.value?.hasNode(entityId)) {
-    selectNode(entityId)
-    const dd = sigma.getNodeDisplayData(entityId)
-    if (!dd) return
-    sigma.getCamera().animate(
-      { x: dd.x, y: dd.y, ratio: 0.15 },
-      { duration: 400 },
-    )
-  } else {
-    // Entity not in the visible graph — just load its detail panel
-    selectedNode.value = { id: entityId, label: entityId }
-    loadEntityDetail(entityId)
+  // Pull the entity onto the canvas if it isn't already there.
+  // Off-canvas entities used to render only as a detail-panel
+  // header with a "not on canvas" tag — UX-bad: the user clicked
+  // a relation expecting to SEE the connection, not just read
+  // about it. Now we lazily inject the node + its edges to
+  // already-visible entities, then run the normal select +
+  // camera-focus path.
+  let wasPulled = false
+  if (!graph.value?.hasNode(entityId)) {
+    wasPulled = await pullEntityToCanvas(entityId)
+    if (!wasPulled) {
+      // Fallback for genuine load failure (404, network) — show
+      // the panel with what we know. ``offCanvas`` flag drives
+      // the small hint badge in the header.
+      selectedNode.value = {
+        id: entityId,
+        name: entityId,
+        type: 'UNKNOWN',
+        degree: 0,
+        color: '#6b7280',
+        source_doc_ids: [],
+        offCanvas: true,
+      }
+      loadEntityDetail(entityId)
+      return
+    }
   }
+  selectNode(entityId)
+  const dd = sigma.getNodeDisplayData(entityId)
+  if (!dd) return
+  // Pulled-in nodes get a wider ratio (0.4 vs 0.15) so the camera
+  // shows the new node together with its neighbours instead of a
+  // tight close-up that's just one disc.
+  sigma.getCamera().animate(
+    { x: dd.x, y: dd.y, ratio: wasPulled ? 0.4 : 0.15 },
+    { duration: 400 },
+  )
+}
+
+/**
+ * Inject a single entity (and its edges to already-visible
+ * entities) into the live graph. Used when the user navigates to
+ * an entity that's outside the current anchor+halo set — search
+ * results, relation-list clicks, deep links via ``?node=…``.
+ *
+ * Returns true on success, false if the API call failed.
+ *
+ * Edges are only drawn against nodes already on the canvas — we
+ * deliberately don't recursively pull in the new node's other
+ * neighbours, otherwise one click could explode the visible set.
+ */
+async function pullEntityToCanvas(entityId) {
+  let detail
+  try {
+    detail = await getEntityDetail(entityId)
+  } catch {
+    return false
+  }
+  const entity = detail?.entity
+  const g = graph.value
+  if (!entity || !g) return false
+
+  // Seed the new node at the centroid of whichever of its
+  // neighbours are already on the canvas. ``(Math.random()*30)``
+  // would have placed it near graph origin (±15), but the layout
+  // typically spreads existing nodes across ±200+ — so the camera
+  // animation that follows would zoom into an empty patch near
+  // origin while the actual content sits far off-screen. Centroid
+  // seeding lands the node next to its visible neighbours so the
+  // camera focus + zoom shows something useful immediately.
+  let seedX = 0
+  let seedY = 0
+  let seedCount = 0
+  for (const r of detail.relations || []) {
+    const otherId = r.source_entity === entityId ? r.target_entity : r.source_entity
+    if (!g.hasNode(otherId)) continue
+    seedX += g.getNodeAttribute(otherId, 'x') || 0
+    seedY += g.getNodeAttribute(otherId, 'y') || 0
+    seedCount++
+  }
+  if (seedCount > 0) {
+    seedX /= seedCount
+    seedY /= seedCount
+  } else if (g.order > 0) {
+    // No on-canvas neighbours — drop the new node at the global
+    // centroid so it sits inside the visible cluster, not in some
+    // arbitrary patch the camera then zooms into.
+    let sx = 0, sy = 0, n = 0
+    g.forEachNode((_, attrs) => {
+      sx += attrs.x || 0
+      sy += attrs.y || 0
+      n++
+    })
+    seedX = sx / n
+    seedY = sy / n
+  }
+  // Tiny jitter so the new node doesn't stack exactly on top of a
+  // single neighbour when there's only one connection.
+  seedX += (Math.random() - 0.5) * 8
+  seedY += (Math.random() - 0.5) * 8
+
+  if (!g.hasNode(entityId)) {
+    const degree = (detail.relations || []).length
+    g.addNode(entityId, {
+      label: entity.name || entityId,
+      entityType: entity.entity_type || 'UNKNOWN',
+      description: entity.description || '',
+      degree,
+      sourceDocIds: entity.source_doc_ids || [],
+      x: seedX,
+      y: seedY,
+      size: Math.max(3, Math.min(15, 3 + degree * 0.5)),
+      color: typeFill(entity.entity_type),
+    })
+    nodeCount.value = g.order
+  }
+
+  // Connect to already-visible neighbours only.
+  const edgeColor = graphColors().defaultEdge
+  for (const r of detail.relations || []) {
+    const otherId = r.source_entity === entityId ? r.target_entity : r.source_entity
+    if (!g.hasNode(otherId)) continue
+    const ekey = r.relation_id || `${r.source_entity}__${r.target_entity}`
+    if (g.hasEdge(ekey)) continue
+    // Some graphs already have an unkeyed edge between the two
+    // endpoints from the original load — ``addEdgeWithKey``
+    // tolerates parallels in a multigraph; in a simple graph it
+    // throws, in which case we just skip.
+    try {
+      g.addEdgeWithKey(ekey, r.source_entity, r.target_entity, {
+        type: 'arrow',
+        size: 0.6,
+        color: edgeColor,
+        label: r.keywords || '',
+        keywords: r.keywords || '',
+        description: r.description || '',
+        weight: r.weight || 0,
+        source_chunk_ids: r.source_chunk_ids || [],
+        source_doc_ids: r.source_doc_ids || [],
+      })
+    } catch {
+      /* duplicate / parallel edge in a simple graph — fine */
+    }
+  }
+  edgeCount.value = g.size
+
+  // No FA2 pulse here. We seed the new node at the neighbours'
+  // centroid; running FA2 immediately would shove it around while
+  // the camera animation is still zooming in, leaving the camera
+  // locked on the OLD seed position with the node now elsewhere.
+  // Users can hit Re-layout (the refresh icon in the toolbar) if
+  // they want to re-settle the layout.
+  return true
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -405,7 +642,9 @@ function initSigma(g) {
     labelRenderedSizeThreshold: 5,
     // Edges
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
-    edgeLabelSize: 9,
+    edgeLabelSize: 11,
+    edgeLabelColor: { color: c.edgeLabel },
+    edgeLabelWeight: '500',
     // Performance
     hideEdgesOnMove: false,
     hideLabelsOnMove: false,
@@ -419,7 +658,20 @@ function initSigma(g) {
     // ``withHalo`` is a custom reducer flag we only set on the
     // selected anchor + the mouse-hovered node.
     defaultDrawNodeHover: (ctx, data, settings) => {
-      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
+      if (!data.withHalo) return
+      // Sigma paints a near-white halo pill behind the node and
+      // then drops the label on top. The default ``labelColor``
+      // (#d4d4d4) is the right tone against the dark canvas but
+      // washes out on the white pill — text reads as faint grey
+      // ghost. Override to a near-black tone for any pilled label
+      // (selected anchor + currently-hovered) so it pops off the
+      // pill regardless of theme. Pill colour itself is theme-
+      // independent (sigma uses white for the halo in both modes),
+      // so the dark override works in both light and dark.
+      drawDiscNodeHover(ctx, data, {
+        ...settings,
+        labelColor: { color: '#0a0a0a' },
+      })
     },
   })
 
@@ -562,6 +814,15 @@ function initSigma(g) {
       outboundAttractionDistribution: true,
     },
   })
+  // Default layout is Force Atlas — kick FA2 off after the
+  // circlepack seed so users land on a force-settled view. The
+  // seed gives an instant first paint; FA2 then refines for ~4 s
+  // before stopping itself. If the user picked a different layout
+  // before the fetch returned, respect that.
+  if (activeLayout.value === 'Force Atlas') {
+    fa2.start()
+    setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 4000)
+  }
 }
 
 // Sigma stacks its 7 canvas layers in DOM order. By default
@@ -658,13 +919,14 @@ function reheat() {
 }
 
 /* ── Layout switcher ── */
-const activeLayout = ref('Circle Pack')
+const activeLayout = ref('Force Atlas')
 const showLayoutMenu = ref(false)
 const LAYOUTS = ['Force Atlas', 'Force Directed', 'Circular', 'Circle Pack', 'Random', 'Noverlap']
 
 function applyLayout(name) {
   activeLayout.value = name
   showLayoutMenu.value = false
+  showTypeMenu.value = false
   const g = graph.value
   if (!g || !sigma) return
 
@@ -725,16 +987,38 @@ function onKeyDown(e) {
     searchInput.value?.select?.()
   }
   if (e.key === 'Escape') {
-    if (showLayoutMenu.value) showLayoutMenu.value = false
+    if (showLayoutMenu.value || showTypeMenu.value) {
+      showLayoutMenu.value = false
+      showTypeMenu.value = false
+    }
     else if (searchQuery.value) searchQuery.value = ''
     else if (chunkPanelDocId.value) closeChunkPanel()
     else if (selectedNode.value) clearSelection()
   }
 }
 
+// Open one of the toolbar dropdowns and close any other that's
+// open. Avoids the "two menus open at once" bug where the Layout
+// list and the Type list could overlap each other.
+function toggleLayoutMenu() {
+  const next = !showLayoutMenu.value
+  showLayoutMenu.value = next
+  if (next) showTypeMenu.value = false
+}
+function toggleTypeMenu() {
+  const next = !showTypeMenu.value
+  showTypeMenu.value = next
+  if (next) showLayoutMenu.value = false
+}
+
 function onClickOutside(e) {
-  if (showLayoutMenu.value && !e.target.closest('.relative')) {
+  // Click outside ANY ``.kg-dropdown`` wrapper closes whichever menu
+  // is open. ``.relative`` was too broad — every relative ancestor
+  // counted as "inside", so clicking inside the Type wrapper used
+  // to leave the Layout menu open.
+  if ((showLayoutMenu.value || showTypeMenu.value) && !e.target.closest('.kg-dropdown')) {
     showLayoutMenu.value = false
+    showTypeMenu.value = false
   }
 }
 
@@ -765,9 +1049,12 @@ onMounted(async () => {
       cameraObserver = () => updateZoom()
       sigma.getCamera().on('updated', cameraObserver)
     }
-    // Restore selection from URL query (?node=xxx) — let FA2 settle first
+    // Restore selection from URL query (?node=xxx) — let FA2 settle
+    // first. ``focusNode`` itself handles the off-canvas case by
+    // pulling the entity in, so we don't need to gate on
+    // ``hasNode`` here any more.
     const nodeId = route.query.node
-    if (nodeId && graph.value?.hasNode(nodeId)) {
+    if (nodeId) {
       setTimeout(() => focusNode(nodeId), 1500)
     }
   } else {
@@ -888,8 +1175,8 @@ watch(isDark, () => {
         <div class="w-px h-4 bg-line mx-1"></div>
 
         <!-- Layout selector -->
-        <div class="relative">
-          <button @click="showLayoutMenu = !showLayoutMenu"
+        <div class="kg-dropdown relative">
+          <button @click="toggleLayoutMenu"
             class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
             <span>{{ activeLayout }}</span>
             <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -899,12 +1186,48 @@ watch(isDark, () => {
           </button>
           <Transition name="fade">
             <div v-if="showLayoutMenu"
-              class="absolute top-full left-0 mt-1 bg-bg border border-line rounded-lg shadow-lg py-1 z-30 min-w-[120px]">
+              class="kg-menu absolute top-full left-0 mt-1 z-30 min-w-[120px]">
               <button v-for="l in LAYOUTS" :key="l"
                 @click="applyLayout(l)"
-                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors"
-                :class="activeLayout === l ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+                class="kg-menu-item"
+                :class="{ 'kg-menu-item--active': activeLayout === l }"
               >{{ l }}</button>
+            </div>
+          </Transition>
+        </div>
+
+        <!-- Entity-type filter — same dropdown idiom as Layout. The
+             chip shows the current filter; opening the menu lists
+             every type seen in the unfiltered load + an "All"
+             reset. Backend re-fetch on change so anchors are picked
+             from the filtered pool, not just dimmed client-side. -->
+        <div class="kg-dropdown relative" v-if="availableTypes.length > 1">
+          <button @click="toggleTypeMenu"
+            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] hover:bg-bg-hover transition-colors"
+            :class="entityTypeFilter ? 'text-t1' : 'text-t3 hover:text-t1'">
+            <span v-if="entityTypeFilter" class="w-1.5 h-1.5 rounded-full" :style="{ background: typeFill(entityTypeFilter) }"></span>
+            <span>{{ entityTypeFilter || 'Type' }}</span>
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              class="transition-transform" :class="showTypeMenu ? 'rotate-180' : ''">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+          <Transition name="fade">
+            <div v-if="showTypeMenu"
+              class="kg-menu absolute top-full left-0 mt-1 z-30 min-w-[140px] max-h-[280px] overflow-auto">
+              <button @click="applyTypeFilter(null)"
+                class="kg-menu-item"
+                :class="{ 'kg-menu-item--active': !entityTypeFilter }"
+              >All types</button>
+              <div class="kg-menu-divider"></div>
+              <button v-for="t in availableTypes" :key="t"
+                @click="applyTypeFilter(t)"
+                class="kg-menu-item flex items-center gap-2"
+                :class="{ 'kg-menu-item--active': entityTypeFilter === t }"
+              >
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ background: typeFill(t) }"></span>
+                <span class="truncate">{{ t }}</span>
+              </button>
             </div>
           </Transition>
         </div>
@@ -923,9 +1246,16 @@ watch(isDark, () => {
     </div>
 
     <!-- ═══════ Main content ═══════ -->
-    <div class="flex-1 flex min-h-0">
-      <!-- ── Graph container ── -->
-      <div class="kg-graph-area flex-1 relative overflow-hidden">
+    <!-- ``relative`` so the detail-panel can absolute-overlay the right
+         edge instead of being a sibling flex item. With the panel as a
+         flex sibling, its 288 px width pushed the graph area to a
+         narrower flex-1 box on every selection, and sigma's
+         ResizeObserver only repainted after the slide transition
+         settled (≈200 ms of stale canvas). Overlay = canvas stays
+         full-width, panel slides in over it. -->
+    <div class="flex-1 relative min-h-0">
+      <!-- ── Graph container (always full width) ── -->
+      <div class="kg-graph-area absolute inset-0 overflow-hidden">
 
         <!-- Loading -->
         <Transition name="fade">
@@ -966,9 +1296,17 @@ watch(isDark, () => {
              onBeforeRouteLeave — bypasses Vue's async reactivity so the
              cover is guaranteed to paint before sigma is killed.) -->
 
-        <!-- Legend -->
+        <!-- Legend — flush bottom strip, edge-to-edge along the
+             canvas (left:0 = aligned with the sidebar's right edge,
+             which the user-card in the sidebar bottom also sits at;
+             right shifts dynamically to stop at the detail / chunk
+             panel's left border so the two surfaces meet cleanly
+             instead of leaving an awkward floating-pill gap).
+             ``border-t`` only — matches the upload-bar idiom
+             ("Vercel uses a crisp 1px border instead"). -->
         <div v-if="entityTypes.length"
-          class="kg-legend absolute bottom-3 left-3 backdrop-blur-sm border border-line rounded-lg px-3 py-2 z-10 pointer-events-none">
+          class="kg-legend absolute bottom-0 left-0 border-t border-line bg-bg/80 backdrop-blur-sm px-4 py-2 z-10 pointer-events-none"
+          :style="{ right: legendRight }">
           <div class="flex flex-wrap gap-x-3 gap-y-1">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
@@ -977,25 +1315,35 @@ watch(isDark, () => {
           </div>
         </div>
 
-        <!-- Zoom -->
-        <div class="kg-overlay-pill absolute bottom-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
+        <!-- Zoom % — top-right, mirrors the "showing N of M" pill in
+             the top-left so the canvas stats are bookended at the
+             top instead of crowding the bottom legend strip. -->
+        <div class="kg-overlay-pill absolute top-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
-        <!-- Node count -->
+        <!-- Node count — "showing N of M" so it's obvious the canvas
+             is a sample, not the whole KG. Without the "of M" gloss,
+             a 200-node canvas on a 30k-entity graph reads as if the
+             rest of the data is missing. -->
         <div v-if="nodeCount"
           class="kg-overlay-pill absolute top-3 left-3 backdrop-blur-sm border border-line rounded-md px-2.5 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3">
-            <span class="font-medium text-t2">{{ nodeCount }}</span> nodes &middot;
-            <span class="font-medium text-t2">{{ edgeCount }}</span> edges
+            showing
+            <span class="font-medium text-t2">{{ nodeCount.toLocaleString() }}</span>
+            <template v-if="stats.entities && stats.entities > nodeCount">
+              of <span class="font-medium text-t2">{{ stats.entities.toLocaleString() }}</span>
+            </template>
+            nodes &middot;
+            <span class="font-medium text-t2">{{ edgeCount.toLocaleString() }}</span> edges
           </span>
         </div>
       </div>
 
-      <!-- ── Detail panel ── -->
+      <!-- ── Detail panel (absolute overlay, not a flex sibling) ── -->
       <Transition name="slide">
         <div v-if="selectedNode"
-          class="w-72 shrink-0 flex flex-col border-l border-line bg-bg overflow-hidden">
+          class="absolute top-0 right-0 bottom-0 w-72 flex flex-col border-l border-line bg-bg overflow-hidden z-20">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1017,6 +1365,15 @@ watch(isDark, () => {
                 {{ selectedNode.type }}
               </span>
               <span class="text-[9px] text-t3">{{ selectedNode.degree }} connections</span>
+              <!-- "Not on canvas" hint: this entity isn't part of
+                   the current visible graph (clicked from search or
+                   the relations list, but pulls outside the
+                   anchor+halo set). Without the hint users wonder
+                   why no node lights up. -->
+              <span v-if="selectedNode.offCanvas"
+                class="text-[9px] text-t3 px-1.5 py-0.5 rounded border border-line">
+                not on canvas
+              </span>
             </div>
           </div>
 
@@ -1064,18 +1421,35 @@ watch(isDark, () => {
                 <div v-if="sourceChunksLoading" class="mt-2 text-[9px] text-t3 text-center">Loading chunks...</div>
               </div>
 
-              <!-- Relations -->
-              <div v-if="selectedDetail.relations?.length" class="px-4 py-3">
+              <!-- Relations — sorted by weight desc, with an inline
+                   weight bar so the strongest links read first. The
+                   bar width is normalized against the strongest
+                   relation in this entity's neighbourhood (not a
+                   global scale), so even an entity whose connections
+                   are all weak still shows a useful gradient. -->
+              <div v-if="sortedRelations.length" class="px-4 py-3">
                 <div class="text-[9px] text-t3 uppercase tracking-widest mb-2 font-medium">
                   Relations
-                  <span class="normal-case tracking-normal">({{ selectedDetail.relations.length }})</span>
+                  <span class="normal-case tracking-normal">({{ sortedRelations.length }})</span>
                 </div>
                 <div class="space-y-0.5">
-                  <button v-for="rel in selectedDetail.relations" :key="rel.relation_id"
+                  <button v-for="rel in sortedRelations" :key="rel.relation_id"
                     @click="focusNode(rel.source_entity === selectedNode.id ? rel.target_entity : rel.source_entity)"
                     class="w-full text-left px-2 py-1.5 rounded-md hover:bg-bg2 transition-colors group">
-                    <div class="text-[10px] text-t1 font-medium truncate group-hover:text-brand transition-colors">
-                      {{ rel.source_entity === selectedNode.id ? (rel.target_entity_name || rel.target_entity) : (rel.source_entity_name || rel.source_entity) }}
+                    <div class="flex items-center gap-2">
+                      <div class="text-[10px] text-t1 font-medium truncate group-hover:text-brand transition-colors flex-1 min-w-0">
+                        {{ rel.source_entity === selectedNode.id ? (rel.target_entity_name || rel.target_entity) : (rel.source_entity_name || rel.source_entity) }}
+                      </div>
+                      <span v-if="rel.weight"
+                        class="text-[9px] text-t3 tabular-nums font-mono shrink-0">{{ Number(rel.weight).toFixed(1) }}</span>
+                    </div>
+                    <!-- Weight bar — single track so 50 relations
+                         don't pile up visual noise. ``rel.weight`` is
+                         already a non-negative float on Neo4j. -->
+                    <div v-if="rel.weight"
+                      class="mt-1 h-px bg-line/60 rounded-full overflow-hidden">
+                      <div class="h-full bg-brand/60"
+                        :style="{ width: ((rel.weight / maxRelationWeight) * 100) + '%' }"></div>
                     </div>
                     <div v-if="rel.keywords" class="text-[9px] text-t3 mt-0.5 truncate">
                       {{ rel.keywords }}
@@ -1093,10 +1467,13 @@ watch(isDark, () => {
         </div>
       </Transition>
 
-      <!-- ── Chunk panel (opens when a source doc is clicked) ── -->
+      <!-- ── Chunk panel (opens when a source doc is clicked) ──
+           Sits to the LEFT of the detail panel; absolute-positioned
+           so it doesn't reflow the canvas. ``right-72`` = right edge
+           of the detail panel (which is w-72 = 288 px). -->
       <Transition name="slide-chunk">
         <div v-if="chunkPanelDocId"
-          class="w-96 shrink-0 flex flex-col border-l border-line bg-bg overflow-hidden">
+          class="absolute top-0 right-72 bottom-0 w-96 flex flex-col border-l border-line bg-bg overflow-hidden z-20">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1182,11 +1559,18 @@ watch(isDark, () => {
   transform: translateX(100%);
   opacity: 0;
 }
+/* Chunk panel transition — short-travel fade. The previous
+   ``translateX(100%)`` slid the entire 384 px panel from outside
+   the viewport, sweeping over the detail panel before settling.
+   That read as flashy when the panel actually emerges right next
+   to where the user clicked (a doc tile inside the detail panel
+   immediately to its right). 12 px translate + opacity gives a
+   subtle "appears here" cue without the dramatic sweep. */
 .slide-chunk-enter-active, .slide-chunk-leave-active {
-  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition: transform 0.16s ease, opacity 0.14s ease;
 }
 .slide-chunk-enter-from, .slide-chunk-leave-to {
-  width: 0 !important;
+  transform: translateX(12px);
   opacity: 0;
 }
 .fade-enter-active, .fade-leave-active {
@@ -1194,6 +1578,46 @@ watch(isDark, () => {
 }
 .fade-enter-from, .fade-leave-to {
   opacity: 0;
+}
+
+/* ── Toolbar dropdown — matches ContextMenu / GlobalUploadPanel idiom:
+      6px radius, 1px border, subtle shadow, 11px items at 5/8 padding.
+      Previously this used Tailwind's ``rounded-lg shadow-lg`` which
+      stuck out next to the rest of the app's crisp-border surfaces. */
+.kg-menu {
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  font-size: 11px;
+}
+.kg-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--color-t2);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.kg-menu-item:hover {
+  background: var(--color-bg2);
+  color: var(--color-t1);
+}
+.kg-menu-item--active {
+  background: var(--color-bg3);
+  color: var(--color-t1);
+  font-weight: 500;
+}
+.kg-menu-divider {
+  height: 1px;
+  background: var(--color-line);
+  margin: 3px 0;
 }
 
 /* ── KG-specific surfaces — token-based so they adapt to dark mode ── */

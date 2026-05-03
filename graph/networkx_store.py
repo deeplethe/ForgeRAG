@@ -597,6 +597,13 @@ class NetworkXGraphStore(GraphStore):
         with self._lock:
             return [self._graph.nodes[nid]["entity"] for nid in self._graph.nodes]
 
+    def get_all_relations(self):
+        """Walk the in-memory DiGraph once. Avoids the base-class
+        fallback which builds a synthetic ``get_subgraph`` over every
+        entity (O(N²) join cost on big graphs)."""
+        with self._lock:
+            return [self._graph.edges[u, v]["relation"] for u, v in self._graph.edges]
+
     # -- entity semantic search ---------------------------------------------
 
     def search_entities_by_embedding(

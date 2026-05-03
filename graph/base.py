@@ -169,6 +169,109 @@ class GraphStore(ABC):
             return {"nodes": [], "edges": []}
         return self.get_subgraph([e.entity_id for e in matching])
 
+    def explore(
+        self,
+        *,
+        anchors: int = 200,
+        halo_cap: int = 600,
+        doc_id: str | None = None,
+        entity_type: str | None = None,
+    ) -> dict:
+        """Anchor + 1-hop halo subgraph for the /knowledge-graph viewer.
+
+        Big graphs (100 K+ entities) can't render on a single canvas.
+        ``get_full(limit=N)`` returns the top-N by degree but drops every
+        edge whose other endpoint is outside the top-N — and in
+        scale-free graphs that's the majority of edges. Result: a
+        sparse, disconnected canvas that the focus-on-click pattern
+        can't usefully highlight (most clicks light up the selected
+        node alone because its neighbours are off-canvas).
+
+        ``explore`` fixes that by treating the result set as
+        ``anchors + halo``:
+
+        * **anchors** — top-N entities by degree, optionally narrowed
+          to a single doc and/or entity_type.
+        * **halo** — every entity reachable in one hop from an anchor.
+          Capped at ``halo_cap`` highest-degree halo entities so a
+          dense anchor set doesn't explode the result.
+
+        Edges are then EVERY relation whose endpoints are both in
+        ``anchors ∪ halo`` — anchors get their full local
+        neighbourhood, the canvas density supports interactive
+        exploration, and the focus-on-click pattern actually finds
+        neighbours to highlight.
+
+        Default impl is O(|graph|) — fine for in-memory backends.
+        Neo4j override pushes the same logic into a single Cypher
+        query so it's tolerable on 1M-entity graphs.
+        """
+        candidates = list(self.get_all_entities())
+        if doc_id is not None:
+            candidates = [e for e in candidates if doc_id in e.source_doc_ids]
+        if entity_type is not None:
+            candidates = [e for e in candidates if e.entity_type == entity_type]
+        if not candidates:
+            return {"nodes": [], "edges": []}
+
+        # Approximate degree per candidate. Backends without a cheap
+        # degree primitive will override anyway; for the default we
+        # walk relations once and tally.
+        deg: dict[str, int] = {}
+        rels = list(self.get_all_relations())
+        for r in rels:
+            deg[r.source_entity] = deg.get(r.source_entity, 0) + 1
+            deg[r.target_entity] = deg.get(r.target_entity, 0) + 1
+
+        candidates.sort(key=lambda e: deg.get(e.entity_id, 0), reverse=True)
+        anchors_set = {e.entity_id for e in candidates[:anchors]}
+
+        # 1-hop halo via the relation list. Order halo by degree
+        # (in the FULL graph, not the filtered candidate space) so
+        # the cap keeps the most-connected halo nodes.
+        halo_pool: dict[str, int] = {}
+        for r in rels:
+            if r.source_entity in anchors_set and r.target_entity not in anchors_set:
+                tgt = r.target_entity
+                if doc_id is None or self._has_doc(tgt, doc_id):
+                    halo_pool[tgt] = max(halo_pool.get(tgt, 0), deg.get(tgt, 0))
+            elif r.target_entity in anchors_set and r.source_entity not in anchors_set:
+                src = r.source_entity
+                if doc_id is None or self._has_doc(src, doc_id):
+                    halo_pool[src] = max(halo_pool.get(src, 0), deg.get(src, 0))
+        halo_ids = sorted(halo_pool, key=lambda i: halo_pool[i], reverse=True)[:halo_cap]
+        keep = anchors_set.union(halo_ids)
+        return self.get_subgraph(list(keep))
+
+    def _has_doc(self, entity_id: str, doc_id: str) -> bool:
+        """Internal helper: does this entity carry doc_id in its sources?"""
+        e = self.get_entity(entity_id)
+        return e is not None and doc_id in e.source_doc_ids
+
+    def get_all_relations(self):
+        """Optional iterator over all Relation objects.
+        Override in backends that store relations natively."""
+        # Fallback: synthesise from get_subgraph of all entities. Slow.
+        ents = list(self.get_all_entities())
+        if not ents:
+            return []
+        sub = self.get_subgraph([e.entity_id for e in ents])
+        out = []
+        for ed in sub.get("edges", []):
+            try:
+                out.append(
+                    Relation(
+                        source_entity=ed.get("source") or ed.get("source_entity"),
+                        target_entity=ed.get("target") or ed.get("target_entity"),
+                        keywords=ed.get("keywords", ""),
+                        description=ed.get("description", ""),
+                        weight=ed.get("weight", 1.0),
+                    )
+                )
+            except Exception:
+                continue
+        return out
+
     # -- description update ---------------------------------------------------
 
     def update_entity_description(self, entity_id: str, description: str) -> None:
