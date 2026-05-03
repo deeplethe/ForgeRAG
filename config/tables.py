@@ -67,6 +67,21 @@ class TableEnrichmentConfig(BaseModel):
     # Convergence guard — same default as SummarizeConfig.
     max_iterations: int = 5
 
+    # Threshold (tokens) below which the LLM is asked to write a
+    # "concrete" summary — one that quotes actual cell values inline
+    # (e.g. "EMEA Q1 revenue was $1,200; NA was $3,400") instead of
+    # the abstract column-and-pattern description used for big tables.
+    # Above this threshold, value-quoting would just get truncated by
+    # the output budget so we stay abstract. The original cells live
+    # on block.table_markdown for citation / viewer regardless.
+    #
+    # Default 1500 tokens ≈ 100-150 cells — a 30-row × 5-col table fits.
+    # Set to 0 to always use the abstract prompt (description-only,
+    # never quote values). Set to a huge number to always use the
+    # concrete prompt (LLM may then squeeze huge tables into the
+    # max_tokens budget and produce truncated value lists).
+    concrete_summary_max_tokens: int = 1500
+
 
 # Extensions accepted as spreadsheet-as-document uploads. Mirrored
 # on the frontend (``capabilities.classify``); we expose this via

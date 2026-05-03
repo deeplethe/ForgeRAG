@@ -99,22 +99,38 @@ def _describe_one_table(
     sum_cfg = _build_summarize_cfg(cfg)
     estimated = approx_tokens(md)
 
+    # Pick prompt by size:
+    #   * Small (markdown fits well within the description budget)
+    #     → "concrete" prompt: LLM is told to quote actual cell values
+    #       inline, so the description for a 5-row table reads like
+    #       "EMEA Q1 revenue was $1,200; NA was $3,400; ...". User can
+    #       then answer "what was EMEA Q1?" straight from the chunk
+    #       content without a follow-up agent round-trip.
+    #   * Large (above threshold) → "abstract" prompt: LLM stays
+    #     summary-style and refrains from row-dumps, which would just
+    #     get truncated by the output budget anyway.
+    # The block.table_markdown is preserved on the side for the viewer
+    # / future agent regardless of which path runs — citations always
+    # link back to the full data.
+    use_small_prompt = estimated <= cfg.concrete_summary_max_tokens
+    prompt_kind = "table_small" if use_small_prompt else "table"
+
     try:
         if estimated <= cfg.context_size:
-            # Small table — single-pass call. Wrap the whole
-            # markdown as one "fragment" and let
-            # summarize_descriptions handle it (it'll go through
-            # the single-pass branch since len(fragments) == 1
-            # falls under force_on_count).
+            # Single-pass call. Wrap the whole markdown as one
+            # "fragment" and let summarize_descriptions handle it
+            # (single-pass branch since len(fragments) == 1).
             return summarize_descriptions(
                 name=sheet_name,
-                kind="table",
+                kind=prompt_kind,
                 fragments=[md],
                 cfg=sum_cfg,
             )
 
-        # Large table — split into row-groups and let the
-        # map-reduce loop in summarize_descriptions take over.
+        # Doesn't fit one window — split into row-groups and let the
+        # map-reduce loop in summarize_descriptions take over. Always
+        # the abstract prompt here: by definition we exceeded
+        # concrete_summary_max_tokens (which is ≤ context_size).
         fragments = split_table_into_row_groups(md, rows_per_group=cfg.rows_per_group)
         log.info(
             "table_enrichment: %s ~%d tokens > context %d → map-reduce on %d fragments",

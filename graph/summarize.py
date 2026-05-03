@@ -116,14 +116,58 @@ Fragments (each is a markdown sub-table or a partial summary):
 """
 
 
+# Concrete-summary prompt for **small** tables — used when the
+# caller (table_enrichment) detects the markdown is small enough that
+# a budget-respecting prose summary can comfortably mention specific
+# values. Identical structure to PROMPT_USER_TABLE, but rule 5 flips
+# from "don't quote values" to "DO quote representative values" so
+# the description naturally includes "EMEA Q1 was 1200" style facts.
+#
+# Why bother having two prompts? For a 5-row table, an abstract
+# description is wasteful — the user wants the numbers, and the
+# answer LLM can quote them straight from the description without a
+# follow-up agent round-trip. For a 5,000-row table, the same
+# instruction produces noisy verbose output that gets truncated; the
+# abstract prompt is the right call there.
+PROMPT_USER_TABLE_SMALL = """\
+---Task---
+You will be given a small spreadsheet (or a few row groups of one). Produce a concise description that incorporates the actual cell values into the prose, so a downstream reader can see specific numbers / dates / names without opening the source file.
+
+---Instructions---
+1. Input Format: Each fragment is provided as JSONL — each line has a ``description`` field whose value is a markdown table.
+2. Output Format: Plain text, one or two paragraphs. NO additional formatting, NO bullet lists, NO row-by-row dumps.
+3. Cover (in order): what the table is about; the columns and what they represent; representative cell values inline (e.g. "EMEA Q1 revenue was $1,200; APAC was $2,200"); any obvious patterns.
+4. Context: Mention the table name explicitly at the start. Write from an objective, third-person perspective.
+5. DO incorporate specific cell values into the prose. If there are few enough rows (say, ≤ 10), it is fine to mention each one in a single sentence. For more rows, mention representative values, ranges, and notable extremes rather than every row.
+6. Length Constraint: The summary's total length must not exceed {max_tokens} tokens. If a small table cannot fit verbatim within this budget, prefer aggregate values + a few representative rows over truncating mid-row.
+7. Language: {language}. Column headers and proper nouns retain their original form.
+
+---Input---
+Table Name: {name}
+
+Fragments (each is a markdown sub-table):
+{json_list}
+
+---Output---
+"""
+
+
 def _select_prompt(kind: str) -> str:
     """Pick the user-prompt template by ``kind``.
 
     Falls through to the entity/relation default if an unknown
     ``kind`` is passed — keeps callers loose-coupled.
+
+    Recognized kinds:
+      * ``"table"``       — abstract summary, no value quoting (big tables)
+      * ``"table_small"`` — concrete summary, values inline (small tables)
+      * ``"entity"`` / ``"relation"`` / anything else — the
+        original LightRAG-style entity-description prompt.
     """
     if kind == "table":
         return PROMPT_USER_TABLE
+    if kind == "table_small":
+        return PROMPT_USER_TABLE_SMALL
     return PROMPT_USER_ENTITY
 
 

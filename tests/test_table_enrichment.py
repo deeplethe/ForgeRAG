@@ -139,19 +139,106 @@ def test_enrichment_uses_sheet_name_in_summarize_call():
     pass it to summarize_descriptions so it lands in the LLM prompt
     (and the cache key)."""
     parsed = _make_parsed_with_two_tables()
-    cfg = TableEnrichmentConfig(enabled=True, model="stub", api_key="test")
+    # Tiny markdown → small-prompt path; bump threshold to 0 to force
+    # the abstract path so this test covers ``kind="table"`` (the
+    # original branch).
+    cfg = TableEnrichmentConfig(
+        enabled=True, model="stub", api_key="test",
+        concrete_summary_max_tokens=0,
+    )
 
-    captured: list[str] = []
+    captured: list[tuple[str, str]] = []
 
     def fake_summarize(*, name, kind, fragments, cfg):
-        captured.append(name)
-        assert kind == "table"  # always "table" for this code path
+        captured.append((name, kind))
         return f"desc-of-{name}"
 
     with patch("ingestion.table_enrichment.summarize_descriptions", side_effect=fake_summarize):
         enrich_tables(parsed, cfg)
 
-    assert sorted(captured) == ["Forecast", "Sales"]
+    assert sorted(n for n, _ in captured) == ["Forecast", "Sales"]
+    # All used the abstract prompt because threshold was 0.
+    assert all(k == "table" for _, k in captured)
+
+
+def test_small_table_uses_concrete_prompt():
+    """For tables whose markdown fits in concrete_summary_max_tokens,
+    the prompt switches to "table_small" — graph.summarize uses that
+    to pick PROMPT_USER_TABLE_SMALL, which instructs the LLM to quote
+    actual cell values inline ("EMEA Q1 was 1,200") instead of the
+    abstract pattern-only description.
+
+    The block.table_markdown remains on the side for the viewer /
+    citations regardless of which prompt runs.
+    """
+    parsed = _make_parsed_with_two_tables()
+    # Both fixture tables are ≤ ~50 tokens of markdown, well under
+    # the default threshold of 1500 → both go to the concrete prompt.
+    cfg = TableEnrichmentConfig(enabled=True, model="stub", api_key="test")
+
+    captured: list[tuple[str, str]] = []
+
+    def fake_summarize(*, name, kind, fragments, cfg):
+        captured.append((name, kind))
+        return f"desc-of-{name}"
+
+    with patch("ingestion.table_enrichment.summarize_descriptions", side_effect=fake_summarize):
+        enrich_tables(parsed, cfg)
+
+    assert all(k == "table_small" for _, k in captured), captured
+
+
+def test_large_table_falls_back_to_abstract_prompt():
+    """Above the concrete threshold, prompt switches back to "table"
+    (abstract). This guards the embedder context window: a huge
+    markdown going through the concrete prompt would invite the LLM
+    to row-dump until the output budget truncates mid-row."""
+    parsed = _make_parsed_with_two_tables()
+    # Inflate one block well past the threshold.
+    parsed.blocks[0].table_markdown = (
+        "| col |\n|---|\n" + "| value |\n" * 5000
+    )
+    cfg = TableEnrichmentConfig(
+        enabled=True, model="stub", api_key="test",
+        concrete_summary_max_tokens=200,  # << inflated markdown
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_summarize(*, name, kind, fragments, cfg):
+        captured[name] = kind
+        return f"desc-of-{name}"
+
+    with patch("ingestion.table_enrichment.summarize_descriptions", side_effect=fake_summarize):
+        enrich_tables(parsed, cfg)
+
+    # Big sheet → abstract; small sibling sheet → concrete (per-block decision).
+    assert captured["Sales"] == "table"
+    assert captured["Forecast"] == "table_small"
+
+
+def test_select_prompt_returns_correct_template_for_table_small():
+    """Pin that graph.summarize._select_prompt actually returns the
+    new PROMPT_USER_TABLE_SMALL when called with kind="table_small".
+    Without this glue the table_enrichment plumbing would silently
+    fall through to the entity-default template."""
+    from graph.summarize import (
+        PROMPT_USER_ENTITY,
+        PROMPT_USER_TABLE,
+        PROMPT_USER_TABLE_SMALL,
+        _select_prompt,
+    )
+
+    assert _select_prompt("table") is PROMPT_USER_TABLE
+    assert _select_prompt("table_small") is PROMPT_USER_TABLE_SMALL
+    # Sanity: the small prompt is actually a different string AND
+    # carries the value-quoting permission rule that distinguishes
+    # it from the abstract one.
+    assert PROMPT_USER_TABLE_SMALL is not PROMPT_USER_TABLE
+    assert "DO incorporate specific cell values" in PROMPT_USER_TABLE_SMALL
+    assert "Don't quote individual cell values" in PROMPT_USER_TABLE
+    # Unknown kinds still fall through to entity prompt.
+    assert _select_prompt("unknown_kind") is PROMPT_USER_ENTITY
 
 
 def test_enrichment_falls_back_on_llm_failure():
