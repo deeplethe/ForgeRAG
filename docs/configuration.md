@@ -339,8 +339,28 @@ Runs whenever a `graph` store is configured. To skip the KG layer entirely, omit
 | `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials |
 | `max_workers` | int | `5` | Parallel extraction workers |
 | `timeout` | float | `120.0` | Timeout per chunk |
-| `merge_description_threshold` | int | `6` | Fragment count that triggers LLM description consolidation |
-| `merge_description_max_chars` | int | `2000` | Char length that triggers LLM description consolidation |
+
+##### `retrieval.kg_extraction.summary` (description compaction)
+
+LLM-driven post-merge compaction of entity / relation descriptions.
+Adapted from LightRAG's `_handle_entity_relation_summary`. The graph
+stores merge descriptions across upserts by substring-deduped concat,
+so a frequently-mentioned entity's description otherwise grows
+linearly with chunk count — see also `graph/summarize.py`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Master switch. Disable for tiny corpora where bloat doesn't matter |
+| `trigger_tokens` | int | `1200` | Token total of fragments that triggers summarisation |
+| `force_on_count` | int | `8` | Fragment count that triggers summarisation (either condition fires) |
+| `max_output_tokens` | int | `600` | Soft prompt-side cap on summary length |
+| `context_size` | int | `12000` | Map-reduce input window. Oversized inputs split into ≥2-fragment chunks, summarised, and chunk-summaries fed back through the loop |
+| `max_iterations` | int | `5` | Convergence guard for the map-reduce loop |
+| `model` | string | inherit | LLM for summarise calls. `null` inherits `kg_extraction.model` |
+| `api_key` / `api_key_env` / `api_base` | string | null | Inline credentials for the summarise model |
+| `timeout` | float | `60.0` | Per-call timeout |
+| `max_workers` | int | `5` | Parallel summarise calls post-upsert |
+| `language` | string | follow input | Prompt directive. Default tells the LLM to mirror the input language; override to e.g. `"Write the entire output in Chinese"` |
 
 #### `retrieval.kg_path`
 

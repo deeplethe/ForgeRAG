@@ -56,6 +56,58 @@ parser:
             load_config(yml)
 
 
+class TestKGSummaryConfig:
+    """The KG summary sub-config drives ``graph.summarize`` thresholds.
+
+    These tests pin the defaults + verify YAML overrides reach the
+    nested model — pydantic happily silently-drops typos in nested
+    fields, so a regression is easy to miss without explicit checks.
+    """
+
+    def test_defaults(self):
+        cfg = load_config(None)
+        s = cfg.retrieval.kg_extraction.summary
+        # Enabled by default — disabling is opt-out, not opt-in.
+        assert s.enabled is True
+        # Trigger gates
+        assert s.trigger_tokens == 1200
+        assert s.force_on_count == 8
+        # Output / map-reduce window
+        assert s.max_output_tokens == 600
+        assert s.context_size == 12000
+        assert s.max_iterations == 5
+        # Concurrency
+        assert s.max_workers == 5
+        # ``model = None`` means inherit from KGExtractionConfig.model
+        assert s.model is None
+
+    def test_yaml_override(self, tmp_path):
+        yml = tmp_path / "cfg.yaml"
+        yml.write_text(
+            """
+retrieval:
+  kg_extraction:
+    summary:
+      enabled: false
+      trigger_tokens: 800
+      force_on_count: 5
+      model: openai/gpt-4o
+      max_workers: 10
+""",
+            encoding="utf-8",
+        )
+        cfg = load_config(yml)
+        s = cfg.retrieval.kg_extraction.summary
+        assert s.enabled is False
+        assert s.trigger_tokens == 800
+        assert s.force_on_count == 5
+        assert s.model == "openai/gpt-4o"
+        assert s.max_workers == 10
+        # Unset fields keep their defaults
+        assert s.context_size == 12000
+        assert s.max_output_tokens == 600
+
+
 class TestStorageValidation:
     def test_s3_mode_without_section_raises(self):
         with pytest.raises(ValueError):

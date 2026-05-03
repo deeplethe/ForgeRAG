@@ -139,6 +139,65 @@ class QueryUnderstandingConfig(BaseModel):
     user_prompt_template: str | None = None
 
 
+class KGSummaryConfig(BaseModel):
+    """Description-compaction settings (LightRAG-style).
+
+    The graph stores merge entity / relation descriptions across
+    upserts by substring-deduped concatenation, so a frequently-
+    mentioned entity's description grows linearly with chunk count.
+    When fragment count or token total cross the thresholds below,
+    the ingest pipeline calls
+    ``graph.summarize.summarize_descriptions`` to LLM-compact the
+    accumulated fragments into a single canonical paragraph.
+    Map-reduce + recursion handle the case where the fragment list
+    is too big for one LLM call.
+
+    Disable by setting ``enabled = False`` (descriptions then grow
+    unbounded — fine for small corpora, bad for production).
+    """
+
+    enabled: bool = True
+
+    # Trigger gates — either condition fires summarisation.
+    # Defaults tuned for ForgeRAG's typical fragment profile
+    # (~50–100 tokens / fragment): 1200 tokens ≈ 12 average
+    # fragments, 8 fragments is the count-based escape hatch for
+    # when many small fragments slip under the token gate.
+    trigger_tokens: int = 1200
+    force_on_count: int = 8
+
+    # Output length target — a soft prompt-side ceiling.
+    max_output_tokens: int = 600
+
+    # Map-reduce input window. If total fragment tokens exceed
+    # this, we split into ≥2-fragment chunks, summarise each, then
+    # loop on the chunk summaries until the total fits.
+    context_size: int = 12000
+
+    # Convergence guard for the map-reduce loop.
+    max_iterations: int = 5
+
+    # LLM call params. By default reuses the KG extraction model so
+    # ingest sticks to a single provider; override to point at a
+    # cheaper / faster model dedicated to summarisation.
+    model: str | None = None  # None = inherit from KGExtractionConfig.model
+    api_key: str | None = None
+    api_key_env: str | None = None
+    api_base: str | None = None
+    timeout: float = 60.0
+
+    # Number of entities + relations to summarise in parallel
+    # post-upsert. Higher → faster wall-time on large ingests but
+    # more concurrent provider load.
+    max_workers: int = 5
+
+    # Language directive for the prompt. Default tells the LLM to
+    # follow the input language — works for monolingual EN, ZH, and
+    # mixed corpora. Override to e.g. ``"Write the entire output in
+    # Chinese"`` to force a canonical language.
+    language: str = "Write the entire output in the original language of the input descriptions"
+
+
 class KGExtractionConfig(BaseModel):
     """Ingestion-time entity/relation extraction settings.
 
@@ -160,11 +219,13 @@ class KGExtractionConfig(BaseModel):
     # the upstream provider rate-limits below this concurrency.
     max_workers: int = 10
     timeout: float = 120.0
-    # Description merge: LLM-consolidate fragmented entity/relation descriptions.
-    # When an entity accumulates many description fragments (from multiple chunks
-    # or documents), an LLM call synthesizes them into one concise description.
-    merge_description_threshold: int = 6  # fragment count that triggers LLM merge
-    merge_description_max_chars: int = 2000  # char length that triggers LLM merge
+
+    # Description compaction settings — see ``KGSummaryConfig``.
+    # Replaces the previous ``merge_description_threshold`` /
+    # ``merge_description_max_chars`` flat fields, which only ran
+    # against the per-chunk extraction batch (never the cumulative
+    # graph state) and were therefore mostly a no-op.
+    summary: KGSummaryConfig = Field(default_factory=KGSummaryConfig)
 
 
 class KGPathConfig(BaseModel):
