@@ -2,6 +2,9 @@
 
 from fastapi import APIRouter, Depends
 
+from config.images import IMAGE_EXTENSIONS, is_image_upload_configured
+from ingestion.converter import LEGACY_OFFICE_EXTENSIONS
+
 from ..deps import get_state
 from ..health_registry import get_registry
 from ..schemas import HealthResponse
@@ -12,6 +15,13 @@ router = APIRouter(prefix="/api/v1", tags=["health"])
 
 @router.get("/health", response_model=HealthResponse)
 def health(state: AppState = Depends(get_state)) -> HealthResponse:
+    # Image upload capability — gated on image_enrichment having a
+    # working VLM, since without one the IMAGE block stays empty and
+    # the document is un-retrievable. The frontend reads this from
+    # /health on app mount and disables the image-upload code path
+    # when ``image_upload`` is False (toast on attempted drop).
+    img_ok = is_image_upload_configured(state.cfg.image_enrichment)
+
     return HealthResponse(
         status="ok",
         components={
@@ -23,6 +33,13 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
         counts={
             "documents": state.store.count_documents(),
             "files": state.store.count_files(),
+        },
+        features={
+            "image_upload": img_ok,
+            "image_upload_extensions": list(IMAGE_EXTENSIONS) if img_ok else [],
+            # Always rejected at upload — frontend uses this list to
+            # show "save as .docx instead" before sending the bytes.
+            "legacy_office_extensions": list(LEGACY_OFFICE_EXTENSIONS),
         },
     )
 

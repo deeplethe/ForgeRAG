@@ -181,6 +181,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch
 import { useRouter, useRoute } from 'vue-router'
 import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
 import { useWorkspace } from '@/composables/useWorkspace'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useUploadsStore } from '@/stores/uploads'
 import { useDialog } from '@/composables/useDialog'
 import DocDetail from '@/views/DocDetail.vue'
@@ -261,9 +262,11 @@ function onOSDrop(e) {
   osDragActive.value = false
   const files = Array.from(e.dataTransfer.files || [])
   if (!files.length) return
-  // Hand off to the global upload queue (same path as the toolbar Upload btn)
-  uploads.enqueue(files, { folderPath: ws.currentPath.value })
-  uploads.toggleDrawer(true)
+  // Capability-aware enqueue — images / legacy Office formats get
+  // toasted + dropped here so the user knows immediately. Backend
+  // 415 is still the source of truth.
+  const accepted = safeEnqueue(files, { folderPath: ws.currentPath.value })
+  if (accepted) uploads.toggleDrawer(true)
   // Refresh the file list shortly after so newly-ingested docs surface
   setTimeout(() => { refresh() }, 800)
 }
@@ -305,6 +308,39 @@ const filteredDocuments = computed(() => {
   )
 })
 const uploads = useUploadsStore()
+const capabilities = useCapabilitiesStore()
+
+// Filter incoming files against the server's capability flags before
+// handing them to the upload queue. Files we know the backend will
+// reject (image when no VLM, .doc/.ppt/.xls always) get a toast +
+// drop here, so the user gets immediate feedback instead of waiting
+// for a 415 a few hundred ms later. Backend still enforces — this is
+// just a UX-side safety net.
+function safeEnqueue(files, opts) {
+  const arr = Array.isArray(files) ? files : Array.from(files || [])
+  if (!arr.length) return 0
+  const accepted = []
+  for (const f of arr) {
+    const verdict = capabilities.classify(f)
+    if (verdict.ok) {
+      accepted.push(f)
+      continue
+    }
+    if (verdict.reason === 'legacy_office') {
+      toast(
+        `${f.name} — legacy ${verdict.ext} format not supported. Save as ${verdict.suggested} and try again.`,
+        { variant: 'error', duration: 7000 },
+      )
+    } else if (verdict.reason === 'image_disabled') {
+      toast(
+        `${f.name} — image upload requires a VLM. Enable image_enrichment in forgerag.yaml.`,
+        { variant: 'error', duration: 7000 },
+      )
+    }
+  }
+  if (accepted.length) uploads.enqueue(accepted, opts)
+  return accepted.length
+}
 
 // URL-driven doc detail. Clicking a document in the browser sets ?doc=<id>
 // which swaps the main area for the embedded Repository view (PDF + tree +
@@ -654,10 +690,11 @@ function onFilesPicked(e) {
   const files = [...(e.target.files || [])]
   if (!files.length) return
   const folderPath = ws.currentPath.value
-  // Hand files off to the global upload queue — it handles upload + ingestion
-  // polling + progress UI. Open the drawer so the user sees activity start.
-  uploads.enqueue(files, { folderPath })
-  uploads.toggleDrawer(true)
+  // Hand files off via the capability-aware wrapper — pre-flights
+  // image / legacy-office gates and toasts rejected files. The
+  // upload queue then handles upload + ingestion polling + progress.
+  const accepted = safeEnqueue(files, { folderPath })
+  if (accepted) uploads.toggleDrawer(true)
   e.target.value = ''
   // Kick a workspace refresh after a short delay so new docs appear in the
   // file tree once they hit the DB. The queue keeps updating independently.

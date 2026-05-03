@@ -7,10 +7,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse, Response
+
+from config.images import IMAGE_EXTENSIONS, is_image_upload_configured
+from ingestion.converter import LEGACY_OFFICE_EXTENSIONS
 
 from ..deps import get_state
 from ..schemas import FileOut, PaginatedResponse, UploadUrlRequest
@@ -50,6 +54,40 @@ async def upload_file(
 ) -> FileOut:
     name = original_name or file.filename or "upload.bin"
     mime = mime_type or file.content_type
+
+    # Pre-flight format gates — fail fast with actionable messages
+    # rather than letting the ingest pipeline crash confusingly mid-
+    # parse. Frontend reads the same constraints from /health
+    # ``features`` and disables the relevant upload paths in the UI;
+    # this endpoint is the safety net for callers bypassing the UI
+    # (curl / SDK).
+    ext = Path(name).suffix.lower()
+
+    # Legacy binary Office formats — python-docx / python-pptx /
+    # openpyxl are all OOXML-only. ``.doc`` / ``.ppt`` / ``.xls``
+    # would crash with ``zipfile.BadZipFile`` at import. Tell the
+    # user to save as the modern format (5-second operation) instead
+    # of pretending the upload worked and surfacing a red status 30
+    # seconds later.
+    if ext in LEGACY_OFFICE_EXTENSIONS:
+        raise HTTPException(
+            415,
+            f"Legacy binary Office format ({ext}) is not supported. "
+            f"Please save as {ext}x and re-upload "
+            "(File → Save As → choose the .docx / .pptx / .xlsx variant).",
+        )
+
+    # Refuse image uploads when no VLM is configured. Without one the
+    # IMAGE block stays text-empty post-parse → chunk has no content
+    # → embedder + KG produce nothing → doc is un-retrievable.
+    if ext in IMAGE_EXTENSIONS and not is_image_upload_configured(state.cfg.image_enrichment):
+        raise HTTPException(
+            415,
+            "Image uploads require image_enrichment to be enabled and a VLM "
+            "to be configured. Set image_enrichment.enabled=true and provide "
+            "a model + credentials in forgerag.yaml, then restart.",
+        )
+
     data = await file.read()
     files_cfg = getattr(state.cfg, "files", None)
     max_bytes = files_cfg.max_bytes if files_cfg and files_cfg.max_bytes else 524288000
