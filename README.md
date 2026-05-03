@@ -200,17 +200,26 @@ ForgeRAG/
 - **[Deployment](docs/deployment.md)** — Docker, production checklist, Nginx
 - **[Development](docs/development.md)** — dev setup, testing, adding backends
 - **[Auth](docs/auth.md)** — single-admin password + SK tokens
+- **[Roadmaps](docs/roadmaps/)** — design docs for in-flight features ([retrieval evolution](docs/roadmaps/retrieval-evolution.md), [spreadsheet support](docs/roadmaps/spreadsheet-as-document.md))
 
 ---
 
 ## 🗺️ Roadmap
+
+**Next wave — retrieval evolution** ([full design](docs/roadmaps/retrieval-evolution.md)):
+
+- [ ] **File search** — lexical search over filenames + folder paths + types. Find "that legal report" without remembering its content.
+- [ ] **Retrieval MCP server** — expose `search_files / search_chunks / query / read_chunk` as MCP tools. Plug ForgeRAG into Claude Desktop, Claude Code, custom agent workflows.
+- [ ] **Agentic search** — multi-step retrieval where an LLM iteratively decides what to query next. Comparison + multi-hop questions get the iteration they need; one-shot stays one-shot.
+- [ ] **Deep research mode** — long-horizon report generation. Plan outline → parallel section research → cited synthesis. Export Markdown / PDF.
+
+**Foundation work** (in parallel as needed):
 
 - [ ] Comprehensive benchmark suite (vs RAGFlow / GraphRAG / vanilla, additional domains)
 - [ ] Scale to 1M+ documents — incremental indexing, async KG, sharded vector store
 - [ ] Multi-language retrieval — cross-lingual query/document support
 - [ ] Python SDK (`pip install forgerag-sdk`)
 - [ ] Config panel diagnostics (missing-provider warnings, validation feedback)
-- [ ] Performance: faster ingestion, query caching, async embedding
 
 ---
 
