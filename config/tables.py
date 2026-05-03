@@ -67,21 +67,6 @@ class TableEnrichmentConfig(BaseModel):
     # Convergence guard — same default as SummarizeConfig.
     max_iterations: int = 5
 
-    # Verbatim-data threshold (tokens). For tables whose rendered
-    # markdown is small enough, we append the full markdown after
-    # the LLM description so the chunk content carries BOTH a
-    # narrative summary AND every cell value verbatim. Two wins:
-    #   * BM25 / vector get lexical signal on cell values (e.g.
-    #     "EMEA Q1 1200" matches the literal row), not just the
-    #     abstract description.
-    #   * Answer LLM sees actual numbers in context — no need to
-    #     defer to a future agent tool for tiny lookup tables.
-    # Above this threshold we fall back to description-only to keep
-    # chunk content under the embedder context window (8K-32K for
-    # most providers; description ~600 tok + verbatim 2000 tok =
-    # 2.6K total fits everywhere).
-    verbatim_max_tokens: int = 2000
-
 
 # Extensions accepted as spreadsheet-as-document uploads. Mirrored
 # on the frontend (``capabilities.classify``); we expose this via
