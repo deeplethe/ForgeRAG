@@ -1,10 +1,10 @@
 """
 SQLAlchemy 2.0 declarative models.
 
-Portable across Postgres / MySQL / SQLite via the dialect URL.
+Portable across Postgres / SQLite via the dialect URL.
 Array-like fields use the JSON column type (JSONB on Postgres,
-JSON on MySQL, TEXT on SQLite) because our access pattern is
-"store a list, read it back whole" rather than indexed lookups.
+TEXT on SQLite) because our access pattern is "store a list, read
+it back whole" rather than indexed lookups.
 
 Hard-overwrite versioning:
     (doc_id, parse_version) is treated as the unit of truth.

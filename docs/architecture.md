@@ -34,7 +34,7 @@ flowchart LR
     end
 
     subgraph Persistence ["Persistence Layer"]
-        RDB[("Relational DB<br/>(SQLite / PG / MySQL)")]
+        RDB[("Relational DB<br/>(SQLite / PostgreSQL)")]
         VDB[("Vector Store<br/>(ChromaDB / pgvector / Qdrant / Milvus / Weaviate)")]
         Blob[("Blob Store<br/>(Local / S3 / OSS)")]
         Graph[("Graph Store<br/>(NetworkX / Neo4j)")]
@@ -170,7 +170,7 @@ ForgeRAG/
 
 The ingestion pipeline transforms raw documents into searchable, structured data. It operates in two phases: a fast synchronous upload, followed by background processing.
 
-> **Crash recovery:** On startup, ForgeRAG automatically detects documents stuck in intermediate states (`processing`, `parsing`, `structuring`, etc.) from a previous crash or restart, resets them to `pending`, and re-queues them for ingestion. No manual intervention needed — this works across SQLite, PostgreSQL, and MySQL.
+> **Crash recovery:** On startup, ForgeRAG automatically detects documents stuck in intermediate states (`processing`, `parsing`, `structuring`, etc.) from a previous crash or restart, resets them to `pending`, and re-queues them for ingestion. No manual intervention needed — works across both SQLite and PostgreSQL backends.
 
 ```mermaid
 flowchart TB
@@ -551,12 +551,11 @@ flowchart TB
 
     subgraph Relational ["Relational Store (persistence/store.py)"]
         direction TB
-        Engine["SQLAlchemy Engine<br/>make_engine(cfg)"]
-        Engine --> SQLite["SQLite<br/>(pytest fixture only;<br/>refused in production)"]
-        Engine --> PG["PostgreSQL<br/>pool_size, connect_timeout"]
-        Engine --> MySQL["MySQL<br/>pymysql driver"]
+        Engine["SQLAlchemy 2.0 Engine<br/>make_engine(cfg)"]
+        Engine --> PG["PostgreSQL<br/>(production default)<br/>psycopg driver, pooled"]
+        Engine --> SQLite["SQLite<br/>(dev / demo / tests)<br/>WAL mode, busy_timeout"]
 
-        Tables["Tables:<br/>File, Document, ParsedBlock,<br/>DocTreeRow, ChunkRow,<br/>Conversation, Message,<br/>Setting, LLMProvider, QueryTrace"]
+        Tables["Tables:<br/>File, Document, ParsedBlock,<br/>DocTreeRow, ChunkRow,<br/>Conversation, Message,<br/>Setting, QueryTrace"]
     end
 
     subgraph Vector ["Vector Store (persistence/vector/)"]

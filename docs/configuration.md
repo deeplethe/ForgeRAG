@@ -158,18 +158,14 @@ Database backends for relational data and vector embeddings.
 
 #### `persistence.relational`
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `backend` | string | `"sqlite"` | Backend: `sqlite`, `postgres`, `mysql` |
-
-**SQLite:**
+Two backends, both fully supported by the unified SQLAlchemy 2.0 store layer. Pick `postgres` for production (multi-worker safe, full SQL feature set, pgvector co-location); `sqlite` for development, demo, and tests.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `persistence.relational.sqlite.path` | string | `"./storage/forgerag.db"` | Database file path |
-| `persistence.relational.sqlite.journal_mode` | string | `"wal"` | Journal mode (WAL recommended) |
+| `backend` | string | `"postgres"` | Backend: `postgres`, `sqlite` |
+| `schema_auto_init` | bool | `true` | Run schema migrations on startup |
 
-**PostgreSQL:**
+**PostgreSQL** (production default):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -177,17 +173,21 @@ Database backends for relational data and vector embeddings.
 | `persistence.relational.postgres.port` | int | `5432` | Port |
 | `persistence.relational.postgres.database` | string | `"forgerag"` | Database name |
 | `persistence.relational.postgres.user` | string | `"forgerag"` | Username |
-| `persistence.relational.postgres.password_env` | string | `"POSTGRES_PASSWORD"` | Env var for password |
+| `persistence.relational.postgres.password_env` | string | `"POSTGRES_PASSWORD"` | Env var for password (preferred over plaintext `password`) |
+| `persistence.relational.postgres.pool_min` | int | `2` | Min pooled connections |
+| `persistence.relational.postgres.pool_max` | int | `10` | Max pooled connections |
+| `persistence.relational.postgres.connect_timeout` | int | `10` | Connect timeout (seconds) |
 
-**MySQL:**
+**SQLite** (dev / demo / single-process):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `persistence.relational.mysql.host` | string | `"localhost"` | Hostname |
-| `persistence.relational.mysql.port` | int | `3306` | Port |
-| `persistence.relational.mysql.database` | string | `"forgerag"` | Database name |
-| `persistence.relational.mysql.user` | string | `"forgerag"` | Username |
-| `persistence.relational.mysql.password_env` | string | `"MYSQL_PASSWORD"` | Env var for password |
+| `persistence.relational.sqlite.path` | string | `"./storage/forgerag.db"` | Database file path |
+| `persistence.relational.sqlite.timeout` | float | `30.0` | `busy_timeout` in seconds — how long a waiting writer sleeps before giving up with "database is locked". Default tuned for 12-way parallel ingestion |
+| `persistence.relational.sqlite.journal_mode` | string | `"wal"` | `wal` / `delete` / `truncate` / `memory` (WAL strongly recommended) |
+| `persistence.relational.sqlite.synchronous` | string | `"normal"` | `off` / `normal` / `full` |
+
+> SQLite serialises writers (WAL helps reads but writers still queue), so multi-worker uvicorn deployments should prefer `postgres`. SQLite is also incompatible with `vector.backend=pgvector` — pgvector lives inside Postgres.
 
 #### `persistence.vector`
 
@@ -517,7 +517,6 @@ Credentials should **never** be stored in `forgerag.yaml`. Use environment varia
 | `FORGERAG_HOST` | main.py | Server bind address |
 | `FORGERAG_PORT` | main.py | Server bind port |
 | `POSTGRES_PASSWORD` | Relational store | PostgreSQL password |
-| `MYSQL_PASSWORD` | Relational store | MySQL password |
 | `NEO4J_PASSWORD` | Graph store | Neo4j password |
 | `AWS_ACCESS_KEY_ID` | S3 blob store | AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | S3 blob store | AWS secret key |
