@@ -52,9 +52,11 @@ function graphColors() {
   return isDark.value
     ? {
         defaultEdge: '#3f3f46',
-        // Lifted from #a1a1a1 → #d4d4d4. Mirrors the parent KG view
-        // so visual tone stays consistent between the two surfaces.
-        label:       '#d4d4d4',
+        label:       '#a1a1a1',
+        // Edge labels (relation keywords) brighter than node labels
+        // — same trade-off as KnowledgeGraph.vue: the keyword text
+        // sits on top of dim grey edge lines and needs extra
+        // contrast to read against the canvas background.
         edgeLabel:   '#d4d4d4',
         dimNode:     '#1f1f1f',
         focusEdge:   '#ededed',
@@ -62,7 +64,7 @@ function graphColors() {
       }
     : {
         defaultEdge: '#d1d5db',
-        label:       '#1f2937',
+        label:       '#374151',
         edgeLabel:   '#1f2937',
         dimNode:     '#d0d0d0',
         focusEdge:   '#3d3d3d',
@@ -346,8 +348,9 @@ function initSigma(g) {
     },
     renderEdgeLabels: true,
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
-    edgeLabelSize: 10,
-    edgeLabelColor: { color: c.label },
+    edgeLabelSize: 11,
+    edgeLabelColor: { color: c.edgeLabel },
+    edgeLabelWeight: '500',
     labelFont: 'Geist, Inter, system-ui, sans-serif',
     labelSize: 12,
     labelWeight: '500',

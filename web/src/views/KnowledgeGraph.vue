@@ -19,14 +19,11 @@ function graphColors() {
     ? {
         defaultNode: '#71717a',
         defaultEdge: '#3f3f46',
-        // Default node label tone, lifted from #a1a1a1 → #d4d4d4
-        // because medium-grey text on the canvas bg was hard to
-        // read at the zoom levels users actually settle on. The
-        // sigma hover-pill drawn for the selected anchor sits over
-        // a light halo, so we keep the same colour for both
-        // default and selected — overriding to white collides with
-        // the halo and renders as white-on-white.
-        label:       '#d4d4d4',
+        label:       '#a1a1a1',
+        // Edge labels (relation keywords) get a brighter token than
+        // node labels — they sit on top of the dim ``defaultEdge``
+        // line and need extra contrast to read at the canvas zoom
+        // levels users actually use.
         edgeLabel:   '#d4d4d4',
         dimNode:     '#1f1f1f',
         focusEdge:   '#ededed',
@@ -35,7 +32,7 @@ function graphColors() {
     : {
         defaultNode: '#9ca3af',
         defaultEdge: '#d1d5db',
-        label:       '#1f2937',
+        label:       '#374151',
         edgeLabel:   '#1f2937',
         dimNode:     '#d0d0d0',
         focusEdge:   '#3d3d3d',
@@ -645,7 +642,9 @@ function initSigma(g) {
     labelRenderedSizeThreshold: 5,
     // Edges
     edgeLabelFont: 'Geist, Inter, system-ui, sans-serif',
-    edgeLabelSize: 9,
+    edgeLabelSize: 11,
+    edgeLabelColor: { color: c.edgeLabel },
+    edgeLabelWeight: '500',
     // Performance
     hideEdgesOnMove: false,
     hideLabelsOnMove: false,
