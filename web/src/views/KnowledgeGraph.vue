@@ -21,18 +21,13 @@ function graphColors() {
         defaultEdge: '#3f3f46',
         // Default node label tone, lifted from #a1a1a1 → #d4d4d4
         // because medium-grey text on the canvas bg was hard to
-        // read at the zoom levels users actually settle on.
+        // read at the zoom levels users actually settle on. The
+        // sigma hover-pill drawn for the selected anchor sits over
+        // a light halo, so we keep the same colour for both
+        // default and selected — overriding to white collides with
+        // the halo and renders as white-on-white.
         label:       '#d4d4d4',
-        // Edge labels (relation keywords) — same brightness as
-        // node labels now that we lifted both. They sit on top of
-        // the dim ``defaultEdge`` line and need contrast.
         edgeLabel:   '#d4d4d4',
-        // Selected node label pill renders text in this colour on
-        // a near-canvas-bg pill, drawn by ``drawNodeLabelDark``
-        // (overriding sigma's default per-node label paint for
-        // ``highlighted`` nodes). Pure white reads as the visual
-        // anchor among the merely-brightened neighbour labels.
-        selectedLabel: '#ffffff',
         dimNode:     '#1f1f1f',
         focusEdge:   '#ededed',
         dimEdge:     '#1f1f1f',
@@ -42,9 +37,6 @@ function graphColors() {
         defaultEdge: '#d1d5db',
         label:       '#1f2937',
         edgeLabel:   '#1f2937',
-        // Light-mode "darker on selection" maps to near-black so
-        // it's a step deeper than the already-dark default.
-        selectedLabel: '#000000',
         dimNode:     '#d0d0d0',
         focusEdge:   '#3d3d3d',
         dimEdge:     '#e2e2e2',
@@ -667,18 +659,7 @@ function initSigma(g) {
     // ``withHalo`` is a custom reducer flag we only set on the
     // selected anchor + the mouse-hovered node.
     defaultDrawNodeHover: (ctx, data, settings) => {
-      if (!data.withHalo) return
-      // Selected anchor's label rendered in ``selectedLabel`` color
-      // (full white in dark / black in light) so it pops out against
-      // the merely-brightened ``label`` colour the neighbour nodes
-      // use. Hovered-only nodes keep the default tone — overusing
-      // the strong colour would defeat its purpose as a "this is the
-      // active selection" cue.
-      const isSelectedAnchor = data.key === selectedId
-      const overrideSettings = isSelectedAnchor
-        ? { ...settings, labelColor: { color: graphColors().selectedLabel } }
-        : settings
-      drawDiscNodeHover(ctx, data, overrideSettings)
+      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
     },
   })
 

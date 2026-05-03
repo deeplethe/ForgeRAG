@@ -56,11 +56,6 @@ function graphColors() {
         // so visual tone stays consistent between the two surfaces.
         label:       '#d4d4d4',
         edgeLabel:   '#d4d4d4',
-        // Selected anchor's label rendered in this color via the
-        // custom ``defaultDrawNodeHover`` override below — pure
-        // white pops the active selection out of the brightened
-        // neighbour labels.
-        selectedLabel: '#ffffff',
         dimNode:     '#1f1f1f',
         focusEdge:   '#ededed',
         dimEdge:     '#1f1f1f',
@@ -69,7 +64,6 @@ function graphColors() {
         defaultEdge: '#d1d5db',
         label:       '#1f2937',
         edgeLabel:   '#1f2937',
-        selectedLabel: '#000000',
         dimNode:     '#d0d0d0',
         focusEdge:   '#3d3d3d',
         dimEdge:     '#e2e2e2',
@@ -372,17 +366,7 @@ function initSigma(g) {
     // ``withHalo`` (selected anchor / mouse-hovered); neighbours
     // get the silent WebGL re-render only.
     defaultDrawNodeHover: (ctx, data, settings) => {
-      if (!data.withHalo) return
-      // Selected anchor gets ``selectedLabel`` (white in dark / black
-      // in light) so it reads as the active pick against the
-      // merely-brightened neighbour labels. Hovered-only nodes use
-      // the default tone — overusing the strong colour would defeat
-      // its purpose as a "this is the active selection" cue.
-      const isSelectedAnchor = data.key === selectedNodeId
-      const overrideSettings = isSelectedAnchor
-        ? { ...settings, labelColor: { color: graphColors().selectedLabel } }
-        : settings
-      drawDiscNodeHover(ctx, data, overrideSettings)
+      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
     },
   })
 
