@@ -87,11 +87,9 @@ class DocumentOut(BaseModel):
     status: str = "pending"
     error_message: str | None = None
     embed_status: str = "pending"
-    embed_provider_id: str | None = None
     embed_model: str | None = None
     embed_at: Any = None
     enrich_status: str = "pending"
-    enrich_provider_id: str | None = None
     enrich_model: str | None = None
     enrich_summary_count: int = 0
     enrich_image_count: int = 0
@@ -105,7 +103,6 @@ class DocumentOut(BaseModel):
     embed_started_at: Any = None
     # Knowledge Graph
     kg_status: Any = None
-    kg_provider_id: str | None = None
     kg_model: str | None = None
     kg_entity_count: Any = None
     kg_relation_count: Any = None

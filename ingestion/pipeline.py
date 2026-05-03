@@ -309,9 +309,6 @@ class IngestionPipeline:
             summary_count = 0
             tree_has_summaries = tree.generation_method == "page_groups"
             if do_summary:
-                # provider_id audit column kept for legacy rows; new ingests
-                # only record the model id (each module owns its own).
-                enrich_provider_id = None
                 enrich_model = getattr(self.parser.cfg.image_enrichment, "model", None)
                 self.rel.update_document_status(doc_id, enrich_status="running", enrich_started_at=datetime.utcnow())
                 image_count = self._enrich_images(parsed)
@@ -329,7 +326,6 @@ class IngestionPipeline:
                 self.rel.update_document_status(
                     doc_id,
                     enrich_status=enrich_status,
-                    enrich_provider_id=enrich_provider_id,
                     enrich_model=enrich_model,
                     enrich_summary_count=max(summary_count, 0),
                     enrich_image_count=max(image_count, 0),
@@ -351,7 +347,6 @@ class IngestionPipeline:
             # store never references chunk_ids that don't exist in the
             # relational store. IngestionWriter wraps blocks/tree/chunks
             # in a single relational transaction.
-            embed_provider_id = None
             embed_model = getattr(getattr(self.parser.cfg.embedder, "litellm", None), "model", None)
             self.rel.update_document_status(
                 doc_id, status="embedding", embed_status="running", embed_started_at=datetime.utcnow()
@@ -364,7 +359,6 @@ class IngestionPipeline:
                 doc_id,
                 status="ready",
                 embed_status="done",
-                embed_provider_id=embed_provider_id,
                 embed_model=embed_model,
                 embed_at=datetime.utcnow(),
             )
@@ -632,7 +626,6 @@ class IngestionPipeline:
                 kg_entity_count=len(entities),
                 kg_relation_count=len(relations),
                 kg_completed_at=datetime.utcnow(),
-                kg_provider_id=None,
                 kg_model=kg_cfg.model,
             )
             log.info(

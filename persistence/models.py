@@ -111,12 +111,10 @@ class Document(Base):
     status: Mapped[str | None] = mapped_column(String(32), nullable=True, server_default="pending")
     # Embedding
     embed_status: Mapped[str | None] = mapped_column(String(32), nullable=True, server_default="pending")
-    embed_provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embed_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # LLM enrichment
     enrich_status: Mapped[str | None] = mapped_column(String(32), nullable=True, server_default="pending")
-    enrich_provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enrich_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     enrich_summary_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
     enrich_image_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
@@ -134,7 +132,6 @@ class Document(Base):
     kg_relation_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     kg_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     kg_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    kg_provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kg_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Tree navigation eligibility
     tree_navigable: Mapped[bool | None] = mapped_column(Boolean, nullable=True, server_default="1")
@@ -301,34 +298,6 @@ class Setting(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     value_type: Mapped[str] = mapped_column(String(32), default="string")  # string/int/float/bool/enum/secret
     enum_options: Mapped[list | None] = mapped_column(JSON, nullable=True)  # for value_type=enum
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-# ---------------------------------------------------------------------------
-# LLM Providers (pluggable model registry)
-# ---------------------------------------------------------------------------
-
-
-class LLMProvider(Base):
-    """
-    Registry of LLM / embedding / reranker endpoints.
-
-    Allows the system to reference models by a short user-defined name
-    instead of hardcoding model strings and API keys in settings.
-    The `provider_type` column distinguishes chat models from embedding
-    models from rerankers so the UI can filter appropriately.
-    """
-
-    __tablename__ = "llm_providers"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True)
-    provider_type: Mapped[str] = mapped_column(String(32), index=True)  # chat / embedding / reranker
-    api_base: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    model_name: Mapped[str] = mapped_column(String(255))  # litellm model string
-    api_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
