@@ -69,14 +69,13 @@ const selectedNode = ref(null)
 const selectedDetail = ref(null)
 const detailLoading = ref(false)
 
-// Right-edge offset for the legend strip. With no panel open, the
-// strip runs all the way to the canvas edge (right: 0). When a
-// panel is open, the strip ends exactly at the panel's left border
-// — no gap, no overlap, the two surfaces share the vertical line.
-// 18rem = w-72 detail panel, +24rem when chunk panel is also open.
+// Right-edge offset for the legend strip. Only the first-tier
+// detail panel reshapes the legend — the second-tier chunk panel
+// is allowed to OVERLAY it (z-20 > legend's z-10) so opening a
+// chunk doesn't recompute the legend wrap-points and shove its
+// chips around. UX feels stacked rather than constantly resizing.
 const legendRight = computed(() => {
-  if (chunkPanelDocId.value && selectedNode.value) return 'calc(18rem + 24rem)'
-  if (selectedNode.value) return '18rem'
+  if (selectedNode.value) return '18rem'  // w-72 detail panel
   return '0'
 })
 
