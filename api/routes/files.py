@@ -14,6 +14,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import RedirectResponse, Response
 
 from config.images import IMAGE_EXTENSIONS, is_image_upload_configured
+from config.tables import (
+    SPREADSHEET_EXTENSIONS,
+    SPREADSHEET_MAX_CELLS,
+    SPREADSHEET_WARN_CELLS,
+    is_spreadsheet_upload_configured,
+)
 from ingestion.converter import LEGACY_OFFICE_EXTENSIONS
 
 from ..deps import get_state
@@ -88,11 +94,64 @@ async def upload_file(
             "a model + credentials in forgerag.yaml, then restart.",
         )
 
+    # Same shape for spreadsheet uploads — without an LLM the TABLE
+    # block can't get a description, retrieval can't find the doc.
+    if ext in SPREADSHEET_EXTENSIONS and not is_spreadsheet_upload_configured(state.cfg.table_enrichment):
+        raise HTTPException(
+            415,
+            "Spreadsheet uploads require table_enrichment to be enabled and "
+            "an LLM to be configured. Set table_enrichment.enabled=true and "
+            "provide a model + credentials in forgerag.yaml, then restart.",
+        )
+
     data = await file.read()
     files_cfg = getattr(state.cfg, "files", None)
     max_bytes = files_cfg.max_bytes if files_cfg and files_cfg.max_bytes else 524288000
     if len(data) > max_bytes:
         raise HTTPException(413, f"File too large: {len(data)} bytes exceeds limit of {max_bytes}")
+
+    # Pre-flight cell-count gate for spreadsheets. Runs after the
+    # bytes are buffered (need them to actually parse) but before
+    # we hand them to the FileStore, so we don't store something
+    # we'll then refuse to ingest. RAG-style retrieval doesn't add
+    # value beyond ~5M cells (one giant doc dominates BM25 / vector
+    # — see docs/roadmaps/spreadsheet-as-document.md), so we refuse
+    # rather than store-then-fail.
+    if ext in SPREADSHEET_EXTENSIONS:
+        try:
+            import tempfile
+
+            from parser.backends.spreadsheet import count_cells
+
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            try:
+                cells = count_cells(tmp_path)
+            finally:
+                from pathlib import Path as _P
+
+                _P(tmp_path).unlink(missing_ok=True)
+        except Exception as e:
+            log.warning("spreadsheet cell-count failed for %s: %s", name, e)
+            cells = 0  # don't refuse on count failure; let the pipeline try
+
+        if cells > SPREADSHEET_MAX_CELLS:
+            raise HTTPException(
+                415,
+                f"Spreadsheet has ~{cells:,} cells, exceeding the "
+                f"{SPREADSHEET_MAX_CELLS:,} limit for retrieval-style RAG. For "
+                "analytical queries on this scale, use SQL / Polars / DuckDB.",
+            )
+        if cells > SPREADSHEET_WARN_CELLS:
+            log.warning(
+                "large spreadsheet upload: %s has ~%d cells (>%d soft warn); "
+                "retrieval may be biased toward this doc",
+                name,
+                cells,
+                SPREADSHEET_WARN_CELLS,
+            )
+
     try:
         record = state.file_store.store(data, original_name=name, mime_type=mime)
     except ValueError as e:

@@ -3,6 +3,11 @@
 from fastapi import APIRouter, Depends
 
 from config.images import IMAGE_EXTENSIONS, is_image_upload_configured
+from config.tables import (
+    SPREADSHEET_EXTENSIONS,
+    SPREADSHEET_MAX_CELLS,
+    is_spreadsheet_upload_configured,
+)
 from ingestion.converter import LEGACY_OFFICE_EXTENSIONS
 
 from ..deps import get_state
@@ -21,6 +26,7 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
     # /health on app mount and disables the image-upload code path
     # when ``image_upload`` is False (toast on attempted drop).
     img_ok = is_image_upload_configured(state.cfg.image_enrichment)
+    sheet_ok = is_spreadsheet_upload_configured(state.cfg.table_enrichment)
 
     return HealthResponse(
         status="ok",
@@ -37,6 +43,9 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
         features={
             "image_upload": img_ok,
             "image_upload_extensions": list(IMAGE_EXTENSIONS) if img_ok else [],
+            "spreadsheet_upload": sheet_ok,
+            "spreadsheet_upload_extensions": list(SPREADSHEET_EXTENSIONS) if sheet_ok else [],
+            "spreadsheet_max_cells": SPREADSHEET_MAX_CELLS,
             # Always rejected at upload — frontend uses this list to
             # show "save as .docx instead" before sending the bytes.
             "legacy_office_extensions": list(LEGACY_OFFICE_EXTENSIONS),

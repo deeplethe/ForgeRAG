@@ -24,6 +24,7 @@ from .parser import ParserSection
 from .persistence import PersistenceConfig
 from .retrieval import RetrievalSection
 from .storage import StorageModel
+from .tables import TableEnrichmentConfig
 
 
 class AppConfig(BaseModel):
@@ -36,6 +37,7 @@ class AppConfig(BaseModel):
     retrieval: RetrievalSection = Field(default_factory=RetrievalSection)
     answering: AnsweringSection = Field(default_factory=AnsweringSection)
     image_enrichment: ImageEnrichmentConfig = Field(default_factory=ImageEnrichmentConfig)
+    table_enrichment: TableEnrichmentConfig = Field(default_factory=TableEnrichmentConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     graph: GraphConfig = Field(default_factory=GraphConfig)

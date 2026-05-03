@@ -105,8 +105,19 @@ class IngestionWriter:
             if prev_version is not None and prev_version != doc.parse_version:
                 self.rel.delete_parse_version(doc.doc_id, prev_version)
 
-            # Pages as compact JSON on the document row
-            pages_json = [{"page_no": p.page_no, "width": p.width, "height": p.height} for p in doc.pages]
+            # Pages as compact JSON on the document row. ``name`` is
+            # spreadsheet-only (sheet titles); for PDFs / images it
+            # stays None and is omitted from the JSON to keep the
+            # blob small for the common case.
+            pages_json = [
+                {
+                    "page_no": p.page_no,
+                    "width": p.width,
+                    "height": p.height,
+                    **({"name": p.name} if p.name else {}),
+                }
+                for p in doc.pages
+            ]
             self.rel.upsert_document(
                 doc_id=doc.doc_id,
                 filename=doc.filename,

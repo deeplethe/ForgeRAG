@@ -49,20 +49,29 @@ log = logging.getLogger(__name__)
 _EXT_TO_FORMAT = {
     ".pdf": DocFormat.PDF,
     ".docx": DocFormat.DOCX,
-    ".doc": DocFormat.DOCX,
     ".pptx": DocFormat.PPTX,
-    ".ppt": DocFormat.PPTX,
-    ".xlsx": DocFormat.XLSX,
-    ".xls": DocFormat.XLSX,
     ".html": DocFormat.HTML,
     ".htm": DocFormat.HTML,
     ".md": DocFormat.TEXT,
     ".txt": DocFormat.TEXT,
+    # Spreadsheet-as-document path — parsed directly via
+    # ``parser.backends.spreadsheet.SpreadsheetBackend``, no PDF
+    # round-trip, no LibreOffice dependency.
+    ".xlsx": DocFormat.SPREADSHEET,
+    ".csv": DocFormat.SPREADSHEET,
+    ".tsv": DocFormat.SPREADSHEET,
+    # Image-as-document path — parsed directly via
+    # ``parser.backends.image.ImageBackend``.
     ".png": DocFormat.IMAGE,
     ".jpg": DocFormat.IMAGE,
     ".jpeg": DocFormat.IMAGE,
+    ".webp": DocFormat.IMAGE,
+    ".gif": DocFormat.IMAGE,
+    ".bmp": DocFormat.IMAGE,
     ".tif": DocFormat.IMAGE,
     ".tiff": DocFormat.IMAGE,
+    # Legacy binary Office formats (.doc / .ppt / .xls) intentionally
+    # absent — rejected at upload via ``LEGACY_OFFICE_EXTENSIONS``.
 }
 
 
@@ -138,6 +147,17 @@ class ParserPipeline:
             from .backends.image import ImageBackend
 
             backend = ImageBackend(self.blob_store)
+        elif profile.format == DocFormat.SPREADSHEET:
+            # Spreadsheet-as-document path. Same shape as the image
+            # branch above — no PDF round-trip, no LibreOffice, no
+            # MinerU. ``SpreadsheetBackend`` produces one
+            # ``BlockType.TABLE`` block per sheet; the
+            # ``table_enrichment`` phase fills ``block.text`` with
+            # an LLM-generated description later in the ingest
+            # pipeline.
+            from .backends.spreadsheet import SpreadsheetBackend
+
+            backend = SpreadsheetBackend(self.blob_store)
         else:
             backend = self.backend
 

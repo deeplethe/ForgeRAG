@@ -168,7 +168,7 @@ Every component is a config swap — pick your stack at the wizard, change later
 - **🎛️ Per-request overrides** — `QueryOverrides` on `POST /query` toggles paths, top-ks, rerank — great for A/B and SDK
 - **🗑️ Recycle bin + Undo** — soft-delete, Windows-style restore (rebuilds missing parent folders), 30-day auto-purge
 - **⚡ SQLite single-process · PG multi-process** — startup checks prevent foot-guns; clamps workers automatically
-- **🌍 Multi-format** — PDF, DOCX, PPTX, XLSX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) as native one-block documents — VLM describes each image, description feeds retrieval and KG just like text chunks
+- **🌍 Multi-format** — PDF, DOCX, PPTX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) and spreadsheets (XLSX/CSV/TSV) as native one-block-per-page documents — VLM describes each image, LLM describes each sheet, descriptions feed retrieval and KG just like text chunks
 
 ---
 

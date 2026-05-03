@@ -35,6 +35,11 @@ class DocFormat(str, Enum):
     DOCX = "docx"
     PPTX = "pptx"
     XLSX = "xlsx"
+    # Native spreadsheet path (xlsx / csv / tsv parsed directly into a
+    # one-block-per-sheet ``ParsedDocument`` — see ``parser/backends/
+    # spreadsheet.py``). Distinct from ``XLSX`` which lingers as a
+    # legacy enum value for any external code that may have stored it.
+    SPREADSHEET = "spreadsheet"
     HTML = "html"
     TEXT = "text"
     IMAGE = "image"
@@ -181,6 +186,13 @@ class Page:
     width: float  # in points
     height: float  # in points
     block_ids: list[str] = field(default_factory=list)
+    # Optional human-readable name for the page. PDFs leave this
+    # ``None`` (page numbers are sufficient identifiers). Spreadsheet
+    # uploads populate it with the sheet name so the frontend tab
+    # strip can show real labels ("Q3-Revenue") instead of "Page 1".
+    # Image-as-document docs likewise leave it None — there's only
+    # ever one page and the doc filename already labels it.
+    name: str | None = None
 
 
 # ---------------------------------------------------------------------------

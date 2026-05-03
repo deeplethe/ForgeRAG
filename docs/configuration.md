@@ -478,6 +478,44 @@ Optional figure captioning and OCR.
 | `caption_model` | string | null | Model for figure captioning |
 | `ocr_model` | string | null | Model for OCR on images |
 
+> **Required for image-as-document uploads.** When disabled, the
+> upload route refuses image files (`.png` / `.jpg` / `.webp` /
+> `.gif` / `.bmp` / `.tif`) — without a VLM the IMAGE block carries no
+> text and the document is unretrievable. The frontend reads
+> `features.image_upload` from `/health` and disables the drop path
+> with a toast.
+
+---
+
+### `table_enrichment`
+
+LLM-generated descriptions for spreadsheet uploads (`.xlsx` / `.csv` /
+`.tsv`). One description per sheet — that description is what gets
+embedded, retrieved, and injected as a `entity_type="TABLE"` knowledge-
+graph node. The full table data lives on the side
+(`block.table_markdown`) for the `<SpreadsheetViewer>` component and
+future agent tools.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable spreadsheet uploads + LLM description |
+| `model` | string | `"openai/gpt-4o-mini"` | LLM for description generation |
+| `api_key` / `api_key_env` | string | null | Inline key OR env-var name |
+| `api_base` | string | null | Override the OpenAI-compatible base URL |
+| `timeout` | float | `60.0` | Per-call timeout in seconds |
+| `max_workers` | int | `4` | Concurrent enrichment threads (one per sheet) |
+| `rows_per_group` | int | `200` | Map-reduce row-group size for large tables |
+| `summary_max_tokens` | int | `600` | Cap on description length |
+| `context_size` | int | `12000` | LLM context window (single-pass / map-reduce gate) |
+| `max_iterations` | int | `5` | Recursive-reduce safety stop |
+
+> **Required for spreadsheet uploads.** When disabled, the upload
+> route refuses `.xlsx` / `.csv` / `.tsv` (HTTP 415) — without an LLM
+> the TABLE block has no description and the doc is unretrievable.
+> Hard cell-count limits (`SPREADSHEET_MAX_CELLS = 5_000_000`) are
+> enforced at upload regardless of this config; tables that big are
+> better served by SQL / Polars / DuckDB than retrieval-style RAG.
+
 ---
 
 ### `cors`
