@@ -34,7 +34,6 @@ from .models import (
     DocTreeRow,
     Document,
     File,
-    LLMProvider,
     Message,
     ParsedBlock,
     QueryTrace,
@@ -1109,51 +1108,6 @@ class Store:
 
             return s.execute(select(sa_func.count()).select_from(QueryTrace)).scalar() or 0
 
-    # =======================================================================
-    # LLM Providers
-    # =======================================================================
-
-    def upsert_llm_provider(self, record: dict) -> None:
-        with self._session() as s:
-            row = s.get(LLMProvider, record["id"])
-            if row is None:
-                s.add(LLMProvider(**record))
-            else:
-                for k, v in record.items():
-                    if k != "id":
-                        setattr(row, k, v)
-
-    def get_llm_provider(self, provider_id: str) -> dict | None:
-        with self._session() as s:
-            row = s.get(LLMProvider, provider_id)
-            return _llm_provider_to_dict(row) if row else None
-
-    def get_llm_provider_by_name(self, name: str) -> dict | None:
-        with self._session() as s:
-            row = s.execute(select(LLMProvider).where(LLMProvider.name == name)).scalars().first()
-            return _llm_provider_to_dict(row) if row else None
-
-    def list_llm_providers(self, provider_type: str | None = None) -> list[dict]:
-        with self._session() as s:
-            q = select(LLMProvider).order_by(LLMProvider.provider_type, LLMProvider.name)
-            if provider_type:
-                q = q.where(LLMProvider.provider_type == provider_type)
-            rows = s.execute(q).scalars().all()
-            return [_llm_provider_to_dict(r) for r in rows]
-
-    def delete_llm_provider(self, provider_id: str) -> None:
-        with self._session() as s:
-            row = s.get(LLMProvider, provider_id)
-            if row is not None:
-                s.delete(row)
-
-    def count_llm_providers(self) -> int:
-        with self._session() as s:
-            from sqlalchemy import func as sa_func
-
-            return s.execute(select(sa_func.count()).select_from(LLMProvider)).scalar() or 0
-
-
 # ---------------------------------------------------------------------------
 # Row -> dict helpers
 # ---------------------------------------------------------------------------
@@ -1172,11 +1126,9 @@ def _doc_to_dict(row: Document) -> dict:
         "parse_trace_json": row.parse_trace_json,
         "status": row.status,
         "embed_status": row.embed_status,
-        "embed_provider_id": row.embed_provider_id,
         "embed_model": row.embed_model,
         "embed_at": row.embed_at,
         "enrich_status": row.enrich_status,
-        "enrich_provider_id": row.enrich_provider_id,
         "enrich_model": row.enrich_model,
         "enrich_summary_count": row.enrich_summary_count,
         "enrich_image_count": row.enrich_image_count,
@@ -1192,7 +1144,6 @@ def _doc_to_dict(row: Document) -> dict:
         "kg_relation_count": row.kg_relation_count,
         "kg_started_at": row.kg_started_at,
         "kg_completed_at": row.kg_completed_at,
-        "kg_provider_id": row.kg_provider_id,
         "kg_model": row.kg_model,
         "tree_navigable": getattr(row, "tree_navigable", None),
         "tree_quality": getattr(row, "tree_quality", None),
@@ -1324,15 +1275,3 @@ def _file_to_dict(row: File) -> dict:
     }
 
 
-def _llm_provider_to_dict(row: LLMProvider) -> dict:
-    return {
-        "id": row.id,
-        "name": row.name,
-        "provider_type": row.provider_type,
-        "api_base": row.api_base,
-        "model_name": row.model_name,
-        "api_key": row.api_key,
-        "is_default": row.is_default,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }

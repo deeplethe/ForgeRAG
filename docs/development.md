@@ -289,4 +289,4 @@ Earlier versions kept "runtime" settings editable in the DB via the web UI. We r
 * **Per-request overrides are the real need.** When a caller wants "skip QU for this query" or "bump top-k just this once", mutating a shared DB knob is the wrong tool — another concurrent request has to suffer the side-effect. `QueryOverrides` on `/api/v1/query` solves this cleanly; no global mutation.
 * **Secrets don't belong in a checkbox.** API keys live in `api_key_env` referencing an environment variable, not in a settings row an HTTP PUT can overwrite.
 
-The DB still has a `settings` table that gets a **write-once snapshot** of the running cfg — surfaced by `GET /api/v1/settings` for admin tools, never read back by the runtime. (A legacy `llm_providers` table also exists for migration compatibility; v0.2.0 dropped the `provider_id` indirection it used to back, so it's unused now.)
+The DB still has a `settings` table that gets a **write-once snapshot** of the running cfg — surfaced by `GET /api/v1/settings` for admin tools, never read back by the runtime.

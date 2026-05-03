@@ -695,11 +695,9 @@ def reparse_document(
         doc_id,
         status="pending",
         embed_status="pending",
-        embed_provider_id=None,
         embed_model=None,
         embed_at=None,
         enrich_status="pending",
-        enrich_provider_id=None,
         enrich_model=None,
         enrich_summary_count=0,
         enrich_image_count=0,
@@ -715,7 +713,6 @@ def reparse_document(
         kg_relation_count=None,
         kg_started_at=None,
         kg_completed_at=None,
-        kg_provider_id=None,
         kg_model=None,
     )
 

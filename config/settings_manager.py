@@ -14,9 +14,7 @@ favour.
 
 Each module that calls an LLM owns its own ``model``, ``api_key``
 (or ``api_key_env``), and ``api_base`` fields directly on its config
-section — no central provider registry, no startup indirection. The
-legacy ``llm_providers`` DB table is not used at runtime; it's kept
-to avoid a destructive migration.
+section — no central provider registry, no startup indirection.
 
 EDITABLE_SETTINGS and PROMPT_DEFAULTS are retained as metadata
 registries used by the read-only ``GET /settings`` endpoints; they drive

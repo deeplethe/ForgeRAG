@@ -17,7 +17,7 @@ A subset of retrieval knobs can be overridden **per query** via `QueryOverrides`
 
 ## DB as a one-way backup mirror
 
-On startup, ForgeRAG writes the resolved cfg into the `settings` table as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot. (A legacy `llm_providers` table also exists for migration compatibility but is unused since v0.2.0 dropped the `provider_id` indirection.)
+On startup, ForgeRAG writes the resolved cfg into the `settings` table as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot.
 
 ## Changing configuration — the only way
 
