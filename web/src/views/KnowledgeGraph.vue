@@ -6,7 +6,7 @@ defineOptions({ name: 'KnowledgeGraph' })
 
 import { ref, computed, watch, onActivated, onDeactivated, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getGraphStats, getFullGraph, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
+import { getGraphStats, getGraphExplore, searchEntities, getEntityDetail, getDocument, getChunk, blockImageUrl } from '@/api'
 import { Search, X, RefreshCw, Maximize2 } from 'lucide-vue-next'
 import Spinner from '@/components/Spinner.vue'
 import { useTheme } from '@/composables/useTheme'
@@ -54,10 +54,37 @@ const error = ref('')
 const nodeCount = ref(0)
 const edgeCount = ref(0)
 
+// Entity-type filter for /explore. ``null`` = no filter (anchors
+// drawn from the whole graph). When set, only entities of that type
+// are eligible to be anchors; the halo can still pull in other types
+// (so a "show me PERSONs" view still includes the ORG / WORK nodes
+// they connect to). Available types accumulate from each load —
+// after the first unfiltered load we know every type the KG holds.
+const entityTypeFilter = ref(null)
+const availableTypes = ref([])
+const showTypeMenu = ref(false)
+
 // Detail panel
 const selectedNode = ref(null)
 const selectedDetail = ref(null)
 const detailLoading = ref(false)
+
+// Relations sorted by weight desc — strongest connections float to
+// the top of the panel. Backend returns them in storage order which
+// is roughly insertion-order; without sorting, the panel buries the
+// most important neighbours under noise.
+const sortedRelations = computed(() => {
+  const rels = selectedDetail.value?.relations
+  if (!rels?.length) return []
+  return [...rels].sort((a, b) => (b.weight || 0) - (a.weight || 0))
+})
+// Max weight in the current relation set — denominator for the
+// inline weight bar so the strongest relation always reads as full.
+const maxRelationWeight = computed(() => {
+  const rels = selectedDetail.value?.relations
+  if (!rels?.length) return 1
+  return Math.max(1, ...rels.map((r) => r.weight || 0))
+})
 
 // Source documents & chunks for detail panel
 const sourceDocs = ref({})          // { doc_id: { ...docMeta } }
@@ -143,11 +170,29 @@ async function loadGraph() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getFullGraph(500)
+    // ``/explore`` returns top-N anchors by degree + their 1-hop
+    // halo. Strictly bounded (anchors + halo_cap) so the canvas
+    // stays performant; the halo gives anchors actual neighbours
+    // to highlight on click — ``/full?limit=N`` without a halo
+    // drops most edges in scale-free graphs because high-degree
+    // anchors mostly link out to low-degree non-anchors.
+    const data = await getGraphExplore({
+      anchors: 200,
+      halo_cap: 600,
+      entity_type: entityTypeFilter.value,
+    })
     const rawNodes = data.nodes || []
     const rawEdges = data.edges || []
     nodeCount.value = rawNodes.length
     edgeCount.value = rawEdges.length
+    // Refresh the type chip list from the loaded set when no filter
+    // is active. Once filtered, we'd only see one type — keep the
+    // last full list in that case.
+    if (!entityTypeFilter.value) {
+      const seen = new Set()
+      for (const n of rawNodes) if (n.type) seen.add(n.type)
+      availableTypes.value = [...seen].sort()
+    }
     buildGraph(rawNodes, rawEdges)
   } catch (e) {
     if (e.message?.includes('404')) {
@@ -158,6 +203,12 @@ async function loadGraph() {
   } finally {
     loading.value = false
   }
+}
+
+function applyTypeFilter(type) {
+  entityTypeFilter.value = type   // null clears the filter
+  showTypeMenu.value = false
+  loadGraph()
 }
 
 async function loadEntityDetail(entityId) {
@@ -909,6 +960,42 @@ watch(isDark, () => {
           </Transition>
         </div>
 
+        <!-- Entity-type filter — same dropdown idiom as Layout. The
+             chip shows the current filter; opening the menu lists
+             every type seen in the unfiltered load + an "All"
+             reset. Backend re-fetch on change so anchors are picked
+             from the filtered pool, not just dimmed client-side. -->
+        <div class="relative" v-if="availableTypes.length > 1">
+          <button @click="showTypeMenu = !showTypeMenu"
+            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] hover:bg-bg-hover transition-colors"
+            :class="entityTypeFilter ? 'text-t1' : 'text-t3 hover:text-t1'">
+            <span v-if="entityTypeFilter" class="w-1.5 h-1.5 rounded-full" :style="{ background: typeFill(entityTypeFilter) }"></span>
+            <span>{{ entityTypeFilter || 'Type' }}</span>
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              class="transition-transform" :class="showTypeMenu ? 'rotate-180' : ''">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+          <Transition name="fade">
+            <div v-if="showTypeMenu"
+              class="absolute top-full left-0 mt-1 bg-bg border border-line rounded-lg shadow-lg py-1 z-30 min-w-[140px] max-h-[280px] overflow-auto">
+              <button @click="applyTypeFilter(null)"
+                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors"
+                :class="!entityTypeFilter ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+              >All types</button>
+              <div class="h-px bg-line my-1"></div>
+              <button v-for="t in availableTypes" :key="t"
+                @click="applyTypeFilter(t)"
+                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors flex items-center gap-2"
+                :class="entityTypeFilter === t ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+              >
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ background: typeFill(t) }"></span>
+                <span class="truncate">{{ t }}</span>
+              </button>
+            </div>
+          </Transition>
+        </div>
+
         <div class="w-px h-4 bg-line mx-0.5"></div>
 
         <button @click="reheat" title="Re-layout"
@@ -923,9 +1010,16 @@ watch(isDark, () => {
     </div>
 
     <!-- ═══════ Main content ═══════ -->
-    <div class="flex-1 flex min-h-0">
-      <!-- ── Graph container ── -->
-      <div class="kg-graph-area flex-1 relative overflow-hidden">
+    <!-- ``relative`` so the detail-panel can absolute-overlay the right
+         edge instead of being a sibling flex item. With the panel as a
+         flex sibling, its 288 px width pushed the graph area to a
+         narrower flex-1 box on every selection, and sigma's
+         ResizeObserver only repainted after the slide transition
+         settled (≈200 ms of stale canvas). Overlay = canvas stays
+         full-width, panel slides in over it. -->
+    <div class="flex-1 relative min-h-0">
+      <!-- ── Graph container (always full width) ── -->
+      <div class="kg-graph-area absolute inset-0 overflow-hidden">
 
         <!-- Loading -->
         <Transition name="fade">
@@ -982,20 +1076,28 @@ watch(isDark, () => {
           <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
-        <!-- Node count -->
+        <!-- Node count — "showing N of M" so it's obvious the canvas
+             is a sample, not the whole KG. Without the "of M" gloss,
+             a 200-node canvas on a 30k-entity graph reads as if the
+             rest of the data is missing. -->
         <div v-if="nodeCount"
           class="kg-overlay-pill absolute top-3 left-3 backdrop-blur-sm border border-line rounded-md px-2.5 py-1 z-10 pointer-events-none">
           <span class="text-[9px] text-t3">
-            <span class="font-medium text-t2">{{ nodeCount }}</span> nodes &middot;
-            <span class="font-medium text-t2">{{ edgeCount }}</span> edges
+            showing
+            <span class="font-medium text-t2">{{ nodeCount.toLocaleString() }}</span>
+            <template v-if="stats.entities && stats.entities > nodeCount">
+              of <span class="font-medium text-t2">{{ stats.entities.toLocaleString() }}</span>
+            </template>
+            nodes &middot;
+            <span class="font-medium text-t2">{{ edgeCount.toLocaleString() }}</span> edges
           </span>
         </div>
       </div>
 
-      <!-- ── Detail panel ── -->
+      <!-- ── Detail panel (absolute overlay, not a flex sibling) ── -->
       <Transition name="slide">
         <div v-if="selectedNode"
-          class="w-72 shrink-0 flex flex-col border-l border-line bg-bg overflow-hidden">
+          class="absolute top-0 right-0 bottom-0 w-72 flex flex-col border-l border-line bg-bg overflow-hidden z-20 shadow-xl">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1064,18 +1166,35 @@ watch(isDark, () => {
                 <div v-if="sourceChunksLoading" class="mt-2 text-[9px] text-t3 text-center">Loading chunks...</div>
               </div>
 
-              <!-- Relations -->
-              <div v-if="selectedDetail.relations?.length" class="px-4 py-3">
+              <!-- Relations — sorted by weight desc, with an inline
+                   weight bar so the strongest links read first. The
+                   bar width is normalized against the strongest
+                   relation in this entity's neighbourhood (not a
+                   global scale), so even an entity whose connections
+                   are all weak still shows a useful gradient. -->
+              <div v-if="sortedRelations.length" class="px-4 py-3">
                 <div class="text-[9px] text-t3 uppercase tracking-widest mb-2 font-medium">
                   Relations
-                  <span class="normal-case tracking-normal">({{ selectedDetail.relations.length }})</span>
+                  <span class="normal-case tracking-normal">({{ sortedRelations.length }})</span>
                 </div>
                 <div class="space-y-0.5">
-                  <button v-for="rel in selectedDetail.relations" :key="rel.relation_id"
+                  <button v-for="rel in sortedRelations" :key="rel.relation_id"
                     @click="focusNode(rel.source_entity === selectedNode.id ? rel.target_entity : rel.source_entity)"
                     class="w-full text-left px-2 py-1.5 rounded-md hover:bg-bg2 transition-colors group">
-                    <div class="text-[10px] text-t1 font-medium truncate group-hover:text-brand transition-colors">
-                      {{ rel.source_entity === selectedNode.id ? (rel.target_entity_name || rel.target_entity) : (rel.source_entity_name || rel.source_entity) }}
+                    <div class="flex items-center gap-2">
+                      <div class="text-[10px] text-t1 font-medium truncate group-hover:text-brand transition-colors flex-1 min-w-0">
+                        {{ rel.source_entity === selectedNode.id ? (rel.target_entity_name || rel.target_entity) : (rel.source_entity_name || rel.source_entity) }}
+                      </div>
+                      <span v-if="rel.weight"
+                        class="text-[9px] text-t3 tabular-nums font-mono shrink-0">{{ Number(rel.weight).toFixed(1) }}</span>
+                    </div>
+                    <!-- Weight bar — single track so 50 relations
+                         don't pile up visual noise. ``rel.weight`` is
+                         already a non-negative float on Neo4j. -->
+                    <div v-if="rel.weight"
+                      class="mt-1 h-px bg-line/60 rounded-full overflow-hidden">
+                      <div class="h-full bg-brand/60"
+                        :style="{ width: ((rel.weight / maxRelationWeight) * 100) + '%' }"></div>
                     </div>
                     <div v-if="rel.keywords" class="text-[9px] text-t3 mt-0.5 truncate">
                       {{ rel.keywords }}
@@ -1093,10 +1212,13 @@ watch(isDark, () => {
         </div>
       </Transition>
 
-      <!-- ── Chunk panel (opens when a source doc is clicked) ── -->
+      <!-- ── Chunk panel (opens when a source doc is clicked) ──
+           Sits to the LEFT of the detail panel; absolute-positioned
+           so it doesn't reflow the canvas. ``right-72`` = right edge
+           of the detail panel (which is w-72 = 288 px). -->
       <Transition name="slide-chunk">
         <div v-if="chunkPanelDocId"
-          class="w-96 shrink-0 flex flex-col border-l border-line bg-bg overflow-hidden">
+          class="absolute top-0 right-72 bottom-0 w-96 flex flex-col border-l border-line bg-bg overflow-hidden z-20 shadow-xl">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1182,11 +1304,14 @@ watch(isDark, () => {
   transform: translateX(100%);
   opacity: 0;
 }
+/* Chunk panel transition: was width-based when the panel was a
+   flex sibling; switched to transform now that it's absolute (width
+   is fixed at w-96, no layout reflow during the animation). */
 .slide-chunk-enter-active, .slide-chunk-leave-active {
-  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
 }
 .slide-chunk-enter-from, .slide-chunk-leave-to {
-  width: 0 !important;
+  transform: translateX(100%);
   opacity: 0;
 }
 .fade-enter-active, .fade-leave-active {
