@@ -69,6 +69,16 @@ const selectedNode = ref(null)
 const selectedDetail = ref(null)
 const detailLoading = ref(false)
 
+// Right-edge offset for the legend so it never tucks under the
+// right detail / chunk panels. ``0.75rem`` matches ``right-3`` for
+// the empty-panel case; +18rem for the detail panel (w-72) and
+// another +24rem for the chunk panel (w-96) when both are open.
+const legendRight = computed(() => {
+  if (chunkPanelDocId.value && selectedNode.value) return 'calc(0.75rem + 18rem + 24rem)'
+  if (selectedNode.value) return 'calc(0.75rem + 18rem)'
+  return '0.75rem'
+})
+
 // Relations sorted by weight desc — strongest connections float to
 // the top of the panel. Backend returns them in storage order which
 // is roughly insertion-order; without sorting, the panel buries the
@@ -950,11 +960,11 @@ watch(isDark, () => {
           </button>
           <Transition name="fade">
             <div v-if="showLayoutMenu"
-              class="absolute top-full left-0 mt-1 bg-bg border border-line rounded-lg shadow-lg py-1 z-30 min-w-[120px]">
+              class="kg-menu absolute top-full left-0 mt-1 z-30 min-w-[120px]">
               <button v-for="l in LAYOUTS" :key="l"
                 @click="applyLayout(l)"
-                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors"
-                :class="activeLayout === l ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+                class="kg-menu-item"
+                :class="{ 'kg-menu-item--active': activeLayout === l }"
               >{{ l }}</button>
             </div>
           </Transition>
@@ -978,16 +988,16 @@ watch(isDark, () => {
           </button>
           <Transition name="fade">
             <div v-if="showTypeMenu"
-              class="absolute top-full left-0 mt-1 bg-bg border border-line rounded-lg shadow-lg py-1 z-30 min-w-[140px] max-h-[280px] overflow-auto">
+              class="kg-menu absolute top-full left-0 mt-1 z-30 min-w-[140px] max-h-[280px] overflow-auto">
               <button @click="applyTypeFilter(null)"
-                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors"
-                :class="!entityTypeFilter ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+                class="kg-menu-item"
+                :class="{ 'kg-menu-item--active': !entityTypeFilter }"
               >All types</button>
-              <div class="h-px bg-line my-1"></div>
+              <div class="kg-menu-divider"></div>
               <button v-for="t in availableTypes" :key="t"
                 @click="applyTypeFilter(t)"
-                class="w-full text-left px-3 py-1.5 text-[11px] transition-colors flex items-center gap-2"
-                :class="entityTypeFilter === t ? 'text-t1 bg-bg3 font-medium' : 'text-t2 hover:bg-bg3'"
+                class="kg-menu-item flex items-center gap-2"
+                :class="{ 'kg-menu-item--active': entityTypeFilter === t }"
               >
                 <span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ background: typeFill(t) }"></span>
                 <span class="truncate">{{ t }}</span>
@@ -1060,9 +1070,16 @@ watch(isDark, () => {
              onBeforeRouteLeave — bypasses Vue's async reactivity so the
              cover is guaranteed to paint before sigma is killed.) -->
 
-        <!-- Legend -->
+        <!-- Legend — anchored bottom with both ``left`` and ``right``
+             constraints so flex-wrap can wrap inside the visible
+             canvas area instead of running under the right detail
+             panel. ``right`` shifts dynamically when a panel is open
+             (panel = 18rem = 288px; +chunk panel = 24rem on top of
+             that). Without the right constraint, the chip strip
+             extended under the panel and got clipped. -->
         <div v-if="entityTypes.length"
-          class="kg-legend absolute bottom-3 left-3 backdrop-blur-sm border border-line rounded-lg px-3 py-2 z-10 pointer-events-none">
+          class="kg-legend absolute bottom-3 left-3 backdrop-blur-sm border border-line rounded-md px-3 py-2 z-10 pointer-events-none"
+          :style="{ right: legendRight }">
           <div class="flex flex-wrap gap-x-3 gap-y-1">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
@@ -1097,7 +1114,7 @@ watch(isDark, () => {
       <!-- ── Detail panel (absolute overlay, not a flex sibling) ── -->
       <Transition name="slide">
         <div v-if="selectedNode"
-          class="absolute top-0 right-0 bottom-0 w-72 flex flex-col border-l border-line bg-bg overflow-hidden z-20 shadow-xl">
+          class="absolute top-0 right-0 bottom-0 w-72 flex flex-col border-l border-line bg-bg overflow-hidden z-20">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1218,7 +1235,7 @@ watch(isDark, () => {
            of the detail panel (which is w-72 = 288 px). -->
       <Transition name="slide-chunk">
         <div v-if="chunkPanelDocId"
-          class="absolute top-0 right-72 bottom-0 w-96 flex flex-col border-l border-line bg-bg overflow-hidden z-20 shadow-xl">
+          class="absolute top-0 right-72 bottom-0 w-96 flex flex-col border-l border-line bg-bg overflow-hidden z-20">
           <!-- Header -->
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
@@ -1319,6 +1336,46 @@ watch(isDark, () => {
 }
 .fade-enter-from, .fade-leave-to {
   opacity: 0;
+}
+
+/* ── Toolbar dropdown — matches ContextMenu / GlobalUploadPanel idiom:
+      6px radius, 1px border, subtle shadow, 11px items at 5/8 padding.
+      Previously this used Tailwind's ``rounded-lg shadow-lg`` which
+      stuck out next to the rest of the app's crisp-border surfaces. */
+.kg-menu {
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  font-size: 11px;
+}
+.kg-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--color-t2);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.kg-menu-item:hover {
+  background: var(--color-bg2);
+  color: var(--color-t1);
+}
+.kg-menu-item--active {
+  background: var(--color-bg3);
+  color: var(--color-t1);
+  font-weight: 500;
+}
+.kg-menu-divider {
+  height: 1px;
+  background: var(--color-line);
+  margin: 3px 0;
 }
 
 /* ── KG-specific surfaces — token-based so they adapt to dark mode ── */
