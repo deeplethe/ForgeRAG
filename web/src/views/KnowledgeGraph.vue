@@ -658,7 +658,20 @@ function initSigma(g) {
     // ``withHalo`` is a custom reducer flag we only set on the
     // selected anchor + the mouse-hovered node.
     defaultDrawNodeHover: (ctx, data, settings) => {
-      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
+      if (!data.withHalo) return
+      // Sigma paints a near-white halo pill behind the node and
+      // then drops the label on top. The default ``labelColor``
+      // (#d4d4d4) is the right tone against the dark canvas but
+      // washes out on the white pill — text reads as faint grey
+      // ghost. Override to a near-black tone for any pilled label
+      // (selected anchor + currently-hovered) so it pops off the
+      // pill regardless of theme. Pill colour itself is theme-
+      // independent (sigma uses white for the halo in both modes),
+      // so the dark override works in both light and dark.
+      drawDiscNodeHover(ctx, data, {
+        ...settings,
+        labelColor: { color: '#0a0a0a' },
+      })
     },
   })
 

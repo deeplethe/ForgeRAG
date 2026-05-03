@@ -369,7 +369,15 @@ function initSigma(g) {
     // ``withHalo`` (selected anchor / mouse-hovered); neighbours
     // get the silent WebGL re-render only.
     defaultDrawNodeHover: (ctx, data, settings) => {
-      if (data.withHalo) drawDiscNodeHover(ctx, data, settings)
+      if (!data.withHalo) return
+      // Match KG main view: pill bg is near-white in both themes,
+      // so override the brightened default labelColor to a near-
+      // black tone for pilled (selected / hovered) nodes so the
+      // text pops off the pill instead of washing out.
+      drawDiscNodeHover(ctx, data, {
+        ...settings,
+        labelColor: { color: '#0a0a0a' },
+      })
     },
   })
 
