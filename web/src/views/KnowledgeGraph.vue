@@ -378,9 +378,10 @@ async function focusNode(entityId) {
   // about it. Now we lazily inject the node + its edges to
   // already-visible entities, then run the normal select +
   // camera-focus path.
+  let wasPulled = false
   if (!graph.value?.hasNode(entityId)) {
-    const pulled = await pullEntityToCanvas(entityId)
-    if (!pulled) {
+    wasPulled = await pullEntityToCanvas(entityId)
+    if (!wasPulled) {
       // Fallback for genuine load failure (404, network) — show
       // the panel with what we know. ``offCanvas`` flag drives
       // the small hint badge in the header.
@@ -400,8 +401,11 @@ async function focusNode(entityId) {
   selectNode(entityId)
   const dd = sigma.getNodeDisplayData(entityId)
   if (!dd) return
+  // Pulled-in nodes get a wider ratio (0.4 vs 0.15) so the camera
+  // shows the new node together with its neighbours instead of a
+  // tight close-up that's just one disc.
   sigma.getCamera().animate(
-    { x: dd.x, y: dd.y, ratio: 0.15 },
+    { x: dd.x, y: dd.y, ratio: wasPulled ? 0.4 : 0.15 },
     { duration: 400 },
   )
 }
@@ -429,18 +433,55 @@ async function pullEntityToCanvas(entityId) {
   const g = graph.value
   if (!entity || !g) return false
 
+  // Seed the new node at the centroid of whichever of its
+  // neighbours are already on the canvas. ``(Math.random()*30)``
+  // would have placed it near graph origin (±15), but the layout
+  // typically spreads existing nodes across ±200+ — so the camera
+  // animation that follows would zoom into an empty patch near
+  // origin while the actual content sits far off-screen. Centroid
+  // seeding lands the node next to its visible neighbours so the
+  // camera focus + zoom shows something useful immediately.
+  let seedX = 0
+  let seedY = 0
+  let seedCount = 0
+  for (const r of detail.relations || []) {
+    const otherId = r.source_entity === entityId ? r.target_entity : r.source_entity
+    if (!g.hasNode(otherId)) continue
+    seedX += g.getNodeAttribute(otherId, 'x') || 0
+    seedY += g.getNodeAttribute(otherId, 'y') || 0
+    seedCount++
+  }
+  if (seedCount > 0) {
+    seedX /= seedCount
+    seedY /= seedCount
+  } else if (g.order > 0) {
+    // No on-canvas neighbours — drop the new node at the global
+    // centroid so it sits inside the visible cluster, not in some
+    // arbitrary patch the camera then zooms into.
+    let sx = 0, sy = 0, n = 0
+    g.forEachNode((_, attrs) => {
+      sx += attrs.x || 0
+      sy += attrs.y || 0
+      n++
+    })
+    seedX = sx / n
+    seedY = sy / n
+  }
+  // Tiny jitter so the new node doesn't stack exactly on top of a
+  // single neighbour when there's only one connection.
+  seedX += (Math.random() - 0.5) * 8
+  seedY += (Math.random() - 0.5) * 8
+
   if (!g.hasNode(entityId)) {
     const degree = (detail.relations || []).length
-    // Seed near the centre so FA2 / camera focus has something
-    // sensible to grab; FA2's force-settle will reposition.
     g.addNode(entityId, {
       label: entity.name || entityId,
       entityType: entity.entity_type || 'UNKNOWN',
       description: entity.description || '',
       degree,
       sourceDocIds: entity.source_doc_ids || [],
-      x: (Math.random() - 0.5) * 30,
-      y: (Math.random() - 0.5) * 30,
+      x: seedX,
+      y: seedY,
       size: Math.max(3, Math.min(15, 3 + degree * 0.5)),
       color: typeFill(entity.entity_type),
     })
@@ -448,7 +489,6 @@ async function pullEntityToCanvas(entityId) {
   }
 
   // Connect to already-visible neighbours only.
-  let addedEdges = 0
   const edgeColor = graphColors().defaultEdge
   for (const r of detail.relations || []) {
     const otherId = r.source_entity === entityId ? r.target_entity : r.source_entity
@@ -471,21 +511,18 @@ async function pullEntityToCanvas(entityId) {
         source_chunk_ids: r.source_chunk_ids || [],
         source_doc_ids: r.source_doc_ids || [],
       })
-      addedEdges++
     } catch {
       /* duplicate / parallel edge in a simple graph — fine */
     }
   }
   edgeCount.value = g.size
 
-  // Brief FA2 pulse so the new node + its edges find a sensible
-  // resting position relative to the existing layout. Bounded
-  // (1.2 s) so the canvas doesn't keep shaking for new clicks.
-  if (fa2 && addedEdges > 0) {
-    if (fa2.isRunning()) fa2.stop()
-    fa2.start()
-    setTimeout(() => { if (fa2?.isRunning()) fa2.stop() }, 1200)
-  }
+  // No FA2 pulse here. We seed the new node at the neighbours'
+  // centroid; running FA2 immediately would shove it around while
+  // the camera animation is still zooming in, leaving the camera
+  // locked on the OLD seed position with the node now elsewhere.
+  // Users can hit Re-layout (the refresh icon in the toolbar) if
+  // they want to re-settle the layout.
   return true
 }
 
