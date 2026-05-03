@@ -268,6 +268,9 @@ class TestBlockIsolation:
         assert table_chunks[0].content.startswith("| col | value |")
 
     def test_image_gets_own_chunk_with_caption(self):
+        """Pre-enrichment / VLM-disabled path: block.text is empty,
+        block.image_caption holds the parser-bound PDF caption. The
+        caption is what the chunker falls back to in that case."""
         blocks = [
             _block(1, 1, "Section", btype=BlockType.HEADING, level=1),
             _block(
@@ -283,6 +286,44 @@ class TestBlockIsolation:
         image_chunks = [c for c in chunks if c.content_type == "image"]
         assert len(image_chunks) == 1
         assert "Figure 1: diagram" in image_chunks[0].content
+
+    def test_image_chunk_prefers_rich_text_over_caption(self):
+        """Post-enrichment invariant: when both block.text (rich VLM
+        description) and block.image_caption (300-char truncation) are
+        set, the chunker MUST prefer block.text. Otherwise an
+        image-as-document loses ~65% of its retrievable content during
+        chunking and the embedding silently caps at 300 chars per
+        image — same shape of bug as the table chunker had pre-fix.
+
+        Regression test: previously the order was ``caption or text``,
+        which short-circuited on the truncated caption.
+        """
+        # Mimic post-enrichment shape from parser.image_enrichment.
+        rich_description = (
+            "This figure shows a network architecture diagram with three "
+            "encoder layers feeding into a cross-attention block, followed "
+            "by a residual connection and layer-norm. The diagram labels "
+            "the input as 'tokens' and the output as 'context vectors'. "
+            "Numerical annotations indicate dimensions: 768 → 1024 → 768."
+        )
+        blocks = [
+            _block(
+                1,
+                0,
+                rich_description,
+                btype=BlockType.IMAGE,
+                image_caption=rich_description[:300],  # truncated copy
+            ),
+        ]
+        doc = _mk_doc(blocks=blocks, n_pages=1)
+        _, chunks = _build(doc)
+        image_chunks = [c for c in chunks if c.content_type == "image"]
+        assert len(image_chunks) == 1
+        # Critical: full description reached the chunk, not the 300-char
+        # caption truncation. The phrase "768 → 1024 → 768" is past the
+        # 300-char cutoff in the description above.
+        assert image_chunks[0].content == rich_description
+        assert "768 → 1024 → 768" in image_chunks[0].content
 
 
 # ---------------------------------------------------------------------------

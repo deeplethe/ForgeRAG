@@ -488,8 +488,17 @@ def _join_block_texts(
         return b.formula_latex or b.text
     if category == "image" and len(blocks) == 1:
         b = blocks[0]
-        caption = b.image_caption or ""
-        return caption or b.text or f"[image:{b.block_id}]"
+        # Prefer the rich VLM description (block.text) over the caption.
+        # ``parser.image_enrichment`` writes the full description into
+        # block.text and a 300-char truncation into block.image_caption
+        # (only when no caption was already bound). Preferring caption
+        # over text — as the original order did — discarded ~65% of an
+        # image-as-document's content during chunking and silently
+        # capped the embedding's signal at 300 chars per image. Caption
+        # remains the fallback for the pre-enrichment / disabled-VLM
+        # case where block.text is empty but the parser had bound a
+        # PDF figure caption via caption_of.
+        return b.text or b.image_caption or f"[image:{b.block_id}]"
     if category == "code" and len(blocks) == 1:
         b = blocks[0]
         return b.code_text or b.text or ""
