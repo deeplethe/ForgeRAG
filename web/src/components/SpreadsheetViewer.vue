@@ -57,8 +57,13 @@ function sheetLabel(blk, i) {
 //   2nd line: ``| --- | --- | ... |`` (separator)
 //   Nth line: ``| v1 | v2 | ... |``
 // Anything before the first ``|`` line is ignored (caption / blank).
-// Cells with literal ``|`` or newlines are escaped at backend
-// render time, so a naive split on ``|`` is safe here.
+//
+// Cell content escapes (mirror of ``parser.backends.spreadsheet._escape``):
+//   literal ``\``  →  ``\\``  in markdown
+//   literal ``|``  →  ``\|``  in markdown
+// We must split on **un-escaped** pipes only, then unescape each cell —
+// otherwise cells containing ``|`` would split into extra columns and
+// cells containing ``\`` would render with an extra backslash visible.
 function parseMarkdownTable(md) {
   if (!md || typeof md !== 'string') return { headers: [], rows: [] }
   const lines = md.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
@@ -68,11 +73,37 @@ function parseMarkdownTable(md) {
   const tableLines = lines.slice(start).filter((l) => l.startsWith('|'))
   if (tableLines.length < 2) return { headers: [], rows: [] }
 
+  // Split on a ``|`` that's NOT preceded by an odd number of ``\``.
+  // Walk the string once, counting consecutive backslashes — this
+  // sidesteps the lookbehind-compatibility question and handles
+  // ``\\|`` correctly (escaped backslash + unescaped pipe = split).
   const splitRow = (line) => {
-    // Trim leading + trailing pipe and split. Empty trailing cells
-    // are preserved (don't trim from end of the array).
     const inner = line.replace(/^\|/, '').replace(/\|\s*$/, '')
-    return inner.split('|').map((c) => c.trim())
+    const cells = []
+    let buf = ''
+    let bs = 0  // running count of trailing backslashes
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i]
+      if (ch === '\\') {
+        buf += ch
+        bs += 1
+        continue
+      }
+      if (ch === '|' && bs % 2 === 0) {
+        cells.push(buf)
+        buf = ''
+        bs = 0
+        continue
+      }
+      buf += ch
+      bs = 0
+    }
+    cells.push(buf)
+    // Unescape: ``\\`` → ``\`` and ``\|`` → ``|``. Order matters —
+    // do the pipe-unescape first so ``\\\|`` (escaped backslash +
+    // escaped pipe) becomes ``\|`` (literal backslash + literal pipe)
+    // not ``||`` (which would re-introduce a structural pipe).
+    return cells.map((c) => c.trim().replace(/\\\|/g, '|').replace(/\\\\/g, '\\'))
   }
 
   const headers = splitRow(tableLines[0])
