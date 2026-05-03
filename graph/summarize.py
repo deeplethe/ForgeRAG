@@ -56,7 +56,9 @@ from parser.chunker import approx_tokens
 
 PROMPT_SYSTEM = "You are a Knowledge Graph Specialist, proficient in data curation and synthesis."
 
-PROMPT_USER = """\
+# Default prompt — used for ``kind="entity"`` and ``kind="relation"``.
+# Originally adapted from LightRAG's ``summarize_entity_descriptions``.
+PROMPT_USER_ENTITY = """\
 ---Task---
 Your task is to synthesize a list of descriptions of a given {kind} into a single, comprehensive, and cohesive summary.
 
@@ -79,6 +81,55 @@ Description List:
 
 ---Output---
 """
+
+# Table-specific prompt — used for ``kind="table"``. Tables differ
+# from entities in two ways:
+#   1. The "fragments" are row-group markdown tables (each fragment
+#      is itself a valid markdown sub-table), not free-form
+#      descriptions. The LLM has to read and interpret data, not
+#      reconcile descriptions.
+#   2. We want a structured-style description (what the table is
+#      about, what columns it has, notable patterns, scale) rather
+#      than narrative reconciliation.
+# The map-reduce machinery is the same — single-pass for fits,
+# row-group split + reduce for big tables.
+PROMPT_USER_TABLE = """\
+---Task---
+You will be given excerpts of a spreadsheet, possibly split into row groups when the table is too large for one pass. Synthesize a single concise description of what this table contains.
+
+---Instructions---
+1. Input Format: Each fragment is provided as JSONL — each line has a ``description`` field whose value is a markdown table (or a partial summary of one when the recursive reduce path is active).
+2. Output Format: Plain text, one or two paragraphs. NO additional formatting, NO bullet lists, NO row-by-row dumps.
+3. Cover (in order): what the table is about; the columns and what they appear to represent; the approximate row count and any visible scale / range indicators (e.g. "revenue values range from 1M to 89B"); any obvious patterns (time-series, regional groupings, categorical breakdowns).
+4. Context: Mention the table name explicitly at the start. Write from an objective, third-person perspective.
+5. Don't quote individual cell values unless they are summary statistics. Don't reproduce rows.
+6. Length Constraint: The summary's total length must not exceed {max_tokens} tokens.
+7. Language: {language}. Column headers and proper nouns retain their original form.
+
+---Input---
+Table Name: {name}
+
+Fragments (each is a markdown sub-table or a partial summary):
+{json_list}
+
+---Output---
+"""
+
+
+def _select_prompt(kind: str) -> str:
+    """Pick the user-prompt template by ``kind``.
+
+    Falls through to the entity/relation default if an unknown
+    ``kind`` is passed — keeps callers loose-coupled.
+    """
+    if kind == "table":
+        return PROMPT_USER_TABLE
+    return PROMPT_USER_ENTITY
+
+
+# Back-compat alias — older code references ``PROMPT_USER`` directly.
+# Don't remove without an audit of callers.
+PROMPT_USER = PROMPT_USER_ENTITY
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +374,8 @@ def _summarize_chunk(
     json_list = "\n".join(
         json.dumps({"description": f}, ensure_ascii=False) for f in fragments
     )
-    user = PROMPT_USER.format(
+    template = _select_prompt(kind)
+    user = template.format(
         kind=kind,
         name=name,
         max_tokens=cfg.max_output_tokens,
