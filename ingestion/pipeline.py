@@ -524,10 +524,15 @@ class IngestionPipeline:
         description, not source prose) and (b) deterministically inject
         one ``entity_type="TABLE"`` entity per sheet afterwards.
 
-        Returns ``{}`` for non-spreadsheet docs — there are no
-        ``BlockType.TABLE`` blocks in PDF/DOCX outputs (those tables
-        come through as TEXT-with-table-html), so this is a no-op.
+        Spreadsheet-only gate. PDF tables (emitted by mineru as
+        ``BlockType.TABLE``) MUST stay on the standard LLM-extraction
+        path — their chunk content is the rendered markdown, which is
+        the right input for entity / relation extraction. Skipping
+        them here would silently lose every entity/relation that
+        appears inside a PDF table.
         """
+        if (doc_row.get("format") or "").lower() != "spreadsheet":
+            return {}
         try:
             blocks = self.rel.get_blocks(doc_id, parse_version)
         except Exception as e:

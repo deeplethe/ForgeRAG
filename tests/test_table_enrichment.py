@@ -72,6 +72,32 @@ def _make_parsed_with_two_tables() -> ParsedDocument:
     )
 
 
+def test_enrichment_skips_non_spreadsheet_format():
+    """Mineru's PDF backend ALSO emits BlockType.TABLE for native PDF
+    tables, but their architecture is different: chunker takes
+    block.table_markdown for PDFs, so any description we'd write into
+    block.text would be silently discarded. Enrichment must skip
+    non-SPREADSHEET docs to avoid burning LLM tokens for nothing.
+
+    Regression: previously the gate was only ``cfg.enabled`` — a deploy
+    with table_enrichment turned on for spreadsheets would also pay
+    the LLM bill for every PDF table block.
+    """
+    parsed = _make_parsed_with_two_tables()
+    parsed.format = DocFormat.PDF  # simulate a PDF doc with TABLE blocks
+    parsed.profile.format = DocFormat.PDF
+    before = [b.text for b in parsed.blocks]
+
+    cfg = TableEnrichmentConfig(enabled=True, model="stub", api_key="test")
+    # No patch — if the gate is broken, summarize_descriptions would
+    # try a real LLM call and the test would crash on missing creds.
+    n = enrich_tables(parsed, cfg)
+
+    assert n == 0
+    # Block text untouched.
+    assert [b.text for b in parsed.blocks] == before
+
+
 def test_enrichment_disabled_is_a_noop():
     parsed = _make_parsed_with_two_tables()
     before = [b.text for b in parsed.blocks]
@@ -147,6 +173,47 @@ def test_enrichment_falls_back_on_llm_failure():
     # Original deterministic descriptions are still in place.
     for b in parsed.blocks:
         assert b.text == original_texts[b.block_id]
+
+
+def test_collect_table_chunks_skips_non_spreadsheet_docs():
+    """_collect_table_chunks (in IngestionPipeline) is the gate that
+    decides which TABLE chunks bypass LLM-driven KG extraction and get
+    a deterministic ``entity_type=TABLE`` entity injected instead.
+
+    PDF tables (mineru emits BlockType.TABLE for them) MUST stay on
+    the standard LLM-extraction path — their chunk content is the
+    rendered markdown, which is the right input for entity / relation
+    extraction. Skipping PDFs here would silently lose every entity
+    found inside a PDF table.
+
+    Regression test: previously the gate only checked block.type ==
+    table; any TABLE block would be routed to the placeholder
+    injection. This pin enforces the format gate.
+    """
+    from unittest.mock import MagicMock
+
+    from ingestion import IngestionPipeline
+
+    pipe = IngestionPipeline(
+        file_store=MagicMock(),
+        parser=MagicMock(),
+        tree_builder=MagicMock(),
+        chunker=MagicMock(),
+        relational_store=MagicMock(),
+    )
+
+    # Non-spreadsheet doc with a TABLE block — gate should bail out
+    # BEFORE touching the relational store, so we can assert no DB
+    # calls were made (proves the early return, not just an empty result).
+    pdf_doc_row = {"format": "pdf", "active_parse_version": 1}
+    result = pipe._collect_table_chunks(
+        doc_id="doc_pdf",
+        parse_version=1,
+        doc_row=pdf_doc_row,
+    )
+    assert result == {}
+    pipe.rel.get_blocks.assert_not_called()
+    pipe.rel.find_chunk_by_block_id.assert_not_called()
 
 
 def test_enrichment_skips_non_table_blocks():

@@ -39,7 +39,7 @@ from config.tables import TableEnrichmentConfig
 from graph.summarize import SummarizeConfig, summarize_descriptions
 from parser.backends.spreadsheet import split_table_into_row_groups
 from parser.chunker import approx_tokens
-from parser.schema import Block, BlockType, ParsedDocument
+from parser.schema import Block, BlockType, DocFormat, ParsedDocument
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +152,22 @@ def enrich_tables(parsed: ParsedDocument, cfg: TableEnrichmentConfig) -> int:
     """
     if not cfg.enabled:
         log.debug("table_enrichment disabled — using deterministic fallback descriptions")
+        return 0
+
+    # Spreadsheet-only gate. PDF / DOCX backends (mineru) ALSO emit
+    # ``BlockType.TABLE`` for native PDF tables, but their architecture
+    # is different: ``block.text`` is a flat HTML→text view and
+    # ``block.table_markdown`` is the rendered table; the chunker
+    # picks ``table_markdown`` for PDFs, so any description we'd
+    # write into ``block.text`` is silently discarded by the chunker.
+    # Running the LLM on PDF tables would waste calls + tokens with
+    # zero retrieval benefit. Restrict to SPREADSHEET docs where the
+    # description-only architecture actually consumes block.text.
+    if parsed.format != DocFormat.SPREADSHEET:
+        log.debug(
+            "table_enrichment: skipping (format=%s, only SPREADSHEET is enriched)",
+            parsed.format,
+        )
         return 0
 
     # Build a quick page_no → page_name index so we can pass the
