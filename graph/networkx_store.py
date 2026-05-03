@@ -407,6 +407,42 @@ class NetworkXGraphStore(GraphStore):
                 self._graph.nodes[entity_id]["entity"].description = description
                 self._save()
 
+    def update_relation_description(
+        self,
+        relation_id: str,
+        description: str,
+        description_embedding: list[float] | None = None,
+    ) -> None:
+        """Replace a relation's description (+ optionally its embedding).
+
+        Walks the multidigraph's edges to find the one keyed by
+        ``relation_id`` — relations don't have an O(1) index in the
+        networkx backend, but post-summary writes are rare so the
+        scan is acceptable. Refreshes the FAISS embedding mirror so
+        relation-semantic search stays consistent with the new text.
+        """
+        with self._lock:
+            for _u, _v, data in self._graph.edges(data=True):
+                rel: Relation | None = data.get("relation")
+                if rel is None or rel.relation_id != relation_id:
+                    continue
+                rel.description = description
+                if description_embedding is not None:
+                    rel.description_embedding = description_embedding
+                    # Refresh the FAISS mirror so retrieval sees the
+                    # new vector. The mirror keys by relation_id;
+                    # add() is idempotent / replaces in place.
+                    if hasattr(self, "_relation_idx") and self._relation_idx is not None:
+                        try:
+                            self._relation_idx.add(relation_id, description_embedding)
+                        except Exception:
+                            logger.warning(
+                                "relation embedding refresh failed for %s",
+                                relation_id,
+                            )
+                self._save()
+                return
+
     def upsert_relation(self, relation: Relation) -> None:
         with self._lock:
             src, tgt = relation.source_entity, relation.target_entity

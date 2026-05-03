@@ -284,8 +284,23 @@ class GraphStore(ABC):
             entity.description = description
             self.upsert_entity(entity)
 
-    def update_relation_description(self, relation_id: str, description: str) -> None:
-        """Replace a relation's description. Default: no-op (override in backends)."""
+    def update_relation_description(
+        self,
+        relation_id: str,
+        description: str,
+        description_embedding: list[float] | None = None,
+    ) -> None:
+        """Replace a relation's description (and optionally its embedding).
+
+        After post-upsert summarisation, the relation's stored
+        description gets replaced with a single LLM-merged paragraph.
+        The previously-cached ``description_embedding`` was computed
+        against the pre-summary fragment list, so it goes stale —
+        passing ``description_embedding`` here lets the caller refresh
+        it atomically alongside the text.
+
+        Default: no-op (override in backends).
+        """
 
     # -- entity disambiguation ----------------------------------------------
 
