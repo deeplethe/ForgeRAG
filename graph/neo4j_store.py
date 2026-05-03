@@ -651,6 +651,37 @@ class Neo4jGraphStore(GraphStore):
             result = s.run(contains_cypher, term=q, limit=top_k)
             return [_entity_from_record(dict(r)) for r in result]
 
+    def get_all_entities(self) -> list[Entity]:
+        """Page over every ``KGEntity`` in the graph.
+
+        Buffers in memory — fine for the 30k-entity scale we run at;
+        for million-entity graphs callers should prefer streaming.
+        """
+        cypher = "MATCH (e:KGEntity) RETURN e"
+        out: list[Entity] = []
+        with self._driver.session(database=self._database) as s:
+            for rec in s.run(cypher):
+                out.append(_entity_from_record(dict(rec["e"])))
+        return out
+
+    def get_all_relations(self) -> list[Relation]:
+        """Page over every ``RELATES_TO`` edge in the graph.
+
+        ``source_entity`` / ``target_entity`` are projected from the
+        endpoint nodes' ``entity_id``s rather than read off the
+        relation properties — the relation itself doesn't store them
+        directly (graph topology already encodes the wiring).
+        """
+        cypher = """
+        MATCH (src:KGEntity)-[r:RELATES_TO]->(tgt:KGEntity)
+        RETURN r {.*, source_entity: src.entity_id, target_entity: tgt.entity_id} AS r
+        """
+        out: list[Relation] = []
+        with self._driver.session(database=self._database) as s:
+            for rec in s.run(cypher):
+                out.append(_relation_from_record(dict(rec["r"])))
+        return out
+
     def get_subgraph(self, entity_ids: list[str]) -> dict:
         cypher = """
         MATCH (e:KGEntity) WHERE e.entity_id IN $entity_ids
