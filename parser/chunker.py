@@ -37,6 +37,7 @@ from .schema import (
     Block,
     BlockType,
     Chunk,
+    DocFormat,
     DocTree,
     ParsedDocument,
     TreeNode,
@@ -322,7 +323,7 @@ class _ChunkContext:
         section_path: list[str],
         ancestor_ids: list[str],
     ) -> Chunk:
-        content = _join_block_texts(blocks, content_type)
+        content = _join_block_texts(blocks, content_type, doc_format=self.doc.format)
         token_count = approx_tokens(content)
         page_start = min(b.page_no for b in blocks)
         page_end = max(b.page_no for b in blocks)
@@ -443,16 +444,44 @@ def _classify(block: Block, cfg: ChunkerConfig) -> _Category:
 # ---------------------------------------------------------------------------
 
 
-def _join_block_texts(blocks: list[Block], category: _Category) -> str:
+def _join_block_texts(
+    blocks: list[Block],
+    category: _Category,
+    *,
+    doc_format: DocFormat | None = None,
+) -> str:
     """
     Join block texts into the chunk body.
 
     Text chunks use ``\\n\\n`` between blocks so paragraph boundaries
     are preserved. Structural categories (table / image / formula /
     code) prefer their typed payload when one is present.
+
+    Spreadsheet TABLE blocks are the one exception to "prefer the
+    structural payload" — they follow the description-only architecture
+    (see docs/roadmaps/spreadsheet-as-document.md):
+
+      * ``block.text`` is the LLM-generated (or fallback-metadata)
+        description that should reach the embedder + retrieval index;
+      * ``block.table_markdown`` carries the **full sheet data**
+        (potentially millions of cells) and is preserved on the side
+        for the SpreadsheetViewer + future agent tools — explicitly
+        NOT embedded.
+
+    Embedding the full markdown would (a) blow the embedder's context
+    window for any non-trivial sheet and (b) defeat the entire
+    description-level architecture. The fork on doc_format is the
+    minimal coupling that lets the chunker do the right thing for
+    both PDF tables (caption-in-text + data-in-markdown) and
+    spreadsheet tables (description-in-text + data-in-markdown).
     """
     if category == "table" and len(blocks) == 1:
         b = blocks[0]
+        if doc_format == DocFormat.SPREADSHEET:
+            # Description-only: chunk content is the description; the
+            # full table data stays on block.table_markdown for the
+            # viewer / future agent tools and is NOT embedded.
+            return b.text or b.table_markdown or (b.table_html or "")
         return b.table_markdown or b.text or (b.table_html or "")
     if category == "formula" and len(blocks) == 1:
         b = blocks[0]

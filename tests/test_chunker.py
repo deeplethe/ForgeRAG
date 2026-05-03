@@ -197,6 +197,76 @@ class TestBlockIsolation:
         assert table_chunks[0].content == "| a | b |"
         assert len(table_chunks[0].block_ids) == 1
 
+    def test_spreadsheet_table_chunk_uses_description_not_data(self):
+        """Description-only architecture invariant: for SPREADSHEET docs,
+        the chunk content for a TABLE block must be the LLM-generated
+        description (block.text), NOT the full table data
+        (block.table_markdown).
+
+        Embedding the full markdown would (a) defeat the description-
+        level retrieval design and (b) overflow embedder context windows
+        on any non-trivial sheet (millions of cells in one chunk).
+
+        Regression test: previously the chunker preferred table_markdown
+        unconditionally for TABLE blocks, silently embedding the raw
+        data even after table_enrichment had filled block.text.
+        """
+        # Mimic post-enrichment shape:
+        #   block.text         = "## Sheet: ...<description>"
+        #   block.table_markdown = full data
+        sheet_description = (
+            "## Sheet: Sales\n\n"
+            "Quarterly sales figures across three regions for FY2025."
+        )
+        full_data = (
+            "| region | quarter | revenue |\n"
+            "|---|---|---|\n"
+            "| EMEA | Q1 | 1200 |\n"
+            "| NA | Q1 | 3400 |\n"
+            "| APAC | Q1 | 2200 |\n"
+        )
+        blocks = [
+            _block(
+                1,
+                0,
+                sheet_description,
+                btype=BlockType.TABLE,
+                table_markdown=full_data,
+            ),
+        ]
+        # Override format to SPREADSHEET — _mk_doc defaults to PDF.
+        doc = _mk_doc(blocks=blocks, n_pages=1)
+        doc.format = DocFormat.SPREADSHEET
+        doc.profile.format = DocFormat.SPREADSHEET
+
+        _, chunks = _build(doc)
+        table_chunks = [c for c in chunks if c.content_type == "table"]
+        assert len(table_chunks) == 1
+        # Critical invariant: content is the description, NOT the markdown.
+        assert table_chunks[0].content == sheet_description
+        assert "EMEA" not in table_chunks[0].content
+        assert "1200" not in table_chunks[0].content
+
+    def test_pdf_table_chunk_still_uses_markdown(self):
+        """Counterpart to the spreadsheet test: PDF TABLE blocks must
+        keep the existing behavior (chunk content = table_markdown,
+        which carries the actual rendered table; block.text for PDF
+        tables is typically empty or a caption pointer)."""
+        blocks = [
+            _block(
+                1,
+                0,
+                "",  # PDF parsers don't fill block.text for tables
+                btype=BlockType.TABLE,
+                table_markdown="| col | value |\n|---|---|\n| x | 1 |",
+            ),
+        ]
+        doc = _mk_doc(blocks=blocks, n_pages=1)  # PDF by default
+        _, chunks = _build(doc)
+        table_chunks = [c for c in chunks if c.content_type == "table"]
+        assert len(table_chunks) == 1
+        assert table_chunks[0].content.startswith("| col | value |")
+
     def test_image_gets_own_chunk_with_caption(self):
         blocks = [
             _block(1, 1, "Section", btype=BlockType.HEADING, level=1),
