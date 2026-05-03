@@ -320,6 +320,13 @@ function initSigma(g) {
   // small chunk-filtered subgraph). On the default top-N view with
   // no entity selected, labels are stripped entirely to avoid
   // clutter on a 1500-edge canvas.
+  // Kill any prior sigma instance first — every ``new Sigma()``
+  // grabs a WebGL context, and browsers cap concurrent contexts
+  // (~16 in Chrome). Without this, repeated chunk / doc / theme
+  // rebuilds leak contexts until ``getContext('webgl')`` returns
+  // null and the next init throws "Cannot read properties of null
+  // (reading 'blendFunc')".
+  destroySigma()
   const filtered = !!props.activeChunkId
   const c = graphColors()
   sigma = new Sigma(g, containerRef.value, {
