@@ -57,51 +57,36 @@ Users routinely have hundreds of uploads. Hunting by clicking through folders do
 
 ### Architecture
 
-**Two backends, single API**:
+**Reuse `InMemoryBM25Index`, second instance, fed filenames instead of chunks.**
 
-```
-┌──────────────────────────────────┐
-│ POST /api/v1/files/search        │
-│ { query, limit, types?, path? }  │
-└────────────────┬─────────────────┘
-                 ▼
-        ┌────────────────┐
-        │ FileSearcher   │  ← retrieval/file_search.py
-        └────┬───────┬───┘
-             │       │
-   Postgres? │       │ SQLite?
-             ▼       ▼
-   ┌──────────────┐ ┌──────────────────┐
-   │ tsvector +   │ │ trigram + ILIKE  │
-   │ websearch_to │ │ (no extension    │
-   │ _tsquery     │ │  in stdlib       │
-   │              │ │  SQLite —        │
-   │              │ │  Python fallback)│
-   └──────────────┘ └──────────────────┘
-```
+The existing content BM25 indexes `(chunk_id, doc_id, chunk.content + section_path)`. The filename BM25 indexes `(doc_id, doc_id, "filename + path")` — same class, same persistence shape, different data and a different cache file. No new dependencies, no SQL-dialect splits, no migrations.
 
-* **Postgres path**: a generated `tsvector` column on the `documents` table over `(filename, path)`, GIN-indexed. Query via `websearch_to_tsquery` for natural-language input ("legal report 2024" → matches both "legal" and "report"). Sub-millisecond at 1M docs.
-* **SQLite path**: in-process trigram match via `rapidfuzz`. SQLite has no native trigram extension. For up to ~50K docs the linear scan is fast enough (a single SELECT pulls the whole `(doc_id, filename, path)` set into memory). Above that we'd want to stand up a sidecar SQLite-FTS5 index, but that's a v2 concern — single-user installs rarely cross 50K.
+* **Index keying**: per-document, not per-chunk. Each doc contributes one entry whose text is `f"{filename} {path}"` — tokenized normally so `invoice-2024-Q3.pdf` becomes `["invoice", "2024", "Q3", "pdf"]`. Folder segments tokenize the same way, so `/legal/2024/contracts/` adds `legal`, `2024`, `contracts` to the entry. Format also added (`pdf`, `xlsx`, ...) so type-filter queries can be lexical too.
+* **Build at startup**: parallel to `build_bm25_index()`, add `build_filename_bm25_index()`. Both load from disk if cached; both rebuild from scratch if cache is stale.
+* **Incremental updates**: when a doc lands in `_on_ingest_complete`, update both indices alongside each other. Same lock pattern (`_init_lock`).
+* **Path / type filter**: applied as a post-filter on the BM25 candidate set rather than baked into the index. Filter-then-score is the same shape the content path uses for trashed-doc filtering.
 
-**Result shape**: `list[FileSearchHit]` with `doc_id, filename, path, format, score, matched_field`. Path filter and type filter (`["pdf", "xlsx"]`) gate the candidate set before scoring.
+**Result shape**: `list[FileSearchHit]` with `doc_id, filename, path, format, score, matched_field`.
 
 **Frontend**: Workspace gets a top-of-page search bar. Cmd/Ctrl+K opens a global file palette. Results render the matched portion bolded.
 
 ### Rejected alternatives
 
-* **Add filename to BM25 index** — pollutes content scoring (a query for "Apple" would match every PDF named `apple-quarterly.pdf` even if the content is irrelevant). Keep the indices separate.
-* **Use the vector embedding for filename matching** — embeddings are bad at literal-string queries ("invoice-2024-Q3-final.pdf" doesn't have meaningful semantics). Lexical match is correct here.
-* **Reuse the existing list endpoints with a `q=` parameter** — those endpoints have pagination + filter semantics that don't compose well with relevance ranking. New endpoint is cleaner.
+* **Add filenames to the EXISTING content BM25** — pollutes ranking. A search for "Apple" would surface every PDF named `apple-quarterly.pdf` even when the content is irrelevant; conversely, a content-search query that incidentally hits a filename gets noise. Keep the indices separate, share the class.
+* **Postgres `tsvector` + GIN** — premature dialect split. The Python BM25 already handles the production-scale content index; filenames are 1-2 orders of magnitude smaller and trivially fit in the same backend. Adding a dialect-specific path here means SQLite users get a different code path with different bug surface.
+* **SQLite trigram via `rapidfuzz`** — fixes "no Postgres dialect", introduces "no relevance ranking, no idf weighting" and a new dependency. Same critique.
+* **`SQL ILIKE`** — no relevance ranking, no fuzzy match, scales linearly. Bad UX even at small N.
+* **Vector embedding for filename matching** — embeddings are bad at literal-string queries (`invoice-2024-Q3-final.pdf` has no useful semantics). Lexical match is correct here.
 
 ### Implementation
 
-* New module: `retrieval/file_search.py` with `FileSearcher` class, dialect-detecting backend.
-* New API route: `POST /api/v1/files/search` (POST not GET because the body carries filter dicts and is more auditable for telemetry).
+* New module: `retrieval/file_search.py` with `FileSearcher` (build + search). Internally just an `InMemoryBM25Index` instance plus path/type post-filter logic.
+* `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`.
+* New route: `POST /api/v1/files/search` (POST not GET — body carries filter dicts, easier telemetry).
 * New schema: `FileSearchHit` in `api/schemas.py`.
-* Migration: `documents.search_tsv` generated column on Postgres; SQLite gets nothing.
-* Telemetry: a single OTel span per search, attributes `q.length, hits, dialect`.
+* Telemetry: one OTel span per search.
 
-Estimated size: ~400 LOC backend + ~150 LOC frontend (search bar, palette, result rendering).
+Estimated size: ~150 LOC backend (the wrapper around the existing BM25 class is the bulk) + ~150 LOC frontend.
 
 ---
 
@@ -486,12 +471,12 @@ Within a session (agentic search or research), the same chunk retrieved by multi
 
 | # | Feature | Estimate (eng-weeks) | Depends on | Why this order |
 |---|---|---|---|---|
-| 1 | File search | 1 | — | Smallest, standalone, immediate user value. |
+| 1 | File search | 0.5 | — | Smallest. Reuses existing BM25 class, second instance fed filenames. Standalone. |
 | 2 | Retrieval MCP | 1.5 | (1) for the file-search tool | Exposes existing surface; collects external feedback while heavier work proceeds. |
 | 3 | Agentic search | 3 | (1), (2) | Core capability that deep research depends on. Ships independently as a power-user feature. |
 | 4 | Deep research | 4 | (3) | Largest. Heavy frontend work + new persistence + the most user-visible output. |
 
-Total: ~10 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
+Total: ~9 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
 
 ---
 
