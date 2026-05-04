@@ -4,8 +4,8 @@ Retrieval orchestrator + error type — public SDK surface.
 ``RetrievalPipeline`` is the default end-to-end assembly of components
 (query-understanding → parallel BM25/Vector/KG → Tree → RRF → expand →
 rerank → citations). Most SDK users won't construct it directly — they'll
-either use ``forgerag.client.Client`` (remote) or compose components
-themselves via ``forgerag.components``.
+either use ``opencraig.client.Client`` (remote) or compose components
+themselves via ``opencraig.components``.
 
 ``RetrievalError`` is raised when an infrastructure dependency (LLM,
 embedder, vector store, KG store, reranker) fails. Set

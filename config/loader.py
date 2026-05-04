@@ -16,7 +16,7 @@ from .app import AppConfig
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
-    """Load and validate forgerag.yaml (or return defaults)."""
+    """Load and validate opencraig.yaml (or return defaults)."""
     if path is None:
         return AppConfig()
 

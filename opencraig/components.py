@@ -7,7 +7,7 @@ custom chain you get waterfall tracing for free.
 
 Typical usage:
 
-    from forgerag.components import (
+    from opencraig.components import (
         PathScopeResolver, BM25Retriever, VectorRetriever,
         RRFFusion, Reranker,
     )

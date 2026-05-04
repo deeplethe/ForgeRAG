@@ -19,7 +19,7 @@ is the kind of bug you only catch in production.
 
 Usage at call sites:
 
-    from forgerag.llm_cache import cached_completion
+    from opencraig.llm_cache import cached_completion
     resp = cached_completion(model=..., messages=..., temperature=0.1)
 
 If no cache is installed (config disabled, or import-time bypass for

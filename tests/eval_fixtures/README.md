@@ -29,15 +29,15 @@ Each line is one query in this shape (fields match
 Load with:
 
 ```python
-from forgerag.eval import Dataset
+from opencraig.eval import Dataset
 ds = Dataset.from_jsonl("my_eval.jsonl")
 ```
 
 Run it against a deployed server:
 
 ```python
-from forgerag.client import Client
-from forgerag.eval import RetrievalRun, metrics
+from opencraig.client import Client
+from opencraig.eval import RetrievalRun, metrics
 
 c = Client("http://localhost:8000")
 run = RetrievalRun.execute(

@@ -113,7 +113,7 @@ class AppState:
         # every downstream collaborator that calls ``cached_completion``
         # picks up the global cache automatically. Skipped when the
         # config flag is off; falls back to plain ``litellm.completion``.
-        from forgerag import llm_cache as _llm_cache_mod
+        from opencraig import llm_cache as _llm_cache_mod
 
         _llm_cache_mod.install(cfg.cache.llm)
 

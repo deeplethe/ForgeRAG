@@ -149,7 +149,7 @@ def make_vlm_fn(
     key = resolve_api_key(api_key=api_key, api_key_env=api_key_env)
 
     def _call(image_bytes: bytes, prompt: str) -> str:
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
         # Detect mime from magic bytes

@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 
 class LoggingConfig(BaseModel):
-    """Logging section of ``forgerag.yaml``."""
+    """Logging section of ``opencraig.yaml``."""
 
     level: Literal[
         "DEBUG",
@@ -75,7 +75,7 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
 
     # Remove any handlers we previously attached (idempotent re-init).
     for h in list(root.handlers):
-        if getattr(h, "_forgerag_managed", False):
+        if getattr(h, "_opencraig_managed", False):
             root.removeHandler(h)
             h.close()
 
@@ -112,7 +112,7 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
     fh.namer = _namer
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(_FILE_FMT, datefmt=_DATE_FMT))
-    fh._forgerag_managed = True  # type: ignore[attr-defined]
+    fh._opencraig_managed = True  # type: ignore[attr-defined]
     root.addHandler(fh)
 
     # ── Console handler ───────────────────────────────────────────────
@@ -120,7 +120,7 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
         ch = logging.StreamHandler(sys.stderr)
         ch.setLevel(level)
         ch.setFormatter(logging.Formatter(_CONSOLE_FMT, datefmt=_DATE_FMT))
-        ch._forgerag_managed = True  # type: ignore[attr-defined]
+        ch._opencraig_managed = True  # type: ignore[attr-defined]
         root.addHandler(ch)
 
     # ── Suppress noisy third-party loggers ────────────────────────────

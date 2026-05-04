@@ -29,8 +29,8 @@ COPY --from=frontend /app/web/dist /app/web/dist
 # Default storage directory
 RUN mkdir -p /app/storage
 
-ENV FORGERAG_HOST=0.0.0.0
-ENV FORGERAG_PORT=8000
+ENV OPENCRAIG_HOST=0.0.0.0
+ENV OPENCRAIG_PORT=8000
 
 EXPOSE 8000
 

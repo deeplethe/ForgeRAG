@@ -321,7 +321,7 @@ def make_summary_fn(
     key = _resolve(api_key=api_key, api_key_env=api_key_env)
 
     def _generate(prompt: str) -> str:
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         kwargs: dict[str, Any] = dict(
             model=model,

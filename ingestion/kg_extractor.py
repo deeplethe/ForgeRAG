@@ -417,7 +417,7 @@ class KGExtractor:
         # ``litellm`` for exception classes; ``cached_completion`` for the call.
         import litellm
 
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         # Hard timeout = 2× the litellm timeout to account for thinking models
         hard_timeout = self.timeout * 2

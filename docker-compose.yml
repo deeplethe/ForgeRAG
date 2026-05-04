@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - FORGERAG_CONFIG=/app/config.yaml
+      - OPENCRAIG_CONFIG=/app/config.yaml
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forgerag}
     volumes:

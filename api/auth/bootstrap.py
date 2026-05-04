@@ -99,7 +99,7 @@ def bootstrap_if_empty(cfg, store) -> None:
         f"  API Token:  {raw}    (use for CLI / SDK bearer)",
         "-" * 78,
         "  Web:  POST /api/v1/auth/login  with username/password",
-        "  CLI:  export FORGERAG_API_TOKEN=" + raw,
+        "  CLI:  export OPENCRAIG_API_TOKEN=" + raw,
         "=" * 78,
         "",
     ]

@@ -7,7 +7,7 @@ consumed by many layers: parser, retrieval, storage, API, etc.
 Typical usage:
 
     from config import load_config
-    cfg = load_config("forgerag.yaml")
+    cfg = load_config("opencraig.yaml")
     cfg.parser.backend                  # "pymupdf" | "mineru" | "mineru-vlm"
     cfg.storage.mode
 """

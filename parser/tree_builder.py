@@ -830,7 +830,7 @@ class _BuildContext:
 
     def _call_llm(self, system_msg: str, user_msg: str) -> str:
         """Call the LLM via litellm (routed through ingest-side cache)."""
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
@@ -1047,7 +1047,7 @@ class _BuildContext:
         structural_hints: str = "",
     ) -> list[dict]:
         """One LLM call to merge groups + generate titles + summaries."""
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
@@ -1137,7 +1137,7 @@ class _BuildContext:
         last_page: int,
     ) -> list[dict]:
         """Split into batches when total text exceeds context window."""
-        from forgerag.llm_cache import cached_completion
+        from opencraig.llm_cache import cached_completion
 
         cfg = self.cfg
         assert cfg is not None
