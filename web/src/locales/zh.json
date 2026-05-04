@@ -13,6 +13,7 @@
   "sidebar": {
     "tabs": {
       "chat": "对话",
+      "search": "搜索",
       "workspace": "工作区",
       "knowledge_graph": "知识图谱",
       "simulation": "模拟",
@@ -57,6 +58,32 @@
     "thinking": "思考",
     "trace": "Trace",
     "citation_untitled": "（未命名）"
+  },
+  "search": {
+    "title": "搜索",
+    "subtitle": "在你的文档里找文件和片段——不调 LLM、不生成答案，只列匹配项。",
+    "placeholder": "搜索文件名、路径、文档内容…",
+    "submit": "搜索",
+    "clear": "清空",
+    "empty": {
+      "idle": "输入关键词在全部文档中搜索。",
+      "hint": "提示：文件名、文件夹、内容都会一起匹配。点击结果跳到原文。",
+      "searching": "搜索中…",
+      "none": "没有匹配 \"{query}\" 的结果。"
+    },
+    "section": {
+      "files": "文件",
+      "chunks": "段落"
+    },
+    "badge": {
+      "filename": "文件名",
+      "content": "内容",
+      "both": "全部"
+    },
+    "tooltip": {
+      "boosted": "因为该文档的文件名也匹配查询，排名被略微提升。"
+    },
+    "footer": "{chunks} 个段落 · {files} 个文件 · {ms} ms"
   },
   "tools": {
     "label": "工具",

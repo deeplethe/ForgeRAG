@@ -67,6 +67,11 @@ export {
   askQueryStream,
 } from './query'
 
+// Search (检索本体, 无 LLM)
+export {
+  search,
+} from './search'
+
 // Conversations (多轮对话)
 export {
   listConversations,

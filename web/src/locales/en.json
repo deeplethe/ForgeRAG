@@ -13,6 +13,7 @@
   "sidebar": {
     "tabs": {
       "chat": "Chat",
+      "search": "Search",
       "workspace": "Workspace",
       "knowledge_graph": "Knowledge Graph",
       "simulation": "Simulation",
@@ -57,6 +58,32 @@
     "thinking": "Thinking",
     "trace": "Trace",
     "citation_untitled": "(untitled)"
+  },
+  "search": {
+    "title": "Search",
+    "subtitle": "Find files and passages across your documents — no LLM answer, just the matches.",
+    "placeholder": "Search filenames, paths, and document content…",
+    "submit": "Search",
+    "clear": "Clear",
+    "empty": {
+      "idle": "Type a query to search across all documents.",
+      "hint": "Tip: filename, folder, and content all match. Click a result to jump to the source.",
+      "searching": "Searching…",
+      "none": "No results for \"{query}\"."
+    },
+    "section": {
+      "files": "Files",
+      "chunks": "Passages"
+    },
+    "badge": {
+      "filename": "filename",
+      "content": "content",
+      "both": "both"
+    },
+    "tooltip": {
+      "boosted": "Ranked higher because the document's filename also matches your query."
+    },
+    "footer": "{chunks} passages · {files} files · {ms} ms"
   },
   "tools": {
     "label": "Tools",
