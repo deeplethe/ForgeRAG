@@ -8,8 +8,8 @@ auto-runs in CI — scoring is expensive and corpora are user-specific.
 
 Typical flow:
 
-    from forgerag.eval import Dataset, RetrievalRun, metrics
-    from forgerag.client import Client
+    from opencraig.eval import Dataset, RetrievalRun, metrics
+    from opencraig.client import Client
 
     ds = Dataset.from_jsonl("my_eval.jsonl")
     c = Client("http://localhost:8000")
@@ -22,7 +22,7 @@ Typical flow:
     print("MRR:",        metrics.mrr(run))
 
 LLM-judge scoring (for faithfulness / answer quality) lives in
-``forgerag.eval.judge``.
+``opencraig.eval.judge``.
 
 Fixture corpus at ``tests/eval_fixtures/`` ships with the repo so the
 ForgeRAG project itself can sanity-check its own retrieval on every

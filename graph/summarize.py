@@ -437,7 +437,7 @@ def _call_llm(system: str, user: str, cfg: SummarizeConfig) -> str:
     back to the verbatim description rather than overwriting it with
     nothing.
     """
-    from forgerag.llm_cache import cached_completion
+    from opencraig.llm_cache import cached_completion
 
     kwargs: dict[str, Any] = dict(
         model=cfg.model,

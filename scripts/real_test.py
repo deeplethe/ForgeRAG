@@ -156,16 +156,21 @@ def main():
     )
 
     # --- Resolve config ---
-    # Precedence: --config > $FORGERAG_CONFIG > ./forgerag.yaml > examples/forgerag.dev.yaml > hardcoded fallback
+    # Precedence: --config > $OPENCRAIG_CONFIG ($FORGERAG_CONFIG) > ./opencraig.yaml > ./forgerag.yaml
+    #           > examples/forgerag.dev.yaml > hardcoded fallback
+    _env_cfg = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
     if args.config:
         cfg = load_config(args.config)
         print(f"  config:     {args.config}")
-    elif os.environ.get("FORGERAG_CONFIG"):
-        cfg = load_config(os.environ["FORGERAG_CONFIG"])
-        print(f"  config:     {os.environ['FORGERAG_CONFIG']} (from $FORGERAG_CONFIG)")
+    elif _env_cfg:
+        cfg = load_config(_env_cfg)
+        print(f"  config:     {_env_cfg} (from $OPENCRAIG_CONFIG / $FORGERAG_CONFIG)")
+    elif (_ROOT / "opencraig.yaml").exists():
+        cfg = load_config(_ROOT / "opencraig.yaml")
+        print(f"  config:     {_ROOT / 'opencraig.yaml'}")
     elif (_ROOT / "forgerag.yaml").exists():
         cfg = load_config(_ROOT / "forgerag.yaml")
-        print(f"  config:     {_ROOT / 'forgerag.yaml'}")
+        print(f"  config:     {_ROOT / 'forgerag.yaml'} (legacy)")
     elif (_ROOT / "examples" / "forgerag.dev.yaml").exists():
         cfg = load_config(_ROOT / "examples" / "forgerag.dev.yaml")
         print(f"  config:     {_ROOT / 'examples' / 'forgerag.dev.yaml'} (dev fallback)")

@@ -7,7 +7,7 @@ every query in the dataset; it's the argument the metric functions
 consume.
 
 Shapes are deliberately loose — your retrieve-function can return an
-``Answer`` (from ``forgerag.client``), a plain dict, or any object with
+``Answer`` (from ``opencraig.client``), a plain dict, or any object with
 ``citations_used`` / ``citations_all`` / ``text`` — the adapters try in
 that order. When in doubt, stick to lists of chunk IDs in
 ``RetrievalRun.rows``.
@@ -110,7 +110,7 @@ class RetrievalRun:
         Runs ``retrieve(query)`` for every query in ``dataset``. ``retrieve``
         may return:
 
-          * a ``forgerag.client.Answer`` — uses its ``citations_used`` /
+          * a ``opencraig.client.Answer`` — uses its ``citations_used`` /
             ``citations_all`` / ``text``
           * a plain dict in the same shape as the /query response
           * any iterable of objects with a ``.chunk_id`` / ``.doc_id``
@@ -153,7 +153,7 @@ class RetrievalRun:
 def _extract_hits(raw: Any) -> tuple[list[str], list[str], str | None]:
     """Best-effort extraction of (chunk_ids, doc_ids, answer_text) from
     whatever the caller's retrieve-function returned."""
-    # Answer from forgerag.client
+    # Answer from opencraig.client
     if hasattr(raw, "citations_all"):
         chunks, docs = [], []
         for c in list(getattr(raw, "citations_all", []) or getattr(raw, "citations_used", [])):

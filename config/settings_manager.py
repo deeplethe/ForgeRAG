@@ -2,7 +2,7 @@
 SettingsManager: yaml is the single source of truth.
 
 Architecture:
-    yaml (forgerag.yaml + myconfig.yaml) = authoritative config
+    yaml (opencraig.yaml + myconfig.yaml) = authoritative config
     DB (settings table)                    = one-way backup snapshot
     Runtime                                = cfg object, never touches DB
 

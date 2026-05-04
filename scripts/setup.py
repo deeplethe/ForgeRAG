@@ -2650,7 +2650,7 @@ def post_setup(config_path: Path) -> None:
                 "dim",
             )
         )
-        print(f"    export FORGERAG_CONFIG={config_path}")
+        print(f"    export OPENCRAIG_CONFIG={config_path}")
         return
 
     if choice == "batch":
@@ -2677,6 +2677,9 @@ def post_setup(config_path: Path) -> None:
         host = ask(_t("Host", "监听地址"), default="0.0.0.0")
         port = ask_int(_t("Port", "监听端口"), default=8000)
         env = _child_env()
+        # Set both env-var spellings so both old and new readers see the path
+        # during the rename window.
+        env["OPENCRAIG_CONFIG"] = str(config_path)
         env["FORGERAG_CONFIG"] = str(config_path)
         cmd = [
             sys.executable,
@@ -2689,7 +2692,7 @@ def post_setup(config_path: Path) -> None:
             str(port),
             "--reload",
         ]
-        print(_c(f"\n  FORGERAG_CONFIG={config_path}", "dim"))
+        print(_c(f"\n  OPENCRAIG_CONFIG={config_path}", "dim"))
         print(_c(f"  running: {' '.join(cmd)}\n", "dim"))
         try:
             subprocess.run(cmd, cwd=_ROOT, env=env)
@@ -2750,10 +2753,10 @@ Typical runs
 Using the generated config afterwards
 -------------------------------------
   # Validate:
-  python -m config validate forgerag.yaml
+  python -m config validate opencraig.yaml
 
   # Point everything at it:
-  export FORGERAG_CONFIG=./forgerag.yaml
+  export OPENCRAIG_CONFIG=./opencraig.yaml
 
   # Batch-ingest some files:
   python scripts/batch_ingest.py ./papers

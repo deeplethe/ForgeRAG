@@ -1,11 +1,11 @@
 """
 Thin Python client for a running ForgeRAG server.
 
-For embedding ForgeRAG inside your own app, prefer ``forgerag.components``
+For embedding ForgeRAG inside your own app, prefer ``opencraig.components``
 (direct, no HTTP). Use this ``Client`` when you have a deployed server
 and want to call it over HTTP.
 
-    >>> from forgerag.client import Client
+    >>> from opencraig.client import Client
     >>> c = Client("http://localhost:8000")
     >>> answer = c.ask("What are the Q3 revenue trends?")
     >>> for cite in answer.citations_used:
@@ -36,7 +36,7 @@ try:
     import httpx
 except ImportError as _e:  # pragma: no cover — httpx is a core dep via LiteLLM
     raise ImportError(
-        "forgerag.client requires httpx. It's included by default; reinstall the project's requirements.txt to get it."
+        "opencraig.client requires httpx. It's included by default; reinstall the project's requirements.txt to get it."
     ) from _e
 
 
@@ -94,7 +94,8 @@ class Client:
     Args:
         base_url: Deployed server base, e.g. ``"http://localhost:8000"``.
         token:   API token (Forge_...) — sent as ``Authorization: Bearer``
-                 on every request. If unset, falls back to ``$FORGERAG_API_TOKEN``.
+                 on every request. If unset, falls back to ``$OPENCRAIG_API_TOKEN``
+                 (legacy ``$FORGERAG_API_TOKEN`` also accepted).
         timeout: Per-request timeout (seconds) for non-streaming calls.
                  Streaming uses its own idle-timeout.
         headers: Extra HTTP headers.
@@ -114,7 +115,11 @@ class Client:
         self._timeout = timeout
         self._headers = dict(headers or {})
 
-        resolved_token = token if token is not None else _os.environ.get("FORGERAG_API_TOKEN")
+        resolved_token = (
+            token
+            if token is not None
+            else (_os.environ.get("OPENCRAIG_API_TOKEN") or _os.environ.get("FORGERAG_API_TOKEN"))
+        )
         if resolved_token:
             self._headers.setdefault("Authorization", f"Bearer {resolved_token}")
 

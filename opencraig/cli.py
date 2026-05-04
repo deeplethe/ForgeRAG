@@ -1,17 +1,17 @@
 """
-``forgerag`` command-line entry point.
+``opencraig`` command-line entry point.
 
 Usage:
 
-    forgerag serve [--config myconfig.yaml] [--host 0.0.0.0] [--port 8000]
-    forgerag ask   "question" [--server URL] [--path /scope] [--no-kg]
-    forgerag ingest <file> [--folder /destination]
-    forgerag health [--server URL]
-    forgerag version
+    opencraig serve [--config myconfig.yaml] [--host 0.0.0.0] [--port 8000]
+    opencraig ask   "question" [--server URL] [--path /scope] [--no-kg]
+    opencraig ingest <file> [--folder /destination]
+    opencraig health [--server URL]
+    opencraig version
 
 The ``serve`` subcommand is a shim for the existing ``main.py`` launcher
 so installing the package exposes a proper console script; everything
-else is a thin wrapper over ``forgerag.client.Client``.
+else is a thin wrapper over ``opencraig.client.Client``.
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def _cmd_auth(args: argparse.Namespace) -> int:
         return _auth_whoami(args)
     if sub == "logout":
         return _auth_logout(args)
-    print("unknown auth subcommand — see `forgerag auth --help`", file=sys.stderr)
+    print("unknown auth subcommand — see `opencraig auth --help`", file=sys.stderr)
     return 2
 
 
@@ -232,7 +232,7 @@ def _auth_logout(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="forgerag", description="ForgeRAG CLI")
+    p = argparse.ArgumentParser(prog="opencraig", description="ForgeRAG CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # serve
@@ -283,7 +283,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--new-password", default=None, help="New password; prompt if omitted")
     rp.add_argument("--config", default=None, help="yaml path (for DB connection)")
 
-    wh = au_sub.add_parser("whoami", help="GET /auth/me using $FORGERAG_API_TOKEN")
+    wh = au_sub.add_parser("whoami", help="GET /auth/me using $OPENCRAIG_API_TOKEN")
     wh.add_argument("--server", default="http://localhost:8000")
 
     lt = au_sub.add_parser("list-tokens", help="List SKs owned by current user")

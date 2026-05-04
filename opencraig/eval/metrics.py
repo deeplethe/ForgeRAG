@@ -13,7 +13,7 @@ Implemented:
     hit_rate_at_k   — fraction of queries with ≥1 relevant chunk in top-k
     doc_recall_at_k — same as recall_at_k but at document granularity
 
-Use the LLM-judge (``forgerag.eval.LLMJudge``) for faithfulness /
+Use the LLM-judge (``opencraig.eval.LLMJudge``) for faithfulness /
 answer quality / context-precision scoring.
 """
 

@@ -9,7 +9,7 @@ class LLMCacheSubconfig(BaseModel):
     Targets the high-volume deterministic-prompt callers (KG extraction,
     tree builder, tree-summary enrichment, image-enrichment VLM). Query-
     side callers (QU, rerank, generation, tree-nav) deliberately bypass
-    this cache — see ``forgerag/llm_cache.py`` for the rationale.
+    this cache — see ``opencraig/llm_cache.py`` for the rationale.
 
     Default ON because the killer use case is failure recovery: when a
     long ingest crashes mid-corpus (rate-limit, balance, network), the

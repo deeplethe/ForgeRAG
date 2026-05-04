@@ -32,7 +32,8 @@ Thumbs.db
 *.db-shm
 
 # Runtime config (contains credentials — use examples/ as template)
-forgerag.yaml
+opencraig.yaml
+forgerag.yaml          # legacy filename, kept ignored for back-compat
 myconfig.yaml
 
 # Wizard checkpoint (in-progress setup state; auto-deleted on success)

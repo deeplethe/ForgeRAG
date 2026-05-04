@@ -84,8 +84,8 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Path to forgerag.yaml. If omitted, uses FORGERAG_CONFIG env "
-        "var or falls back to --db / --blob CLI defaults.",
+        help="Path to opencraig.yaml. If omitted, uses OPENCRAIG_CONFIG env "
+        "var (legacy: FORGERAG_CONFIG) or falls back to --db / --blob CLI defaults.",
     )
     p.add_argument(
         "--db",
@@ -171,12 +171,12 @@ def _resolve_config(args: argparse.Namespace) -> AppConfig:
     """
     Precedence (highest first):
         1. --config path
-        2. FORGERAG_CONFIG env var
+        2. OPENCRAIG_CONFIG env var (legacy: FORGERAG_CONFIG)
         3. CLI flags (--db / --blob) layered on top of defaults
     """
     path: Path | None = args.config
     if path is None:
-        env_path = os.environ.get("FORGERAG_CONFIG")
+        env_path = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
         if env_path:
             path = Path(env_path)
 

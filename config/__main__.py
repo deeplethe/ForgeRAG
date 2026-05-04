@@ -2,8 +2,8 @@
 Config CLI.
 
 Usage:
-    python -m config validate [path/to/forgerag.yaml]
-    python -m config dump     [path/to/forgerag.yaml]
+    python -m config validate [path/to/opencraig.yaml]
+    python -m config dump     [path/to/opencraig.yaml]
     python -m config schema
 
 validate  -- load a YAML file through pydantic and print every
@@ -34,7 +34,7 @@ from .loader import load_config
 def _resolve_path(argv: list[str]) -> Path | None:
     if len(argv) >= 2:
         return Path(argv[1])
-    env = os.environ.get("FORGERAG_CONFIG")
+    env = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
     return Path(env) if env else None
 
 
@@ -47,7 +47,7 @@ def cmd_validate(argv: list[str]) -> int:
     path = _resolve_path(argv)
     if path is None:
         print(
-            "usage: python -m config validate <path>       (or set FORGERAG_CONFIG env var)",
+            "usage: python -m config validate <path>       (or set OPENCRAIG_CONFIG env var)",
             file=sys.stderr,
         )
         return 2
