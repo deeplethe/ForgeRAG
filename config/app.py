@@ -25,6 +25,7 @@ from .persistence import PersistenceConfig
 from .retrieval import RetrievalSection
 from .storage import StorageModel
 from .tables import TableEnrichmentConfig
+from .web_search import WebSearchConfig
 
 
 class AppConfig(BaseModel):
@@ -44,6 +45,7 @@ class AppConfig(BaseModel):
     benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
     @model_validator(mode="after")
     def _validate_dimensions(self) -> AppConfig:

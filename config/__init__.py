@@ -62,6 +62,13 @@ from .storage import (
     S3StorageModel,
     StorageModel,
 )
+from .web_search import (
+    BraveConfig,
+    TavilyConfig,
+    WebSearchCacheConfig,
+    WebSearchConfig,
+    WebSearchCostConfig,
+)
 
 __all__ = [
     "AnsweringSection",
@@ -106,6 +113,11 @@ __all__ = [
     "VectorConfig",
     "VectorSearchConfig",
     "WeaviateConfig",
+    "BraveConfig",
+    "TavilyConfig",
+    "WebSearchCacheConfig",
+    "WebSearchConfig",
+    "WebSearchCostConfig",
     "load_config",
     "setup_logging",
 ]
