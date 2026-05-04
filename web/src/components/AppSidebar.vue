@@ -91,8 +91,11 @@ function isTabActive(tab) {
     <div class="px-4 pt-4 pb-5 flex items-center gap-2">
       <button
         @click="emit('new-chat'); router.push('/chat')"
-        class="wordmark text-[15px] hover:opacity-80 transition-opacity cursor-pointer"
-      >ForgeRAG</button>
+        class="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer"
+      >
+        <img src="/craig.png" alt="" class="w-6 h-6 rounded-full shrink-0" />
+        <span class="wordmark text-[15px]">OpenCraig</span>
+      </button>
       <span class="text-[10px] text-t3 select-none">v{{ version }}</span>
       <a
         href="https://github.com/deeplethe/ForgeRAG"

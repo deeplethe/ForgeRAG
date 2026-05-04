@@ -333,12 +333,12 @@ function safeEnqueue(files, opts) {
       )
     } else if (verdict.reason === 'image_disabled') {
       toast(
-        `${f.name} — image upload requires a VLM. Enable image_enrichment in forgerag.yaml.`,
+        `${f.name} — image upload requires a VLM. Enable image_enrichment in opencraig.yaml.`,
         { variant: 'error', duration: 7000 },
       )
     } else if (verdict.reason === 'spreadsheet_disabled') {
       toast(
-        `${f.name} — spreadsheet upload requires an LLM. Enable table_enrichment in forgerag.yaml.`,
+        `${f.name} — spreadsheet upload requires an LLM. Enable table_enrichment in opencraig.yaml.`,
         { variant: 'error', duration: 7000 },
       )
     }

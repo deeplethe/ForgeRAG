@@ -53,7 +53,7 @@
   "chat": {
     "ask_a_question": "Ask a question...",
     "ask_followup": "Ask a follow-up...",
-    "may_make_mistakes": "ForgeRAG may make mistakes. Verify important information.",
+    "may_make_mistakes": "OpenCraig may make mistakes. Verify important information.",
     "stop_generation": "Stop generation",
     "thinking": "Thinking",
     "trace": "Trace",

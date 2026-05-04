@@ -222,7 +222,7 @@ async function loadGraph() {
     }
   } catch (e) {
     if (e.message?.includes('404')) {
-      error.value = 'Knowledge graph not configured. Enable retrieval.kg_extraction.enabled in forgerag.yaml and restart.'
+      error.value = 'Knowledge graph not configured. Enable retrieval.kg_extraction.enabled in opencraig.yaml and restart.'
     } else {
       error.value = e.message || 'Failed to load graph'
     }
@@ -1284,7 +1284,7 @@ watch(isDark, () => {
             <div>
               <div class="text-sm text-t2 font-medium">No graph data</div>
               <div class="text-[11px] text-t3 mt-1 leading-relaxed">
-                {{ error || 'Enable retrieval.kg_extraction.enabled in forgerag.yaml, restart the server, and ingest documents to populate the knowledge graph.' }}
+                {{ error || 'Enable retrieval.kg_extraction.enabled in opencraig.yaml, restart the server, and ingest documents to populate the knowledge graph.' }}
               </div>
             </div>
           </div>

@@ -53,7 +53,7 @@
   "chat": {
     "ask_a_question": "请输入问题...",
     "ask_followup": "继续追问...",
-    "may_make_mistakes": "ForgeRAG 可能出错，请核实重要信息。",
+    "may_make_mistakes": "OpenCraig 可能出错，请核实重要信息。",
     "stop_generation": "停止生成",
     "thinking": "思考",
     "trace": "Trace",

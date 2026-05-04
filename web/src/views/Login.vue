@@ -4,8 +4,9 @@
          auth is actually required; otherwise the form flashes for a
          tick before the redirect when auth is disabled. -->
     <form v-if="!probing" @submit.prevent="onSubmit" class="w-80 p-6 rounded-lg border border-line bg-bg shadow-sm">
-      <div class="flex justify-center mb-6">
-        <span class="wordmark text-[20px]">ForgeRAG</span>
+      <div class="flex flex-col items-center mb-6 gap-2">
+        <img src="/craig.png" alt="" class="w-12 h-12 rounded-full" />
+        <span class="wordmark text-[20px]">OpenCraig</span>
       </div>
 
       <label class="block text-[11px] text-t3 mb-1">Username</label>

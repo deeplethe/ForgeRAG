@@ -1,5 +1,5 @@
 /**
- * ForgeRAG API — 统一导出
+ * OpenCraig API — 统一导出
  *
  * 按模块分文件,这里汇总导出供 Vue 组件使用。
  * Config 走 yaml，不再有 settings 编辑 API。
