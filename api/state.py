@@ -359,20 +359,24 @@ class AppState:
     def unified_search(self) -> UnifiedSearcher:
         """Lazy-init the ``/search`` searcher.
 
-        Reuses the retrieval pipeline (lazy-built via the `retrieval`
-        property if needed) and the filename BM25 index (built at the
-        same time). Constructed once per process — searchers hold no
-        per-request state.
+        ``/search`` is BM25-only (no vector / KG / tree / rerank), so we
+        only need the content + filename BM25 indices, not the full
+        retrieval pipeline. We still call ``_ensure_retrieval`` to
+        guarantee both indices are built — it sets ``_bm25`` and
+        ``_filename_bm25`` as a side effect alongside the pipeline.
+        Constructed once per process — searchers hold no per-request
+        state.
         """
         if self._unified_search is not None:
             return self._unified_search
         with self._init_lock:
             if self._unified_search is not None:
                 return self._unified_search
-            pipeline = self._ensure_retrieval()
-            assert self._filename_bm25 is not None  # set inside _ensure_retrieval
+            self._ensure_retrieval()  # populates _bm25 + _filename_bm25
+            assert self._bm25 is not None
+            assert self._filename_bm25 is not None
             self._unified_search = UnifiedSearcher(
-                pipeline=pipeline,
+                bm25_index=self._bm25,
                 filename_index=self._filename_bm25,
                 rel=self.store,
             )
@@ -410,6 +414,7 @@ class AppState:
             if self._retrieval is not None:
                 self._retrieval.bm25 = new_bm25
             if self._unified_search is not None:
+                self._unified_search.bm25 = new_bm25
                 self._unified_search.filename_index = new_filename
 
     # ------------------------------------------------------------------

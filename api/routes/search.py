@@ -1,4 +1,10 @@
-"""POST /api/v1/search — the retrieval primitive (chunks default, files opt-in)."""
+"""POST /api/v1/search — BM25-only keyword search (chunks default, files opt-in).
+
+Distinct from ``/query``: this endpoint runs pure lexical search (no
+vector / KG / tree / rerank / LLM) and returns ranked hits with
+matched-token lists so the UI can highlight keywords. ``/query`` is
+where the answering pipeline + structural retrieval lives.
+"""
 
 from __future__ import annotations
 
@@ -22,17 +28,17 @@ router = APIRouter(prefix="/api/v1", tags=["search"])
 
 @router.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchResponse:
-    """Run unified retrieval. Returns chunks by default; opt-in
+    """Run BM25 keyword search. Returns chunks by default; opt-in
     ``include=["files"]`` adds a file-level rollup view.
 
     Distinct from ``/query``:
 
-      * ``/query`` runs retrieval and synthesises an LLM answer with
+      * ``/query`` runs the full retrieval pipeline (BM25 + vector +
+        KG + tree + RRF + rerank) and synthesises an LLM answer with
         citation IDs. Used by Chat.
-      * ``/search`` runs retrieval and returns the ranked results
-        directly, no LLM call. Used by the Workspace search bar, the
-        debug tooling, and (later) the agentic / research layers that
-        compose retrieval iteratively.
+      * ``/search`` runs pure BM25 over chunk text + filenames, returns
+        ranked hits with matched-token lists for keyword highlighting.
+        Used by the Workspace search bar — meant to be cheap and fast.
     """
     if not req.query.strip():
         raise HTTPException(400, "query must not be empty")
@@ -66,6 +72,7 @@ def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchRe
             snippet=c.snippet,
             score=c.score,
             boosted_by_filename=c.boosted_by_filename,
+            matched_tokens=c.matched_tokens,
         )
         for c in result.chunks
     ]
@@ -85,6 +92,7 @@ def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchRe
                     snippet=f.best_chunk.snippet,
                     page_no=f.best_chunk.page_no,
                     score=f.best_chunk.score,
+                    matched_tokens=f.best_chunk.matched_tokens,
                 ) if f.best_chunk else None,
                 filename_tokens=f.filename_tokens,
             )

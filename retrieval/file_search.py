@@ -1,14 +1,13 @@
 """
 Unified search: the retrieval primitive exposed standalone.
 
-Sits next to ``retrieval.pipeline.RetrievalPipeline`` (which produces
-chunks + LLM rerank + answer-ready output) and exposes a cheaper, no-
-LLM "find me things" surface that returns:
+Pure-lexical, BM25-only. No vector / KG / tree / rerank — those live
+on ``/query`` (the answering pipeline). ``/search`` is meant to be the
+fast "find me things by keyword" surface, with two views:
 
-  * **chunks view** (always) — ranked chunks from the existing
-    retrieval pipeline. Same shape that ``/query`` consumes internally
-    BEFORE answer synthesis. By default we skip rerank to keep the
-    primitive cheap; callers wanting rerank pass an override.
+  * **chunks view** (always) — top BM25 chunk hits, hydrated from the
+    relational store, with the per-hit list of query tokens that
+    actually appear in the chunk so the UI can highlight them.
 
   * **files view** (opt-in) — file-level rollup of the same query.
     The filename BM25 hits and per-doc rollups of the content hits are
@@ -23,8 +22,10 @@ Filename signal feeds both views asymmetrically:
   * files: full RRF fusion at file granularity — parameter-free, the
     same algo the main retrieval merge uses elsewhere.
 
-See ``docs/roadmaps/retrieval-evolution.md`` for the design rationale
-and rejected alternatives.
+Trashed docs are filtered out, and an optional ``path_prefix`` limits
+the candidate set by folder. Both filters are applied post-BM25 with
+3× over-fetch headroom so the per-view caps still come out full when
+hits are evenly spread.
 """
 
 from __future__ import annotations
@@ -133,6 +134,7 @@ class ChunkMatch:
     snippet: str
     page_no: int
     score: float
+    matched_tokens: list[str] | None = None
 
 
 @dataclass
@@ -148,6 +150,7 @@ class ScoredChunkHit:
     score: float
     bbox: tuple[float, float, float, float] | None = None
     boosted_by_filename: bool = False
+    matched_tokens: list[str] | None = None
 
 
 @dataclass
@@ -194,23 +197,38 @@ _DEFAULT_LIMIT_CHUNKS = 30
 _DEFAULT_LIMIT_FILES = 10
 
 
-class UnifiedSearcher:
-    """Run /search.
+@dataclass
+class _ContentHit:
+    """Internal: one BM25 content hit, hydrated from the relational store.
 
-    Composes the existing retrieval pipeline (for the chunks view) with
-    a doc-keyed filename BM25 (for the filename signal). Holds no
-    state of its own — the pipeline + filename index are passed in,
-    so callers can swap mocks for tests.
+    Holds the raw per-chunk BM25 score (not yet boosted by filename) plus
+    the matched query tokens for UI highlighting. ``page_no`` defaults
+    to 0 when the chunk row has no page (e.g. plain-text imports)."""
+
+    chunk_id: str
+    doc_id: str
+    score: float
+    content: str
+    page_no: int
+    matched_tokens: list[str]
+
+
+class UnifiedSearcher:
+    """Run /search — pure BM25, two views.
+
+    Holds no per-request state. The content + filename BM25 indices and
+    the relational store are passed in so callers (and tests) can swap
+    them for fakes.
     """
 
     def __init__(
         self,
         *,
-        pipeline,  # retrieval.pipeline.RetrievalPipeline
+        bm25_index: InMemoryBM25Index,
         filename_index: InMemoryBM25Index,
         rel: RelationalStore,
     ):
-        self.pipeline = pipeline
+        self.bm25 = bm25_index
         self.filename_index = filename_index
         self.rel = rel
 
@@ -221,9 +239,9 @@ class UnifiedSearcher:
         *,
         include: list[str] | None = None,
         limit: dict[str, int] | None = None,
-        filter: dict | None = None,
+        filter: dict | None = None,            # noqa: ARG002 — kept for API compat
         path_prefix: str | None = None,
-        overrides: dict | None = None,
+        overrides: object | None = None,        # noqa: ARG002 — kept for API compat
     ) -> SearchResult:
         """Run unified search.
 
@@ -236,8 +254,10 @@ class UnifiedSearcher:
         ``limit`` is a per-view cap dict, ``{"chunks": 30, "files": 10}``.
         Missing keys use the module defaults.
 
-        ``filter`` / ``path_prefix`` / ``overrides`` plumb through to
-        the underlying retrieval pipeline (path scoping, per-call knobs).
+        ``path_prefix`` limits results to documents under that folder.
+        ``filter`` / ``overrides`` are accepted for shape compatibility
+        with the previous pipeline-backed signature but are ignored —
+        BM25-only search has no rerank / per-call knobs.
         """
         t0 = time.time()
         wanted = set(include or ["chunks"])
@@ -247,31 +267,38 @@ class UnifiedSearcher:
         cap_files = (limit or {}).get("files", _DEFAULT_LIMIT_FILES)
 
         stats: dict = {"include": sorted(wanted)}
+        q_tokens = tokenize(query)
 
-        # ── filename BM25 — small, runs once even if both views asked ──
+        # ── filename BM25 — cheap, runs once even if both views asked ──
         filename_hits = self._search_filenames(query, top_k=max(cap_files, 50))
         stats["filename_hits"] = len(filename_hits)
+        filename_token_map: dict[str, list[str]] = {
+            doc_id: self._matched_filename_tokens(doc_id, q_tokens)
+            for doc_id, _ in filename_hits
+        }
 
-        # Pre-compute the matched-token list per filename hit so the
-        # files view can return them for UI bolding without re-tokenising.
-        q_tokens = tokenize(query)
-        filename_token_map: dict[str, list[str]] = {}
-        for doc_id, _ in filename_hits:
-            filename_token_map[doc_id] = self._matched_filename_tokens(doc_id, q_tokens)
+        # ── content BM25 — fetch with 3× headroom for trash / path filter ──
+        # We size to whichever view needs more candidates: chunks wants
+        # ``cap_chunks`` after filtering; files needs several chunks
+        # per doc to roll up, so over-fetch by ``cap_files * 5``.
+        content_top_k = 0
+        if "chunks" in wanted:
+            content_top_k = max(content_top_k, cap_chunks)
+        if "files" in wanted:
+            content_top_k = max(content_top_k, cap_files * 5)
+        content_hits = self._search_content(
+            query,
+            q_tokens=q_tokens,
+            top_k=content_top_k * 3 if content_top_k else 0,
+            path_prefix=path_prefix,
+        )
+        stats["content_hits"] = len(content_hits)
 
         # ── chunks view ────────────────────────────────────────────────
         chunks_view: list[ScoredChunkHit] = []
-        chunk_pipeline_hits = []
         if "chunks" in wanted:
-            chunk_pipeline_hits = self._run_pipeline(
-                query,
-                top_k=cap_chunks * 2,  # over-fetch so the filename boost can re-rank
-                filter=filter,
-                path_prefix=path_prefix,
-                overrides=overrides,
-            )
             chunks_view = self._build_chunks_view(
-                pipeline_hits=chunk_pipeline_hits,
+                content_hits=content_hits,
                 filename_score_by_doc=dict(filename_hits),
                 cap=cap_chunks,
             )
@@ -280,17 +307,6 @@ class UnifiedSearcher:
         # ── files view ─────────────────────────────────────────────────
         files_view: list[FileHit] | None = None
         if "files" in wanted:
-            # Reuse pipeline hits if we already have them; otherwise run
-            # a smaller search just to get the per-doc content rollup.
-            content_hits = chunk_pipeline_hits
-            if not content_hits:
-                content_hits = self._run_pipeline(
-                    query,
-                    top_k=cap_files * 5,  # need several chunks per doc to roll up
-                    filter=filter,
-                    path_prefix=path_prefix,
-                    overrides=overrides,
-                )
             files_view = self._build_files_view(
                 filename_hits=filename_hits,
                 content_hits=content_hits,
@@ -332,131 +348,210 @@ class UnifiedSearcher:
         return [t for t in q_tokens if t in present]
 
     # ------------------------------------------------------------------
-    # Chunks view
+    # Content signal — pure BM25, no pipeline
     # ------------------------------------------------------------------
 
-    def _run_pipeline(
+    def _search_content(
         self,
         query: str,
         *,
+        q_tokens: list[str],
         top_k: int,
-        filter: dict | None,
         path_prefix: str | None,
-        overrides,  # dict | QueryOverrides | None
-    ):
-        """Call the existing retrieval pipeline and return its
-        ``RetrievalResult.merged`` — the post-RRF list of ``MergedChunk``
-        the answering layer normally consumes.
+    ) -> list[_ContentHit]:
+        """Run BM25 against the content index, hydrate hits, drop trashed
+        and out-of-scope docs. Returns at most ``top_k / 3`` filtered
+        hits — caller already over-fetched 3×.
 
-        Default behaviour skips rerank — the LLM call is the dominant
-        cost and ``/search`` is supposed to be cheap. Callers wanting
-        rerank pass ``overrides.rerank = True`` (or ``{"rerank": True}``
-        which we adapt).
+        Filtering pass:
+          * trashed docs (path under ``/__trash__``)
+          * path_prefix mismatch (when set)
+
+        Both filters require knowing the chunk's doc_id and the doc's
+        path, so we batch-fetch chunk rows + doc rows once per query.
         """
-        # Build a filter dict in the shape the pipeline expects.
-        merged_filter: dict = dict(filter or {})
-        if path_prefix:
-            merged_filter["_path_filter"] = path_prefix
+        if top_k <= 0 or self.bm25 is None or len(self.bm25) == 0:
+            return []
 
-        # Adapt dict-shape overrides into the pipeline's QueryOverrides
-        # without coupling this module to that pydantic model. If
-        # ``overrides`` is already a QueryOverrides we pass it through.
-        ov = overrides
-        if isinstance(overrides, dict) or overrides is None:
-            ov = self._build_overrides(overrides or {}, top_k=top_k)
+        raw_hits = self.bm25.search_chunks(query, top_k=top_k)
+        if not raw_hits:
+            return []
 
-        result = self.pipeline.retrieve(
-            query,
-            filter=merged_filter or None,
-            overrides=ov,
-        )
-        # ``result.merged`` is the canonical post-RRF list of MergedChunk.
-        # Older pipeline versions occasionally exposed this as
-        # ``merged_chunks`` — be defensive so the searcher survives an
-        # internal rename.
-        return getattr(result, "merged", None) or getattr(result, "merged_chunks", []) or []
+        chunk_ids = [c for c, _ in raw_hits]
+        score_by_chunk = dict(raw_hits)
 
-    @staticmethod
-    def _build_overrides(d: dict, *, top_k: int):
-        """Adapt a plain-dict overrides payload into a ``QueryOverrides``.
+        # Batch fetch chunks → content + doc_id + page
+        chunk_rows: list[dict] = []
+        getter = getattr(self.rel, "get_chunks_by_ids", None)
+        if callable(getter):
+            chunk_rows = getter(chunk_ids)
+        else:
+            for cid in chunk_ids:
+                row = self.rel.get_chunk(cid)
+                if row:
+                    chunk_rows.append(row)
+        rows_by_chunk = {r["chunk_id"]: r for r in chunk_rows}
 
-        ``QueryOverrides`` is the pydantic model the pipeline reads;
-        our public surface accepts JSON-y dicts so the search route can
-        forward request bodies without coupling clients to the model
-        layout. We default ``rerank=False`` to keep ``/search`` cheap;
-        callers that want rerank pass it explicitly.
+        # Per-chunk matched-tokens — single pass over the BM25 index
+        # restricted to the hit set.
+        token_map = self._matched_content_tokens_batch(chunk_ids, q_tokens)
+
+        # Resolve scope: trashed doc set + path-prefix doc set.
+        doc_ids = {
+            r.get("doc_id") for r in chunk_rows if r.get("doc_id")
+        }
+        trashed, path_doc_set = self._resolve_doc_scope(doc_ids, path_prefix)
+
+        budget = max(1, top_k // 3)  # the post-filter cap per caller's request
+        out: list[_ContentHit] = []
+        for cid in chunk_ids:
+            row = rows_by_chunk.get(cid)
+            if not row:
+                continue
+            doc_id = row.get("doc_id")
+            if not doc_id or doc_id in trashed:
+                continue
+            if path_doc_set is not None and doc_id not in path_doc_set:
+                continue
+            out.append(
+                _ContentHit(
+                    chunk_id=cid,
+                    doc_id=doc_id,
+                    score=float(score_by_chunk.get(cid, 0.0)),
+                    content=row.get("content") or "",
+                    page_no=int(row.get("page_start") or 0),
+                    matched_tokens=token_map.get(cid, []),
+                )
+            )
+            if len(out) >= budget:
+                break
+        return out
+
+    def _matched_content_tokens_batch(
+        self, chunk_ids: list[str], q_tokens: list[str]
+    ) -> dict[str, list[str]]:
+        """Build matched-tokens map for a batch of content chunks in
+        one pass over the BM25 index.
+
+        ``InMemoryBM25Index.chunk_ids`` is a list, so ``index()`` per
+        chunk would be O(N × M). We instead scan the index once and
+        only inspect entries whose chunk_id is in the hit set.
         """
-        from api.schemas import QueryOverrides
+        if not chunk_ids or not q_tokens:
+            return {}
+        # Dedup query tokens but keep ordering — UI shows them in
+        # the same order the user typed where possible.
+        q_seen: dict[str, bool] = {}
+        for t in q_tokens:
+            q_seen.setdefault(t, True)
+        q_unique = list(q_seen.keys())
 
-        payload = dict(d)
-        payload.setdefault("rerank", False)
-        # Cap rerank_top_k / candidate_limit at our requested top_k so
-        # the pipeline doesn't waste work on chunks we won't return.
-        payload.setdefault("candidate_limit", max(top_k, 60))
-        return QueryOverrides(**payload)
+        hit_set = set(chunk_ids)
+        positions: dict[str, int] = {}
+        for i, cid in enumerate(self.bm25.chunk_ids):
+            if cid in hit_set:
+                positions[cid] = i
+                if len(positions) == len(hit_set):
+                    break
+        out: dict[str, list[str]] = {}
+        for cid, i in positions.items():
+            present = set(self.bm25.token_counts[i].keys())
+            out[cid] = [t for t in q_unique if t in present]
+        return out
+
+    def _resolve_doc_scope(
+        self, doc_ids: set[str], path_prefix: str | None
+    ) -> tuple[set[str], set[str] | None]:
+        """Return ``(trashed_set, path_doc_set)``.
+
+        ``trashed_set`` is the subset of ``doc_ids`` whose document is
+        under ``/__trash__``. ``path_doc_set`` is the subset that lives
+        under ``path_prefix`` — or ``None`` when no prefix was given,
+        meaning "no scope filter".
+
+        Implementation note: we'd love a batched ``get_documents`` but
+        the store doesn't expose one yet. ``cap`` ≤ 30 keeps the
+        per-doc round trip cheap; if this becomes hot we can add a
+        batch fetch on ``Store``.
+        """
+        if not doc_ids:
+            return set(), (set() if path_prefix else None)
+
+        try:
+            from persistence.folder_service import TRASH_PATH
+        except ImportError:
+            TRASH_PATH = "/__trash__"
+
+        prefix = (path_prefix or "").rstrip("/")
+        path_doc_set: set[str] | None = set() if path_prefix else None
+        trashed: set[str] = set()
+
+        for did in doc_ids:
+            if not did:
+                continue
+            row = self.rel.get_document(did)
+            if not row:
+                continue
+            doc_path = row.get("path") or ""
+            if doc_path.startswith(TRASH_PATH + "/") or doc_path == TRASH_PATH:
+                trashed.add(did)
+                continue
+            if path_doc_set is not None:
+                if not prefix or doc_path == prefix or doc_path.startswith(prefix + "/"):
+                    path_doc_set.add(did)
+        return trashed, path_doc_set
+
+    # ------------------------------------------------------------------
+    # Chunks view — projects _ContentHit into the API shape
+    # ------------------------------------------------------------------
 
     def _build_chunks_view(
         self,
         *,
-        pipeline_hits,                              # list[MergedChunk]
+        content_hits: list[_ContentHit],
         filename_score_by_doc: dict[str, float],
         cap: int,
     ) -> list[ScoredChunkHit]:
-        """Project ``MergedChunk`` rows into ``ScoredChunkHit`` rows,
+        """Project ``_ContentHit`` rows into ``ScoredChunkHit`` rows,
         applying the filename boost and hydrating filename / path from
         the relational store in a single batched call.
 
-        The boost is additive and capped: it tops out at ``α`` × the
-        top RRF score — a filename match nudges the order but never
-        overrides a strong content match.
+        The boost is additive and capped at ``α`` × the top BM25 score —
+        a filename match nudges the order but never overrides a strong
+        content match.
         """
-        if not pipeline_hits:
+        if not content_hits:
             return []
 
-        # Top content score → cap on the filename boost so it stays a
-        # nudge, not a takeover. ``rrf_score`` is the canonical post-
-        # fusion score on a ``MergedChunk``.
-        top_score = max(getattr(h, "rrf_score", 0.0) for h in pipeline_hits) or 0.0
+        top_score = max(h.score for h in content_hits) or 0.0
         boost_cap = top_score * _FILENAME_BOOST_ALPHA
-
-        # Normalise filename scores to [0, 1] within the candidate set.
         max_fn_score = max(filename_score_by_doc.values()) if filename_score_by_doc else 0.0
 
-        # Batch-fetch document metadata (filename, path, format) so we
-        # don't issue one round-trip per hit.
-        doc_ids = {
-            getattr(h.chunk, "doc_id", None) or self._doc_id_of_chunk(getattr(h, "chunk_id", ""))
-            for h in pipeline_hits
-            if getattr(h, "chunk", None) is not None or getattr(h, "chunk_id", None)
-        }
-        doc_meta: dict[str, dict] = self._batch_fetch_docs(doc_ids)
+        doc_ids = {h.doc_id for h in content_hits if h.doc_id}
+        doc_meta = self._batch_fetch_docs(doc_ids)
 
         out: list[ScoredChunkHit] = []
-        for h in pipeline_hits:
-            chunk = getattr(h, "chunk", None)
-            if chunk is None:
-                # Hit without a rehydrated chunk — pipeline anomaly. Skip.
-                continue
-            doc_id = chunk.doc_id
-            base_score = getattr(h, "rrf_score", 0.0)
-            fn_raw = filename_score_by_doc.get(doc_id, 0.0)
+        for h in content_hits:
+            base_score = h.score
+            fn_raw = filename_score_by_doc.get(h.doc_id, 0.0)
             boosted = False
             if fn_raw > 0 and max_fn_score > 0 and boost_cap > 0:
                 base_score += boost_cap * (fn_raw / max_fn_score)
                 boosted = True
 
-            meta = doc_meta.get(doc_id, {})
+            meta = doc_meta.get(h.doc_id, {})
             out.append(
                 ScoredChunkHit(
-                    chunk_id=chunk.chunk_id,
-                    doc_id=doc_id,
+                    chunk_id=h.chunk_id,
+                    doc_id=h.doc_id,
                     filename=meta.get("filename") or "",
                     path=meta.get("path") or "",
-                    page_no=int(chunk.page_start or 0),
-                    snippet=_snippet(chunk.content),
+                    page_no=h.page_no,
+                    snippet=_snippet(h.content),
                     score=base_score,
                     bbox=None,  # /search omits bbox; clients use /query for highlights
                     boosted_by_filename=boosted,
+                    matched_tokens=h.matched_tokens or None,
                 )
             )
 
@@ -491,7 +586,7 @@ class UnifiedSearcher:
         self,
         *,
         filename_hits: list[tuple[str, float]],
-        content_hits,                                # list[MergedChunk]
+        content_hits: list[_ContentHit],
         filename_token_map: dict[str, list[str]],
         cap: int,
     ) -> list[FileHit]:
@@ -501,24 +596,19 @@ class UnifiedSearcher:
         content hits, compute the file's RRF score from the two ranked
         lists. Snippet comes from the doc's best content chunk (which
         is the highest-rank chunk per doc — content_hits is already in
-        rank order coming out of the pipeline).
+        BM25-rank order).
         """
         # Roll up content hits by doc_id (best chunk wins, i.e. first
         # chunk for that doc in rank order).
-        best_content_chunk: dict[str, object] = {}
+        best_content_chunk: dict[str, _ContentHit] = {}
         content_rank_by_doc: dict[str, int] = {}
         rank = 0
         for h in content_hits:
-            chunk = getattr(h, "chunk", None)
-            doc_id = getattr(chunk, "doc_id", None) if chunk is not None else None
-            if not doc_id:
-                # Fallback for hits whose chunk wasn't rehydrated.
-                doc_id = self._doc_id_of_chunk(getattr(h, "chunk_id", ""))
-            if not doc_id or doc_id in content_rank_by_doc:
+            if not h.doc_id or h.doc_id in content_rank_by_doc:
                 continue
             rank += 1
-            content_rank_by_doc[doc_id] = rank
-            best_content_chunk[doc_id] = h
+            content_rank_by_doc[h.doc_id] = rank
+            best_content_chunk[h.doc_id] = h
 
         filename_rank_by_doc: dict[str, int] = {}
         for i, (doc_id, _) in enumerate(filename_hits, start=1):
@@ -556,14 +646,13 @@ class UnifiedSearcher:
             chunk_match: ChunkMatch | None = None
             if doc_id in best_content_chunk:
                 ch = best_content_chunk[doc_id]
-                inner = getattr(ch, "chunk", None)
-                if inner is not None:
-                    chunk_match = ChunkMatch(
-                        chunk_id=inner.chunk_id,
-                        snippet=_snippet(inner.content),
-                        page_no=int(inner.page_start or 0),
-                        score=getattr(ch, "rrf_score", 0.0),
-                    )
+                chunk_match = ChunkMatch(
+                    chunk_id=ch.chunk_id,
+                    snippet=_snippet(ch.content),
+                    page_no=ch.page_no,
+                    score=ch.score,
+                    matched_tokens=ch.matched_tokens or None,
+                )
 
             out.append(
                 FileHit(

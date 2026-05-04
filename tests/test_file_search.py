@@ -8,23 +8,20 @@ Covers two layers:
      (substring/path-segment/extension all match), persistence
      round-trips, and `update_filename_index_for_doc` is idempotent.
 
-  2. ``UnifiedSearcher`` — orchestrates pipeline + filename index +
-     dual-view aggregation. Uses a fake pipeline + tiny fake store
-     so the test is fast and doesn't require the full ingestion
-     chain.
+  2. ``UnifiedSearcher`` — BM25-only over content + filename indices,
+     plus the per-view aggregation. Uses a real ``InMemoryBM25Index``
+     so the test exercises actual scoring rather than mock numbers.
+     A tiny fake store fills in document/chunk metadata.
 
-LLM / embedder / vector-store calls are entirely avoided here; the
-fake pipeline returns deterministic ``MergedChunk`` lists and the
-test asserts on the `SearchResult` shape.
+No LLM / embedder / vector-store calls — ``/search`` is pure lexical.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from config import BM25Config
-from parser.schema import Chunk
+from retrieval.bm25 import InMemoryBM25Index
 from retrieval.file_search import (
     FILENAME_BM25_CACHE_PATH,
     UnifiedSearcher,
@@ -35,7 +32,6 @@ from retrieval.file_search import (
     remove_filename_index_for_doc,
     update_filename_index_for_doc,
 )
-from retrieval.types import MergedChunk
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -43,71 +39,41 @@ from retrieval.types import MergedChunk
 
 
 class _FakeStore:
-    """Minimal Store stand-in: just enough for filename-index build,
-    UnifiedSearcher's hydrations, and incremental update calls."""
+    """Minimal Store stand-in: enough for filename-index build,
+    UnifiedSearcher's hydrations (chunk + doc fetch), and incremental
+    update calls."""
 
-    def __init__(self, docs: list[dict]):
+    def __init__(self, docs: list[dict], chunks: list[dict] | None = None):
         self._docs = {d["doc_id"]: d for d in docs}
+        self._chunks = {c["chunk_id"]: c for c in (chunks or [])}
 
+    # docs
     def list_document_ids(self) -> list[str]:
         return list(self._docs)
 
     def get_document(self, doc_id: str) -> dict | None:
         return self._docs.get(doc_id)
 
+    # chunks (the content-BM25 hydration path uses these)
+    def get_chunk(self, chunk_id: str) -> dict | None:
+        return self._chunks.get(chunk_id)
 
-@dataclass
-class _FakeRetrievalResult:
-    """Mimics ``retrieval.types.RetrievalResult`` for the searcher."""
-
-    merged: list[MergedChunk]
-    citations: list = None  # unused
-    vector_hits: list = None
-    tree_hits: list = None
-    stats: dict = None
-    query_plan = None
-    kg_context = None
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
+        return [self._chunks[c] for c in chunk_ids if c in self._chunks]
 
 
-class _FakePipeline:
-    """Returns a fixed list of ``MergedChunk`` for any query.
-
-    The fixed list lets us deterministically assert how the searcher
-    projects MergedChunk → ScoredChunkHit and how it rolls up into
-    the files view.
-    """
-
-    def __init__(self, merged: list[MergedChunk]):
-        self._merged = merged
-        self.calls: list[tuple] = []
-
-    def retrieve(self, query, *, filter=None, overrides=None, **_):
-        self.calls.append((query, filter, overrides))
-        return _FakeRetrievalResult(merged=list(self._merged))
-
-
-def _chunk(doc_id: str, seq: int, content: str, *, page: int = 1) -> Chunk:
-    return Chunk(
-        chunk_id=f"{doc_id}:1:c{seq}",
-        doc_id=doc_id,
-        parse_version=1,
-        node_id=f"node-{seq}",
-        block_ids=[f"{doc_id}:1:1:0"],
-        content=content,
-        content_type="text",
-        page_start=page,
-        page_end=page,
-        token_count=len(content) // 4,
-    )
-
-
-def _merged(chunk: Chunk, score: float, source: str = "vector") -> MergedChunk:
-    return MergedChunk(
-        chunk_id=chunk.chunk_id,
-        rrf_score=score,
-        sources={source},
-        chunk=chunk,
-    )
+def _chunk_row(doc_id: str, seq: int, content: str, *, page: int = 1) -> dict:
+    """Build a chunk row in the shape ``Store.get_chunks_by_ids`` returns."""
+    return {
+        "chunk_id": f"{doc_id}:1:c{seq}",
+        "doc_id": doc_id,
+        "parse_version": 1,
+        "node_id": f"node-{seq}",
+        "content": content,
+        "content_type": "text",
+        "page_start": page,
+        "page_end": page,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -228,17 +194,30 @@ def test_filename_index_path_default_falls_back_to_module_constant():
 # ---------------------------------------------------------------------------
 
 
-def _build_searcher(docs: list[dict], merged: list[MergedChunk], tmp_path: Path) -> UnifiedSearcher:
-    store = _FakeStore(docs)
+def _build_searcher(
+    docs: list[dict],
+    chunks: list[dict],
+    tmp_path: Path,
+) -> UnifiedSearcher:
+    """Construct a searcher backed by real BM25 indices.
+
+    Both indices use the default ``BM25Config``; the same tokenizer
+    that runs in production scores the test corpus, so assertions
+    don't have to mock score numbers.
+    """
+    store = _FakeStore(docs, chunks)
     fn_idx = build_filename_bm25_index(store, BM25Config(), cache_path=str(tmp_path / "fn.pkl"))
-    pipeline = _FakePipeline(merged)
-    return UnifiedSearcher(pipeline=pipeline, filename_index=fn_idx, rel=store)
+    bm25 = InMemoryBM25Index(BM25Config())
+    for c in chunks:
+        bm25.add(c["chunk_id"], c["doc_id"], c["content"])
+    bm25.finalize()
+    return UnifiedSearcher(bm25_index=bm25, filename_index=fn_idx, rel=store)
 
 
-def test_chunks_view_default_returns_pipeline_results(tmp_path: Path):
+def test_chunks_view_default_returns_bm25_hits(tmp_path: Path):
     docs = [{"doc_id": "d1", "filename": "alpha.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "talks about machine learning"), score=0.5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    chunks = [_chunk_row("d1", 1, "talks about machine learning")]
+    searcher = _build_searcher(docs, chunks, tmp_path)
 
     result = searcher.search("machine learning")
     assert len(result.chunks) == 1
@@ -247,28 +226,33 @@ def test_chunks_view_default_returns_pipeline_results(tmp_path: Path):
     assert hit.filename == "alpha.pdf"
     assert hit.path == "/"
     assert hit.snippet == "talks about machine learning"
-    assert hit.score == 0.5
+    assert hit.score > 0
     assert hit.boosted_by_filename is False
+    # matched_tokens reports which query tokens hit this chunk's bag.
+    assert set(hit.matched_tokens or []) == {"machine", "learning"}
     assert result.files is None  # default include is chunks-only
 
 
 def test_chunks_view_applies_filename_boost_when_doc_filename_matches(tmp_path: Path):
-    """A query that matches a doc's FILENAME should boost that doc's
-    chunks. With equal raw RRF scores, the filename-matched doc's chunk
-    must come out on top of an unboosted chunk."""
+    """A query whose tokens land in BOTH chunks (equal content score)
+    AND in one doc's filename should rank the filename-matched doc's
+    chunk first via the filename boost."""
     docs = [
         {"doc_id": "d1", "filename": "deep_learning_intro.pdf", "path": "/", "format": "pdf"},
         {"doc_id": "d2", "filename": "vacation_photos.pdf", "path": "/", "format": "pdf"},
     ]
-    merged = [
-        # Same raw RRF — without the filename boost, order is preserved.
-        _merged(_chunk("d2", 1, "this chunk mentions neural networks"), score=0.4),
-        _merged(_chunk("d1", 1, "this chunk mentions neural networks"), score=0.4),
+    # Identical chunk text → identical raw BM25 score. The boost is
+    # the only thing that can break the tie.
+    chunks = [
+        _chunk_row("d2", 1, "deep learning is a subfield of machine learning"),
+        _chunk_row("d1", 1, "deep learning is a subfield of machine learning"),
     ]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("deep learning")
 
-    # d1 is boosted because filename matches "deep" + "learning".
+    # d1's filename has "deep" + "learning"; d2's doesn't. With equal
+    # raw content scores (both chunks share the same body text), d1
+    # wins on the boost.
     assert result.chunks[0].doc_id == "d1"
     assert result.chunks[0].boosted_by_filename is True
     assert result.chunks[1].doc_id == "d2"
@@ -277,32 +261,70 @@ def test_chunks_view_applies_filename_boost_when_doc_filename_matches(tmp_path: 
 
 def test_chunks_view_filename_boost_is_capped(tmp_path: Path):
     """A vague filename match must NOT overtake a strong content match.
-    With a wide score gap (1.0 vs 0.1) and a 0.15-fraction boost cap,
-    the strong-content chunk should still rank first even if the
-    weaker chunk's doc has a filename match.
-    """
+    With a wide BM25 gap (d2 is short and densely about the query;
+    d1 buries a single mention in a long, unrelated body) and a
+    0.15-fraction boost cap, the strong-content chunk still wins."""
     docs = [
         {"doc_id": "d1", "filename": "report.pdf", "path": "/", "format": "pdf"},
         {"doc_id": "d2", "filename": "team_photos.pdf", "path": "/", "format": "pdf"},
     ]
-    merged = [
-        _merged(_chunk("d2", 1, "deep technical content"), score=1.0),  # strong content
-        _merged(_chunk("d1", 1, "weak match"), score=0.1),               # weak content + filename hit
+    chunks = [
+        # d2: short, query-dense chunk — high BM25 via low doc length.
+        _chunk_row("d2", 1, "report financials report sales report"),
+        # d1: long body with one query mention buried — low BM25.
+        _chunk_row(
+            "d1",
+            1,
+            "this is a comprehensive body of unrelated text " * 10 + "report",
+        ),
     ]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("report")
 
-    # d2 still wins because the boost on d1 is capped to 0.15 * 1.0 = 0.15;
-    # 0.1 + 0.15 = 0.25 < 1.0.
+    # d2 wins despite d1 getting the filename boost: the cap is 0.15
+    # of d2's top score, which can't close the term-frequency gap.
     assert result.chunks[0].doc_id == "d2"
 
 
 def test_chunks_view_respects_limit(tmp_path: Path):
-    docs = [{"doc_id": f"d{i}", "filename": f"f{i}.pdf", "path": "/", "format": "pdf"} for i in range(5)]
-    merged = [_merged(_chunk(f"d{i}", 1, f"content {i}"), score=0.5 - i * 0.05) for i in range(5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    docs = [
+        {"doc_id": f"d{i}", "filename": f"f{i}.pdf", "path": "/", "format": "pdf"}
+        for i in range(5)
+    ]
+    chunks = [_chunk_row(f"d{i}", 1, f"content number {i}") for i in range(5)]
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("content", limit={"chunks": 3})
     assert len(result.chunks) == 3
+
+
+def test_chunks_view_filters_trashed_docs(tmp_path: Path):
+    """Docs in ``/__trash__/...`` must be excluded from chunk hits."""
+    docs = [
+        {"doc_id": "d1", "filename": "live.pdf", "path": "/projects", "format": "pdf"},
+        {"doc_id": "d2", "filename": "old.pdf", "path": "/__trash__/old", "format": "pdf"},
+    ]
+    chunks = [
+        _chunk_row("d1", 1, "tariffs are levied at the border"),
+        _chunk_row("d2", 1, "tariffs are levied at the border"),
+    ]
+    searcher = _build_searcher(docs, chunks, tmp_path)
+    result = searcher.search("tariffs")
+    assert [c.doc_id for c in result.chunks] == ["d1"]
+
+
+def test_chunks_view_respects_path_prefix(tmp_path: Path):
+    """When ``path_prefix`` is set, only docs under that folder match."""
+    docs = [
+        {"doc_id": "d1", "filename": "a.pdf", "path": "/projects/2024", "format": "pdf"},
+        {"doc_id": "d2", "filename": "b.pdf", "path": "/scratch", "format": "pdf"},
+    ]
+    chunks = [
+        _chunk_row("d1", 1, "matter under projects"),
+        _chunk_row("d2", 1, "matter under scratch"),
+    ]
+    searcher = _build_searcher(docs, chunks, tmp_path)
+    result = searcher.search("matter", path_prefix="/projects")
+    assert [c.doc_id for c in result.chunks] == ["d1"]
 
 
 # ---------------------------------------------------------------------------
@@ -316,36 +338,39 @@ def test_files_view_rolls_up_chunks_per_doc(tmp_path: Path):
         {"doc_id": "d1", "filename": "report.pdf", "path": "/", "format": "pdf"},
         {"doc_id": "d2", "filename": "memo.pdf", "path": "/", "format": "pdf"},
     ]
-    merged = [
-        _merged(_chunk("d1", 1, "first chunk of report", page=1), score=0.9),
-        _merged(_chunk("d1", 2, "second chunk of report", page=2), score=0.7),
-        _merged(_chunk("d2", 1, "memo text"), score=0.6),
+    # d1's first chunk has a stronger match than its second so it wins
+    # the "best chunk" slot for the rollup. d2 trails because its chunk
+    # mentions "report" only once and lives in a longer body.
+    chunks = [
+        _chunk_row("d1", 1, "report report report report opening summary", page=1),
+        _chunk_row("d1", 2, "later sections of the report", page=2),
+        _chunk_row("d2", 1, "memo text mentions report once amid much else", page=1),
     ]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("report", include=["files"])
 
     assert result.files is not None
     doc_ids = [f.doc_id for f in result.files]
     assert doc_ids.count("d1") == 1  # rolled up
     assert "d2" in doc_ids
-    # Best chunk for d1 is the first (highest-rank) one.
+    # Best chunk for d1 is the higher-scoring one (the first chunk).
     d1 = next(f for f in result.files if f.doc_id == "d1")
     assert d1.best_chunk is not None
-    assert d1.best_chunk.snippet == "first chunk of report"
+    assert d1.best_chunk.snippet.startswith("report report report")
 
 
 def test_files_view_marks_matched_in_filename_only(tmp_path: Path):
-    """A doc that matches by filename but isn't in the content hits gets
+    """A doc that matches by filename but has no content hit gets
     ``matched_in == ["filename"]`` and a null ``best_chunk``."""
     docs = [
         {"doc_id": "d1", "filename": "tariffs_2024.pdf", "path": "/", "format": "pdf"},
         {"doc_id": "d2", "filename": "lunch.pdf", "path": "/", "format": "pdf"},
     ]
-    merged = [
-        # Pipeline returns a chunk only for d2; d1 gets in via filename match.
-        _merged(_chunk("d2", 1, "lunch menu items"), score=0.5),
+    chunks = [
+        # Only d2 has body content for this query; d1 enters via filename only.
+        _chunk_row("d2", 1, "lunch menu items"),
     ]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("tariffs", include=["files"])
 
     assert result.files is not None
@@ -357,20 +382,22 @@ def test_files_view_marks_matched_in_filename_only(tmp_path: Path):
 
 def test_files_view_marks_matched_in_both(tmp_path: Path):
     docs = [{"doc_id": "d1", "filename": "tariffs_overview.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "tariffs apply at the border"), score=0.7)]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    chunks = [_chunk_row("d1", 1, "tariffs apply at the border")]
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("tariffs", include=["files"])
 
     assert result.files is not None
     f = result.files[0]
     assert set(f.matched_in) == {"filename", "content"}
     assert f.best_chunk is not None
+    # best_chunk carries matched_tokens too, mirroring filename_tokens.
+    assert "tariffs" in (f.best_chunk.matched_tokens or [])
 
 
 def test_files_view_includes_filename_tokens_for_ui_bolding(tmp_path: Path):
     docs = [{"doc_id": "d1", "filename": "Q3_financials_2024.pdf", "path": "/", "format": "pdf"}]
-    merged = []  # no content hits — files view drives entirely off filename
-    searcher = _build_searcher(docs, merged, tmp_path)
+    chunks: list[dict] = []  # no content — files view drives off filename only
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("financials 2024", include=["files"])
 
     assert result.files is not None
@@ -388,8 +415,8 @@ def test_files_view_includes_filename_tokens_for_ui_bolding(tmp_path: Path):
 
 def test_chunks_and_files_returned_together(tmp_path: Path):
     docs = [{"doc_id": "d1", "filename": "report.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "report content"), score=0.5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
+    chunks = [_chunk_row("d1", 1, "report content")]
+    searcher = _build_searcher(docs, chunks, tmp_path)
     result = searcher.search("report", include=["chunks", "files"])
 
     assert result.chunks
@@ -397,33 +424,21 @@ def test_chunks_and_files_returned_together(tmp_path: Path):
     assert result.stats.get("include") == ["chunks", "files"]
 
 
-def test_pipeline_called_only_once_per_search(tmp_path: Path):
-    """When both views are requested, the pipeline shouldn't be hit
-    twice — the searcher reuses the chunks-view pipeline hits to build
-    the files rollup."""
-    docs = [{"doc_id": "d1", "filename": "report.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "content"), score=0.5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
-    searcher.search("report", include=["chunks", "files"])
-
-    assert len(searcher.pipeline.calls) == 1
-
-
 def test_default_include_is_chunks_only(tmp_path: Path):
     """No ``include`` passed → only chunks view computed; files is None
     so callers can distinguish "not requested" from "requested but empty"."""
     docs = [{"doc_id": "d1", "filename": "x.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "x"), score=0.5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
-    result = searcher.search("x")
+    chunks = [_chunk_row("d1", 1, "alpha bravo charlie")]
+    searcher = _build_searcher(docs, chunks, tmp_path)
+    result = searcher.search("alpha")
     assert result.files is None
 
 
 def test_unrecognised_include_falls_back_to_chunks(tmp_path: Path):
     docs = [{"doc_id": "d1", "filename": "x.pdf", "path": "/", "format": "pdf"}]
-    merged = [_merged(_chunk("d1", 1, "x"), score=0.5)]
-    searcher = _build_searcher(docs, merged, tmp_path)
-    result = searcher.search("x", include=["unknown_view"])
+    chunks = [_chunk_row("d1", 1, "alpha bravo charlie")]
+    searcher = _build_searcher(docs, chunks, tmp_path)
+    result = searcher.search("alpha", include=["unknown_view"])
     assert result.chunks
     assert result.files is None
 

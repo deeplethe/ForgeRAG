@@ -461,6 +461,10 @@ class ScoredChunkOut(BaseModel):
     snippet: str
     score: float
     boosted_by_filename: bool = False
+    # Subset of the tokenised query that actually appears in this
+    # chunk's BM25 token bag. Returned so the UI can highlight matched
+    # terms without re-tokenising the snippet client-side.
+    matched_tokens: list[str] | None = None
 
 
 class ChunkMatchOut(BaseModel):
@@ -468,6 +472,7 @@ class ChunkMatchOut(BaseModel):
     snippet: str
     page_no: int
     score: float
+    matched_tokens: list[str] | None = None
 
 
 class FileHitOut(BaseModel):
