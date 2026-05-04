@@ -45,7 +45,7 @@ A **file-level aggregated search**: same query is matched against both filenames
 Distinct from `/query`:
 
 * `/query` returns *chunks* answering a question, with rerank + answer synthesis. Chat-level QA.
-* `/files/search` returns *files* that match a query (in name or in content), without rerank or answer. Workspace-level navigation. Each result carries a snippet + which signal matched (`filename` | `content` | both).
+* `/search` returns *files* that match a query (in name or in content), without rerank or answer. Workspace-level navigation. Each result carries a snippet + which signal matched (`filename` | `content` | both).
 
 A search for `"Q3 financial report"` should surface all of:
 
@@ -119,12 +119,13 @@ class ChunkMatch:
 * **`SQL ILIKE`** — no relevance ranking, no fuzzy match, scales linearly. Bad UX even at small N.
 * **Vector embedding for the file-search query** — embeddings are unreliable on literal-string queries (`invoice-2024-Q3.pdf` has no useful semantics). For *content* matching the existing BM25 is enough at this level; vector search is on the `/query` path where rerank can fix mistakes.
 * **Weighted-sum fusion** (`α * filename_score + β * content_score`) — needs hand-tuned weights, brittle. RRF is parameter-free and the codebase already uses it for the main retrieval merge.
+* **Name the endpoint `/files/search`** — REST-resource framing leaks a non-user concept ("files" as a sub-resource) into the URL. Users say "search" as a verb, not "search files". Keeps `/search` free as the one place future result-types (chunks, entities) compose into via query params (`?include=chunks`) rather than spawning parallel `/chunks/search` / `/entities/search` endpoints.
 
 ### Implementation
 
 * New module: `retrieval/file_search.py` with `FileSearcher` — owns the filename `InMemoryBM25Index`, runs both indices, fuses via RRF, applies post-filters.
 * `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`. Rename hook updates the filename index entry.
-* New route: `POST /api/v1/files/search` (POST not GET — body carries filter dicts, easier telemetry).
+* New route: `POST /api/v1/search` (POST not GET — body carries filter dicts, easier telemetry; flat `/search` not `/files/search` so future result-type extensions live as query params, not parallel endpoints).
 * New schemas: `FileSearchHit`, `ChunkMatch` in `api/schemas.py`.
 * Telemetry: one OTel span per search, attributes `q.length, hits, filename_hits, content_hits`.
 
