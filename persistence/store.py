@@ -132,21 +132,12 @@ class Store:
                 ),
                 {"tt": True},
             )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO folder_grants (grant_id, folder_id, principal_id,
-                                               principal_type, permission,
-                                               inherit, granted_by)
-                    SELECT '__bootstrap__', '__root__', 'local', 'user',
-                           'admin', :inh, 'system'
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM folder_grants WHERE grant_id = '__bootstrap__'
-                    )
-                    """
-                ),
-                {"inh": True},
-            )
+            # System folders are created with NULL owner_user_id. The
+            # auth bootstrap path takes ownership of __root__ for the
+            # first admin user; __trash__ stays ownerless (admin-only
+            # via role bypass). The legacy folder_grants seed row was
+            # removed in the multi-user refactor — folder.shared_with
+            # is the access list of record now.
 
     # Column renames: (table_name, old_col, new_col)
     _COLUMN_RENAMES: list[tuple[str, str, str]] = [

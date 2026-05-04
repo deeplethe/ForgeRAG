@@ -61,6 +61,7 @@ def bootstrap_if_empty(cfg, store) -> None:
                 must_change_password=True,
                 role="admin",
                 is_active=True,
+                status="active",
             )
             sess.add(admin)
             # Flush so the user row exists before we insert the token that
@@ -79,6 +80,16 @@ def bootstrap_if_empty(cfg, store) -> None:
                 role="admin",
             )
             sess.add(token)
+
+            # Take ownership of __root__ so subsequent uploads /
+            # subfolder creation under the existing single-user UX
+            # land with a real owner_user_id. __trash__ stays
+            # ownerless (admins manage it via role bypass).
+            from persistence.models import Folder
+
+            root = sess.get(Folder, "__root__")
+            if root is not None and root.owner_user_id is None:
+                root.owner_user_id = user_id
     except IntegrityError:
         # Another worker won the bootstrap race — the username UNIQUE
         # constraint kicked in. Idempotent: just return so startup

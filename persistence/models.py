@@ -52,6 +52,15 @@ class File(Base):
     display_name: Mapped[str] = mapped_column(String(512))
     size_bytes: Mapped[int] = mapped_column(Integer)
     mime_type: Mapped[str] = mapped_column(String(128))
+    # The user who uploaded this file. Audit-only; access control runs
+    # off the containing folder's owner / shared_with, not the file
+    # itself. Nullable for legacy rows that pre-date multi-user.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -93,6 +102,15 @@ class Document(Base):
         String(1024),
         default="/",
         server_default="/",
+        index=True,
+    )
+    # The user who first ingested this document. Audit-only; access
+    # control runs off the containing folder's owner / shared_with.
+    # Nullable for legacy rows that pre-date multi-user.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     # Populated only for trashed documents: original folder + path + metadata
@@ -242,6 +260,17 @@ class Conversation(Base):
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # The user who owns this conversation. Conversations are private —
+    # only the creator can read / continue / delete them. Even admins
+    # do NOT bypass this; the per-user privacy promise is stronger
+    # than the folder-level admin bypass. Nullable for legacy rows
+    # that pre-date multi-user.
+    user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -341,8 +370,13 @@ class QueryTrace(Base):
 #       __root__   (path='/')       — everything's ancestor
 #       __trash__  (path='/__trash__') — trash bin
 #   - A document always belongs to exactly one folder. "No folder" = __root__.
-#   - Single-tenant: there is no access-control layer planned. See
-#     persistence/scope.py for why the FolderGrant model below is dormant.
+#   - Multi-user authz: each folder carries an ``owner_user_id`` and a
+#     ``shared_with`` JSON list of {user_id, role} grants. Subfolder grants
+#     must be a SUPERSET of parent grants — enforced by the folder service
+#     at every grant edit (cascading add to descendants, rejected remove
+#     when the user is still in an ancestor). The legacy ``folder_grants``
+#     table from earlier migrations is deliberately not used; rows there
+#     are ignored.
 
 
 class Folder(Base):
@@ -364,6 +398,24 @@ class Folder(Base):
     )
     name: Mapped[str] = mapped_column(String(255))
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # ── Multi-user authz fields ──────────────────────────────────────
+    # owner_user_id = the user with full management rights. NULL means
+    # "ownerless" — happens after a user is hard-deleted and their
+    # folders haven't been transferred yet. Admins can still manage
+    # ownerless folders (admin role bypasses owner checks).
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # shared_with = list of {"user_id": "...", "role": "r"|"rw"} grants.
+    # Stored as JSON because typical folders have 0–10 entries and the
+    # whole list reads fine in one row. Subfolder.shared_with is
+    # maintained as a SUPERSET of parent.shared_with via cascading edits
+    # in the folder service (so path-prefix filtering stays correct
+    # without explicit subtree walks at query time).
+    shared_with: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     # When trashed_at is NOT NULL, this folder is inside trash (a descendant of
     # __trash__). Documents inside it inherit the trashed view automatically.
     trashed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -372,31 +424,46 @@ class Folder(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
-class FolderGrant(Base):
+class FolderInvitation(Base):
     """
-    DORMANT — kept only to avoid a schema migration. Originally designed for
-    a Phase-2 ACL that we've since decided against: ForgeRAG is single-tenant
-    and folder path is retrieval *scope*, not authZ (see persistence/scope.py).
+    Invitation link to share a folder with someone who isn't yet a
+    registered user.
 
-    The table has a single bootstrap row inserted by Store._seed and is never
-    read. Safe to drop in a future migration once we're ready to touch the
-    schema.
+    The owner (or any rw member, depending on policy) generates an
+    invitation; the server returns a one-shot signed URL. Recipient
+    follows the URL, registers (or logs in if their email already
+    has an account), and the grant lands on the folder's
+    ``shared_with`` atomically with consumption.
+
+    No SMTP yet (v1) — the inviter copy/pastes the URL into whatever
+    channel they use. ``token_hash`` = sha256(raw_token); we store
+    the hash only, the raw token is in the URL.
     """
 
-    __tablename__ = "folder_grants"
+    __tablename__ = "folder_invitations"
 
-    grant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    invitation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     folder_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("folders.folder_id", ondelete="CASCADE"),
         index=True,
     )
-    principal_id: Mapped[str] = mapped_column(String(128), index=True)  # user/group id
-    principal_type: Mapped[str] = mapped_column(String(16))  # 'user' | 'group' | 'public'
-    permission: Mapped[str] = mapped_column(String(16))  # 'view' | 'edit' | 'admin'
-    inherit: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
-    granted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    granted_by: Mapped[str] = mapped_column(String(128), default="system", server_default="system")
+    inviter_user_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    target_email: Mapped[str] = mapped_column(String(255), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # 'r' | 'rw'
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consumed_by_user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class AuditLogRow(Base):
@@ -463,18 +530,48 @@ class PendingFolderOp(Base):
 
 
 class AuthUser(Base):
-    """Single or multi tenant user record. Admin-bootstrapped on first
-    boot when ``auth.enabled=true`` and this table is empty."""
+    """User account. Bootstrapped admin on first boot when
+    ``auth.enabled=true`` and this table is empty; subsequent users
+    arrive via ``POST /auth/register``.
+
+    ``status`` is the multi-user lifecycle state:
+
+        active            - normal account
+        pending_approval  - registered under registration_mode="approval";
+                            cannot log in until an admin approves
+        suspended         - admin-disabled; cannot log in, owned content
+                            stays accessible to admins via folder bypass
+        deleted           - soft-tombstoned; row kept so audit_log /
+                            owner_user_id references still resolve
+
+    ``email`` is required for new self-registered users (it's how
+    folder invitations target a recipient). The bootstrap admin and
+    legacy single-user upgrades are allowed to leave it NULL — the
+    UNIQUE index is partial (WHERE email IS NOT NULL) so multiple
+    legacy rows can coexist.
+    """
 
     __tablename__ = "auth_users"
 
     user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))  # argon2id
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
+    # ``is_active`` is kept for backwards compatibility with the
+    # existing AuthMiddleware login check; ``status`` is the source of
+    # truth going forward and the bootstrap / register / approve paths
+    # update both fields in lockstep (active <=> is_active=True).
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        server_default="active",
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -499,6 +596,13 @@ class AuthToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     hash_prefix: Mapped[str] = mapped_column(String(8))  # first 8 hex of hash, for UI fingerprint
     role: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
+    # Optional path-level scope. When set, the bearer of this token
+    # may only operate against documents under ``scope_path`` (and
+    # only with ``scope_role`` permission, if also set). NULL means
+    # "no scope restriction beyond the user's own grants" — the
+    # token inherits the owning user's full access.
+    scope_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    scope_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -42,6 +42,25 @@ class AuthConfig(BaseModel):
     session_cookie_secure: bool = True
     password_change_revokes_other_sessions: bool = True
 
+    # --- multi-user registration ---
+    # ``open``       — anyone with a valid email can register and use
+    #                  the system immediately. Suitable for trusted
+    #                  internal deployments only.
+    # ``approval``   — registration creates a ``pending_approval`` row;
+    #                  an admin must explicitly approve before the
+    #                  user can log in. Default for self-host.
+    # ``invite_only``— only invitations from existing members can lead
+    #                  to a new account. Plain registration is rejected
+    #                  unless accompanied by a valid invitation token.
+    # Special case (always-on): when ``auth_users`` has no active admin
+    # row, the FIRST successful registration is auto-promoted to admin
+    # and active, regardless of this mode. Covers the empty-deploy
+    # bootstrap path without requiring ``initial_password``.
+    registration_mode: Literal["open", "approval", "invite_only"] = "approval"
+    # Soft expiry on folder invitation links. Recipients must register /
+    # accept within this window or the link 410s.
+    invitation_ttl_days: int = 7
+
     # --- mode=forwarded ---
     forwarded_user_header: str = "X-Forwarded-User"
     # SSRF / spoofing defence for ``mode=forwarded``: only accept the
