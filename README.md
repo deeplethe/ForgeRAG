@@ -208,7 +208,7 @@ ForgeRAG/
 
 **Next wave — retrieval evolution** ([full design](docs/roadmaps/retrieval-evolution.md)):
 
-- [ ] **File search** — file-level aggregated search across filenames + folder paths + chunk content. One query, results grouped by file with a snippet + which-signal-matched badge. Find "that Q3 report" whether you remember the title, the contents, or both.
+- [ ] **Unified `/search`** — the retrieval primitive exposed standalone (no LLM answer). Returns chunks by default; opt-in `include=["files"]` adds a file-level rollup. Filename signal feeds both. `/query` becomes `/search + answering`.
 - [ ] **Retrieval MCP server** — expose `search_files / search_chunks / query / read_chunk` as MCP tools. Plug ForgeRAG into Claude Desktop, Claude Code, custom agent workflows.
 - [ ] **Agentic search** — multi-step retrieval where an LLM iteratively decides what to query next. Comparison + multi-hop questions get the iteration they need; one-shot stays one-shot.
 - [ ] **Deep research mode** — long-horizon report generation. Plan outline → parallel section research → cited synthesis. Export Markdown / PDF.

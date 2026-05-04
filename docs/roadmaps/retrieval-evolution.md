@@ -11,7 +11,7 @@ This document captures the design and sequencing for the next wave of retrieval-
 
 The current retrieval pipeline (BM25 + vector + KG + tree-nav, fused via RRF, reranked, with pixel-precise citations) is solid for one-shot question answering. The next four features compose on top of that foundation, each unlocking a different kind of usage:
 
-1. **File search** (foundation) — file-level aggregated search. Same query is matched against filenames+paths AND chunk content; results grouped by file and fused via RRF, with a snippet + match-source badge per row. Two BM25 instances of the same class, no content-index pollution.
+1. **Unified `/search`** (foundation) — the retrieval primitive exposed standalone, no answer synthesis. Returns chunks by default; opt in to a file-level rollup view via `include=["files"]`. Filename signal feeds both views (small per-doc boost on chunks, RRF-fused per-file ranking on the files view) so a query for "Q3 financial report" surfaces both filename-matches and content-matches in the same call. `/query` becomes definitionally `/search + answering`.
 2. **Retrieval MCP** (interface) — expose the retrieval + answering pipeline as MCP tools so external agents (Claude Desktop, Claude Code, custom workflows) can use ForgeRAG as their RAG backend.
 3. **Agentic search** (orchestration) — multi-step retrieval where an LLM drives follow-up queries based on intermediate results. Replaces "one-shot retrieval" with an agentic loop bounded by a budget.
 4. **Deep research** (composition) — long-horizon research mode. Builds an outline, runs agentic search per section in parallel, synthesises a structured citation-grounded report.
@@ -36,100 +36,144 @@ MCP doesn't fix any of those internally — it's about *exposure*. But shipping 
 
 ---
 
-## Feature 1: File search
+## Feature 1: Unified search (`/search`)
 
 ### What
 
-A **file-level aggregated search**: same query is matched against both filenames+paths AND chunk content; results are grouped by file and ranked together so the user sees "files that mention this" regardless of *where* the match landed.
+The retrieval primitive — exposed standalone, no answer synthesis. `/search` is the single endpoint for "find me things matching this query"; the existing `/query` becomes "`/search` then ask the LLM about the results."
 
-Distinct from `/query`:
+```
+POST /api/v1/search
+{
+  query: str,
+  filter?: dict,
+  path_prefix?: str,
+  overrides?: QueryOverrides,    # reuse existing per-call knobs
+  include?: ["chunks"]           # default. Add "files" for the file-level rollup view.
+  limit?: { chunks?: 30, files?: 10 }
+}
 
-* `/query` returns *chunks* answering a question, with rerank + answer synthesis. Chat-level QA.
-* `/search` returns *files* that match a query (in name or in content), without rerank or answer. Workspace-level navigation. Each result carries a snippet + which signal matched (`filename` | `content` | both).
+→ {
+  chunks: [ ScoredChunkHit, ... ],          # always present
+  files?: [ FileHit, ... ],                  # when include contains "files"
+  stats: { ... }
+}
+```
 
-A search for `"Q3 financial report"` should surface all of:
+Two views of the same retrieval, returned together when asked:
 
-* `Q3_financials_2024.pdf` — filename match
-* `annual-report.pdf` whose page 12 has "Q3 financial summary" — content match
-* `board-deck.pdf` whose chunks repeatedly mention Q3 financials — content match
+* **`chunks`** (always) — the primary retrieval output: ranked chunks with snippet, doc_id, page_no, bbox, score. Same shape callers already see on `/query` minus the LLM answer + citation IDs.
+* **`files`** (opt-in via `include`) — file-level rollup: same query collapsed to one row per doc, snippet from the best content chunk, badge for which signal matched (`filename` / `content` / both). Workspace search-bar's natural fit.
 
-…ranked together, one row per file, snippet from the best signal.
+A query for `"Q3 financial report"` returns:
+
+* `chunks`: top scored chunks across the corpus, naturally including chunks from `Q3_financials_2024.pdf` boosted by the filename match
+* `files` (if requested): three files ranked together — the filename-only match (`Q3_financials_2024.pdf`), the content-deep match (`board-deck.pdf` page 12), and the partial-overlap match (`annual-report.pdf` mentions "Q3 financial").
 
 ### Why
 
-Current state:
+Two real needs that today's API doesn't cleanly serve:
 
-* `GET /api/v1/files` and `GET /api/v1/documents` both list, neither searches.
-* The BM25 index is content-only; filename tokens leak into it via `section_path` prefixes only inconsistently.
-* Workspace UI has folder navigation but no global "find file" search bar.
+1. **"Show me the retrieval results without answering"** — agents, debug UIs, and the future agentic / research layers all want chunks without paying for the LLM answer. Today they have to call `/query` and discard the answer.
+2. **"Search for a file"** — the workspace UI has no search bar. Users with hundreds of uploads can't find files by name, and they can't find files by remembered content fragment without entering chat.
 
-Users routinely have hundreds of uploads. Hunting by clicking through folders doesn't scale; expecting them to remember a content fragment to find a file by content is a worse UX than a literal Cmd-F.
+A single `/search` endpoint solves both. Mode-switching is via `include` (which views to compute), not by routing to different endpoints.
+
+`/query` becomes definitionally `/search + answering`; we'll likely refactor it that way internally even if the URL stays for back-compat.
 
 ### Architecture
 
-**Two BM25 instances of the same class, fused per-file via RRF.**
-
-The existing content BM25 indexes `(chunk_id, doc_id, chunk.content + section_path)`. We add a filename BM25 that indexes `(doc_id, doc_id, "filename + path + format")` — same `InMemoryBM25Index` class, parallel persistence, different data. The aggregator runs both, groups content hits by `doc_id` (best chunk wins), then RRF-fuses the two ranked file lists. No new dependencies, no SQL-dialect splits, no migrations.
+**One pipeline, two views.** The retrieval pipeline runs once; views are projections.
 
 ```
 query
-  ├─► filename BM25  ─────► [(doc_id, score), ...]            ─┐
-  │                                                            │
-  └─► content BM25  ──► group_by_doc_id (keep best chunk) ─►  ─┤── RRF ─► top-N FileSearchHit
-                                                               │
-                                            type / path post-filter
+  │
+  ├─► filename BM25 ─► { doc_id: filename_score }   (new index, doc-keyed)
+  │                              │
+  │                              └────────┐
+  │                                       ▼
+  └─► RetrievalPipeline ───► [ScoredChunk] ── boost chunks of filename-matched docs ──► chunks view
+                                            (small additive bonus, capped)
+                                       │
+                                       └─ for files view: roll up by doc_id (best chunk wins),
+                                          RRF-fuse with filename BM25 hits ──► files view
+
+  type / path filter applied to both views (post-filter)
 ```
 
-* **Filename index keying**: per-document, not per-chunk. Each doc contributes one entry whose text is `f"{filename} {path} {format}"` — tokenized normally so `invoice-2024-Q3.pdf` becomes `["invoice", "2024", "Q3", "pdf"]` and `/legal/2024/contracts/` adds `["legal", "2024", "contracts"]`. Including `format` lets type-filter intent ("find a pdf about ...") match lexically too.
-* **Content reuse**: the existing BM25 index is the production-scale content path. We don't rebuild it; we just call `.search()` and roll up by `doc_id`, picking the highest-scoring chunk per file. Snippet comes from that chunk.
-* **RRF fusion**: same algo the main retrieval pipeline uses to merge BM25 + vector + tree + KG. Parameter-free, one knob (`k`, default 60). Avoids the "filename match always wins" failure mode of a weighted-sum fusion.
-* **Build at startup**: parallel to `build_bm25_index()`, add `build_filename_bm25_index()`. Both load from disk if cached; both rebuild on stale.
-* **Incremental updates**: when a doc lands in `_on_ingest_complete`, update both indices alongside each other under `_init_lock`. Rename also touches the filename index (filename + path is denormalized; rename rewrites the entry).
-* **Path / type filter**: applied as a post-filter on the fused candidate set rather than baked into either index. Same shape the content path uses for trashed-doc filtering.
+* **Existing pipeline reused** for the chunks view. The full BM25 + vector + KG + tree-nav + RRF + expand + rerank stack runs unchanged. We DON'T re-run rerank for chunks here unless `overrides` says to — `/search` is meant to be cheap. Default behaviour: skip the rerank LLM call (`rerank.backend = "passthrough"` for `/search`).
+* **New filename BM25 index** — same `InMemoryBM25Index` class, parallel persistence, doc-keyed (one entry per doc whose text is `f"{filename} {path} {format}"`). Built at startup alongside the content index, updated incrementally on ingest / rename.
+* **Filename signal feeds both views**:
+  - **chunks view**: `chunks_score += α * filename_score(chunk.doc_id)`. Small additive boost capped at ~20% of the top content score so an irrelevant-content file doesn't beat a perfect-content match purely on a vague filename. `α` defaults to `0.15`.
+  - **files view**: per-doc RRF of (filename rank, best-content-chunk rank) — the parameter-free fusion that avoids "filename match always wins."
+* **Path / type filter**: applied to the fused candidate set after both views are computed. Same shape the existing pipeline uses for trashed-doc filtering.
+* **Stats payload**: counts per signal (`filename_hits`, `content_hits`, `total_files`, `total_chunks`), elapsed ms per phase. Cheap, lets clients show a "Searched 12,000 chunks across 340 files in 80ms" footer.
 
-**Result shape** (one row per file):
+**Result shapes**:
 
 ```python
-class FileSearchHit:
+class ScoredChunkHit:                       # chunks view (always returned)
+    chunk_id: str
+    doc_id: str
+    filename: str                           # convenience — UI doesn't need a second call
+    path: str
+    page_no: int
+    snippet: str                            # ~200 chars
+    score: float                            # post-RRF, post-filename-boost
+    bbox: tuple[float, float, float, float] | None
+    boosted_by_filename: bool               # provenance flag for trace
+
+class FileHit:                              # files view (opt-in)
     doc_id: str
     filename: str
     path: str
     format: str
-    score: float                          # RRF score
-    matched_in: list[str]                 # subset of {"filename", "content"}
-    chunk_match: ChunkMatch | None        # populated when content matched
-    filename_tokens: list[str] | None     # the matched filename tokens, for UI bolding
+    score: float                            # RRF
+    matched_in: list[str]                   # subset of {"filename", "content"}
+    best_chunk: ChunkMatch | None           # populated when content matched
+    filename_tokens: list[str] | None       # matched filename tokens, for UI bolding
 
-class ChunkMatch:
+class ChunkMatch:                           # the file's best content chunk, for snippet
     chunk_id: str
-    snippet: str                          # ~200 chars around the best content match
+    snippet: str
     page_no: int
-    score: float                          # raw BM25 score on the content side
+    score: float
 ```
 
-**Frontend**: Workspace gets a top-of-page search bar. Cmd/Ctrl+K opens a global file palette. Each result row shows the file with a small badge for `matched_in` (📁 filename / 📄 content / both) and the snippet when content matched. Bolding handled via `filename_tokens` on the filename and via standard snippet highlighting on the content side.
+**Frontend**:
+
+* Workspace top-bar gets a search input that calls `/search?include=files` and renders the `files` view as a palette. Cmd/Ctrl+K opens a global file palette with the same input.
+* Chat already calls `/query`; no change there yet. Future iterations may switch chat's "show retrieved chunks" debug pane to `/search` so it can render before the answer streams.
 
 ### Rejected alternatives
 
-* **Filename-only file search** — what the previous draft of this roadmap had. Misses the case where the user remembers something inside the file but not the filename ("the contract that mentions a 6-month notice"). File search needs both signals.
-* **Content-only file search** (just call `/query` with `top_k=10` and dedup by `doc_id`) — misses literal filename matches when the file's content doesn't restate its title (`invoice-2024.pdf` whose body is mostly a table). Filenames carry deliberate signal users put there themselves.
-* **Add filenames to the EXISTING content BM25** — pollutes the chunk scoring used by `/query` and the rest of the retrieval pipeline. A search for "Apple" would re-rank every PDF named `apple-quarterly.pdf` even when its content is unrelated. Keep the indices separate, share the class.
-* **Postgres `tsvector` + GIN** — premature dialect split. The Python BM25 already handles the production-scale content index; filenames are 1–2 orders of magnitude smaller and trivially fit the same backend. A dialect-specific path means SQLite users get a different code path with different bug surface.
-* **SQLite trigram via `rapidfuzz`** — fixes "no Postgres", introduces "no relevance ranking, no idf weighting" and a new dependency. Same critique.
-* **`SQL ILIKE`** — no relevance ranking, no fuzzy match, scales linearly. Bad UX even at small N.
-* **Vector embedding for the file-search query** — embeddings are unreliable on literal-string queries (`invoice-2024-Q3.pdf` has no useful semantics). For *content* matching the existing BM25 is enough at this level; vector search is on the `/query` path where rerank can fix mistakes.
-* **Weighted-sum fusion** (`α * filename_score + β * content_score`) — needs hand-tuned weights, brittle. RRF is parameter-free and the codebase already uses it for the main retrieval merge.
-* **Name the endpoint `/files/search`** — REST-resource framing leaks a non-user concept ("files" as a sub-resource) into the URL. Users say "search" as a verb, not "search files". Keeps `/search` free as the one place future result-types (chunks, entities) compose into via query params (`?include=chunks`) rather than spawning parallel `/chunks/search` / `/entities/search` endpoints.
+* **Two endpoints (`/search/chunks` + `/search/files`)** — defeats "unified". Two clients have to stitch two responses together when they want both views; one endpoint with `include` returns the joint view in one round-trip.
+* **`/search` returns files only** (the previous draft of this roadmap) — too narrow. Agents and debug UIs primarily want chunks; files is a workspace-UX concern. Making chunks an opt-in feels backwards.
+* **`/search` returns chunks only, separate `/files/search`** — same critique as the splitter above plus the URL-symmetry trap (`/chunks/search`, `/entities/search` next).
+* **Mode parameter (`?mode=chunks|files|both`)** — `include` is more composable. `mode` reads as mutually exclusive; `include=["chunks","files","entities"]` reads as additive (and is forward-compatible with future result types).
+* **Add filenames to the EXISTING content BM25** — pollutes chunk scoring on `/query`. A search for "Apple" would re-rank every PDF named `apple-quarterly.pdf` regardless of content. Keep indices separate, share the class.
+* **Re-implement filename match as a Postgres `tsvector` / SQLite trigram** — premature dialect split. `InMemoryBM25Index` already handles the production-scale content index; filenames are 1–2 orders of magnitude smaller and trivially fit the same backend.
+* **`SQL ILIKE`** — no relevance ranking, no fuzzy match, scales linearly.
+* **Vector embedding for filename matching** — embeddings are unreliable on literal-string queries; lexical match is correct here.
+* **Weighted-sum fusion for the files view** (`α * filename + β * content`) — needs hand-tuned weights. RRF is parameter-free and the codebase already uses it for the main retrieval merge.
+* **Run rerank by default on `/search`** — defeats the "cheap retrieval primitive" goal. Default skips rerank; callers that want rerank pass `overrides.rerank = True` (existing per-call knob).
 
 ### Implementation
 
-* New module: `retrieval/file_search.py` with `FileSearcher` — owns the filename `InMemoryBM25Index`, runs both indices, fuses via RRF, applies post-filters.
+* New module: `retrieval/unified_search.py` with `UnifiedSearcher` — owns the filename `InMemoryBM25Index`, calls the existing `RetrievalPipeline` for the chunks view, applies the filename-boost, computes the files view from the per-doc rollup of chunks plus the filename BM25 hits.
 * `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`. Rename hook updates the filename index entry.
-* New route: `POST /api/v1/search` (POST not GET — body carries filter dicts, easier telemetry; flat `/search` not `/files/search` so future result-type extensions live as query params, not parallel endpoints).
-* New schemas: `FileSearchHit`, `ChunkMatch` in `api/schemas.py`.
-* Telemetry: one OTel span per search, attributes `q.length, hits, filename_hits, content_hits`.
+* New route: `POST /api/v1/search` — flat `/search`, not nested under `/files` or `/chunks`. Calls `UnifiedSearcher.search()`.
+* New schemas: `SearchRequest`, `SearchResponse`, `ScoredChunkHit`, `FileHit`, `ChunkMatch` in `api/schemas.py`.
+* Refactor (later, optional): `/query` reimplemented as `/search` + `AnsweringPipeline.synthesize()`. URL stays for back-compat; internal code path collapses.
+* Telemetry: one OTel span per search, attributes `q.length, include, chunk_hits, filename_hits, file_hits, rerank_used`.
 
-Estimated size: ~250 LOC backend (the new index instance + a small RRF aggregator that's ~30 lines) + ~200 LOC frontend (search bar, palette, result rows with snippet + badges).
+Estimated size: ~400 LOC backend (filename index + searcher + boost logic + dual-view aggregator) + ~200 LOC frontend (workspace search bar + palette).
+
+### Open questions
+
+* **Default `include` value** — chunks-only is simplest; chunks+files is more useful by default for the workspace UI. Decision: chunks-only default keeps cost predictable; the workspace search bar will explicitly request `include=["files"]` (and only that, to skip computing the chunk view it doesn't render).
+* **Filename-boost coefficient `α`** — start at `0.15`, expose as a config knob in `retrieval.unified_search.filename_boost_alpha`. Tune from real query logs once the feature has traffic.
+* **Snippet generation for chunks view** — the existing pipeline produces snippets from chunk content; reuse. Files view's snippet comes from `best_chunk` (which is just the top-scored content chunk for that doc).
 
 ---
 
@@ -514,12 +558,12 @@ Within a session (agentic search or research), the same chunk retrieved by multi
 
 | # | Feature | Estimate (eng-weeks) | Depends on | Why this order |
 |---|---|---|---|---|
-| 1 | File search | 1 | — | Two BM25 instances (existing content + new filename), fused per-file via RRF. Standalone. |
+| 1 | Unified `/search` | 1.5 | — | New filename BM25 + dual-view aggregator on top of the existing pipeline; `/query` keeps working unchanged, gains a cheap retrieval-only sibling. |
 | 2 | Retrieval MCP | 1.5 | (1) for the file-search tool | Exposes existing surface; collects external feedback while heavier work proceeds. |
 | 3 | Agentic search | 3 | (1), (2) | Core capability that deep research depends on. Ships independently as a power-user feature. |
 | 4 | Deep research | 4 | (3) | Largest. Heavy frontend work + new persistence + the most user-visible output. |
 
-Total: ~9.5 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
+Total: ~10 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
 
 ---
 
