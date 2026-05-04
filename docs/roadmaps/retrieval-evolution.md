@@ -46,9 +46,11 @@ Two architectural invariants are landed early so everything downstream inherits 
 
 ## Feature 1: Unified search (`/search`)
 
+> **Revision 2026-05-05** — chunks view is now BM25-only. The original design had it run through the full RetrievalPipeline (BM25 + vector + KG + tree + RRF, with rerank as an opt-in). Production usage made it clear the workspace search bar wants a fast, purely lexical surface, not a quieter version of `/query`. See "Revision: BM25-only chunks view" below for the diff. The rest of this section reflects the original design with that revision applied.
+
 ### What
 
-The retrieval primitive — exposed standalone, no answer synthesis. `/search` is the single endpoint for "find me things matching this query"; the existing `/query` becomes "`/search` then ask the LLM about the results."
+The retrieval primitive — exposed standalone, no answer synthesis. `/search` is the single endpoint for "find me things matching this query"; `/query` remains "retrieval + LLM answer" but uses its own pipeline path (the full structural retrieval stack), not `/search`.
 
 ```
 POST /api/v1/search
@@ -91,31 +93,32 @@ A single `/search` endpoint solves both. Mode-switching is via `include` (which 
 
 ### Architecture
 
-**One pipeline, two views.** The retrieval pipeline runs once; views are projections.
+**Two BM25 indices, two views.** Content + filename indices run independently; views are projections of their fused candidate set.
 
 ```
 query
   │
-  ├─► filename BM25 ─► { doc_id: filename_score }   (new index, doc-keyed)
+  ├─► filename BM25 ─► { doc_id: filename_score }   (doc-keyed index)
   │                              │
   │                              └────────┐
   │                                       ▼
-  └─► RetrievalPipeline ───► [ScoredChunk] ── boost chunks of filename-matched docs ──► chunks view
-                                            (small additive bonus, capped)
+  └─► content BM25 ───► [ScoredChunk] ── boost chunks of filename-matched docs ──► chunks view
+                                       (small additive bonus, capped)
                                        │
                                        └─ for files view: roll up by doc_id (best chunk wins),
                                           RRF-fuse with filename BM25 hits ──► files view
 
-  type / path filter applied to both views (post-filter)
+  trash + path_prefix filter applied post-BM25 (3× over-fetch headroom)
 ```
 
-* **Existing pipeline reused** for the chunks view. The full BM25 + vector + KG + tree-nav + RRF + expand + rerank stack runs unchanged. We DON'T re-run rerank for chunks here unless `overrides` says to — `/search` is meant to be cheap. Default behaviour: skip the rerank LLM call (`rerank.backend = "passthrough"` for `/search`).
+* **BM25-only.** The content path uses the same `InMemoryBM25Index` that the answering pipeline builds at startup; we hit it directly, skipping vector / KG / tree / RRF / rerank. Hit chunks are hydrated from the relational store via batched `get_chunks_by_ids`.
 * **New filename BM25 index** — same `InMemoryBM25Index` class, parallel persistence, doc-keyed (one entry per doc whose text is `f"{filename} {path} {format}"`). Built at startup alongside the content index, updated incrementally on ingest / rename.
 * **Filename signal feeds both views**:
-  - **chunks view**: `chunks_score += α * filename_score(chunk.doc_id)`. Small additive boost capped at ~20% of the top content score so an irrelevant-content file doesn't beat a perfect-content match purely on a vague filename. `α` defaults to `0.15`.
+  - **chunks view**: `chunks_score += α * filename_score(chunk.doc_id)`. Small additive boost capped at ~`α` × the top BM25 score so an irrelevant-content file doesn't beat a perfect-content match purely on a vague filename. `α` defaults to `0.15`.
   - **files view**: per-doc RRF of (filename rank, best-content-chunk rank) — the parameter-free fusion that avoids "filename match always wins."
-* **Path / type filter**: applied to the fused candidate set after both views are computed. Same shape the existing pipeline uses for trashed-doc filtering.
-* **Stats payload**: counts per signal (`filename_hits`, `content_hits`, `total_files`, `total_chunks`), elapsed ms per phase. Cheap, lets clients show a "Searched 12,000 chunks across 340 files in 80ms" footer.
+* **Trash + path filter**: applied to the BM25 hit list before view construction. Trashed docs (`path` under `/__trash__`) are dropped unconditionally; `path_prefix` (when set) drops anything outside the prefix. We over-fetch 3× the per-view cap so the post-filter still produces full pages.
+* **Matched tokens per hit**: each chunk hit carries `matched_tokens: list[str]` — the subset of tokenised query terms that actually appear in that chunk's BM25 token bag. The UI uses this to highlight matched keywords without re-tokenising client-side. Mirrors the existing `filename_tokens` on file hits.
+* **Stats payload**: counts per signal (`filename_hits`, `content_hits`, `chunk_hits`, `file_hits`), elapsed ms. Cheap, lets clients show a "Searched 12,000 chunks across 340 files in 80ms" footer.
 
 **Result shapes**:
 
@@ -127,9 +130,10 @@ class ScoredChunkHit:                       # chunks view (always returned)
     path: str
     page_no: int
     snippet: str                            # ~200 chars
-    score: float                            # post-RRF, post-filename-boost
-    bbox: tuple[float, float, float, float] | None
+    score: float                            # raw BM25 + capped filename boost
+    bbox: tuple[float, float, float, float] | None  # always None on /search; clients use /query for highlights
     boosted_by_filename: bool               # provenance flag for trace
+    matched_tokens: list[str] | None        # query tokens that appear in this chunk; UI highlights them
 
 class FileHit:                              # files view (opt-in)
     doc_id: str
@@ -146,6 +150,7 @@ class ChunkMatch:                           # the file's best content chunk, for
     snippet: str
     page_no: int
     score: float
+    matched_tokens: list[str] | None        # mirrors ScoredChunkHit.matched_tokens
 ```
 
 **Frontend**:
@@ -166,16 +171,33 @@ class ChunkMatch:                           # the file's best content chunk, for
 * **Weighted-sum fusion for the files view** (`α * filename + β * content`) — needs hand-tuned weights. RRF is parameter-free and the codebase already uses it for the main retrieval merge.
 * **Run rerank by default on `/search`** — defeats the "cheap retrieval primitive" goal. Default skips rerank; callers that want rerank pass `overrides.rerank = True` (existing per-call knob).
 
+#### Revision (2026-05-05): BM25-only chunks view
+
+Original design ran the chunks view through the full RetrievalPipeline (BM25 + vector + KG + tree + RRF) with rerank as an opt-in. We pivoted to BM25-only because:
+
+* **Workspace search is lexical, not conceptual.** Users typing into the search bar are looking for keywords they remember — file names, exact phrases, IDs. Vector / KG / tree paths drag in semantic neighbours users don't ask for and slow the response.
+* **Cost / latency.** Even with rerank off, `RetrievalPipeline` calls embedder + vector store + KG store on every keystroke-driven search. BM25 is in-memory and finishes in ~5 ms on the production corpus.
+* **Clear separation from `/query`.** `/query` keeps the structural reasoning stack (that's where it pays off — synthesising answers needs adjacent context, multi-hop, conceptual retrieval). `/search` becomes "Cmd-F across your corpus."
+
+Code-level changes (delivered in commit `3c59199`):
+
+* `UnifiedSearcher.__init__` takes `bm25_index` instead of `pipeline`.
+* `_run_pipeline` → `_search_content`: direct BM25 hit list → batched chunk hydration → trash + path-prefix post-filter with 3× over-fetch.
+* `filter` and `overrides` parameters on `search()` are still accepted (shape compat) but ignored — there are no rerank knobs in BM25-only mode.
+* `ScoredChunkHit` and `ChunkMatch` gain `matched_tokens` for client-side highlighting.
+
+`/query` is unaffected — it builds its own `RetrievalPipeline` directly and continues to use the full retrieval stack.
+
 ### Implementation
 
-* New module: `retrieval/unified_search.py` with `UnifiedSearcher` — owns the filename `InMemoryBM25Index`, calls the existing `RetrievalPipeline` for the chunks view, applies the filename-boost, computes the files view from the per-doc rollup of chunks plus the filename BM25 hits.
-* `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`. Rename hook updates the filename index entry.
-* New route: `POST /api/v1/search` — flat `/search`, not nested under `/files` or `/chunks`. Calls `UnifiedSearcher.search()`.
-* New schemas: `SearchRequest`, `SearchResponse`, `ScoredChunkHit`, `FileHit`, `ChunkMatch` in `api/schemas.py`.
-* Refactor (later, optional): `/query` reimplemented as `/search` + `AnsweringPipeline.synthesize()`. URL stays for back-compat; internal code path collapses.
-* Telemetry: one OTel span per search, attributes `q.length, include, chunk_hits, filename_hits, file_hits, rerank_used`.
+* Module `retrieval/file_search.py` with `UnifiedSearcher` — holds references to the content `InMemoryBM25Index` (shared with `/query`'s pipeline) and the new filename `InMemoryBM25Index`. Runs both BM25 searches, applies the filename-boost on chunks, computes the files view from the per-doc rollup of chunks plus the filename BM25 hits.
+* `api/state.py`: `_filename_bm25` attribute built in the same path as `_bm25` (both at startup, both refreshed together on rebuild). `UnifiedSearcher` is constructed with both indices + the relational store.
+* Route: `POST /api/v1/search` — flat `/search`, not nested under `/files` or `/chunks`. Calls `UnifiedSearcher.search()`.
+* Schemas: `SearchRequest`, `SearchResponse`, `ScoredChunkHit`, `FileHit`, `ChunkMatch` in `api/schemas.py`.
+* `/query` retains its own `RetrievalPipeline` instantiation — the original "refactor `/query` as `/search` + answering" plan is dropped because `/search` no longer has the structural retrieval `/query` needs.
+* Telemetry: one OTel span per search, attributes `q.length, include, chunk_hits, filename_hits, file_hits, content_hits, elapsed_ms`.
 
-Estimated size: ~400 LOC backend (filename index + searcher + boost logic + dual-view aggregator) + ~200 LOC frontend (workspace search bar + palette).
+Actual size: ~600 LOC backend (BM25-only orchestrator + filename index + boost + dual-view aggregator + 26 tests) + ~200 LOC frontend (workspace search bar with keyword highlight).
 
 ### Open questions
 
