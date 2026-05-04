@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Pagination wrapper
@@ -324,16 +324,27 @@ class GenerationOverrides(BaseModel):
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=8192)
     filter: dict[str, Any] | None = None
-    # Path scoping: when set, retrieval is limited to documents whose path
-    # starts with this prefix (e.g. "/legal/2024"). Trashed documents are
-    # always excluded regardless of this filter.
-    path_filter: str | None = Field(
+    # Path scoping: list of folder prefixes the retrieval pipeline ORs
+    # together. The multi-user authz layer fills this in from the
+    # caller's accessible folder set when omitted. Trashed documents
+    # are always excluded regardless. When auth is disabled the field
+    # is honoured as-is so single-user setups keep working.
+    path_filters: list[str] | None = Field(
         None,
         description=(
-            "Limit retrieval to documents under this folder path. "
-            "Matches by path prefix (e.g. '/legal' matches '/legal/2024/x.pdf'). "
-            "Trashed documents are always excluded."
+            "Limit retrieval to documents under any of these folder paths "
+            "(OR'd together). Matches by path prefix; e.g. '/legal' "
+            "matches '/legal/2024/x.pdf'. Trashed documents are always "
+            "excluded."
         ),
+    )
+    # Legacy single-prefix alias. New code should pass ``path_filters``;
+    # the validator below normalises this into ``[path_filter]`` so
+    # existing clients keep working through the multi-user transition.
+    path_filter: str | None = Field(
+        None,
+        deprecated=True,
+        description="Deprecated: use ``path_filters: list[str]`` instead.",
     )
     overrides: QueryOverrides | None = Field(
         None,
@@ -358,6 +369,15 @@ class QueryRequest(BaseModel):
         False,
         description="If true, return a text/event-stream SSE response.",
     )
+
+    @model_validator(mode="after")
+    def _coerce_legacy_path_filter(self) -> QueryRequest:
+        """Promote the deprecated ``path_filter`` (str) into the new
+        ``path_filters`` (list[str]) when only the singular form was
+        provided. Caller-supplied ``path_filters`` always wins."""
+        if self.path_filters is None and self.path_filter:
+            self.path_filters = [self.path_filter]
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -438,18 +458,33 @@ class SearchRequest(BaseModel):
     )
     limit: SearchLimit | None = None
     filter: dict[str, Any] | None = None
-    path_filter: str | None = Field(
+    path_filters: list[str] | None = Field(
         None,
         description=(
-            "Limit results to documents under this folder path. "
-            "Matches by path prefix (e.g. '/legal' matches '/legal/2024/x.pdf'). "
-            "Trashed documents are always excluded."
+            "Limit results to documents under any of these folder paths "
+            "(OR'd together). Matches by path prefix; e.g. '/legal' "
+            "matches '/legal/2024/x.pdf'. Trashed documents are always "
+            "excluded."
         ),
+    )
+    path_filter: str | None = Field(
+        None,
+        deprecated=True,
+        description="Deprecated: use ``path_filters: list[str]`` instead.",
     )
     overrides: QueryOverrides | None = Field(
         None,
         description="Per-request retrieval overrides. /search defaults rerank=False to stay cheap.",
     )
+
+    @model_validator(mode="after")
+    def _coerce_legacy_path_filter(self) -> SearchRequest:
+        """Promote the deprecated ``path_filter`` (str) into the new
+        ``path_filters`` (list[str]) when only the singular form was
+        provided. Caller-supplied ``path_filters`` always wins."""
+        if self.path_filters is None and self.path_filter:
+            self.path_filters = [self.path_filter]
+        return self
 
 
 class ScoredChunkOut(BaseModel):

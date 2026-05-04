@@ -1,24 +1,46 @@
 """
-PathScopeResolver — resolves a user-facing ``path_filter`` string into
-the two representations the retrievers need:
+PathScopeResolver — resolves an API-level ``path_filters`` (list) into
+the representations every retriever needs.
 
-1. ``path_prefix``        — passed to SQL / metadata-indexed backends
-                            (pgvector, Chroma, Neo4j) for native prefix
-                            filtering.
+Inputs come from the request-level ``filter`` dict on two reserved keys:
 
-2. ``allowed_doc_ids``    — snapshot whitelist for Python-side backends
-                            (BM25 in-memory index, TreeNav) that don't
-                            store path. Resolved once per request from
-                            ``Document.path`` so all paths see a
-                            consistent scope across a concurrent rename.
+  ``_path_filters``  (list[str], new) — caller's resolved scope. The
+                                        AuthorizationService normalises
+                                        request bodies to this shape;
+                                        admins may legally pass
+                                        anything.
 
-3. ``or_fallback_prefixes`` — during a pending folder-rename window the
-                              downstream stores may still carry the old
-                              path; these are extra prefixes to OR-match
-                              so retrieval stays complete.
+  ``_path_filter``   (str, legacy)    — single-prefix alias kept for
+                                        old callers / tests. Treated
+                                        as ``[_path_filter]``.
 
-Additionally records ``trashed_doc_ids`` so the downstream post-filter
-can drop any chunks that slipped into a non-scoped query.
+Outputs:
+
+  ``path_prefixes``       — flat list of prefixes the metadata-aware
+                            backends (pgvector, Chroma, Neo4j) OR
+                            together natively. Empty list means
+                            "no user-visible scope — match anything
+                            except trash".
+
+  ``allowed_doc_ids``     — snapshot whitelist for path-unaware Python
+                            backends (in-memory BM25, tree nav). The
+                            UNION of doc_ids under any prefix. ``None``
+                            when no scope is set (saves a query).
+
+  ``or_fallback_prefixes`` — extra prefixes to OR-match for stale
+                             denormalised paths during a pending
+                             folder rename. Per-prefix lookups are
+                             unioned + deduped.
+
+  ``trashed_doc_ids``      — set of doc_ids under ``/__trash__/...``.
+                             Always populated; downstream uses it as
+                             a final post-filter so a path-prefix
+                             query that accidentally lands inside
+                             trash drops the hits.
+
+The resolver normalises duplicates and the ``/`` special case ("/"
+in path_prefixes collapses to "no scope" because root absorbs every
+descendant).
 """
 
 from __future__ import annotations
@@ -32,10 +54,41 @@ _tracer = get_tracer()
 
 @dataclass
 class PathScope:
-    path_prefix: str | None = None
+    path_prefixes: list[str] = field(default_factory=list)
     allowed_doc_ids: set[str] | None = None
     or_fallback_prefixes: list[str] = field(default_factory=list)
     trashed_doc_ids: set[str] = field(default_factory=set)
+
+
+def _normalise_prefixes(raw: list[str] | str | None) -> list[str]:
+    """Coerce caller input into a clean prefix list.
+
+    * ``None`` / empty list → ``[]`` (no scope).
+    * Single string → ``[that string]`` (legacy back-compat path).
+    * Any prefix equal to ``/`` collapses the whole list to ``[]``
+      because root absorbs every descendant — keeping ``/`` as a
+      first-class entry would force every backend to special-case
+      "but only for the root prefix".
+    * Trailing slashes are stripped so ``/legal`` and ``/legal/`` are
+      indistinguishable.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    out: list[str] = []
+    for p in raw:
+        if not p or not isinstance(p, str):
+            continue
+        if p == "/":
+            return []
+        out.append(p.rstrip("/"))
+    # Dedup while preserving order — list shape matters for consumers
+    # that build OR-clauses; a stable order keeps query plans stable.
+    seen: dict[str, bool] = {}
+    for p in out:
+        seen.setdefault(p, True)
+    return list(seen.keys())
 
 
 class PathScopeResolver:
@@ -49,33 +102,61 @@ class PathScopeResolver:
 
     def run(self, filter: dict | None = None) -> PathScope:
         with _tracer.start_as_current_span("forgerag.path_scope") as span:
-            from sqlalchemy import select
+            from sqlalchemy import or_, select
 
             from persistence.folder_service import TRASH_PATH
             from persistence.models import Document
             from persistence.pending_ops import or_fallback_prefixes
 
-            raw = (filter or {}).get("_path_filter") if filter else None
-            path_prefix: str | None = None
-            if raw and raw != "/":
-                path_prefix = raw.rstrip("/")
-            span.set_attribute("forgerag.path_filter", path_prefix or "")
+            f = filter or {}
+            # Prefer ``_path_filters`` (list); fall back to legacy
+            # ``_path_filter`` (str). Either may be absent.
+            raw = f.get("_path_filters", None)
+            if raw is None:
+                raw = f.get("_path_filter", None)
+            path_prefixes = _normalise_prefixes(raw)
+
+            span.set_attribute("forgerag.path_filters", path_prefixes)
+            span.set_attribute("forgerag.path_filters_count", len(path_prefixes))
 
             with self.rel.transaction() as sess:
                 allowed_doc_ids: set[str] | None = None
-                if path_prefix is not None:
+                if path_prefixes:
+                    # UNION across all prefixes — a doc qualifies if it
+                    # lives under any of them.
+                    clauses = []
+                    for p in path_prefixes:
+                        clauses.append(Document.path == p)
+                        clauses.append(Document.path.like(p + "/%"))
                     allowed_doc_ids = set(
                         sess.execute(
-                            select(Document.doc_id).where(
-                                (Document.path == path_prefix) | (Document.path.like(path_prefix + "/%"))
-                            )
+                            select(Document.doc_id).where(or_(*clauses))
                         ).scalars()
                     )
 
+                # Trashed doc_ids — always excluded from all paths
                 trashed = set(
-                    sess.execute(select(Document.doc_id).where(Document.path.like(TRASH_PATH + "/%"))).scalars()
+                    sess.execute(
+                        select(Document.doc_id).where(
+                            Document.path.like(TRASH_PATH + "/%")
+                        )
+                    ).scalars()
                 )
-                or_pfx = or_fallback_prefixes(sess, path_prefix) or []
+
+                # Pending-rename OR-fallbacks: union per-prefix lookups.
+                or_pfx_set: set[str] = set()
+                if path_prefixes:
+                    for p in path_prefixes:
+                        for fb in or_fallback_prefixes(sess, p) or []:
+                            if fb:
+                                or_pfx_set.add(fb)
+                else:
+                    # No scope → we still surface all pending old paths
+                    # to keep the contract uniform for downstream callers.
+                    for fb in or_fallback_prefixes(sess, None) or []:
+                        if fb:
+                            or_pfx_set.add(fb)
+                or_pfx = sorted(or_pfx_set)
 
             if allowed_doc_ids is not None:
                 allowed_doc_ids -= trashed
@@ -84,7 +165,7 @@ class PathScopeResolver:
                 span.set_attribute("forgerag.or_fallback_prefixes", or_pfx)
 
             return PathScope(
-                path_prefix=path_prefix,
+                path_prefixes=path_prefixes,
                 allowed_doc_ids=allowed_doc_ids,
                 or_fallback_prefixes=or_pfx,
                 trashed_doc_ids=trashed,

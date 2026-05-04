@@ -58,7 +58,7 @@ def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchRe
         include=include,
         limit=limit_dict or None,
         filter=req.filter,
-        path_prefix=req.path_filter,
+        path_prefixes=req.path_filters,
         overrides=req.overrides,
     )
 

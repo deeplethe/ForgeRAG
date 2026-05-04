@@ -133,24 +133,54 @@ class PgvectorStore:
             "top_k": top_k,
         }
         if filter:
+            # Coalesce path keys (path_prefixes / path_prefix /
+            # path_prefix_or) into one OR'd prefix list. Multi-prefix
+            # scope comes from the multi-user authz layer; the legacy
+            # single-prefix and rename-fallback keys are merged for
+            # back-compat during the transition.
+            merged_prefixes: list[str] = []
+            collapsed = False
+            for k in ("path_prefixes", "path_prefix", "path_prefix_or"):
+                v = filter.get(k)
+                if v is None:
+                    continue
+                if isinstance(v, str):
+                    v = [v]
+                for p in v:
+                    if not isinstance(p, str):
+                        continue
+                    if p in ("", "/"):
+                        merged_prefixes = []
+                        collapsed = True
+                        break
+                    p = p.rstrip("/")
+                    if p and p not in merged_prefixes:
+                        merged_prefixes.append(p)
+                if collapsed:
+                    break
+            if merged_prefixes:
+                # Native B-tree prefix scans on chunks.path
+                # (ix_chunks_path_prefix). Multi-prefix queries OR
+                # together; size in practice is dominated by the user's
+                # accessible folder set.
+                or_chunks: list[str] = []
+                for i, pfx in enumerate(merged_prefixes):
+                    pname = f"pp{i}"
+                    or_chunks.append(
+                        f"(chunks.path = :{pname}_eq OR chunks.path LIKE :{pname}_lk)"
+                    )
+                    params[f"{pname}_eq"] = pfx
+                    params[f"{pname}_lk"] = pfx + "/%"
+                where_parts.append("(" + " OR ".join(or_chunks) + ")")
+
             for i, (k, v) in enumerate(filter.items()):
+                if k in ("path_prefix", "path_prefix_or", "path_prefixes"):
+                    continue  # already handled above
                 # Exact-match filters on low-cardinality columns
                 if k in ("doc_id", "parse_version", "node_id", "content_type"):
                     pname = f"f{i}"
                     where_parts.append(f"{k} = :{pname}")
                     params[pname] = v
-                    continue
-                # Path prefix: the denormalized chunks.path column supports
-                # native B-tree prefix scans (ix_chunks_path_prefix). The
-                # caller passes a folder path like '/legal/2024' and we
-                # match any chunk whose path starts with it (including the
-                # exact equality case for the rare empty-folder situation).
-                if k == "path_prefix" and isinstance(v, str) and v not in ("", "/"):
-                    pfx = v.rstrip("/")
-                    pname = f"f{i}"
-                    where_parts.append(f"(chunks.path = :{pname}_eq OR chunks.path LIKE :{pname}_lk)")
-                    params[f"{pname}_eq"] = pfx
-                    params[f"{pname}_lk"] = pfx + "/%"
                     continue
         where = " AND ".join(where_parts)
 

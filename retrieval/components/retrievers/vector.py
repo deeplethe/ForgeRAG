@@ -42,7 +42,7 @@ class VectorRetriever:
         *,
         top_k: int | None = None,
         filter: dict | None = None,
-        path_prefix: str | None = None,
+        path_prefixes: list[str] | None = None,
         or_fallback_prefixes: list[str] | None = None,
     ) -> VectorResult:
         top_k = top_k if top_k is not None else self.cfg.top_k
@@ -55,16 +55,30 @@ class VectorRetriever:
             q_vecs = self.embedder.embed_texts(queries)
 
             # Compose backend filter:
-            #   - base filter (default_filter or user-supplied, minus our reserved key)
-            #   - path_prefix + or_fallback_prefixes for denormalised path match
+            #   - base filter (default_filter or user-supplied, minus our
+            #     reserved keys)
+            #   - path_prefixes: the OR'd user scope (union of authz-resolved
+            #     accessible folders). Empty / None means "no scope".
+            #   - or_fallback_prefixes: stale denormalised paths from a
+            #     pending folder rename — append to the OR list so we don't
+            #     miss chunks while Chroma/Neo4j catch up to PG.
             vector_filter: dict[str, Any] = {}
             base = filter or self.cfg.default_filter
             if base:
-                vector_filter = {k: v for k, v in base.items() if k != "_path_filter"}
-            if path_prefix:
-                vector_filter["path_prefix"] = path_prefix
-            if or_fallback_prefixes:
-                vector_filter["path_prefix_or"] = list(or_fallback_prefixes)
+                vector_filter = {
+                    k: v
+                    for k, v in base.items()
+                    if k not in ("_path_filter", "_path_filters")
+                }
+            merged_prefixes: list[str] = []
+            for p in (path_prefixes or []):
+                if p and p not in merged_prefixes:
+                    merged_prefixes.append(p)
+            for p in (or_fallback_prefixes or []):
+                if p and p not in merged_prefixes:
+                    merged_prefixes.append(p)
+            if merged_prefixes:
+                vector_filter["path_prefixes"] = merged_prefixes
 
             # Run per-variant, collect raw + scored
             raw_hits = []

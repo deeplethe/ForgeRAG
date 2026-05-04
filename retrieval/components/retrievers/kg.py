@@ -46,8 +46,8 @@ class KGRetriever:
         *,
         top_k: int | None = None,
         allowed_doc_ids: set[str] | None = None,
-        path_prefix: str | None = None,
-        path_prefixes_or: list[str] | None = None,
+        path_prefixes: list[str] | None = None,
+        or_fallback_prefixes: list[str] | None = None,
     ) -> KGResult:
         if self.graph_store is None:
             # Caller should not normally invoke us without a graph store,
@@ -63,11 +63,22 @@ class KGRetriever:
             from ...kg_path import KGPath
 
             kp = KGPath(kg_cfg, self.graph_store, self.rel, embedder=self.embedder)
+            # Translate to KGPath's legacy signature (single primary
+            # prefix + or-list). KGPath itself can stay single-prefix
+            # for now — multi-prefix authz fans out at the top of the
+            # resolver instead of inside the KG search loop, which keeps
+            # the graph traversal contract unchanged.
+            primary = (path_prefixes or [None])[0] if path_prefixes else None
+            extra: list[str] = []
+            if path_prefixes and len(path_prefixes) > 1:
+                extra.extend(path_prefixes[1:])
+            if or_fallback_prefixes:
+                extra.extend(or_fallback_prefixes)
             hits: list[ScoredChunk] = kp.search(
                 query,
                 allowed_doc_ids=allowed_doc_ids,
-                path_prefix=path_prefix,
-                path_prefixes_or=path_prefixes_or,
+                path_prefix=primary,
+                path_prefixes_or=extra or None,
             )
             span.set_attribute("forgerag.hits", len(hits))
             return KGResult(

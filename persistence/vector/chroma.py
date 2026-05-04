@@ -315,12 +315,15 @@ def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
 
     Supported keys:
       - doc_id, parse_version, node_id, content_type, path : exact match
-      - path_prefix : emits ``{"path": {"$contains": scope}}`` —
-        list-membership query against the ancestor list (see module
-        docstring for why we encode ``path`` as a list).
-      - path_prefix_or : list of prefixes combined with $or (deferred-
-        rename OR-fallback: match new_path OR old_path so queries don't
-        lose hits while Chroma lags behind Postgres on a folder rename).
+      - path_prefixes : list of folder prefixes combined with $or. The
+        primary multi-folder scope key; carries both the user's resolved
+        accessible folders AND any deferred-rename OR-fallback paths.
+      - path_prefix : legacy single-prefix alias. Treated as
+        ``path_prefixes=[path_prefix]``. Kept so existing callers still
+        compile during the multi-user transition; new code should pass
+        ``path_prefixes`` directly.
+      - path_prefix_or : legacy fallback-list alias. Merged into
+        ``path_prefixes`` semantics.
 
     Unknown keys are silently dropped to stay forward-compatible with
     the generic pipeline filter shape.
@@ -328,21 +331,38 @@ def _build_chroma_where(filter: dict[str, Any] | None) -> dict | None:
     if not filter:
         return None
 
+    # Coalesce the three possible path keys into one list. Stable order
+    # and dedup keep the resulting Chroma where-clause deterministic
+    # (helpful for telemetry and snapshot-style tests).
+    merged_prefixes: list[str] = []
+    for k in ("path_prefixes", "path_prefix", "path_prefix_or"):
+        v = filter.get(k)
+        if v is None:
+            continue
+        if isinstance(v, str):
+            v = [v]
+        for p in v:
+            if not isinstance(p, str):
+                continue
+            if p in ("", "/"):
+                # Root prefix collapses scope to "no filter".
+                merged_prefixes = []
+                break
+            p = p.rstrip("/")
+            if p and p not in merged_prefixes:
+                merged_prefixes.append(p)
+        else:
+            continue
+        break  # outer loop terminator when "/" hit
+
     clauses: list[dict] = []
+    if merged_prefixes:
+        sub = [{"path": {"$contains": p}} for p in merged_prefixes]
+        clauses.append({"$or": sub} if len(sub) > 1 else sub[0])
+
     for k, v in filter.items():
-        if k == "path_prefix":
-            if isinstance(v, str) and v not in ("", "/"):
-                clauses.append({"path": {"$contains": v.rstrip("/")}})
-            # Root / empty prefix: no constraint (match everything).
-            continue
-        if k == "path_prefix_or":
-            sub = []
-            for pfx in v or []:
-                if isinstance(pfx, str) and pfx not in ("", "/"):
-                    sub.append({"path": {"$contains": pfx.rstrip("/")}})
-            if sub:
-                clauses.append({"$or": sub} if len(sub) > 1 else sub[0])
-            continue
+        if k in ("path_prefix", "path_prefix_or", "path_prefixes"):
+            continue  # already handled above
         if isinstance(v, (list, set, tuple)):
             clauses.append({k: {"$in": list(v)}})
         else:

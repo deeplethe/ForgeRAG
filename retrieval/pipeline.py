@@ -157,67 +157,11 @@ class RetrievalPipeline:
         self.c_rerank = RerankComponent(cfg.rerank, reranker=self.reranker)
 
     # ------------------------------------------------------------------
-    # Path scoping
+    # Path scoping is now centralised in
+    # ``retrieval.components.path_scope.PathScopeResolver``. The
+    # inline ``_resolve_path_scope`` that used to live here is gone;
+    # ``retrieve()`` calls ``self.c_path_scope.run(filter)`` instead.
     # ------------------------------------------------------------------
-
-    def _resolve_path_scope(self, filter: dict | None) -> tuple[str | None, set[str] | None]:
-        """
-        Resolve the API-level path_filter into:
-          1. A path prefix string for backends that support native
-             path-prefix filtering (pgvector, Chroma, Neo4j). None means
-             "no user-visible scope — match anything except trash".
-          2. A doc_id snapshot set for backends that don't store path
-             (Python BM25 index, in-memory tree nav). The snapshot is
-             resolved once per query from the documents table so all
-             retrieval paths see a consistent scope even if a concurrent
-             rename commits mid-query.
-
-        Trashed documents are ALWAYS excluded, regardless of path_filter:
-        ``_trashed_doc_ids`` is populated as a side effect and used by
-        the minimal post-filter step that follows merge.
-        """
-        from sqlalchemy import select
-
-        from persistence.folder_service import TRASH_PATH
-        from persistence.models import Document
-        from persistence.pending_ops import or_fallback_prefixes
-
-        raw = (filter or {}).get("_path_filter") if filter else None
-        path_prefix: str | None = None
-        if raw and raw != "/":
-            path_prefix = raw.rstrip("/")
-
-        with self.rel.transaction() as sess:
-            # Snapshot doc_ids inside scope (only for BM25/Tree; skip
-            # entirely when no path_filter — they'll work on the full set).
-            allowed_doc_ids: set[str] | None = None
-            if path_prefix is not None:
-                allowed_doc_ids = set(
-                    sess.execute(
-                        select(Document.doc_id).where(
-                            (Document.path == path_prefix) | (Document.path.like(path_prefix + "/%"))
-                        )
-                    ).scalars()
-                )
-
-            # Trashed doc_ids — always excluded from all paths
-            trashed = set(sess.execute(select(Document.doc_id).where(Document.path.like(TRASH_PATH + "/%"))).scalars())
-
-            # Pending rename OR-fallback: when a big rename is still
-            # draining through pending_folder_ops, Chroma/Neo4j haven't
-            # seen the rewrite yet, so an incoming query scoped to the
-            # NEW path would miss chunks whose denormalised metadata
-            # still carries the OLD path. These are the prefixes we
-            # tell the stores to ALSO match.
-            or_prefixes = or_fallback_prefixes(sess, path_prefix)
-
-        self._trashed_doc_ids = trashed
-        if allowed_doc_ids is not None:
-            allowed_doc_ids -= trashed
-        # Stash for worker closures that can't easily plumb a new
-        # argument (kg_path, chroma metadata builder).
-        self._or_fallback_prefixes = or_prefixes
-        return path_prefix, allowed_doc_ids
 
     def _drop_trashed_hits(self, hits):
         """
@@ -429,18 +373,23 @@ class RetrievalPipeline:
             eff_tree_llm_nav = False
 
         # Resolve path-scoping into two complementary representations:
-        #   - path_prefix  → passed to SQL/metadata-indexed backends
-        #     (pgvector, Chroma, Neo4j) for native prefix filtering.
+        #   - path_prefixes → passed to SQL/metadata-indexed backends
+        #     (pgvector, Chroma, Neo4j) as an OR'd prefix list. Multi-
+        #     prefix lands when the multi-user authz layer hands the
+        #     pipeline a user's accessible folder set.
         #   - allowed_doc_ids → snapshot whitelist for Python backends
         #     (BM25 in-memory index, Tree nav) that don't store path.
         _scope = self.c_path_scope.run(filter)
-        path_prefix = _scope.path_prefix
+        path_prefixes = _scope.path_prefixes
         allowed_doc_ids = _scope.allowed_doc_ids
         # Stash trashed set + or-fallback prefixes for post-filter + Chroma/Neo4j
         self._trashed_doc_ids = _scope.trashed_doc_ids
         self._or_fallback_prefixes = _scope.or_fallback_prefixes
-        if filter and "_path_filter" in filter:
-            stats["path_filter"] = filter["_path_filter"]
+        if filter:
+            if "_path_filters" in filter:
+                stats["path_filters"] = filter["_path_filters"]
+            elif "_path_filter" in filter:
+                stats["path_filters"] = [filter["_path_filter"]]
         if allowed_doc_ids is not None:
             stats["path_scope_size"] = len(allowed_doc_ids)
 
@@ -553,7 +502,7 @@ class RetrievalPipeline:
                 queries,
                 top_k=eff_vector_top_k,
                 filter=filter,
-                path_prefix=path_prefix,
+                path_prefixes=path_prefixes,
                 or_fallback_prefixes=getattr(self, "_or_fallback_prefixes", None),
             )
             _pcb(phase="vector_path", status="done", detail=f"{len(result.hits)} hits")
@@ -591,8 +540,8 @@ class RetrievalPipeline:
                 query,
                 top_k=eff_kg_top_k,
                 allowed_doc_ids=allowed_doc_ids,
-                path_prefix=path_prefix,
-                path_prefixes_or=getattr(self, "_or_fallback_prefixes", None),
+                path_prefixes=path_prefixes,
+                or_fallback_prefixes=getattr(self, "_or_fallback_prefixes", None),
             )
             _kg_context[0] = result.kg_context
             _pcb(phase="kg_path", status="done", detail=f"{len(result.hits)} hits")

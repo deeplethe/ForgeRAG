@@ -52,14 +52,18 @@ def query(req: QueryRequest, state: AppState = Depends(get_state)):
 
 def _inject_path_filter(req: QueryRequest) -> dict | None:
     """
-    Merge path_filter into the retrieval filter dict under the
-    reserved key '_path_filter'. RetrievalPipeline reads it to
-    build a doc_id whitelist.
+    Merge ``path_filters`` (list) into the retrieval filter dict under
+    the reserved key '_path_filters'. RetrievalPipeline reads it to
+    build the OR'd path-prefix scope and per-prefix doc_id whitelist.
+
+    The schema's model_validator already promotes the legacy
+    ``path_filter`` (str) into ``path_filters``, so this helper only
+    has to look at the plural form.
     """
-    if not req.path_filter:
+    if not req.path_filters:
         return req.filter
     merged = dict(req.filter or {})
-    merged["_path_filter"] = req.path_filter
+    merged["_path_filters"] = list(req.path_filters)
     return merged
 
 

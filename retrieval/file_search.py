@@ -239,9 +239,10 @@ class UnifiedSearcher:
         *,
         include: list[str] | None = None,
         limit: dict[str, int] | None = None,
-        filter: dict | None = None,            # noqa: ARG002 — kept for API compat
-        path_prefix: str | None = None,
-        overrides: object | None = None,        # noqa: ARG002 — kept for API compat
+        filter: dict | None = None,
+        path_prefixes: list[str] | None = None,
+        path_prefix: str | None = None,         # legacy single-prefix alias
+        overrides: object | None = None,
     ) -> SearchResult:
         """Run unified search.
 
@@ -254,11 +255,21 @@ class UnifiedSearcher:
         ``limit`` is a per-view cap dict, ``{"chunks": 30, "files": 10}``.
         Missing keys use the module defaults.
 
-        ``path_prefix`` limits results to documents under that folder.
+        ``path_prefixes`` limits results to documents under any of these
+        folders (OR'd together). Multi-folder scope comes from the
+        multi-user authz layer's ``resolve_paths``. ``path_prefix``
+        (singular) is a legacy alias accepted for back-compat — it's
+        wrapped into a single-element list.
+
         ``filter`` / ``overrides`` are accepted for shape compatibility
         with the previous pipeline-backed signature but are ignored —
         BM25-only search has no rerank / per-call knobs.
         """
+        # Legacy single-prefix callers (and our own pre-multi-user
+        # tests) still pass ``path_prefix=`` — promote it onto the
+        # plural list so the rest of the path is uniform.
+        if path_prefix and not path_prefixes:
+            path_prefixes = [path_prefix]
         t0 = time.time()
         wanted = set(include or ["chunks"])
         if not wanted & {"chunks", "files"}:
@@ -290,7 +301,7 @@ class UnifiedSearcher:
             query,
             q_tokens=q_tokens,
             top_k=content_top_k * 3 if content_top_k else 0,
-            path_prefix=path_prefix,
+            path_prefixes=path_prefixes,
         )
         stats["content_hits"] = len(content_hits)
 
@@ -357,7 +368,7 @@ class UnifiedSearcher:
         *,
         q_tokens: list[str],
         top_k: int,
-        path_prefix: str | None,
+        path_prefixes: list[str] | None,
     ) -> list[_ContentHit]:
         """Run BM25 against the content index, hydrate hits, drop trashed
         and out-of-scope docs. Returns at most ``top_k / 3`` filtered
@@ -365,7 +376,8 @@ class UnifiedSearcher:
 
         Filtering pass:
           * trashed docs (path under ``/__trash__``)
-          * path_prefix mismatch (when set)
+          * any of the ``path_prefixes`` (when non-empty); a doc passes
+            if its path lives under at least one of them.
 
         Both filters require knowing the chunk's doc_id and the doc's
         path, so we batch-fetch chunk rows + doc rows once per query.
@@ -400,7 +412,7 @@ class UnifiedSearcher:
         doc_ids = {
             r.get("doc_id") for r in chunk_rows if r.get("doc_id")
         }
-        trashed, path_doc_set = self._resolve_doc_scope(doc_ids, path_prefix)
+        trashed, path_doc_set = self._resolve_doc_scope(doc_ids, path_prefixes)
 
         budget = max(1, top_k // 3)  # the post-filter cap per caller's request
         out: list[_ContentHit] = []
@@ -460,30 +472,44 @@ class UnifiedSearcher:
         return out
 
     def _resolve_doc_scope(
-        self, doc_ids: set[str], path_prefix: str | None
+        self, doc_ids: set[str], path_prefixes: list[str] | None
     ) -> tuple[set[str], set[str] | None]:
         """Return ``(trashed_set, path_doc_set)``.
 
         ``trashed_set`` is the subset of ``doc_ids`` whose document is
         under ``/__trash__``. ``path_doc_set`` is the subset that lives
-        under ``path_prefix`` — or ``None`` when no prefix was given,
-        meaning "no scope filter".
+        under any of the ``path_prefixes`` — or ``None`` when no
+        prefixes were given, meaning "no scope filter". A non-empty
+        ``path_prefixes`` containing ``/`` collapses to "no scope" too
+        (root absorbs everything).
 
         Implementation note: we'd love a batched ``get_documents`` but
         the store doesn't expose one yet. ``cap`` ≤ 30 keeps the
         per-doc round trip cheap; if this becomes hot we can add a
         batch fetch on ``Store``.
         """
+        # Normalise the prefix list. ``[]`` and ``None`` both mean
+        # "no scope filter"; a list containing "/" collapses to that
+        # same state because root subsumes everything.
+        cleaned: list[str] = []
+        for p in path_prefixes or []:
+            if not p:
+                continue
+            if p == "/":
+                cleaned = []
+                break
+            cleaned.append(p.rstrip("/"))
+        scoping = bool(cleaned)
+
         if not doc_ids:
-            return set(), (set() if path_prefix else None)
+            return set(), (set() if scoping else None)
 
         try:
             from persistence.folder_service import TRASH_PATH
         except ImportError:
             TRASH_PATH = "/__trash__"
 
-        prefix = (path_prefix or "").rstrip("/")
-        path_doc_set: set[str] | None = set() if path_prefix else None
+        path_doc_set: set[str] | None = set() if scoping else None
         trashed: set[str] = set()
 
         for did in doc_ids:
@@ -497,8 +523,10 @@ class UnifiedSearcher:
                 trashed.add(did)
                 continue
             if path_doc_set is not None:
-                if not prefix or doc_path == prefix or doc_path.startswith(prefix + "/"):
-                    path_doc_set.add(did)
+                for prefix in cleaned:
+                    if doc_path == prefix or doc_path.startswith(prefix + "/"):
+                        path_doc_set.add(did)
+                        break
         return trashed, path_doc_set
 
     # ------------------------------------------------------------------
