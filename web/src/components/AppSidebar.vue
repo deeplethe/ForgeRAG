@@ -32,6 +32,7 @@ const emit = defineEmits(['select-conv', 'new-chat', 'delete-conv'])
 // language toggle re-labels them live without re-rendering the array.
 const tabs = computed(() => [
   { path: '/chat', label_key: 'sidebar.tabs.chat', isChat: true },
+  { path: '/search', label_key: 'sidebar.tabs.search' },
   { path: '/workspace', label_key: 'sidebar.tabs.workspace' },
   { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph' },
   { path: '/simulation', label_key: 'sidebar.tabs.simulation' },
