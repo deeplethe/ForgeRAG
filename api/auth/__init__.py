@@ -14,6 +14,16 @@ Public surface:
 Routes live in ``api/routes/auth.py``; this module is the plumbing.
 """
 
+from .authz import (
+    MANAGE_ACTIONS,
+    READ_ACTIONS,
+    WRITE_ACTIONS,
+    Action,
+    AuthorizationService,
+    AuthzError,
+    UnauthorizedPath,
+    minimize_paths,
+)
 from .bootstrap import bootstrap_if_empty
 from .middleware import AuthenticatedPrincipal, AuthError, AuthMiddleware
 from .primitives import (
@@ -25,13 +35,21 @@ from .primitives import (
 )
 
 __all__ = [
+    "MANAGE_ACTIONS",
+    "READ_ACTIONS",
+    "WRITE_ACTIONS",
+    "Action",
     "AuthError",
     "AuthMiddleware",
     "AuthenticatedPrincipal",
+    "AuthorizationService",
+    "AuthzError",
+    "UnauthorizedPath",
     "bootstrap_if_empty",
     "generate_session_id",
     "generate_sk",
     "hash_password",
     "hash_sk",
+    "minimize_paths",
     "verify_password",
 ]
