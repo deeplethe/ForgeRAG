@@ -60,6 +60,7 @@ from .routes import graph as graph_routes
 from .routes import health as health_routes
 from .routes import metrics as metrics_routes
 from .routes import query as query_routes
+from .routes import search as search_routes
 from .routes import settings as settings_routes
 from .routes import system as system_routes
 from .routes import traces as trace_routes
@@ -242,6 +243,7 @@ def create_app(
     app.include_router(chunk_routes.router)
     app.include_router(conversation_routes.router)
     app.include_router(query_routes.router)
+    app.include_router(search_routes.router)
     app.include_router(system_routes.router)
     app.include_router(trace_routes.router)
     app.include_router(settings_routes.router)

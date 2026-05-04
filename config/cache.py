@@ -30,5 +30,10 @@ class CacheConfig(BaseModel):
     bm25_persistence: bool = True
     embedding_cache: bool = True
     bm25_path: str = "./storage/bm25_index.pkl"
+    # Sibling of ``bm25_path`` for the doc-keyed filename index used by
+    # ``/search`` (one entry per Document, indexed against
+    # ``filename + path + format``). Same persistence toggle —
+    # ``bm25_persistence`` controls both.
+    filename_bm25_path: str = "./storage/filename_bm25_index.pkl"
     embedding_path: str = "./storage/embedding_cache.pkl"
     llm: LLMCacheSubconfig = Field(default_factory=LLMCacheSubconfig)

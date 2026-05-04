@@ -415,6 +415,80 @@ class QueryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Search — the retrieval primitive (no LLM answer).
+# See docs/roadmaps/retrieval-evolution.md for the design.
+# ---------------------------------------------------------------------------
+
+
+class SearchLimit(BaseModel):
+    """Per-view caps. Either field may be omitted to use the module
+    defaults (30 chunks, 10 files)."""
+
+    chunks: int | None = Field(None, ge=1, le=200)
+    files: int | None = Field(None, ge=1, le=100)
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=8192)
+    # Default: chunks-only. Workspace search bars pass ["files"] (or
+    # both) explicitly when they want the file rollup.
+    include: list[str] = Field(
+        default_factory=lambda: ["chunks"],
+        description='Subset of {"chunks", "files"}. Empty / unrecognised values fall back to ["chunks"].',
+    )
+    limit: SearchLimit | None = None
+    filter: dict[str, Any] | None = None
+    path_filter: str | None = Field(
+        None,
+        description=(
+            "Limit results to documents under this folder path. "
+            "Matches by path prefix (e.g. '/legal' matches '/legal/2024/x.pdf'). "
+            "Trashed documents are always excluded."
+        ),
+    )
+    overrides: QueryOverrides | None = Field(
+        None,
+        description="Per-request retrieval overrides. /search defaults rerank=False to stay cheap.",
+    )
+
+
+class ScoredChunkOut(BaseModel):
+    chunk_id: str
+    doc_id: str
+    filename: str
+    path: str
+    page_no: int
+    snippet: str
+    score: float
+    boosted_by_filename: bool = False
+
+
+class ChunkMatchOut(BaseModel):
+    chunk_id: str
+    snippet: str
+    page_no: int
+    score: float
+
+
+class FileHitOut(BaseModel):
+    doc_id: str
+    filename: str
+    path: str
+    format: str
+    score: float
+    matched_in: list[str]
+    best_chunk: ChunkMatchOut | None = None
+    filename_tokens: list[str] | None = None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    chunks: list[ScoredChunkOut] = Field(default_factory=list)
+    files: list[FileHitOut] | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Traces
 # ---------------------------------------------------------------------------
 
