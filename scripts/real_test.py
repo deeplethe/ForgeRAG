@@ -20,7 +20,7 @@ Set env vars before running:
     python scripts/real_test.py --limit 5
 
 Or use a custom config:
-    python scripts/real_test.py --config forgerag.yaml --limit 5
+    python scripts/real_test.py --config opencraig.yaml --limit 5
 """
 
 from __future__ import annotations
@@ -156,24 +156,21 @@ def main():
     )
 
     # --- Resolve config ---
-    # Precedence: --config > $OPENCRAIG_CONFIG ($FORGERAG_CONFIG) > ./opencraig.yaml > ./forgerag.yaml
-    #           > examples/forgerag.dev.yaml > hardcoded fallback
-    _env_cfg = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
+    # Precedence: --config > $OPENCRAIG_CONFIG > ./opencraig.yaml
+    #           > examples/opencraig.dev.yaml > hardcoded fallback
+    _env_cfg = os.environ.get("OPENCRAIG_CONFIG")
     if args.config:
         cfg = load_config(args.config)
         print(f"  config:     {args.config}")
     elif _env_cfg:
         cfg = load_config(_env_cfg)
-        print(f"  config:     {_env_cfg} (from $OPENCRAIG_CONFIG / $FORGERAG_CONFIG)")
+        print(f"  config:     {_env_cfg} (from $OPENCRAIG_CONFIG)")
     elif (_ROOT / "opencraig.yaml").exists():
         cfg = load_config(_ROOT / "opencraig.yaml")
         print(f"  config:     {_ROOT / 'opencraig.yaml'}")
-    elif (_ROOT / "forgerag.yaml").exists():
-        cfg = load_config(_ROOT / "forgerag.yaml")
-        print(f"  config:     {_ROOT / 'forgerag.yaml'} (legacy)")
-    elif (_ROOT / "examples" / "forgerag.dev.yaml").exists():
-        cfg = load_config(_ROOT / "examples" / "forgerag.dev.yaml")
-        print(f"  config:     {_ROOT / 'examples' / 'forgerag.dev.yaml'} (dev fallback)")
+    elif (_ROOT / "examples" / "opencraig.dev.yaml").exists():
+        cfg = load_config(_ROOT / "examples" / "opencraig.dev.yaml")
+        print(f"  config:     {_ROOT / 'examples' / 'opencraig.dev.yaml'} (dev fallback)")
     else:
         print("  config:     (hardcoded minimal defaults)")
         cfg = AppConfig()

@@ -10,10 +10,10 @@ ForgeRAG's auth is minimal and self-contained:
                               # "forwarded" = trust an upstream OAuth proxy's
                               #         X-Forwarded-User header
       # ── mode=db knobs ──
-      initial_password: forgerag   # applied at auto-bootstrap; first login
+      initial_password: opencraig  # applied at auto-bootstrap; first login
                                    # must change. Change via yaml only affects
                                    # fresh bootstraps, not existing admins.
-      session_cookie_name: forgerag_session
+      session_cookie_name: opencraig_session
       session_cookie_secure: true  # set false only for http://localhost dev
       password_change_revokes_other_sessions: true
 
@@ -37,8 +37,8 @@ class AuthConfig(BaseModel):
     mode: Literal["db", "forwarded"] = "db"
 
     # --- mode=db ---
-    initial_password: str = "forgerag"
-    session_cookie_name: str = "forgerag_session"
+    initial_password: str = "opencraig"
+    session_cookie_name: str = "opencraig_session"
     session_cookie_secure: bool = True
     password_change_revokes_other_sessions: bool = True
 

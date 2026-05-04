@@ -1,7 +1,7 @@
 """
 Interactive setup wizard for ForgeRAG.
 
-Walks the user through six small steps and writes a forgerag.yaml
+Walks the user through six small steps and writes a opencraig.yaml
 that wires the relational store, vector store, blob storage,
 embedder, and answer-generation LLM end-to-end. The embedder and
 LLM steps each finish with a real connection test (live API call)
@@ -602,7 +602,7 @@ def _profile_defaults(profile: str) -> dict[str, Any]:
         return {
             **base,
             "relational": "sqlite",
-            "sqlite_path": "./storage/forgerag.db",
+            "sqlite_path": "./storage/opencraig.db",
             "vector": "chromadb",
             "chroma_dir": "./storage/chroma",
             "graph_backend": "networkx",
@@ -617,8 +617,8 @@ def _profile_defaults(profile: str) -> dict[str, Any]:
             "relational": "postgres",
             "pg_host": "localhost",
             "pg_port": 5432,
-            "pg_database": "forgerag",
-            "pg_user": "forgerag",
+            "pg_database": "opencraig",
+            "pg_user": "opencraig",
             "pg_password_env": "PG_PASSWORD",
             "vector": "pgvector",
             "embedder_dim": 1024,
@@ -958,9 +958,9 @@ def _step_relational(answers: dict, defaults: dict) -> None:
         answers["pg_host"] = ask(_t("Postgres host", "Postgres 主机"), default=defaults.get("pg_host", "localhost"))
         answers["pg_port"] = ask_int(_t("Postgres port", "Postgres 端口"), default=defaults.get("pg_port", 5432))
         answers["pg_database"] = ask(
-            _t("Postgres database", "Postgres 数据库名"), default=defaults.get("pg_database", "forgerag")
+            _t("Postgres database", "Postgres 数据库名"), default=defaults.get("pg_database", "opencraig")
         )
-        answers["pg_user"] = ask(_t("Postgres user", "Postgres 用户名"), default=defaults.get("pg_user", "forgerag"))
+        answers["pg_user"] = ask(_t("Postgres user", "Postgres 用户名"), default=defaults.get("pg_user", "opencraig"))
         answers["pg_password_env"] = ask(
             _t("Env var containing the password", "存放密码的环境变量名"),
             default=defaults.get("pg_password_env", "PG_PASSWORD"),
@@ -968,7 +968,7 @@ def _step_relational(answers: dict, defaults: dict) -> None:
     else:
         answers["sqlite_path"] = ask(
             _t("SQLite database file path", "SQLite 数据库文件路径"),
-            default=defaults.get("sqlite_path", "./storage/forgerag.db"),
+            default=defaults.get("sqlite_path", "./storage/opencraig.db"),
         )
 
 
@@ -2217,13 +2217,13 @@ def _non_interactive_defaults(profile: str) -> dict[str, Any]:
     # Fill in fields the per-step functions would normally set so
     # build_config_dict has everything it needs without prompting.
     if d.get("relational") == "sqlite":
-        d.setdefault("sqlite_path", "./storage/forgerag.db")
+        d.setdefault("sqlite_path", "./storage/opencraig.db")
     else:
         d.setdefault("relational", "postgres")
         d.setdefault("pg_host", "localhost")
         d.setdefault("pg_port", 5432)
-        d.setdefault("pg_database", "forgerag")
-        d.setdefault("pg_user", "forgerag")
+        d.setdefault("pg_database", "opencraig")
+        d.setdefault("pg_user", "opencraig")
         d.setdefault("pg_password_env", "PG_PASSWORD")
     d.setdefault("blob_root", "./storage/blobs")
     if d.get("vector") == "chromadb":
@@ -2415,7 +2415,7 @@ def build_config_dict(a: dict[str, Any]) -> dict[str, Any]:
             "password_env": a["pg_password_env"],
         }
     else:  # sqlite
-        rel["sqlite"] = {"path": a.get("sqlite_path", "./storage/forgerag.db")}
+        rel["sqlite"] = {"path": a.get("sqlite_path", "./storage/opencraig.db")}
 
     vec: dict[str, Any] = {"backend": a["vector"]}
     if a["vector"] == "pgvector":
@@ -2428,21 +2428,21 @@ def build_config_dict(a: dict[str, Any]) -> dict[str, Any]:
         vec["chromadb"] = {
             "mode": "persistent",
             "persist_directory": a["chroma_dir"],
-            "collection_name": "forgerag",
+            "collection_name": "opencraig",
             "dimension": a["embedder_dim"],
             "distance": "cosine",
         }
     elif a["vector"] == "qdrant":
         vec["qdrant"] = {
             "url": a["qdrant_url"],
-            "collection_name": "forgerag_chunks",
+            "collection_name": "opencraig_chunks",
             "dimension": a["embedder_dim"],
             "distance": "cosine",
         }
     elif a["vector"] == "milvus":
         vec["milvus"] = {
             "uri": a["milvus_uri"],
-            "collection_name": "forgerag_chunks",
+            "collection_name": "opencraig_chunks",
             "dimension": a["embedder_dim"],
             "distance": "cosine",
             "index_type": "HNSW",
@@ -2677,10 +2677,7 @@ def post_setup(config_path: Path) -> None:
         host = ask(_t("Host", "监听地址"), default="0.0.0.0")
         port = ask_int(_t("Port", "监听端口"), default=8000)
         env = _child_env()
-        # Set both env-var spellings so both old and new readers see the path
-        # during the rename window.
         env["OPENCRAIG_CONFIG"] = str(config_path)
-        env["FORGERAG_CONFIG"] = str(config_path)
         cmd = [
             sys.executable,
             "-m",
@@ -2708,7 +2705,7 @@ def post_setup(config_path: Path) -> None:
 _HELP_DESCRIPTION = """\
 Interactive setup wizard for ForgeRAG.
 
-Walks through five small steps and writes a forgerag.yaml that wires
+Walks through five small steps and writes a opencraig.yaml that wires
 together the relational store, vector store, blob storage, embedder,
 and answer-generation LLM. The embedder and LLM steps each finish with
 a real connection test (live API call) so a typo in api_base or a
@@ -2784,7 +2781,7 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output",
         type=Path,
-        default=Path("./forgerag.yaml"),
+        default=Path("./opencraig.yaml"),
         help="Where to write the generated config.",
     )
     p.add_argument(
@@ -2804,7 +2801,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help=(
-            "Skip the wizard. Read PATH (existing forgerag.yaml), "
+            "Skip the wizard. Read PATH (existing opencraig.yaml), "
             "compute the optional pip packages it requires, and "
             "install any that are missing. Useful after a yaml edit."
         ),
