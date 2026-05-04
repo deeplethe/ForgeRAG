@@ -94,8 +94,7 @@ class Client:
     Args:
         base_url: Deployed server base, e.g. ``"http://localhost:8000"``.
         token:   API token (Forge_...) — sent as ``Authorization: Bearer``
-                 on every request. If unset, falls back to ``$OPENCRAIG_API_TOKEN``
-                 (legacy ``$FORGERAG_API_TOKEN`` also accepted).
+                 on every request. If unset, falls back to ``$OPENCRAIG_API_TOKEN``.
         timeout: Per-request timeout (seconds) for non-streaming calls.
                  Streaming uses its own idle-timeout.
         headers: Extra HTTP headers.
@@ -115,11 +114,7 @@ class Client:
         self._timeout = timeout
         self._headers = dict(headers or {})
 
-        resolved_token = (
-            token
-            if token is not None
-            else (_os.environ.get("OPENCRAIG_API_TOKEN") or _os.environ.get("FORGERAG_API_TOKEN"))
-        )
+        resolved_token = token if token is not None else _os.environ.get("OPENCRAIG_API_TOKEN")
         if resolved_token:
             self._headers.setdefault("Authorization", f"Bearer {resolved_token}")
 

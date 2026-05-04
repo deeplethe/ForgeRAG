@@ -125,7 +125,7 @@ def create_app(
             finally:
                 pass
             return
-        resolved = cfg or load_config(os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG"))
+        resolved = cfg or load_config(os.environ.get("OPENCRAIG_CONFIG"))
         # Ensure logging is initialised (idempotent — safe if main.py
         # already called setup_logging with the same config).
         from config.logging import setup_logging
@@ -181,7 +181,7 @@ def create_app(
         try:
             from config.loader import load_config as _load_cfg
 
-            _cors_src = _load_cfg(os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG"))
+            _cors_src = _load_cfg(os.environ.get("OPENCRAIG_CONFIG"))
         except Exception:
             _cors_src = None
     if _cors_src and hasattr(_cors_src, "cors"):
@@ -206,7 +206,7 @@ def create_app(
     # During the nightly maintenance window the server may be placed in
     # read-only mode so the pending_folder_ops queue can drain without
     # new writes racing against a cross-store rename. Enable with:
-    #   OPENCRAIG_READONLY=1   (legacy: FORGERAG_READONLY)
+    #   OPENCRAIG_READONLY=1
     # Queries / GETs still work; mutating HTTP methods return 503.
     # ------------------------------------------------------------------
     from fastapi import Request
@@ -223,7 +223,7 @@ def create_app(
 
     @app.middleware("http")
     async def _readonly_gate(request: Request, call_next):
-        if os.environ.get("OPENCRAIG_READONLY") == "1" or os.environ.get("FORGERAG_READONLY") == "1":
+        if os.environ.get("OPENCRAIG_READONLY") == "1":
             if request.method in _WRITE_METHODS and not any(
                 request.url.path.startswith(p) for p in _READONLY_ALLOW_PATHS
             ):

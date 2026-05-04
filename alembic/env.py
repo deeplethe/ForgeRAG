@@ -29,12 +29,12 @@ def _get_url() -> str:
         from config.loader import load_config
         from persistence.engine import build_engine
 
-        cfg = load_config(os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG"))
+        cfg = load_config(os.environ.get("OPENCRAIG_CONFIG"))
         engine = build_engine(cfg.persistence.relational)
         return str(engine.url)
     except Exception:
-        # Fallback: try env var (legacy FORGERAG_DATABASE_URL still accepted)
-        url = os.environ.get("OPENCRAIG_DATABASE_URL") or os.environ.get("FORGERAG_DATABASE_URL")
+        # Fallback: try env var
+        url = os.environ.get("OPENCRAIG_DATABASE_URL")
         if url:
             return url
         raise RuntimeError("Cannot resolve database URL. Set OPENCRAIG_CONFIG or OPENCRAIG_DATABASE_URL.")

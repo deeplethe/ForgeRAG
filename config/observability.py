@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 class ObservabilityConfig(BaseModel):
     enabled: bool = True
-    service_name: str = "forgerag"
+    service_name: str = "opencraig"
     exporter: Literal["stdout_compact", "stdout", "otlp", "none"] = Field(
         "stdout_compact",
         description=(

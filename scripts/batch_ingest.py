@@ -6,7 +6,7 @@ Minimum example:
 
 Full example:
     python scripts/batch_ingest.py ./papers \\
-        --db ./storage/forgerag.db \\
+        --db ./storage/opencraig.db \\
         --blob ./storage/blobs \\
         --workers 4 \\
         --embed \\
@@ -85,12 +85,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Path to opencraig.yaml. If omitted, uses OPENCRAIG_CONFIG env "
-        "var (legacy: FORGERAG_CONFIG) or falls back to --db / --blob CLI defaults.",
+        "var or falls back to --db / --blob CLI defaults.",
     )
     p.add_argument(
         "--db",
         type=Path,
-        default=Path("./storage/forgerag.db"),
+        default=Path("./storage/opencraig.db"),
         help="SQLite database path when no --config is provided.",
     )
     p.add_argument(
@@ -171,12 +171,12 @@ def _resolve_config(args: argparse.Namespace) -> AppConfig:
     """
     Precedence (highest first):
         1. --config path
-        2. OPENCRAIG_CONFIG env var (legacy: FORGERAG_CONFIG)
+        2. OPENCRAIG_CONFIG env var
         3. CLI flags (--db / --blob) layered on top of defaults
     """
     path: Path | None = args.config
     if path is None:
-        env_path = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
+        env_path = os.environ.get("OPENCRAIG_CONFIG")
         if env_path:
             path = Path(env_path)
 

@@ -41,8 +41,8 @@ _sqlite_warned = False
 class PostgresConfig(BaseModel):
     host: str = "localhost"
     port: int = 5432
-    database: str = "forgerag"
-    user: str = "forgerag"
+    database: str = "opencraig"
+    user: str = "opencraig"
     password: str = ""
     password_env: str | None = None
     pool_min: int = 2
@@ -51,7 +51,7 @@ class PostgresConfig(BaseModel):
 
 
 class SQLiteConfig(BaseModel):
-    path: str = "./storage/forgerag.db"
+    path: str = "./storage/opencraig.db"
     # sqlite3 connection kwargs.
     # ``timeout`` is the SQLite busy_timeout (seconds) — how long a
     # waiting writer sleeps before giving up with "database is locked".
@@ -117,7 +117,7 @@ class ChromaConfig(BaseModel):
     persist_directory: str = "./storage/chroma"
     http_host: str = "localhost"
     http_port: int = 8001
-    collection_name: str = "forgerag_chunks"
+    collection_name: str = "opencraig_chunks"
     dimension: int = 1536
     distance: Literal["cosine", "l2", "ip"] = "cosine"
 
@@ -125,7 +125,7 @@ class ChromaConfig(BaseModel):
 class QdrantConfig(BaseModel):
     url: str = "http://localhost:6333"
     api_key: str | None = None
-    collection_name: str = "forgerag_chunks"
+    collection_name: str = "opencraig_chunks"
     dimension: int = 1536
     distance: Literal["cosine", "l2", "ip"] = "cosine"
     prefer_grpc: bool = False
@@ -135,7 +135,7 @@ class QdrantConfig(BaseModel):
 class MilvusConfig(BaseModel):
     uri: str = "http://localhost:19530"
     token: str | None = None
-    collection_name: str = "forgerag_chunks"
+    collection_name: str = "opencraig_chunks"
     dimension: int = 1536
     distance: Literal["cosine", "l2", "ip"] = "cosine"
     index_type: Literal["HNSW", "IVF_FLAT", "FLAT"] = "HNSW"
@@ -144,7 +144,7 @@ class MilvusConfig(BaseModel):
 class WeaviateConfig(BaseModel):
     url: str = "http://localhost:8080"
     api_key: str | None = None
-    collection_name: str = "ForgeragChunks"
+    collection_name: str = "OpencraigChunks"
     dimension: int = 1536
     distance: Literal["cosine", "l2", "dot"] = "cosine"
 

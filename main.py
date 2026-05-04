@@ -5,9 +5,7 @@ Running `python main.py` in the project root does the right thing
 in three cases:
 
     1. ./opencraig.yaml exists  -> use it, start uvicorn.
-       (./forgerag.yaml also recognised for legacy installs.)
     2. $OPENCRAIG_CONFIG set    -> use it, start uvicorn.
-       ($FORGERAG_CONFIG also recognised.)
     3. Nothing configured        -> write a minimal default config
                                     to ./opencraig.yaml, then start.
 
@@ -17,7 +15,7 @@ Overrides:
     python main.py --init-only       # write default config and exit
 
 The generated default uses zero external services:
-    - SQLite at ./storage/forgerag.db
+    - SQLite at ./storage/opencraig.db
     - ChromaDB at ./storage/chroma
     - Local blob store at ./storage/blobs
     - Embedder / LLM = litellm with OPENAI_API_KEY (override via setup wizard)
@@ -60,7 +58,6 @@ log = logging.getLogger("forgerag.main")
 
 
 DEFAULT_CONFIG_PATH = _ROOT / "opencraig.yaml"
-LEGACY_CONFIG_PATH = _ROOT / "forgerag.yaml"  # back-compat: prior brand name
 
 
 def _minimal_default_config() -> dict[str, Any]:
@@ -87,7 +84,7 @@ def _minimal_default_config() -> dict[str, Any]:
             "relational": {
                 "backend": "sqlite",
                 "sqlite": {
-                    "path": "./storage/forgerag.db",
+                    "path": "./storage/opencraig.db",
                     "journal_mode": "wal",
                 },
             },
@@ -96,7 +93,7 @@ def _minimal_default_config() -> dict[str, Any]:
                 "chromadb": {
                     "mode": "persistent",
                     "persist_directory": "./storage/chroma",
-                    "collection_name": "forgerag",
+                    "collection_name": "opencraig",
                     "dimension": 1536,
                     "distance": "cosine",
                 },
@@ -143,15 +140,14 @@ def resolve_config_path(cli_path: Path | None) -> Path:
     """
     Precedence (highest first):
         1. --config argument
-        2. OPENCRAIG_CONFIG env var (legacy: FORGERAG_CONFIG)
+        2. OPENCRAIG_CONFIG env var
         3. ./opencraig.yaml (current directory)
-        4. ./forgerag.yaml (current directory, legacy)
-        5. None -> caller writes the default to ./opencraig.yaml
+        4. None -> caller writes the default to ./opencraig.yaml
     """
     if cli_path is not None:
         return cli_path.resolve()
 
-    env_path = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
+    env_path = os.environ.get("OPENCRAIG_CONFIG")
     if env_path:
         p = Path(env_path)
         return p.resolve()
@@ -159,10 +155,6 @@ def resolve_config_path(cli_path: Path | None) -> Path:
     cwd_candidate = Path.cwd() / "opencraig.yaml"
     if cwd_candidate.exists():
         return cwd_candidate.resolve()
-
-    legacy_candidate = Path.cwd() / "forgerag.yaml"
-    if legacy_candidate.exists():
-        return legacy_candidate.resolve()
 
     return DEFAULT_CONFIG_PATH.resolve()
 
@@ -248,8 +240,7 @@ def parse_args() -> argparse.Namespace:
             "Launch ForgeRAG. If opencraig.yaml exists in the current "
             "directory (or OPENCRAIG_CONFIG points at one), it is used. "
             "Otherwise a minimal default config is written to ./opencraig.yaml "
-            "and the server starts. (Legacy ./forgerag.yaml + FORGERAG_CONFIG "
-            "are still accepted.)"
+            "and the server starts."
         ),
     )
     p.add_argument(
@@ -261,13 +252,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--host",
         type=str,
-        default=(os.environ.get("OPENCRAIG_HOST") or os.environ.get("FORGERAG_HOST") or "0.0.0.0"),
+        default=os.environ.get("OPENCRAIG_HOST", "0.0.0.0"),
         help="Bind host (default: 0.0.0.0, or $OPENCRAIG_HOST)",
     )
     p.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("OPENCRAIG_PORT") or os.environ.get("FORGERAG_PORT") or "8000"),
+        default=int(os.environ.get("OPENCRAIG_PORT", "8000")),
         help="Bind port (default: 8000, or $OPENCRAIG_PORT)",
     )
     p.add_argument(
@@ -313,11 +304,8 @@ def main() -> int:
     if args.init_only:
         return 0
 
-    # Point everything downstream at the resolved config. Set both names
-    # during the rename window — downstream readers that haven't migrated
-    # yet still see FORGERAG_CONFIG.
+    # Point everything downstream at the resolved config.
     os.environ["OPENCRAIG_CONFIG"] = str(cfg_path)
-    os.environ["FORGERAG_CONFIG"] = str(cfg_path)
 
     # Initialise logging early so preflight and all downstream modules
     # write to the daily-rotated log file under logs/.

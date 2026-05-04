@@ -34,7 +34,7 @@ from .loader import load_config
 def _resolve_path(argv: list[str]) -> Path | None:
     if len(argv) >= 2:
         return Path(argv[1])
-    env = os.environ.get("OPENCRAIG_CONFIG") or os.environ.get("FORGERAG_CONFIG")
+    env = os.environ.get("OPENCRAIG_CONFIG")
     return Path(env) if env else None
 
 

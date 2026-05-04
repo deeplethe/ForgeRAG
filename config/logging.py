@@ -84,11 +84,11 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # TimedRotatingFileHandler with suffix creates files like:
-    #   logs/forgerag.log           (current)
-    #   logs/forgerag.log.2026-04-11  (yesterday)
+    #   logs/opencraig.log           (current)
+    #   logs/opencraig.log.2026-04-11  (yesterday)
     # We rename via namer so rotated files become:
     #   logs/2026-04-11.log
-    log_file = log_dir / "forgerag.log"
+    log_file = log_dir / "opencraig.log"
     fh = TimedRotatingFileHandler(
         filename=str(log_file),
         when="midnight",
@@ -99,9 +99,9 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
     )
     fh.suffix = "%Y-%m-%d"
 
-    # Custom namer: logs/forgerag.log.2026-04-11 -> logs/2026-04-11.log
+    # Custom namer: logs/opencraig.log.2026-04-11 -> logs/2026-04-11.log
     def _namer(default_name: str) -> str:
-        # default_name = ".../logs/forgerag.log.2026-04-11"
+        # default_name = ".../logs/opencraig.log.2026-04-11"
         parts = default_name.rsplit(".", 1)  # [..., "2026-04-11"]
         if len(parts) == 2:
             base_dir = os.path.dirname(parts[0])

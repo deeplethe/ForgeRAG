@@ -1,14 +1,14 @@
 version: "3.9"
 
 services:
-  forgerag:
+  opencraig:
     build: .
     ports:
       - "8000:8000"
     environment:
       - OPENCRAIG_CONFIG=/app/config.yaml
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forgerag}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-opencraig}
     volumes:
       - storage:/app/storage
       - ./docker/config.yaml:/app/config.yaml:ro
@@ -20,15 +20,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: forgerag
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forgerag}
-      POSTGRES_DB: forgerag
+      POSTGRES_USER: opencraig
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencraig}
+      POSTGRES_DB: opencraig
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U forgerag"]
+      test: ["CMD-SHELL", "pg_isready -U opencraig"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -39,7 +39,7 @@ services:
     image: neo4j:5
     profiles: [neo4j]
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-forgerag}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-opencraig}
       NEO4J_PLUGINS: '["apoc"]'
     volumes:
       - neo4jdata:/data

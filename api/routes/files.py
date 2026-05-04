@@ -91,7 +91,7 @@ async def upload_file(
             415,
             "Image uploads require image_enrichment to be enabled and a VLM "
             "to be configured. Set image_enrichment.enabled=true and provide "
-            "a model + credentials in forgerag.yaml, then restart.",
+            "a model + credentials in opencraig.yaml, then restart.",
         )
 
     # Same shape for spreadsheet uploads — without an LLM the TABLE
@@ -101,7 +101,7 @@ async def upload_file(
             415,
             "Spreadsheet uploads require table_enrichment to be enabled and "
             "an LLM to be configured. Set table_enrichment.enabled=true and "
-            "provide a model + credentials in forgerag.yaml, then restart.",
+            "provide a model + credentials in opencraig.yaml, then restart.",
         )
 
     data = await file.read()
