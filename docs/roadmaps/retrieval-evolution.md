@@ -11,7 +11,7 @@ This document captures the design and sequencing for the next wave of retrieval-
 
 The current retrieval pipeline (BM25 + vector + KG + tree-nav, fused via RRF, reranked, with pixel-precise citations) is solid for one-shot question answering. The next four features compose on top of that foundation, each unlocking a different kind of usage:
 
-1. **File search** (foundation) — find documents by *name/path/type*, not by content. Solves "where's that file I uploaded last week" without polluting the content index.
+1. **File search** (foundation) — file-level aggregated search. Same query is matched against filenames+paths AND chunk content; results grouped by file and fused via RRF, with a snippet + match-source badge per row. Two BM25 instances of the same class, no content-index pollution.
 2. **Retrieval MCP** (interface) — expose the retrieval + answering pipeline as MCP tools so external agents (Claude Desktop, Claude Code, custom workflows) can use ForgeRAG as their RAG backend.
 3. **Agentic search** (orchestration) — multi-step retrieval where an LLM drives follow-up queries based on intermediate results. Replaces "one-shot retrieval" with an agentic loop bounded by a budget.
 4. **Deep research** (composition) — long-horizon research mode. Builds an outline, runs agentic search per section in parallel, synthesises a structured citation-grounded report.
@@ -40,10 +40,20 @@ MCP doesn't fix any of those internally — it's about *exposure*. But shipping 
 
 ### What
 
-A **lexical search over file metadata** — filename, folder path, mime type, upload time. Distinct from content search:
+A **file-level aggregated search**: same query is matched against both filenames+paths AND chunk content; results are grouped by file and ranked together so the user sees "files that mention this" regardless of *where* the match landed.
 
-* Content search: "what does the contract say about termination" → searches chunk text via BM25 + vector
-* File search: "where's the termination contract" → searches `Document.filename`, `Document.path`, `File.original_name`
+Distinct from `/query`:
+
+* `/query` returns *chunks* answering a question, with rerank + answer synthesis. Chat-level QA.
+* `/files/search` returns *files* that match a query (in name or in content), without rerank or answer. Workspace-level navigation. Each result carries a snippet + which signal matched (`filename` | `content` | both).
+
+A search for `"Q3 financial report"` should surface all of:
+
+* `Q3_financials_2024.pdf` — filename match
+* `annual-report.pdf` whose page 12 has "Q3 financial summary" — content match
+* `board-deck.pdf` whose chunks repeatedly mention Q3 financials — content match
+
+…ranked together, one row per file, snippet from the best signal.
 
 ### Why
 
@@ -57,36 +67,68 @@ Users routinely have hundreds of uploads. Hunting by clicking through folders do
 
 ### Architecture
 
-**Reuse `InMemoryBM25Index`, second instance, fed filenames instead of chunks.**
+**Two BM25 instances of the same class, fused per-file via RRF.**
 
-The existing content BM25 indexes `(chunk_id, doc_id, chunk.content + section_path)`. The filename BM25 indexes `(doc_id, doc_id, "filename + path")` — same class, same persistence shape, different data and a different cache file. No new dependencies, no SQL-dialect splits, no migrations.
+The existing content BM25 indexes `(chunk_id, doc_id, chunk.content + section_path)`. We add a filename BM25 that indexes `(doc_id, doc_id, "filename + path + format")` — same `InMemoryBM25Index` class, parallel persistence, different data. The aggregator runs both, groups content hits by `doc_id` (best chunk wins), then RRF-fuses the two ranked file lists. No new dependencies, no SQL-dialect splits, no migrations.
 
-* **Index keying**: per-document, not per-chunk. Each doc contributes one entry whose text is `f"{filename} {path}"` — tokenized normally so `invoice-2024-Q3.pdf` becomes `["invoice", "2024", "Q3", "pdf"]`. Folder segments tokenize the same way, so `/legal/2024/contracts/` adds `legal`, `2024`, `contracts` to the entry. Format also added (`pdf`, `xlsx`, ...) so type-filter queries can be lexical too.
-* **Build at startup**: parallel to `build_bm25_index()`, add `build_filename_bm25_index()`. Both load from disk if cached; both rebuild from scratch if cache is stale.
-* **Incremental updates**: when a doc lands in `_on_ingest_complete`, update both indices alongside each other. Same lock pattern (`_init_lock`).
-* **Path / type filter**: applied as a post-filter on the BM25 candidate set rather than baked into the index. Filter-then-score is the same shape the content path uses for trashed-doc filtering.
+```
+query
+  ├─► filename BM25  ─────► [(doc_id, score), ...]            ─┐
+  │                                                            │
+  └─► content BM25  ──► group_by_doc_id (keep best chunk) ─►  ─┤── RRF ─► top-N FileSearchHit
+                                                               │
+                                            type / path post-filter
+```
 
-**Result shape**: `list[FileSearchHit]` with `doc_id, filename, path, format, score, matched_field`.
+* **Filename index keying**: per-document, not per-chunk. Each doc contributes one entry whose text is `f"{filename} {path} {format}"` — tokenized normally so `invoice-2024-Q3.pdf` becomes `["invoice", "2024", "Q3", "pdf"]` and `/legal/2024/contracts/` adds `["legal", "2024", "contracts"]`. Including `format` lets type-filter intent ("find a pdf about ...") match lexically too.
+* **Content reuse**: the existing BM25 index is the production-scale content path. We don't rebuild it; we just call `.search()` and roll up by `doc_id`, picking the highest-scoring chunk per file. Snippet comes from that chunk.
+* **RRF fusion**: same algo the main retrieval pipeline uses to merge BM25 + vector + tree + KG. Parameter-free, one knob (`k`, default 60). Avoids the "filename match always wins" failure mode of a weighted-sum fusion.
+* **Build at startup**: parallel to `build_bm25_index()`, add `build_filename_bm25_index()`. Both load from disk if cached; both rebuild on stale.
+* **Incremental updates**: when a doc lands in `_on_ingest_complete`, update both indices alongside each other under `_init_lock`. Rename also touches the filename index (filename + path is denormalized; rename rewrites the entry).
+* **Path / type filter**: applied as a post-filter on the fused candidate set rather than baked into either index. Same shape the content path uses for trashed-doc filtering.
 
-**Frontend**: Workspace gets a top-of-page search bar. Cmd/Ctrl+K opens a global file palette. Results render the matched portion bolded.
+**Result shape** (one row per file):
+
+```python
+class FileSearchHit:
+    doc_id: str
+    filename: str
+    path: str
+    format: str
+    score: float                          # RRF score
+    matched_in: list[str]                 # subset of {"filename", "content"}
+    chunk_match: ChunkMatch | None        # populated when content matched
+    filename_tokens: list[str] | None     # the matched filename tokens, for UI bolding
+
+class ChunkMatch:
+    chunk_id: str
+    snippet: str                          # ~200 chars around the best content match
+    page_no: int
+    score: float                          # raw BM25 score on the content side
+```
+
+**Frontend**: Workspace gets a top-of-page search bar. Cmd/Ctrl+K opens a global file palette. Each result row shows the file with a small badge for `matched_in` (📁 filename / 📄 content / both) and the snippet when content matched. Bolding handled via `filename_tokens` on the filename and via standard snippet highlighting on the content side.
 
 ### Rejected alternatives
 
-* **Add filenames to the EXISTING content BM25** — pollutes ranking. A search for "Apple" would surface every PDF named `apple-quarterly.pdf` even when the content is irrelevant; conversely, a content-search query that incidentally hits a filename gets noise. Keep the indices separate, share the class.
-* **Postgres `tsvector` + GIN** — premature dialect split. The Python BM25 already handles the production-scale content index; filenames are 1-2 orders of magnitude smaller and trivially fit in the same backend. Adding a dialect-specific path here means SQLite users get a different code path with different bug surface.
-* **SQLite trigram via `rapidfuzz`** — fixes "no Postgres dialect", introduces "no relevance ranking, no idf weighting" and a new dependency. Same critique.
+* **Filename-only file search** — what the previous draft of this roadmap had. Misses the case where the user remembers something inside the file but not the filename ("the contract that mentions a 6-month notice"). File search needs both signals.
+* **Content-only file search** (just call `/query` with `top_k=10` and dedup by `doc_id`) — misses literal filename matches when the file's content doesn't restate its title (`invoice-2024.pdf` whose body is mostly a table). Filenames carry deliberate signal users put there themselves.
+* **Add filenames to the EXISTING content BM25** — pollutes the chunk scoring used by `/query` and the rest of the retrieval pipeline. A search for "Apple" would re-rank every PDF named `apple-quarterly.pdf` even when its content is unrelated. Keep the indices separate, share the class.
+* **Postgres `tsvector` + GIN** — premature dialect split. The Python BM25 already handles the production-scale content index; filenames are 1–2 orders of magnitude smaller and trivially fit the same backend. A dialect-specific path means SQLite users get a different code path with different bug surface.
+* **SQLite trigram via `rapidfuzz`** — fixes "no Postgres", introduces "no relevance ranking, no idf weighting" and a new dependency. Same critique.
 * **`SQL ILIKE`** — no relevance ranking, no fuzzy match, scales linearly. Bad UX even at small N.
-* **Vector embedding for filename matching** — embeddings are bad at literal-string queries (`invoice-2024-Q3-final.pdf` has no useful semantics). Lexical match is correct here.
+* **Vector embedding for the file-search query** — embeddings are unreliable on literal-string queries (`invoice-2024-Q3.pdf` has no useful semantics). For *content* matching the existing BM25 is enough at this level; vector search is on the `/query` path where rerank can fix mistakes.
+* **Weighted-sum fusion** (`α * filename_score + β * content_score`) — needs hand-tuned weights, brittle. RRF is parameter-free and the codebase already uses it for the main retrieval merge.
 
 ### Implementation
 
-* New module: `retrieval/file_search.py` with `FileSearcher` (build + search). Internally just an `InMemoryBM25Index` instance plus path/type post-filter logic.
-* `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`.
+* New module: `retrieval/file_search.py` with `FileSearcher` — owns the filename `InMemoryBM25Index`, runs both indices, fuses via RRF, applies post-filters.
+* `api/state.py`: add `_filename_bm25` attribute and an incremental update path mirroring `_update_bm25_for_doc`. Rename hook updates the filename index entry.
 * New route: `POST /api/v1/files/search` (POST not GET — body carries filter dicts, easier telemetry).
-* New schema: `FileSearchHit` in `api/schemas.py`.
-* Telemetry: one OTel span per search.
+* New schemas: `FileSearchHit`, `ChunkMatch` in `api/schemas.py`.
+* Telemetry: one OTel span per search, attributes `q.length, hits, filename_hits, content_hits`.
 
-Estimated size: ~150 LOC backend (the wrapper around the existing BM25 class is the bulk) + ~150 LOC frontend.
+Estimated size: ~250 LOC backend (the new index instance + a small RRF aggregator that's ~30 lines) + ~200 LOC frontend (search bar, palette, result rows with snippet + badges).
 
 ---
 
@@ -471,12 +513,12 @@ Within a session (agentic search or research), the same chunk retrieved by multi
 
 | # | Feature | Estimate (eng-weeks) | Depends on | Why this order |
 |---|---|---|---|---|
-| 1 | File search | 0.5 | — | Smallest. Reuses existing BM25 class, second instance fed filenames. Standalone. |
+| 1 | File search | 1 | — | Two BM25 instances (existing content + new filename), fused per-file via RRF. Standalone. |
 | 2 | Retrieval MCP | 1.5 | (1) for the file-search tool | Exposes existing surface; collects external feedback while heavier work proceeds. |
 | 3 | Agentic search | 3 | (1), (2) | Core capability that deep research depends on. Ships independently as a power-user feature. |
 | 4 | Deep research | 4 | (3) | Largest. Heavy frontend work + new persistence + the most user-visible output. |
 
-Total: ~9 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
+Total: ~9.5 eng-weeks for all four. Each can ship independently with its own branch + merge to `dev`.
 
 ---
 
