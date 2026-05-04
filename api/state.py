@@ -28,6 +28,13 @@ from parser.tree_builder import TreeBuilder
 from persistence.files import FileStore
 from persistence.store import Store
 from persistence.vector.base import VectorStore, make_vector_store
+from retrieval.file_search import (
+    UnifiedSearcher,
+    build_filename_bm25_index,
+    filename_index_path,
+    remove_filename_index_for_doc,
+    update_filename_index_for_doc,
+)
 from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 
 log = logging.getLogger(__name__)
@@ -269,8 +276,10 @@ class AppState:
         # BM25 index is lazy -- built on first /ask
         self._init_lock = threading.RLock()
         self._bm25 = None
+        self._filename_bm25 = None
         self._retrieval: RetrievalPipeline | None = None
         self._answering: AnsweringPipeline | None = None
+        self._unified_search: UnifiedSearcher | None = None
 
     # ------------------------------------------------------------------
     def _ensure_retrieval(self) -> RetrievalPipeline:
@@ -284,6 +293,14 @@ class AppState:
                 self.store,
                 self.cfg.retrieval.bm25,
                 cache_path=cache_path,
+            )
+            # Build the doc-keyed filename index alongside the content
+            # BM25 so /search has both signals on first call. Reuses the
+            # same BM25Config (k1/b) — filenames tokenize the same way.
+            self._filename_bm25 = build_filename_bm25_index(
+                self.store,
+                self.cfg.retrieval.bm25,
+                cache_path=filename_index_path(self.cfg),
             )
 
             # Build LLM tree navigator if configured
@@ -338,8 +355,42 @@ class AppState:
         return self._ensure_answering()
 
     # ------------------------------------------------------------------
+    @property
+    def unified_search(self) -> UnifiedSearcher:
+        """Lazy-init the ``/search`` searcher.
+
+        Reuses the retrieval pipeline (lazy-built via the `retrieval`
+        property if needed) and the filename BM25 index (built at the
+        same time). Constructed once per process — searchers hold no
+        per-request state.
+        """
+        if self._unified_search is not None:
+            return self._unified_search
+        with self._init_lock:
+            if self._unified_search is not None:
+                return self._unified_search
+            pipeline = self._ensure_retrieval()
+            assert self._filename_bm25 is not None  # set inside _ensure_retrieval
+            self._unified_search = UnifiedSearcher(
+                pipeline=pipeline,
+                filename_index=self._filename_bm25,
+                rel=self.store,
+            )
+            return self._unified_search
+
+    # ------------------------------------------------------------------
     def refresh_bm25(self, *, force_rebuild: bool = True) -> None:
-        """Rebuild BM25 and optionally persist to disk cache."""
+        """Rebuild content + filename BM25 indices and persist them.
+
+        Called from:
+          * fallback after a per-doc incremental update fails
+          * trash service permanent-delete path
+          * /system maintenance routes
+          * /documents reset / re-ingest
+        Both indices are kept in sync — every callsite that needed a
+        content-index rebuild also needs the filename-index to reflect
+        the same delete / rename / reset.
+        """
         cache_path = self.cfg.cache.bm25_path if self.cfg.cache.bm25_persistence else None
         new_bm25 = build_bm25_index(
             self.store,
@@ -347,10 +398,19 @@ class AppState:
             force_rebuild=force_rebuild,
             cache_path=cache_path or "",
         )
+        new_filename = build_filename_bm25_index(
+            self.store,
+            self.cfg.retrieval.bm25,
+            force_rebuild=force_rebuild,
+            cache_path=filename_index_path(self.cfg),
+        )
         with self._init_lock:
             self._bm25 = new_bm25
+            self._filename_bm25 = new_filename
             if self._retrieval is not None:
                 self._retrieval.bm25 = new_bm25
+            if self._unified_search is not None:
+                self._unified_search.filename_index = new_filename
 
     # ------------------------------------------------------------------
     def _on_ingest_complete(self, doc_id: str, error: Exception | None) -> None:
@@ -368,6 +428,42 @@ class AppState:
                 self.refresh_bm25()
             except Exception:
                 log.exception("post-ingest bm25 refresh failed")
+        # Filename index update is independent — never block a content-
+        # index update on a filename-index hiccup, and vice versa.
+        try:
+            self._update_filename_bm25_for_doc(doc_id)
+        except Exception:
+            log.exception(
+                "incremental filename-bm25 update failed for %s; will rebuild on next restart",
+                doc_id,
+            )
+
+    def _update_filename_bm25_for_doc(self, doc_id: str) -> None:
+        """Replace one doc's entry in the filename index in place.
+
+        Same lock pattern as the content index. On doc deletion the
+        store returns no row and we drop the entry.
+        """
+        if self._filename_bm25 is None:
+            return  # not built yet — first /search call will trigger a build
+
+        doc_row = self.store.get_document(doc_id)
+        with self._init_lock:
+            idx = self._filename_bm25
+            if idx is None:
+                return
+            if not doc_row:
+                remove_filename_index_for_doc(idx, doc_id)
+            else:
+                update_filename_index_for_doc(
+                    idx,
+                    doc_id=doc_id,
+                    filename=doc_row.get("filename") or "",
+                    path=doc_row.get("path") or "",
+                    format=doc_row.get("format") or "",
+                )
+            idx.finalize()
+            self._persist_filename_bm25(idx)
 
     def _update_bm25_for_doc(self, doc_id: str) -> None:
         """
@@ -424,6 +520,15 @@ class AppState:
         except Exception as e:
             log.warning("bm25 cache save failed: %s", e)
 
+    def _persist_filename_bm25(self, idx) -> None:
+        cache_path = filename_index_path(self.cfg)
+        if not cache_path:
+            return
+        try:
+            idx.save(cache_path)
+        except Exception as e:
+            log.warning("filename bm25 cache save failed: %s", e)
+
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
         # Stop the parse/embed queue first — this prevents new KG jobs
@@ -447,6 +552,14 @@ class AppState:
                 cache_path = self.cfg.cache.bm25_path if self.cfg.cache.bm25_persistence else None
                 if cache_path:
                     self._bm25.save(cache_path)
+            except Exception:
+                pass
+        # Save filename BM25 cache (sibling of the content index)
+        if self._filename_bm25 is not None:
+            try:
+                fp = filename_index_path(self.cfg)
+                if fp:
+                    self._filename_bm25.save(fp)
             except Exception:
                 pass
         # Close graph store
