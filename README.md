@@ -208,10 +208,13 @@ ForgeRAG/
 
 **Next wave — retrieval evolution** ([full design](docs/roadmaps/retrieval-evolution.md)):
 
-- [ ] **Unified `/search`** — the retrieval primitive exposed standalone (no LLM answer). Returns chunks by default; opt-in `include=["files"]` adds a file-level rollup. Filename signal feeds both. `/query` becomes `/search + answering`.
-- [ ] **Retrieval MCP server** — expose `search_files / search_chunks / query / read_chunk` as MCP tools. Plug ForgeRAG into Claude Desktop, Claude Code, custom agent workflows.
-- [ ] **Agentic search** — multi-step retrieval where an LLM iteratively decides what to query next. Comparison + multi-hop questions get the iteration they need; one-shot stays one-shot.
-- [ ] **Deep research mode** — long-horizon report generation. Plan outline → parallel section research → cited synthesis. Export Markdown / PDF.
+- [x] **Unified `/search`** — retrieval primitive exposed standalone, no LLM. Chunks default, files rollup opt-in. Shipped.
+- [ ] **Web search** — Tavily / Brave / Bing through `/search` via `include=["web"]`. Untrusted-content + prompt-injection defense lands here so every later layer inherits it.
+- [ ] **Multi-user + folder permissions** — email/password auth, per-folder `(owner, shared_with)` model, `path_filters: list[str]` as authz primitive. **Multi-user, not multi-tenant** — shared global tree, shared indices.
+- [ ] **Agentic search** — multi-step retrieval driven by LLM tool calls (`search_local` / `web_search` / `fetch_url` / `read_chunk`). Bounded by iteration / token / time / web-call budgets.
+- [ ] 🚀 **Public release** — at this point: differentiator (AS) live, multi-user ready, web blended. Ship.
+- [ ] **Deep research with HITL** — Plan → parallel per-section AS → draft → synthesis. Three HITL modes; `checkpoint` is default (review each section before research moves on). Export Markdown / PDF.
+- [ ] **Retrieval MCP** — expose `search / query / agentic_search / research_*` as MCP tools. Lands last so the tool list is the full surface in one shot.
 
 **Foundation work** (in parallel as needed):
 
