@@ -22,15 +22,11 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import httpx
 import pytest
 
 from config.web_search import (
-    BraveConfig,
-    TavilyConfig,
-    WebSearchCacheConfig,
     WebSearchConfig,
     WebSearchCostConfig,
 )
@@ -47,7 +43,6 @@ from retrieval.web_search import (
     strip_injection,
     wrap_untrusted,
 )
-
 
 # ---------------------------------------------------------------------------
 # httpx mock harness — patch the module-level ``httpx`` symbol with a
@@ -96,7 +91,7 @@ class _StubHttpx:
             raise nxt
         return nxt
 
-    def post(self, url, *, json=None, timeout=None):  # noqa: A002
+    def post(self, url, *, json=None, timeout=None):
         return self._record("POST", url, json=json, timeout=timeout)
 
     def get(self, url, *, params=None, headers=None, timeout=None, follow_redirects=False):

@@ -448,3 +448,120 @@ def sign_out_others(request: Request, state: AppState = Depends(get_state)):
                 s.revoked_at = datetime.utcnow()
                 count += 1
     return {"revoked": count}
+
+
+# ---------------------------------------------------------------------------
+# Folder invitations — recipient-side
+# ---------------------------------------------------------------------------
+#
+# The owner mints a token via POST /folders/{id}/invitations; the
+# recipient hits these routes with the raw token in the URL. They
+# bypass the middleware (the token is the auth) — the endpoints
+# themselves rate-limit by token uniqueness + expiry + one-shot
+# consumption.
+
+
+class InvitationPreviewOut(BaseModel):
+    invitation_id: str
+    folder_id: str
+    folder_path: str
+    target_email: str
+    role: str
+    expires_at: str
+    inviter_username: str
+    inviter_email: str | None = None
+
+
+@router.get(
+    "/invitations/{token}/preview", response_model=InvitationPreviewOut
+)
+def preview_invitation(token: str, state: AppState = Depends(get_state)):
+    """Pre-redemption summary so the recipient confirms what they're
+    accepting before clicking through. Bypasses auth — the token
+    in the URL identifies the invitation."""
+    from persistence.invitation_service import (
+        FolderInvitationService,
+        InvitationAlreadyConsumed,
+        InvitationExpired,
+        InvitationFolderMissing,
+        InvitationNotFound,
+    )
+
+    with state.store.transaction() as sess:
+        try:
+            preview = FolderInvitationService(sess).preview(token)
+        except InvitationNotFound:
+            raise HTTPException(404, "invalid or revoked invitation")
+        except InvitationExpired:
+            raise HTTPException(410, "invitation expired")
+        except InvitationAlreadyConsumed:
+            raise HTTPException(409, "invitation already used")
+        except InvitationFolderMissing:
+            raise HTTPException(410, "folder no longer exists")
+    return InvitationPreviewOut(
+        invitation_id=preview.invitation_id,
+        folder_id=preview.folder_id,
+        folder_path=preview.folder_path,
+        target_email=preview.target_email,
+        role=preview.role,
+        expires_at=preview.expires_at.isoformat(),
+        inviter_username=preview.inviter_username,
+        inviter_email=preview.inviter_email,
+    )
+
+
+# Consume runs as a normal authenticated route (the recipient must
+# have a session). It's exposed at the same prefix for symmetry —
+# but since it's after registration / login, the middleware bypass
+# above doesn't apply (the user has a session by now). To consume
+# without the middleware caring, we still bypass and require an
+# explicit ``user_id`` in the body — the registration / login route
+# in S4 will be the canonical caller and pass its just-minted user.
+class ConsumeInvitationRequest(BaseModel):
+    token: str
+    user_id: str
+
+
+@router.post("/invitations/consume", response_model=InvitationPreviewOut)
+def consume_invitation(
+    body: ConsumeInvitationRequest, state: AppState = Depends(get_state)
+):
+    """Apply an invitation's grant to the redeemer. Called by the
+    registration / login flow once the recipient has an
+    authenticated identity. The token is one-shot — replaying the
+    same token against this endpoint is rejected.
+    """
+    from persistence.invitation_service import (
+        FolderInvitationService,
+        InvitationAlreadyConsumed,
+        InvitationError,
+        InvitationExpired,
+        InvitationFolderMissing,
+        InvitationNotFound,
+    )
+
+    with state.store.transaction() as sess:
+        try:
+            preview = FolderInvitationService(sess).consume(
+                token=body.token, redeemer_user_id=body.user_id
+            )
+        except InvitationNotFound:
+            raise HTTPException(404, "invalid or revoked invitation")
+        except InvitationExpired:
+            raise HTTPException(410, "invitation expired")
+        except InvitationAlreadyConsumed:
+            raise HTTPException(409, "invitation already used")
+        except InvitationFolderMissing:
+            raise HTTPException(410, "folder no longer exists")
+        except InvitationError as e:
+            raise HTTPException(400, str(e))
+    return InvitationPreviewOut(
+        invitation_id=preview.invitation_id,
+        folder_id=preview.folder_id,
+        folder_path=preview.folder_path,
+        target_email=preview.target_email,
+        role=preview.role,
+        expires_at=preview.expires_at.isoformat(),
+        inviter_username=preview.inviter_username,
+        inviter_email=preview.inviter_email,
+    )

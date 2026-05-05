@@ -127,6 +127,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path.startswith("/api/v1/auth/login") or path.startswith("/api/v1/auth/logout"):
             return await call_next(request)
+        # Folder-invitation preview / consume routes run before the
+        # recipient is logged in (they're following the link from
+        # their email). The token in the URL is the auth.
+        if path.startswith("/api/v1/auth/invitations/"):
+            return await call_next(request)
         for prefix in cfg.public_paths or []:
             if path.startswith(prefix):
                 return await call_next(request)

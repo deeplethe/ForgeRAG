@@ -42,6 +42,11 @@ from persistence.folder_share_service import (
     MembershipConstraintError,
 )
 from persistence.folder_share_service import UserNotFound as ShareUserNotFound
+from persistence.invitation_service import (
+    FolderInvitationService,
+    InvitationError,
+    InvitationFolderMissing,
+)
 from persistence.models import AuthUser, Folder
 from persistence.scope import ScopeMode, ScopeService
 
@@ -483,3 +488,146 @@ def remove_folder_member(
             raise HTTPException(400, str(e))
         members = svc.list_members(folder_id)
     return [MemberOut(**m.__dict__) for m in members]
+
+
+# ---------------------------------------------------------------------------
+# Folder invitations
+# ---------------------------------------------------------------------------
+#
+# An invitation is a one-shot signed link the owner can paste into
+# whatever channel they use (no SMTP in v1). The recipient lands on
+# /auth/register?invite=<token> (frontend route), the
+# unauthenticated /api/v1/auth/invitations/{token}/preview shows
+# them what they're accepting, and the registration / login flow
+# (S4) calls FolderInvitationService.consume on completion.
+#
+# Routes here are owner / admin only — same gate as member CRUD.
+
+
+class IssueInvitationRequest(BaseModel):
+    email: str
+    role: str = Field(..., pattern="^(r|rw)$")
+    ttl_days: int | None = Field(None, ge=1, le=90)
+
+
+class IssuedInvitationOut(BaseModel):
+    invitation_id: str
+    invitation_url: str
+    folder_id: str
+    folder_path: str
+    target_email: str
+    role: str
+    expires_at: str  # iso 8601
+
+
+class InvitationRowOut(BaseModel):
+    invitation_id: str
+    folder_id: str
+    target_email: str
+    role: str
+    inviter_user_id: str
+    created_at: str
+    expires_at: str
+    consumed_at: str | None = None
+    consumed_by_user_id: str | None = None
+
+
+def _invitation_url(token: str) -> str:
+    """Compose the recipient-facing URL. The frontend route
+    ``/auth/register?invite=<token>`` consumes the token after the
+    user registers / logs in. Server-side we never store the URL,
+    only the hash; the inviter copy/pastes the returned string.
+    """
+    return f"/auth/register?invite={token}"
+
+
+@router.post(
+    "/{folder_id}/invitations",
+    response_model=IssuedInvitationOut,
+    status_code=201,
+)
+def issue_folder_invitation(
+    folder_id: str,
+    body: IssueInvitationRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Mint an invitation link the owner copies into whatever channel
+    they use. The raw token is returned exactly once."""
+    _require_share_permission(state, principal, folder_id, "share")
+    ttl = body.ttl_days or state.cfg.auth.invitation_ttl_days
+    with state.store.transaction() as sess:
+        try:
+            issued = FolderInvitationService(sess).create(
+                folder_id=folder_id,
+                target_email=body.email,
+                role=body.role,  # type: ignore[arg-type]
+                inviter_user_id=principal.user_id,
+                ttl_days=ttl,
+            )
+        except InvitationFolderMissing:
+            raise HTTPException(404, f"folder not found: {folder_id!r}")
+        except InvitationError as e:
+            raise HTTPException(400, str(e))
+    return IssuedInvitationOut(
+        invitation_id=issued.invitation_id,
+        invitation_url=_invitation_url(issued.token),
+        folder_id=issued.folder_id,
+        folder_path=issued.folder_path,
+        target_email=issued.target_email,
+        role=issued.role,
+        expires_at=issued.expires_at.isoformat(),
+    )
+
+
+@router.get(
+    "/{folder_id}/invitations",
+    response_model=list[InvitationRowOut],
+)
+def list_folder_invitations(
+    folder_id: str,
+    include_consumed: bool = Query(False),
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Outstanding invitations on this folder. Owner / admin only —
+    invitee emails are sensitive."""
+    _require_share_permission(state, principal, folder_id, "share")
+    with state.store.transaction() as sess:
+        rows = FolderInvitationService(sess).list(
+            folder_id=folder_id, include_consumed=include_consumed
+        )
+    return [
+        InvitationRowOut(
+            invitation_id=r.invitation_id,
+            folder_id=r.folder_id,
+            target_email=r.target_email,
+            role=r.role,
+            inviter_user_id=r.inviter_user_id,
+            created_at=r.created_at.isoformat(),
+            expires_at=r.expires_at.isoformat(),
+            consumed_at=r.consumed_at.isoformat() if r.consumed_at else None,
+            consumed_by_user_id=r.consumed_by_user_id,
+        )
+        for r in rows
+    ]
+
+
+@router.delete(
+    "/{folder_id}/invitations/{invitation_id}",
+    status_code=204,
+)
+def revoke_folder_invitation(
+    folder_id: str,
+    invitation_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Hard-revoke: the token immediately stops working."""
+    _require_share_permission(state, principal, folder_id, "share")
+    with state.store.transaction() as sess:
+        FolderInvitationService(sess).revoke(
+            invitation_id=invitation_id,
+            actor_user_id=principal.user_id,
+        )
+    return None
