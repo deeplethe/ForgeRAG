@@ -22,8 +22,7 @@ Current tools:
     graph_explore  — knowledge graph entity + relation lookup,
                      visibility-filtered
     web_search     — public-web search (untrusted-content tagged)
-
-rerank lands in the next commit.
+    rerank         — cross-encoder rerank over a candidate set
 
 Result shape contract for search-style tools:
 
@@ -42,6 +41,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from ..auth import filter_entity, filter_relation
 from .dispatch import (
@@ -755,6 +755,156 @@ def _handle_web_search(params: dict, ctx: ToolContext) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Tool: rerank
+# ---------------------------------------------------------------------------
+#
+# Cross-encoder rerank over a candidate chunk set. The agent calls
+# this AFTER getting candidates from search_bm25 / search_vector
+# (or both) when it has, say, 30 hits and wants to narrow down to
+# the most relevant 5 before answering.
+#
+# Cross-encoder rerank scores aren't comparable across providers
+# (Cohere / Jina / BGE all use different scales), so we derive a
+# synthetic 0-1 score from rank position. The agent should treat
+# the output ORDER as the rerank's primary signal; ``score`` is a
+# convenience for chaining (e.g. citation_pool sorts by score).
+#
+# Scope check is applied here too — if the agent passes chunk_ids
+# from one tool's result and we silently dropped some via scope,
+# rerank doesn't accidentally re-admit them. Defence in depth.
+
+_RERANK_DEFAULT_TOP_K = 10
+_RERANK_MAX_TOP_K = 30
+
+
+def _handle_rerank(params: dict, ctx: ToolContext) -> dict:
+    reranker = getattr(ctx.state, "reranker", None)
+    if reranker is None:
+        return DispatchError(
+            error="reranker not configured", tool="rerank"
+        ).to_result()
+
+    chunk_ids = params["chunk_ids"]
+    if not isinstance(chunk_ids, list):
+        return DispatchError(
+            error="chunk_ids must be a list of strings", tool="rerank"
+        ).to_result()
+    if not chunk_ids:
+        return {"chunks": []}
+
+    query = params["query"]
+    top_k = min(
+        int(params.get("top_k", _RERANK_DEFAULT_TOP_K)), _RERANK_MAX_TOP_K
+    )
+
+    # Resolve content + apply scope. Out-of-scope chunks silently
+    # dropped — the LLM may have hallucinated a chunk_id from an
+    # earlier result that scope-filter killed; we don't want rerank
+    # to re-admit them.
+    rows = ctx.state.store.get_chunks_by_ids(chunk_ids)
+    by_id = {r["chunk_id"]: r for r in rows}
+
+    # Duck-typed MergedChunk wrappers — RerankApiReranker only reads
+    # ``.chunk.content`` and ``.chunk_id`` from each candidate, so we
+    # don't need full MergedChunk / Chunk objects (10+ required
+    # fields). SimpleNamespace satisfies the protocol.
+    candidates = []
+    for cid in chunk_ids:
+        row = by_id.get(cid)
+        if row is None or not doc_passes_scope(ctx, row.get("doc_id")):
+            continue
+        candidates.append(
+            SimpleNamespace(
+                chunk_id=cid,
+                chunk=SimpleNamespace(content=row.get("content") or ""),
+                rrf_score=0.0,
+            )
+        )
+
+    if not candidates:
+        return {"chunks": []}
+
+    try:
+        ranked = reranker.rerank(query, candidates, top_k=top_k)
+    except Exception as e:
+        return DispatchError(
+            error=f"rerank failed: {type(e).__name__}", tool="rerank"
+        ).to_result()
+
+    out: list[dict] = []
+    total = max(len(ranked), 1)
+    for i, c in enumerate(ranked):
+        cid = c.chunk_id
+        row = by_id.get(cid)
+        if row is None:
+            continue
+        # Rank-position score in [0, 1]. Position 0 → 1.0; last → ~0.
+        score = round(1.0 - (i / total), 4)
+        content = row.get("content") or ""
+        snippet = content[:_SNIPPET_CHARS]
+        if len(content) > _SNIPPET_CHARS:
+            snippet += "…"
+        register_chunk(
+            ctx,
+            cid,
+            doc_id=row["doc_id"],
+            content=content,
+            page_start=row.get("page_start"),
+            page_end=row.get("page_end"),
+            path=row.get("path"),
+            score=score,
+            source="rerank",
+        )
+        out.append(
+            {
+                "chunk_id": cid,
+                "rank": i + 1,
+                "score": score,
+                "snippet": snippet,
+            }
+        )
+    return {"chunks": out}
+
+
+_RERANK_SPEC = ToolSpec(
+    name="rerank",
+    description=(
+        "Rerank a candidate set of chunks by cross-encoder relevance "
+        "to the query. Use this AFTER getting candidates from "
+        "search_bm25 / search_vector when you have many hits and want "
+        "to narrow down to the few most relevant before answering. "
+        "Returns the chunks in rank order with synthetic 0-1 scores. "
+        "Default top_k=10, max 30."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The query the chunks should be ranked against.",
+            },
+            "chunk_ids": {
+                "type": "array",
+                "description": (
+                    "List of chunk_ids to rerank — typically copied "
+                    "from search_bm25 / search_vector results."
+                ),
+            },
+            "top_k": {
+                "type": "integer",
+                "description": (
+                    f"Number of top hits to return after rerank. Default "
+                    f"{_RERANK_DEFAULT_TOP_K}, max {_RERANK_MAX_TOP_K}."
+                ),
+            },
+        },
+        "required": ["query", "chunk_ids"],
+    },
+    handler=_handle_rerank,
+)
+
+
 _WEB_SEARCH_SPEC = ToolSpec(
     name="web_search",
     description=(
@@ -843,4 +993,5 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _READ_TREE_SPEC.name: _READ_TREE_SPEC,
     _GRAPH_EXPLORE_SPEC.name: _GRAPH_EXPLORE_SPEC,
     _WEB_SEARCH_SPEC.name: _WEB_SEARCH_SPEC,
+    _RERANK_SPEC.name: _RERANK_SPEC,
 }
