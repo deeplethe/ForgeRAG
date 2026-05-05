@@ -52,10 +52,10 @@ class File(Base):
     display_name: Mapped[str] = mapped_column(String(512))
     size_bytes: Mapped[int] = mapped_column(Integer)
     mime_type: Mapped[str] = mapped_column(String(128))
-    # The user who uploaded this file. Audit-only; access control runs
-    # off the containing folder's owner / shared_with, not the file
-    # itself. Nullable for legacy rows that pre-date multi-user.
-    owner_user_id: Mapped[str | None] = mapped_column(
+    # The user who uploaded this file. Audit-only; access control
+    # runs off the containing folder's ``shared_with``. Nullable
+    # for legacy rows that pre-date multi-user.
+    user_id: Mapped[str | None] = mapped_column(
         String(32),
         ForeignKey("auth_users.user_id", ondelete="SET NULL"),
         nullable=True,
@@ -63,6 +63,12 @@ class File(Base):
     )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # ── Creator attribution (audit only) ──────────────────────────
+    # ``user_id`` records who uploaded this file. It does NOT
+    # participate in access control — folder.shared_with is the
+    # sole authz field, with admin role bypass for org-level
+    # operations. Renamed from ``owner_user_id`` in 20260507 once
+    # the owner tier was removed from the design.
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +110,11 @@ class Document(Base):
         server_default="/",
         index=True,
     )
-    # The user who first ingested this document. Audit-only; access
-    # control runs off the containing folder's owner / shared_with.
-    # Nullable for legacy rows that pre-date multi-user.
-    owner_user_id: Mapped[str | None] = mapped_column(
+    # The user who first ingested this document. Audit-only;
+    # access control runs off the containing folder's
+    # ``shared_with``. Nullable for legacy rows that pre-date
+    # multi-user.
+    user_id: Mapped[str | None] = mapped_column(
         String(32),
         ForeignKey("auth_users.user_id", ondelete="SET NULL"),
         nullable=True,

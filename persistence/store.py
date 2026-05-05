@@ -1296,7 +1296,7 @@ def _file_to_dict(row: File) -> dict:
         "display_name": row.display_name,
         "size_bytes": row.size_bytes,
         "mime_type": row.mime_type,
-        "owner_user_id": row.owner_user_id,
+        "user_id": row.user_id,
         "uploaded_at": row.uploaded_at,
         "metadata_json": row.metadata_json or {},
     }

@@ -107,7 +107,9 @@ def seeded(store: Store) -> dict:
             )
         sess.flush()
 
-        # Files (uploader = bob for /scratch's, alice for /research's)
+        # Files. ``user_id`` is creator attribution (audit) — does
+        # NOT participate in authz. Read access on a file goes via
+        # the referencing document's folder.shared_with.
         sess.add(
             File(
                 file_id="file_research",
@@ -117,7 +119,7 @@ def seeded(store: Store) -> dict:
                 display_name="r.pdf",
                 size_bytes=1,
                 mime_type="application/pdf",
-                owner_user_id=ids["alice"],
+                user_id=ids["alice"],
             )
         )
         sess.add(
@@ -129,7 +131,7 @@ def seeded(store: Store) -> dict:
                 display_name="s.pdf",
                 size_bytes=1,
                 mime_type="application/pdf",
-                owner_user_id=ids["bob"],
+                user_id=ids["bob"],
             )
         )
         sess.flush()
@@ -377,17 +379,25 @@ def test_get_file_cross_user_404(store, seeded):
     assert r.status_code == 404
 
 
-def test_get_file_uploader_path(store, seeded):
-    """Uploader gets access via files.owner_user_id even if no
-    referencing doc is in an accessible folder. Confirm by orphaning
-    file_research (drop the doc) — alice as the uploader still
-    fetches it."""
+def test_orphan_file_admin_only(store, seeded):
+    """Orphan files (no referencing document) are admin-only — the
+    creator's recorded ``user_id`` does NOT confer access in the
+    new model. If admin hard-deleted alice's doc, alice loses
+    access to the file blob too. Admin can still reach it via
+    role bypass."""
     with store.transaction() as sess:
         d = sess.get(Document, "d_research")
         sess.delete(d)
         sess.commit()
+    # Alice (uploader) → 404 even though files.user_id == alice.
     app = _build_app(store, _alice(seeded))
     with TestClient(app) as c:
+        r = c.get("/api/v1/files/file_research")
+    assert r.status_code == 404
+    # Admin → 200 via role bypass (the role check short-circuits
+    # before any folder lookup).
+    app_admin = _build_app(store, _admin(seeded))
+    with TestClient(app_admin) as c:
         r = c.get("/api/v1/files/file_research")
     assert r.status_code == 200
 

@@ -72,16 +72,20 @@ def test_folders_has_shared_with(store: Store):
     assert "owner_user_id" not in cols
 
 
-def test_documents_has_owner_user_id(store: Store):
+def test_documents_has_user_id_creator_attribution(store: Store):
+    """Renamed from ``owner_user_id`` in 20260507. Audit-only —
+    folder.shared_with is the sole authz field."""
     insp = inspect(store._engine)
     cols = {c["name"] for c in insp.get_columns("documents")}
-    assert "owner_user_id" in cols
+    assert "user_id" in cols
+    assert "owner_user_id" not in cols
 
 
-def test_files_has_owner_user_id(store: Store):
+def test_files_has_user_id_creator_attribution(store: Store):
     insp = inspect(store._engine)
     cols = {c["name"] for c in insp.get_columns("files")}
-    assert "owner_user_id" in cols
+    assert "user_id" in cols
+    assert "owner_user_id" not in cols
 
 
 def test_conversations_has_user_id(store: Store):
@@ -320,7 +324,7 @@ def test_conversation_user_id_nullable(store: Store):
         assert row.user_id is None  # legacy conversations stay un-owned
 
 
-def test_file_owner_user_id_round_trips(store: Store):
+def test_file_user_id_creator_attribution_round_trips(store: Store):
     with store.transaction() as sess:
         u = AuthUser(user_id="u1", username="alice", password_hash="x")
         sess.add(u)
@@ -333,11 +337,11 @@ def test_file_owner_user_id_round_trips(store: Store):
             display_name="x.pdf",
             size_bytes=10,
             mime_type="application/pdf",
-            owner_user_id="u1",
+            user_id="u1",
         )
         sess.add(f)
         sess.commit()
 
     with store.transaction() as sess:
         row = sess.get(File, "f1")
-        assert row.owner_user_id == "u1"
+        assert row.user_id == "u1"

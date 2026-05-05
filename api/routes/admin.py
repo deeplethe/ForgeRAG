@@ -14,8 +14,8 @@ principal with ``role='admin'``):
 
 Hard-delete cascades / nulls per the schema's ON DELETE rules:
   * conversations  → CASCADE     (privacy hygiene)
-  * documents.owner_user_id  → SET NULL (audit-only column)
-  * files.owner_user_id  → SET NULL (audit-only column)
+  * documents.user_id  → SET NULL (audit-only column — who uploaded)
+  * files.user_id  → SET NULL (audit-only — who uploaded)
   * audit_log.actor_id  → string column, untouched (audit trail
                           survives the user row going away)
   * folders.shared_with  → manually swept here (JSON column, no FK)
@@ -269,8 +269,8 @@ def delete_user(
     Cascade behaviour comes from the schema:
 
       * conversations.user_id   → CASCADE (rows deleted)
-      * documents.owner_user_id → SET NULL (audit-only column)
-      * files.owner_user_id     → SET NULL
+      * documents.user_id       → SET NULL (audit-only attribution)
+      * files.user_id           → SET NULL (audit-only attribution)
       * auth_tokens             → CASCADE (issued tokens revoked
                                   by row deletion)
       * auth_sessions           → CASCADE (cookies invalidated)

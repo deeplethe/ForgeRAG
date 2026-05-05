@@ -162,12 +162,16 @@ def require_file_access(
     file_id: str,
     action: str = "read",
 ) -> dict:
-    """Fetch a file row and verify access. Files can be referenced by
-    multiple ``Document`` rows (one per parse_version, or per upload
-    target); the user passes if they have access to the folder of
-    ANY referencing doc, OR they're the original uploader (the
-    audit-only ``files.owner_user_id``). Files with no referencing
-    doc and no recorded uploader are admin-only.
+    """Fetch a file row and verify access via any referencing
+    document's folder.
+
+    Files can be referenced by multiple ``Document`` rows (one per
+    parse_version, or as a converted-PDF target). The user passes
+    if any referencing doc lives in a folder where they have the
+    requested action. Files with no referencing doc are admin-only
+    — the upload's ``user_id`` is recorded for attribution but does
+    NOT confer access (folder ``shared_with`` is the only authz
+    field).
     """
     row = state.store.get_file(file_id)
     if row is None:
@@ -175,11 +179,11 @@ def require_file_access(
     if not (state.cfg.auth.enabled and principal.via != "auth_disabled"):
         return row
 
-    # Original uploader path.
-    if row.get("owner_user_id") == principal.user_id:
+    # Admin role bypasses the per-folder check — also covers orphan
+    # files where there's no referencing doc to gate against.
+    if principal.role == "admin":
         return row
 
-    # Any referencing doc lives in an accessible folder?
     docs = state.store.find_documents_by_file_id(file_id)
     for d in docs or []:
         folder_id = d.get("folder_id")
