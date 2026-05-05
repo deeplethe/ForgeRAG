@@ -465,3 +465,83 @@ class TestTreeAccess:
         with TestClient(app) as c:
             r = c.get("/api/v1/documents/d_scratch/tree/some-node")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/files — list + delete authz
+# ---------------------------------------------------------------------------
+
+
+def _build_files_app(
+    store: Store, principal: AuthenticatedPrincipal, *, auth_enabled: bool = True
+) -> FastAPI:
+    """Files router needs blob + file_store on state.
+
+    Both stubbed — these tests exercise authz, not blob handling."""
+    fake_state = SimpleNamespace(
+        store=store,
+        cfg=SimpleNamespace(auth=AuthConfig(enabled=auth_enabled)),
+        authz=AuthorizationService(store),
+        blob=SimpleNamespace(
+            get=lambda key: b"",
+            url_for=lambda key: None,
+        ),
+        file_store=SimpleNamespace(),
+    )
+    from api.routes.files import router as files_router
+
+    app = FastAPI()
+    app.include_router(files_router)
+    app.dependency_overrides[get_state] = lambda: fake_state
+
+    @app.middleware("http")
+    async def _set_principal(request: Request, call_next):
+        request.state.principal = principal
+        return await call_next(request)
+
+    return app
+
+
+class TestFilesList:
+    def test_user_sees_only_own_folder_files(self, store, seeded):
+        """alice has rw on /research; she should see file_research
+        but NOT file_scratch (referenced only by bob's /scratch
+        doc)."""
+        app = _build_files_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.get("/api/v1/files")
+        assert r.status_code == 200
+        ids = {f["file_id"] for f in r.json()["items"]}
+        assert "file_research" in ids
+        assert "file_scratch" not in ids
+
+    def test_admin_sees_all(self, store, seeded):
+        app = _build_files_app(store, _admin(seeded))
+        with TestClient(app) as c:
+            r = c.get("/api/v1/files")
+        assert r.status_code == 200
+        ids = {f["file_id"] for f in r.json()["items"]}
+        assert {"file_research", "file_scratch"}.issubset(ids)
+
+
+class TestFilesDelete:
+    def test_cross_user_404(self, store, seeded):
+        app = _build_files_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.delete("/api/v1/files/file_scratch")
+        assert r.status_code == 404
+        # Verify no mutation happened.
+        with store.transaction() as sess:
+            assert sess.get(File, "file_scratch") is not None
+
+    def test_owner_ok(self, store, seeded):
+        app = _build_files_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.delete("/api/v1/files/file_research")
+        assert r.status_code == 204
+
+    def test_admin_bypass(self, store, seeded):
+        app = _build_files_app(store, _admin(seeded))
+        with TestClient(app) as c:
+            r = c.delete("/api/v1/files/file_scratch")
+        assert r.status_code == 204

@@ -182,11 +182,54 @@ def list_files(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
-    rows = state.store.list_files(limit=limit, offset=offset)
+    """List files visible to the caller.
+
+    Authz: a file is visible iff at least one of its referencing
+    documents lives in a folder the caller can read. Orphan files
+    (no referencing doc) are admin-only — same gate as
+    ``require_file_access``.
+
+    Pagination after authz filtering: we over-fetch and trim, so
+    ``total`` is the unfiltered upper bound (the visible-to-this-
+    user count would require a folder-join in SQL; the frontend's
+    pager copes with the over-count and the corpus-scale leak this
+    creates is just "how many files exist", which is benign).
+    """
+    auth_active = state.cfg.auth.enabled and principal.via != "auth_disabled"
+    if not auth_active or principal.role == "admin":
+        rows = state.store.list_files(limit=limit, offset=offset)
+        total = state.store.count_files()
+        return PaginatedResponse(
+            items=[_to_out(r) for r in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    # Non-admin path: pull a wider window and post-filter, since
+    # ``list_files`` doesn't yet take a folder-scope. Cap the
+    # fetch at 5×limit to bound DB IO; the trade-off is occasional
+    # short-pages when most of the window is inaccessible.
+    fetch_n = min(limit * 5, 1000)
+    rows = state.store.list_files(limit=fetch_n, offset=offset)
+    visible: list[dict] = []
+    for r in rows:
+        try:
+            docs = state.store.find_documents_by_file_id(r["file_id"])
+        except Exception:
+            docs = []
+        for d in docs or []:
+            fid = d.get("folder_id")
+            if fid and state.authz.can(principal.user_id, fid, "read"):
+                visible.append(r)
+                break
+        if len(visible) >= limit:
+            break
     total = state.store.count_files()
     return PaginatedResponse(
-        items=[_to_out(r) for r in rows],
+        items=[_to_out(r) for r in visible],
         total=total,
         limit=limit,
         offset=offset,
@@ -259,8 +302,15 @@ def preview_file(
 
 
 @router.delete("/{file_id}", status_code=204)
-def delete_file(file_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_file(file_id)
-    if not row:
-        raise HTTPException(404, "file not found")
+def delete_file(
+    file_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have ``rw`` on at least one of the file's
+    referencing-doc folders. Orphan files (no doc reference) are
+    admin-only via the role bypass in ``require_file_access``.
+    Cross-user → 404.
+    """
+    require_file_access(state, principal, file_id, action="soft_delete")
     state.store.delete_file(file_id)
