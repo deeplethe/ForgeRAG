@@ -289,7 +289,11 @@ class KGPath:
 
             _name_cache[eid] = entity.name
 
-            # Collect entity description for KG context
+            # Collect entity description for KG context.
+            # ``source_doc_ids`` MUST be carried on the dict — the
+            # post-retrieval visibility filter (``_scope_kg_context``)
+            # uses it to apply the 3-tier full / partial / hidden
+            # check before this dict's description reaches the LLM.
             if eid not in _seen_entities and entity.description:
                 _seen_entities.add(eid)
                 ctx.entities.append(
@@ -297,6 +301,7 @@ class KGPath:
                         "name": entity.name,
                         "type": entity.entity_type,
                         "description": entity.description,
+                        "source_doc_ids": sorted(entity.source_doc_ids),
                         "_eid": eid,
                     }
                 )
@@ -334,6 +339,7 @@ class KGPath:
                             "name": neighbor.name,
                             "type": neighbor.entity_type,
                             "description": neighbor.description,
+                            "source_doc_ids": sorted(neighbor.source_doc_ids),
                             "_eid": neighbor.entity_id,
                         }
                     )
@@ -384,6 +390,7 @@ class KGPath:
                             "name": entity.name,
                             "type": entity.entity_type,
                             "description": entity.description,
+                            "source_doc_ids": sorted(entity.source_doc_ids),
                             "_eid": entity.entity_id,
                         }
                     )
@@ -611,18 +618,45 @@ class KGPath:
         return kept
 
     def _scope_kg_context(self, allowed_doc_ids: set[str]) -> None:
-        """Drop entities / relations whose source_doc_ids don't overlap
-        the allowed set. Uses the synthesized KGContext populated during
-        retrieval (it already carries source_doc_ids on each entry)."""
+        """Apply the S5.3 visibility filter to the synthesized KG
+        context before its descriptions reach the LLM prompt.
+
+        Three tiers, same model as ``api/auth/kg_visibility.py``:
+
+          full     — every source_doc_id is in the caller's allowed
+                     set. Keep the entry; description flows to LLM.
+          partial  — at least one but not all sources accessible.
+                     **Drop the entry entirely.**
+          hidden   — no source accessible. Drop.
+
+        Why partial → drop (more conservative than the API surface,
+        which surfaces partial entries with description=null + a
+        ``visibility`` block): LLM context is opaque to the user, so
+        there's no place to render "1/3 sources accessible" metadata.
+        Keeping a name-only entry would either (a) feed the LLM zero
+        useful context plus a bare entity name that may itself be a
+        leak, or (b) require a placeholder string that risks
+        hallucination. The accessible chunks that share these
+        entities are still independently retrieved and cited via the
+        chunk path — dropping the synthesized layer doesn't lose
+        information the user can legitimately see, it just removes
+        cross-source synthesis.
+
+        Entries missing ``source_doc_ids`` are dropped (defensive
+        fallback): every legitimate populate site now writes the
+        field, so a missing one means a code path slipped through
+        unfixed. Don't leak through gaps."""
 
         def _keep(e: dict) -> bool:
             srcs = e.get("source_doc_ids")
             if not srcs:
-                # Unknown provenance — err on the side of hiding
                 return False
-            if isinstance(srcs, (list, set, tuple)):
-                return any(s in allowed_doc_ids for s in srcs)
-            return srcs in allowed_doc_ids
+            if not isinstance(srcs, (list, set, tuple)):
+                # Legacy single-value shape — treat as size-1 set.
+                return srcs in allowed_doc_ids
+            # 3-tier: full only. Partial (any-but-not-all) and hidden
+            # (none) both drop.
+            return all(s in allowed_doc_ids for s in srcs)
 
         self.kg_context.entities = [e for e in self.kg_context.entities if _keep(e)]
         self.kg_context.relations = [r for r in self.kg_context.relations if _keep(r)]
@@ -699,6 +733,9 @@ def _resolve_and_emit_relations(
                 "target": name_cache.get(rel.target_entity, rel.target_entity),
                 "keywords": rel.keywords,
                 "description": rel.description,
+                # Carry source_doc_ids so the visibility filter can do
+                # 3-tier check before the description hits the LLM.
+                "source_doc_ids": sorted(rel.source_doc_ids),
                 "_rid": rid,
             }
         )

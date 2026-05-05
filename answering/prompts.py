@@ -158,6 +158,13 @@ def _render_user_message(
         if kg_context.entities and kg_used < kg_budget:
             kg_lines.append("### Key Entities")
             for ent in kg_context.entities:
+                # Defensive: visibility filter may have stripped
+                # description (or upstream may have produced an entry
+                # with none). Skip — no useful prompt content without
+                # the description, and the bare name+type alone risks
+                # leaking entity existence.
+                if not ent.get("description"):
+                    continue
                 type_tag = f" ({ent['type']})" if ent.get("type") and ent["type"] != "unknown" else ""
                 desc = _truncate(ent["description"], 300)
                 line = f"- **{ent['name']}**{type_tag}: {desc}"
@@ -170,6 +177,8 @@ def _render_user_message(
         if kg_context.relations and kg_used < kg_budget:
             kg_lines.append("### Key Relations")
             for rel in kg_context.relations:
+                if not rel.get("description"):
+                    continue
                 kw = f" [{rel['keywords']}]" if rel.get("keywords") else ""
                 desc = _truncate(rel["description"], 200)
                 line = f"- {rel['source']} → {rel['target']}{kw}: {desc}"
@@ -255,6 +264,11 @@ def _estimate_kg_chars(kg_context: KGContext, cfg: GeneratorConfig) -> int:
     kg_budget = int(cfg.max_context_chars * 0.4)
     used = 0
     for ent in kg_context.entities:
+        # Mirror the description-skip in ``_render_user_message`` so
+        # the estimate doesn't reserve space for entries that won't
+        # render.
+        if not ent.get("description"):
+            continue
         type_tag = f" ({ent['type']})" if ent.get("type") and ent["type"] != "unknown" else ""
         desc = _truncate(ent["description"], 300)
         line = f"- **{ent['name']}**{type_tag}: {desc}"
@@ -262,6 +276,8 @@ def _estimate_kg_chars(kg_context: KGContext, cfg: GeneratorConfig) -> int:
             break
         used += len(line)
     for rel in kg_context.relations:
+        if not rel.get("description"):
+            continue
         kw = f" [{rel['keywords']}]" if rel.get("keywords") else ""
         desc = _truncate(rel["description"], 200)
         line = f"- {rel['source']} → {rel['target']}{kw}: {desc}"
