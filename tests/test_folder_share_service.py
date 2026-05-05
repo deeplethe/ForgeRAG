@@ -1,17 +1,18 @@
 """
 FolderShareService — cascading membership management tests.
 
-Folder tree used across these cases:
+Folder tree used across these cases (only ``shared_with`` matters
+for authz; admin reaches everything via role bypass):
 
-    /                    owner=admin
-    └── /research        owner=alice
-        └── /research/2024  owner=alice
-    └── /legal           owner=bob, shared_with [carol:r]
-        └── /legal/contracts  owner=bob
+    /                    (no shared_with)
+    └── /research        shared_with [{alice, rw}]
+        └── /research/2024  shared_with [{alice, rw}]
+    └── /legal           shared_with [{bob, rw}, {carol, r}]
+        └── /legal/contracts  shared_with [{bob, rw}, {carol, r}]
 
 The invariant:  for every user U, every folder F satisfies
     F.shared_with[U]  >=  F.parent.shared_with[U]
-(where role weights are r < rw < owner; "no grant" = 0).
+(where role weights are r < rw; "no grant" = 0).
 
 The service maintains it at write time so path-prefix retrieval can
 trust it at read time.
@@ -77,7 +78,7 @@ def seeded(store: Store) -> dict[str, str]:
             )
         sess.flush()
 
-        sess.get(Folder, "__root__").owner_user_id = ids["admin"]
+        # __root__ has no shared_with — admin reaches it via role bypass.
         sess.add(
             Folder(
                 folder_id="f_research",
@@ -85,7 +86,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -95,8 +96,10 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/legal",
                 parent_id="__root__",
                 name="legal",
-                owner_user_id=ids["bob"],
-                shared_with=[{"user_id": ids["carol"], "role": "r"}],
+                shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
+                    {"user_id": ids["carol"], "role": "r"},
+                ],
             )
         )
         sess.flush()
@@ -107,7 +110,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research/2024",
                 parent_id="f_research",
                 name="2024",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -117,14 +120,14 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/legal/contracts",
                 parent_id="f_legal",
                 name="contracts",
-                owner_user_id=ids["bob"],
-                # Mirrors what the eventual folder-creation hook will
-                # do automatically (copy parent's shared_with into the
-                # new subfolder). For the share-service tests this
-                # keeps the superset invariant satisfied at fixture
-                # time, the same state real folder creation will
-                # produce in production.
-                shared_with=[{"user_id": ids["carol"], "role": "r"}],
+                # Cascade copy of /legal's shared_with — the create-
+                # subfolder hook does this automatically in
+                # production; we hand-fill it here so the fixture
+                # already satisfies the superset invariant.
+                shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
+                    {"user_id": ids["carol"], "role": "r"},
+                ],
             )
         )
         sess.commit()
@@ -223,9 +226,9 @@ def test_add_member_upgrades_weaker_existing_grant(store, seeded):
         assert _grant_for(sub.shared_with, seeded["dan"]) == "rw"
 
 
-def test_add_member_with_owner_is_noop(store, seeded):
-    """alice already owns /research; granting her shared_with rights
-    is meaningless."""
+def test_add_member_same_role_is_idempotent(store, seeded):
+    """Setting the same role alice already has on /research (rw) is
+    a no-op — no audit row written, no shared_with churn."""
     with store.transaction() as sess:
         svc = FolderShareService(sess)
         svc.set_member_role(
@@ -235,9 +238,16 @@ def test_add_member_with_owner_is_noop(store, seeded):
             actor_user_id=seeded["alice"],
         )
         sess.commit()
+    # No new audit row — alice already had rw at fixture time.
     with store.transaction() as sess:
-        f = sess.get(Folder, "f_research")
-        assert _grant_for(f.shared_with, seeded["alice"]) is None
+        rows = (
+            sess.execute(
+                select(AuditLogRow).where(AuditLogRow.action == "folder.member.set")
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
 
 
 def test_set_member_role_idempotent(store, seeded):
@@ -395,18 +405,6 @@ def test_remove_member_rejected_when_user_in_ancestor(store, seeded):
         assert "f_legal" in str(e.value)
 
 
-def test_remove_member_owner_uses_transfer(store, seeded):
-    """Owners are removed via transfer_ownership, not remove_member."""
-    with store.transaction() as sess:
-        svc = FolderShareService(sess)
-        with pytest.raises(Exception):  # FolderShareError
-            svc.remove_member(
-                folder_id="f_research",
-                user_id=seeded["alice"],
-                actor_user_id=seeded["admin"],
-            )
-
-
 def test_remove_member_idempotent_on_missing_user(store, seeded):
     """Removing a user who was never a member is a silent no-op."""
     with store.transaction() as sess:
@@ -434,14 +432,14 @@ def test_remove_member_idempotent_on_missing_user(store, seeded):
 # ---------------------------------------------------------------------------
 
 
-def test_list_members_marks_owner_and_direct(store, seeded):
+def test_list_members_marks_direct(store, seeded):
+    """/legal's shared_with: bob:rw, carol:r — both labelled
+    ``direct`` because no ancestor grants the same roles."""
     with store.transaction() as sess:
         rows = FolderShareService(sess).list_members("f_legal")
     sources = {r.user_id: r.source for r in rows}
-    assert sources[seeded["bob"]] == "owner"
+    assert sources[seeded["bob"]] == "direct"
     assert sources[seeded["carol"]] == "direct"
-    # Owner first.
-    assert rows[0].user_id == seeded["bob"]
 
 
 def test_list_members_marks_inherited(store, seeded):
@@ -459,66 +457,11 @@ def test_list_members_marks_inherited(store, seeded):
     with store.transaction() as sess:
         rows = FolderShareService(sess).list_members("f_legal_contracts")
     by_user = {r.user_id: r for r in rows}
-    # bob owns the subfolder
-    assert by_user[seeded["bob"]].source == "owner"
-    # dan and carol inherit from /legal
+    # bob, carol, dan all inherit from /legal because the same role
+    # exists on the ancestor (cascade kept them in sync).
+    assert by_user[seeded["bob"]].source == "inherited:f_legal"
     assert by_user[seeded["dan"]].source == "inherited:f_legal"
     assert by_user[seeded["carol"]].source == "inherited:f_legal"
-
-
-# ---------------------------------------------------------------------------
-# transfer_ownership
-# ---------------------------------------------------------------------------
-
-
-def test_transfer_ownership_sets_new_owner(store, seeded):
-    with store.transaction() as sess:
-        FolderShareService(sess).transfer_ownership(
-            folder_id="f_research",
-            new_owner_user_id=seeded["bob"],
-            actor_user_id=seeded["admin"],
-        )
-        sess.commit()
-    with store.transaction() as sess:
-        f = sess.get(Folder, "f_research")
-        assert f.owner_user_id == seeded["bob"]
-
-
-def test_transfer_ownership_drops_redundant_shared_with(store, seeded):
-    """If the new owner was previously listed in shared_with, drop the
-    entry — they're owner now, more permissive than any rw grant."""
-    with store.transaction() as sess:
-        # Pre-seed: bob has rw on /research.
-        f = sess.get(Folder, "f_research")
-        f.shared_with = [{"user_id": seeded["bob"], "role": "rw"}]
-        sess.commit()
-
-    with store.transaction() as sess:
-        FolderShareService(sess).transfer_ownership(
-            folder_id="f_research",
-            new_owner_user_id=seeded["bob"],
-            actor_user_id=seeded["admin"],
-        )
-        sess.commit()
-    with store.transaction() as sess:
-        f = sess.get(Folder, "f_research")
-        assert f.owner_user_id == seeded["bob"]
-        assert _grant_for(f.shared_with, seeded["bob"]) is None
-
-
-def test_transfer_ownership_to_none_creates_ownerless_folder(store, seeded):
-    """Transferring to None is the path the user-deletion flow takes
-    — orphan folders are still admin-manageable via role bypass."""
-    with store.transaction() as sess:
-        FolderShareService(sess).transfer_ownership(
-            folder_id="f_research",
-            new_owner_user_id=None,
-            actor_user_id=seeded["admin"],
-        )
-        sess.commit()
-    with store.transaction() as sess:
-        f = sess.get(Folder, "f_research")
-        assert f.owner_user_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -537,14 +480,13 @@ def test_create_subfolder_copies_parent_shared_with(store, seeded):
         sub = FolderService(sess).create(
             parent_path="/legal",
             name="2025",
-            owner_user_id=seeded["bob"],
         )
         sess.commit()
         sub_id = sub.folder_id
 
     with store.transaction() as sess:
         sub = sess.get(Folder, sub_id)
-        assert sub.owner_user_id == seeded["bob"]
-        # Parent /legal had carol:r at fixture time, so the new
-        # /legal/2025 starts with the same grant.
+        # Parent /legal had bob:rw + carol:r at fixture time, so the
+        # new /legal/2025 inherits both.
+        assert _grant_for(sub.shared_with, seeded["bob"]) == "rw"
         assert _grant_for(sub.shared_with, seeded["carol"]) == "r"

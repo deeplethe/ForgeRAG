@@ -205,6 +205,13 @@ def upgrade() -> None:
     ).fetchone()
     if admin_id_row is not None:
         admin_id = admin_id_row[0]
+        # NB: the ``folders.owner_user_id`` column added by this
+        # migration is dropped by ``20260506_drop_folder_owner`` —
+        # the simplification PR found it didn't pay for itself
+        # alongside ``shared_with``. Backfill kept here for forward
+        # / down-migration consistency: applying THIS migration in
+        # isolation populates the column, and the next migration
+        # drops it cleanly.
         bind.execute(
             sa.text("UPDATE folders SET owner_user_id = :uid WHERE owner_user_id IS NULL"),
             {"uid": admin_id},

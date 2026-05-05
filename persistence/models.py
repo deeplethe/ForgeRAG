@@ -398,23 +398,24 @@ class Folder(Base):
     )
     name: Mapped[str] = mapped_column(String(255))
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # ── Multi-user authz fields ──────────────────────────────────────
-    # owner_user_id = the user with full management rights. NULL means
-    # "ownerless" — happens after a user is hard-deleted and their
-    # folders haven't been transferred yet. Admins can still manage
-    # ownerless folders (admin role bypasses owner checks).
-    owner_user_id: Mapped[str | None] = mapped_column(
-        String(32),
-        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    # shared_with = list of {"user_id": "...", "role": "r"|"rw"} grants.
-    # Stored as JSON because typical folders have 0–10 entries and the
-    # whole list reads fine in one row. Subfolder.shared_with is
-    # maintained as a SUPERSET of parent.shared_with via cascading edits
-    # in the folder service (so path-prefix filtering stays correct
-    # without explicit subtree walks at query time).
+    # ── Multi-user authz: shared_with only ──────────────────────────
+    # ``shared_with`` is the single source of truth for who can do
+    # what. Each entry is ``{"user_id": "...", "role": "r"|"rw"}``;
+    # ``rw`` covers everything (read, write, share, delete folder,
+    # purge trash). ``r`` is read-only. ``role=admin`` on
+    # ``auth_users`` bypasses every per-folder check globally.
+    #
+    # Subfolder.shared_with is maintained as a SUPERSET of
+    # parent.shared_with via cascading edits in the folder service,
+    # so path-prefix filtering stays correct without subtree walks
+    # at query time. ``AuthorizationService.can()`` additionally
+    # walks ancestors as a defensive read-side fallback.
+    #
+    # NB: an earlier design carried an explicit ``owner_user_id``
+    # column too. It was dropped because it added complexity without
+    # buying anything ``rw`` doesn't already cover; users with rw on
+    # a folder can do everything an "owner" used to, and admin role
+    # bypass handles the global escape hatch.
     shared_with: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     # When trashed_at is NOT NULL, this folder is inside trash (a descendant of
     # __trash__). Documents inside it inherit the trashed view automatically.

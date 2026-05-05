@@ -73,7 +73,7 @@ def seeded(store: Store) -> dict[str, str]:
             )
         sess.flush()
 
-        sess.get(Folder, "__root__").owner_user_id = ids["admin"]
+        # __root__ has no shared_with — admin reaches it via role bypass.
         sess.add(
             Folder(
                 folder_id="f_research",
@@ -81,7 +81,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -91,7 +91,6 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/legal",
                 parent_id="__root__",
                 name="legal",
-                owner_user_id=ids["admin"],
                 shared_with=[{"user_id": ids["carol"], "role": "r"}],
             )
         )

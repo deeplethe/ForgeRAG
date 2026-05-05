@@ -1,16 +1,17 @@
 """
 Route-level tests for ``POST /api/v1/folders`` — verifying the
-multi-user ownership wiring lands on the new folder row.
+multi-user authz wiring on subfolder creation.
 
-Three things that must hold:
+What must hold:
 
-  1. The creator's user_id is written to the new folder's
-     ``owner_user_id``. Without this, freshly-created folders are
-     ownerless and only admin can manage them.
-  2. Auth-disabled deployments still get NULL owner (the synthetic
-     ``local`` principal has no auth_users row to FK against).
-  3. Non-admin users without write access on the parent get 403
-     before the folder is created.
+  1. The new folder copies the parent's ``shared_with`` so the
+     creator (who must already have ``rw`` on the parent to write
+     under it) inherits the same access on the subfolder.
+  2. Non-rw users on the parent get 403 before the folder is
+     created.
+  3. Admin role bypasses the per-folder check.
+  4. Auth-disabled deployments still produce a folder (the
+     synthetic ``local`` principal trivially passes the gate).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from api.deps import get_state
 from api.routes.folders import router as folders_router
 from config import RelationalConfig, SQLiteConfig
 from config.auth_config import AuthConfig
+from persistence.folder_share_service import _grant_for
 from persistence.models import AuthUser, Folder
 from persistence.store import Store
 
@@ -69,7 +71,6 @@ def seeded(store: Store) -> dict[str, str]:
                 )
             )
         sess.flush()
-        sess.get(Folder, "__root__").owner_user_id = ids["admin"]
         sess.add(
             Folder(
                 folder_id="f_research",
@@ -77,7 +78,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.commit()
@@ -107,9 +108,9 @@ def _build_app(
     return app
 
 
-def test_creator_becomes_owner_when_auth_enabled(store, seeded):
-    """alice owns /research; she creates /research/2024 — the new
-    folder's owner_user_id is alice."""
+def test_creator_inherits_parent_shared_with(store, seeded):
+    """Alice has rw on /research; she creates /research/2024 — the new
+    folder copies the parent's shared_with so she keeps her rw."""
     principal = AuthenticatedPrincipal(
         user_id=seeded["alice"],
         username="alice",
@@ -126,7 +127,7 @@ def test_creator_becomes_owner_when_auth_enabled(store, seeded):
     new_id = r.json()["folder_id"]
     with store.transaction() as sess:
         f = sess.get(Folder, new_id)
-        assert f.owner_user_id == seeded["alice"]
+        assert _grant_for(f.shared_with, seeded["alice"]) == "rw"
 
 
 def test_create_under_other_users_folder_403(store, seeded):
@@ -162,16 +163,13 @@ def test_admin_can_create_anywhere(store, seeded):
     new_id = r.json()["folder_id"]
     with store.transaction() as sess:
         f = sess.get(Folder, new_id)
-        # Admin created it; admin owns it.
-        assert f.owner_user_id == seeded["admin"]
+        # Inherits /research's shared_with → alice still has rw.
+        assert _grant_for(f.shared_with, seeded["alice"]) == "rw"
 
 
-def test_auth_disabled_creates_ownerless_folder(store, seeded):
-    """With auth off the synthetic 'local' principal has no
-    auth_users row; the FK would 500 the request if we tried to
-    set it as owner. Folder is created with owner_user_id=NULL —
-    admin-managed via role bypass, same as the seeded __root__ in
-    bootstrapped deploys with no admin."""
+def test_auth_disabled_creates_folder_with_inherited_share(store, seeded):
+    """With auth off the synthetic 'local' admin can create anywhere;
+    the new folder still copies the parent's shared_with."""
     principal = AuthenticatedPrincipal(
         user_id="local", username="local", role="admin", via="auth_disabled"
     )
@@ -179,10 +177,11 @@ def test_auth_disabled_creates_ownerless_folder(store, seeded):
     with TestClient(app) as c:
         r = c.post(
             "/api/v1/folders",
-            json={"parent_path": "/", "name": "freshly_made"},
+            json={"parent_path": "/research", "name": "freshly_made"},
         )
     assert r.status_code == 201
     new_id = r.json()["folder_id"]
     with store.transaction() as sess:
         f = sess.get(Folder, new_id)
-        assert f.owner_user_id is None
+        # Parent had alice:rw → inherited.
+        assert _grant_for(f.shared_with, seeded["alice"]) == "rw"

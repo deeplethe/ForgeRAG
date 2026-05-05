@@ -14,11 +14,11 @@ principal with ``role='admin'``):
 
 Hard-delete cascades / nulls per the schema's ON DELETE rules:
   * conversations  → CASCADE     (privacy hygiene)
-  * folders.owner_user_id  → SET NULL  (admin transfers later)
-  * documents.owner_user_id  → SET NULL
-  * files.owner_user_id  → SET NULL
+  * documents.owner_user_id  → SET NULL (audit-only column)
+  * files.owner_user_id  → SET NULL (audit-only column)
   * audit_log.actor_id  → string column, untouched (audit trail
                           survives the user row going away)
+  * folders.shared_with  → manually swept here (JSON column, no FK)
 
 The current admin cannot delete or suspend themselves — refusing
 self-suspension prevents the "I locked myself out" foot-gun.
@@ -269,13 +269,17 @@ def delete_user(
     Cascade behaviour comes from the schema:
 
       * conversations.user_id   → CASCADE (rows deleted)
-      * folders.owner_user_id   → SET NULL (admin transfers later)
       * documents.owner_user_id → SET NULL (audit-only column)
       * files.owner_user_id     → SET NULL
       * auth_tokens             → CASCADE (issued tokens revoked
                                   by row deletion)
       * auth_sessions           → CASCADE (cookies invalidated)
       * audit_log.actor_id      → untouched string; trail survives
+
+    Plus a folder-shared_with sweep we have to do in Python because
+    ``shared_with`` is a JSON column with no FK: every folder that
+    listed this user gets their entry removed. Done in the same
+    transaction as the user delete.
     """
     principal = _require_admin(request, state)
     if principal.user_id == user_id:
@@ -284,5 +288,24 @@ def delete_user(
         user = sess.get(AuthUser, user_id)
         if user is None:
             return None  # idempotent
+
+        # Strip the user from every folder.shared_with. Folder count
+        # is small (hundreds in practice); no GIN index needed.
+        from sqlalchemy import select as _select
+
+        from persistence.models import Folder
+
+        folders = sess.execute(_select(Folder)).scalars().all()
+        for f in folders:
+            sw = f.shared_with or []
+            if any(
+                isinstance(e, dict) and e.get("user_id") == user_id
+                for e in sw
+            ):
+                f.shared_with = [
+                    e for e in sw
+                    if not (isinstance(e, dict) and e.get("user_id") == user_id)
+                ]
+
         sess.delete(user)
     return None

@@ -193,10 +193,14 @@ def create_folder(
     state: AppState = Depends(get_state),
     principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
+    """Create a folder under ``parent_path``. Caller must have ``rw``
+    on the parent (or be admin); the new folder copies the parent's
+    ``shared_with`` so the creator inherits the access they used to
+    be allowed to write under there in the first place."""
     scope = ScopeService(state.store)
-    # When auth is on the principal must have at least write access
-    # under the parent (owner / rw / admin). When auth is off the
-    # synthetic local-admin principal passes the check trivially.
+    # When auth is on the principal must have rw / admin under the
+    # parent. When auth is off the synthetic local-admin principal
+    # passes the check trivially.
     if state.cfg.auth.enabled:
         with state.store.transaction() as sess:
             parent = FolderService(sess).require_by_path(body.parent_path)
@@ -206,15 +210,6 @@ def create_folder(
                 raise HTTPException(
                     403, f"forbidden: write under {body.parent_path!r}"
                 )
-    # New folders are owned by the creator. The synthetic ``local``
-    # principal in auth-disabled mode has no ``auth_users`` row, so
-    # we skip ownership in that case (folder gets created with
-    # owner_user_id=NULL — admin-managed via role bypass).
-    creator_id: str | None = (
-        principal.user_id
-        if state.cfg.auth.enabled and principal.via != "auth_disabled"
-        else None
-    )
     with state.store.transaction() as sess:
         svc = FolderService(sess)
         try:
@@ -223,9 +218,7 @@ def create_folder(
             raise HTTPException(404, f"parent folder not found: {body.parent_path!r}")
         scope.require_folder(parent.folder_id, ScopeMode.WRITE)
         try:
-            new = svc.create(
-                body.parent_path, body.name, owner_user_id=creator_id
-            )
+            new = svc.create(body.parent_path, body.name)
         except InvalidFolderName as e:
             raise HTTPException(422, str(e))
         except FolderAlreadyExists as e:

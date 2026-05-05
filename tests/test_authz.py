@@ -4,12 +4,13 @@ Authorization tests — folder grants + admin bypass + path resolution.
 Sets up a tiny folder tree with a few users and asserts every cell
 of the permission matrix:
 
-    folders:
-        /                 owner=admin
-        /research         owner=alice
-        /research/2024    owner=alice
-        /legal            owner=bob, shared_with [{alice, rw}, {carol, r}]
-        /scratch          owner=bob
+    folders (only ``shared_with`` matters; admin reaches everything
+    via the role-bypass on can()):
+        /                 (no shared_with)
+        /research         shared_with [{alice, rw}]
+        /research/2024    shared_with [{alice, rw}]
+        /legal            shared_with [{bob, rw}, {alice, rw}, {carol, r}]
+        /scratch          shared_with [{bob, rw}]
 
     users:
         admin   role=admin     status=active
@@ -77,10 +78,8 @@ def _seed(store: Store) -> dict[str, str]:
             )
         sess.flush()
 
-        # __root__ already seeded by ensure_schema; admin owns it.
-        root = sess.get(Folder, "__root__")
-        root.owner_user_id = ids["admin"]
-
+        # __root__ already seeded by ensure_schema; admin reaches
+        # everything via role bypass on can(), no shared_with needed.
         sess.add(
             Folder(
                 folder_id="f_research",
@@ -88,7 +87,7 @@ def _seed(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -98,7 +97,7 @@ def _seed(store: Store) -> dict[str, str]:
                 path_lower="/research/2024",
                 parent_id="f_research",
                 name="2024",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -108,8 +107,8 @@ def _seed(store: Store) -> dict[str, str]:
                 path_lower="/legal",
                 parent_id="__root__",
                 name="legal",
-                owner_user_id=ids["bob"],
                 shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
                     {"user_id": ids["alice"], "role": "rw"},
                     {"user_id": ids["carol"], "role": "r"},
                 ],
@@ -122,7 +121,7 @@ def _seed(store: Store) -> dict[str, str]:
                 path_lower="/scratch",
                 parent_id="__root__",
                 name="scratch",
-                owner_user_id=ids["bob"],
+                shared_with=[{"user_id": ids["bob"], "role": "rw"}],
             )
         )
         sess.commit()
@@ -184,38 +183,33 @@ def test_minimize_paths_drops_redundant_subpaths():
 
 def test_admin_can_do_anything_anywhere(authz, users):
     admin = users["admin"]
-    for action in ("read", "upload", "share", "transfer", "purge", "delete_folder"):
+    for action in ("read", "upload", "share", "purge", "delete_folder"):
         assert authz.can(admin, "f_research", action) is True
         assert authz.can(admin, "f_legal", action) is True
 
 
-def test_owner_can_do_everything_on_own_folder(authz, users):
+def test_rw_member_can_do_everything(authz, users):
+    """Alice has rw on /research and on /legal. Under the new model,
+    rw covers every action (READ + WRITE + MANAGE). The previous
+    "owner is its own tier" distinction is gone — any rw member
+    can share, delete, purge, etc."""
     alice = users["alice"]
-    for action in ("read", "upload", "share", "transfer", "purge"):
+    for action in ("read", "upload", "soft_delete", "share", "purge", "delete_folder"):
         assert authz.can(alice, "f_research", action) is True
-
-
-def test_rw_member_can_read_and_write_but_not_manage(authz, users):
-    """Alice has rw on /legal (owned by bob)."""
-    alice = users["alice"]
-    assert authz.can(alice, "f_legal", "read") is True
-    assert authz.can(alice, "f_legal", "upload") is True
-    assert authz.can(alice, "f_legal", "soft_delete") is True
-    # MANAGE_ACTIONS — only owner / admin
-    assert authz.can(alice, "f_legal", "share") is False
-    assert authz.can(alice, "f_legal", "transfer") is False
-    assert authz.can(alice, "f_legal", "purge") is False
-    assert authz.can(alice, "f_legal", "delete_folder") is False
+        assert authz.can(alice, "f_legal", action) is True
 
 
 def test_r_member_can_only_read(authz, users):
-    """Carol has read-only on /legal."""
+    """Carol has read-only on /legal — read passes, write/manage all
+    rejected."""
     carol = users["carol"]
     assert authz.can(carol, "f_legal", "read") is True
     assert authz.can(carol, "f_legal", "search") is True
     assert authz.can(carol, "f_legal", "upload") is False
     assert authz.can(carol, "f_legal", "soft_delete") is False
     assert authz.can(carol, "f_legal", "share") is False
+    assert authz.can(carol, "f_legal", "delete_folder") is False
+    assert authz.can(carol, "f_legal", "purge") is False
 
 
 def test_outsider_cannot_read(authz, users):
@@ -241,41 +235,18 @@ def test_unknown_folder_returns_false(authz, users):
 
 
 # ---------------------------------------------------------------------------
-# Ancestor-walk semantics — bob owns /shared, alice creates a subfolder
-# inside and takes ownership; bob must keep full rights via the walk.
+# Ancestor walk — defensive read-side fallback when cascade hasn't
+# materialised the parent's grants on a descendant. Cascade keeps
+# them in sync at write time, but the walk covers legacy data /
+# manual SQL fixes.
 # ---------------------------------------------------------------------------
 
 
-def test_ancestor_owner_can_manage_descendant_owned_by_someone_else(
-    authz, store, users
-):
-    """Bob owns /research's parent (the root). After alice creates
-    /research and takes ownership, bob (admin OR ancestor owner)
-    must still be able to manage it.
-
-    To exercise the ancestor-walk specifically (not the admin
-    bypass), we use the existing fixture where admin owns / and
-    alice owns /research. Demote admin first so we're testing the
-    walk, not the role bypass."""
-    with store.transaction() as sess:
-        from persistence.models import AuthUser
-
-        admin = sess.get(AuthUser, users["admin"])
-        admin.role = "user"  # neutralise admin bypass
-        sess.commit()
-
-    # admin still owns / (the root). /research's owner is alice.
-    # ancestor-walk lookup should give admin owner-level rights on
-    # /research because they own /.
-    for action in ("read", "upload", "share", "transfer", "purge"):
-        assert authz.can(users["admin"], "f_research", action) is True
-
-
-def test_inherited_rw_does_not_grant_manage(authz, store, users):
-    """Alice has rw on /legal via shared_with. /legal/sub (a hypothetical
-    subfolder) inherits the rw grant via cascade. Alice can READ and
-    WRITE on /legal/sub, but cannot MANAGE — manage requires explicit
-    ownership or admin role, not inheritance."""
+def test_inherited_rw_grants_full_manage_on_descendant(authz, store, users):
+    """Alice has rw on /legal via shared_with. /legal/sub is a
+    descendant whose shared_with cascade-copied alice's grant. Under
+    the new model rw on a descendant gives ALL actions including
+    manage — there is no separate owner tier."""
     with store.transaction() as sess:
         sess.add(
             Folder(
@@ -284,9 +255,9 @@ def test_inherited_rw_does_not_grant_manage(authz, store, users):
                 path_lower="/legal/sub",
                 parent_id="f_legal",
                 name="sub",
-                owner_user_id=users["bob"],
                 # cascade copy of /legal's shared_with
                 shared_with=[
+                    {"user_id": users["bob"], "role": "rw"},
                     {"user_id": users["alice"], "role": "rw"},
                     {"user_id": users["carol"], "role": "r"},
                 ],
@@ -294,16 +265,15 @@ def test_inherited_rw_does_not_grant_manage(authz, store, users):
         )
         sess.commit()
     alice = users["alice"]
-    assert authz.can(alice, "f_legal_sub", "read") is True
-    assert authz.can(alice, "f_legal_sub", "upload") is True
-    assert authz.can(alice, "f_legal_sub", "share") is False
-    assert authz.can(alice, "f_legal_sub", "transfer") is False
+    for action in ("read", "upload", "soft_delete", "share", "purge", "delete_folder"):
+        assert authz.can(alice, "f_legal_sub", action) is True
 
 
-def test_carol_inherited_read_via_ancestor_walk(authz, store, users):
-    """Carol has r on /legal. If a subfolder /legal/draft exists with
-    EMPTY shared_with (cascade hadn't run, e.g. legacy data), carol
-    should still resolve via the ancestor walk."""
+def test_walk_finds_grant_via_ancestor_when_local_empty(authz, store, users):
+    """If a subfolder's shared_with is empty (cascade hadn't run, e.g.
+    legacy data), the ancestor walk still finds the grant. Carol has
+    r on /legal — she should still resolve to read on /legal/draft
+    even though /legal/draft has no direct grant."""
     with store.transaction() as sess:
         sess.add(
             Folder(
@@ -312,7 +282,6 @@ def test_carol_inherited_read_via_ancestor_walk(authz, store, users):
                 path_lower="/legal/draft",
                 parent_id="f_legal",
                 name="draft",
-                owner_user_id=users["bob"],
                 shared_with=[],  # legacy / pre-cascade
             )
         )
@@ -321,6 +290,29 @@ def test_carol_inherited_read_via_ancestor_walk(authz, store, users):
     assert authz.can(carol, "f_legal_draft", "read") is True
     assert authz.can(carol, "f_legal_draft", "upload") is False  # only r
     assert authz.can(carol, "f_legal_draft", "share") is False
+
+
+def test_walk_picks_strongest_ancestor_grant(authz, store, users):
+    """Carol has r on /legal directly. If /legal/sub's cascade gives her
+    rw (e.g. operator manually set up), the walk should report rw
+    (strongest grant on the chain wins)."""
+    with store.transaction() as sess:
+        sess.add(
+            Folder(
+                folder_id="f_legal_strong",
+                path="/legal/strong",
+                path_lower="/legal/strong",
+                parent_id="f_legal",
+                name="strong",
+                shared_with=[{"user_id": users["carol"], "role": "rw"}],
+            )
+        )
+        sess.commit()
+    carol = users["carol"]
+    # rw on the local folder beats r on the ancestor — and rw covers
+    # manage too.
+    assert authz.can(carol, "f_legal_strong", "upload") is True
+    assert authz.can(carol, "f_legal_strong", "share") is True
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +329,9 @@ def test_resolve_paths_default_returns_minimal_accessible_set(authz, users):
     assert sorted(paths) == ["/legal", "/research"]
 
 
-def test_resolve_paths_admin_default_collapses_to_root(authz, users):
-    """Admin owns / — minimal set is just ['/']."""
+def test_resolve_paths_admin_default_is_root(authz, users):
+    """Admins default-scope to the whole tree — they can read
+    everything by role bypass, no shared_with grants required."""
     admin = users["admin"]
     paths = authz.resolve_paths(admin, None)
     assert paths == ["/"]
@@ -359,8 +352,7 @@ def test_resolve_paths_explicit_outside_grant_403s(authz, users):
 
 
 def test_resolve_paths_admin_passes_arbitrary_paths(authz, users):
-    """Admin can pass / explicitly even though they own / — and could
-    pass any arbitrary path; admins bypass validation."""
+    """Admin can pass any path — validation is bypassed."""
     admin = users["admin"]
     assert authz.resolve_paths(admin, ["/"]) == ["/"]
     assert authz.resolve_paths(admin, ["/scratch", "/research"]) == [
@@ -396,8 +388,8 @@ def test_resolve_paths_suspended_user_raises(authz, users):
 # ---------------------------------------------------------------------------
 
 
-def test_list_accessible_folders_for_owner_and_member(authz, users):
-    """Alice owns /research + /research/2024 and is in /legal's shared_with."""
+def test_list_accessible_folders_for_member(authz, users):
+    """Alice has rw on /research + /research/2024 + /legal."""
     alice = users["alice"]
     folders = authz.list_accessible_folders(alice)
     paths = sorted(f.path for f in folders)
@@ -434,7 +426,7 @@ def test_list_accessible_folders_excludes_trashed(authz, users, store):
     alice = users["alice"]
     paths = sorted(f.path for f in authz.list_accessible_folders(alice))
     assert "/legal" not in paths
-    # Her owned folders stay visible.
+    # Her other rw-grant folders stay visible.
     assert "/research" in paths
 
 

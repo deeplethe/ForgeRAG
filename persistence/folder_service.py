@@ -247,7 +247,6 @@ class FolderService:
         name: str,
         *,
         metadata: dict | None = None,
-        owner_user_id: str | None = None,
     ) -> Folder:
         name = normalize_name(name)
         parent = self.require_by_path(parent_path)
@@ -277,7 +276,6 @@ class FolderService:
             name=name,
             is_system=False,
             metadata_json=metadata or {},
-            owner_user_id=owner_user_id,
             shared_with=inherited,
         )
         self.sess.add(folder)
@@ -288,7 +286,6 @@ class FolderService:
             {
                 "path": new_path,
                 "parent_id": parent.folder_id,
-                "owner_user_id": owner_user_id,
                 "inherited_shared_with_count": len(inherited),
             },
         )

@@ -7,7 +7,7 @@ Membership lives in ``folders.shared_with`` (JSON list of
 maintains is:
 
     For every user U and every folder F, F.shared_with[U] >= F.parent.shared_with[U]
-    (where "no grant" < "r" < "rw" and the owner is implicitly above all).
+    (where "no grant" < "r" < "rw").
 
 This is what makes path-prefix retrieval correct: a query scoped to
 ``/legal`` can include every chunk under that prefix without having
@@ -34,16 +34,18 @@ Operations:
 
     list_members(folder_id) -> [{user_id, role, source}]
         Materialised view of effective membership. ``source`` is
-        ``"owner"`` / ``"direct"`` / ``"inherited:<ancestor folder_id>"``
-        so the UI can show where each row came from.
-
-    transfer_ownership(folder_id, new_owner_user_id)
-        Set ``owner_user_id`` to a different user. The old owner is
-        not auto-added to ``shared_with`` — the admin transferring
-        decides what residual access (if any) they keep.
+        ``"direct"`` / ``"inherited:<ancestor folder_id>"`` so the UI
+        can show where each row came from.
 
 All operations write an entry to ``audit_log`` with the actor /
 target / before-after grants for forensics.
+
+Roles are just ``r`` (read-only) and ``rw`` (everything: read +
+write + manage shared_with + delete folder + purge trash). There is
+no separate "owner" tier — the design originally had one but it
+added complexity without buying anything ``rw`` doesn't already
+cover. ``role=admin`` on ``auth_users`` bypasses every per-folder
+check globally, which is the only escape hatch.
 
 The AuthorizationService's ``can()`` is the read-side counterpart;
 this module is the write side. Routes in ``api/routes/folders.py``
@@ -66,9 +68,7 @@ log = logging.getLogger(__name__)
 Role = Literal["r", "rw"]
 
 # Numeric weights for monotonic comparisons. Higher = more permissive.
-# ``owner`` is a sentinel used internally for the implicit ancestor
-# check; it is never written to shared_with.
-_ROLE_WEIGHT: dict[str, int] = {"r": 1, "rw": 2, "owner": 3}
+_ROLE_WEIGHT: dict[str, int] = {"r": 1, "rw": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +106,9 @@ class MemberRow:
     username: str
     email: str | None
     display_name: str | None
-    role: Role | Literal["owner"]
-    # ``"owner"`` for the folder owner; ``"direct"`` for a grant on
-    # this folder; ``"inherited:<folder_id>"`` for grants that were
-    # cascaded down from an ancestor.
+    role: Role
+    # ``"direct"`` for a grant on this folder; ``"inherited:<folder_id>"``
+    # for grants cascaded down from an ancestor.
     source: str
 
 
@@ -180,10 +179,6 @@ class FolderShareService:
         folder = self._require_folder(folder_id)
         self._require_user(user_id)
 
-        # Owner of this exact folder needs no shared_with entry.
-        if folder.owner_user_id == user_id:
-            return
-
         before = _grant_for(folder.shared_with or [], user_id)
         if before == role:
             return  # idempotent
@@ -204,10 +199,6 @@ class FolderShareService:
         for desc in self._descendants(folder):
             existing = _grant_for(desc.shared_with or [], user_id)
             if existing and _ROLE_WEIGHT[existing] >= _ROLE_WEIGHT[role]:
-                continue
-            if desc.owner_user_id == user_id:
-                # Owner of a subfolder already has more rights than
-                # any rw grant; skip but the invariant still holds.
                 continue
             desc.shared_with = _set_grant(desc.shared_with or [], user_id, role)
 
@@ -236,18 +227,10 @@ class FolderShareService:
         """Drop a user's grant from F and all descendants.
 
         Rejected when the user still has access via an ancestor's
-        ``shared_with`` (or owns an ancestor) — removing here would
-        leave F with weaker rights than its parent, breaking the
-        superset rule.
+        ``shared_with`` — removing here would leave F with weaker
+        rights than its parent, breaking the superset rule.
         """
         folder = self._require_folder(folder_id)
-
-        # Owner is removed via transfer_ownership, not remove_member.
-        if folder.owner_user_id == user_id:
-            raise FolderShareError(
-                "cannot remove the folder owner from shared_with — "
-                "use transfer_ownership instead"
-            )
 
         ancestor_id = self._ancestor_granting(folder, user_id)
         if ancestor_id is not None:
@@ -285,8 +268,8 @@ class FolderShareService:
     # ------------------------------------------------------------------
 
     def list_members(self, folder_id: str) -> list[MemberRow]:
-        """Return every effective member of a folder — the owner plus
-        every grant in shared_with, labelled by where it originated.
+        """Return every effective member of a folder — every grant in
+        shared_with, labelled by where it originated.
 
         Cascading writes the same role onto every descendant, so a
         "direct" grant on a subfolder might in fact be a copy of a
@@ -303,19 +286,6 @@ class FolderShareService:
         """
         folder = self._require_folder(folder_id)
         rows: dict[str, MemberRow] = {}
-
-        # Owner first — strictly stronger than any shared_with grant.
-        if folder.owner_user_id:
-            owner = self.sess.get(AuthUser, folder.owner_user_id)
-            if owner is not None:
-                rows[owner.user_id] = MemberRow(
-                    user_id=owner.user_id,
-                    username=owner.username,
-                    email=owner.email,
-                    display_name=owner.display_name,
-                    role="owner",
-                    source="owner",
-                )
 
         for entry in folder.shared_with or []:
             if not isinstance(entry, dict):
@@ -343,44 +313,8 @@ class FolderShareService:
                 source=source,
             )
 
-        # Stable order: owner first, then by username.
-        ordered = sorted(rows.values(), key=lambda r: (r.role != "owner", r.username))
-        return ordered
-
-    # ------------------------------------------------------------------
-    # transfer_ownership
-    # ------------------------------------------------------------------
-
-    def transfer_ownership(
-        self,
-        *,
-        folder_id: str,
-        new_owner_user_id: str | None,
-        actor_user_id: str,
-    ) -> None:
-        """Reassign ``owner_user_id`` on a folder. ``None`` clears the
-        owner (folder becomes ownerless — admins still manage via
-        role bypass)."""
-        folder = self._require_folder(folder_id)
-        if new_owner_user_id is not None:
-            self._require_user(new_owner_user_id)
-        old = folder.owner_user_id
-        if old == new_owner_user_id:
-            return
-        folder.owner_user_id = new_owner_user_id
-        # The new owner's old shared_with entry, if any, is redundant
-        # (owner role > rw); we drop it so ``list_members`` shows them
-        # as owner instead of double-listed.
-        if new_owner_user_id:
-            folder.shared_with = _drop_grant(
-                folder.shared_with or [], new_owner_user_id
-            )
-        self._audit(
-            actor_user_id,
-            action="folder.owner.transfer",
-            target_id=folder_id,
-            details={"old_owner": old, "new_owner": new_owner_user_id},
-        )
+        # Stable order: by username.
+        return sorted(rows.values(), key=lambda r: r.username)
 
     # ------------------------------------------------------------------
     # internals
@@ -423,18 +357,18 @@ class FolderShareService:
         self, folder: Folder, user_id: str
     ) -> str | None:
         """Walk up to root and return the strongest grant the user
-        already has via an ancestor (including ``"owner"`` if they
-        own one). None when the user has no ancestor access."""
+        already has via an ancestor's ``shared_with``. None when
+        the user has no ancestor access."""
         cur = self.sess.get(Folder, folder.parent_id) if folder.parent_id else None
         best: str | None = None
         while cur is not None:
-            if cur.owner_user_id == user_id:
-                return "owner"  # strictly strongest; short-circuit
             r = _grant_for(cur.shared_with or [], user_id)
             if r is not None and (
                 best is None or _ROLE_WEIGHT[r] > _ROLE_WEIGHT[best]
             ):
                 best = r
+                if best == "rw":
+                    break  # strictly strongest; short-circuit
             cur = (
                 self.sess.get(Folder, cur.parent_id) if cur.parent_id else None
             )
@@ -444,21 +378,16 @@ class FolderShareService:
         self, folder: Folder, user_id: str
     ) -> tuple[str | None, str | None]:
         """Walk up to root and return the (folder_id, role) of the
-        nearest ancestor where ``user_id`` has a shared_with grant or
-        is the owner. Returns ``(None, None)`` when no ancestor
-        grants access.
+        nearest ancestor where ``user_id`` has a ``shared_with``
+        grant. Returns ``(None, None)`` when no ancestor grants
+        access.
 
         Used by ``list_members`` to label rows as "direct" vs
-        "inherited from ancestor X". Distinct from
-        ``_strongest_ancestor_role`` (which scans the whole chain
-        for the maximum) — here we want the closest ancestor only,
-        because that's the folder the UI will point at as "edit
-        upstream".
+        "inherited from ancestor X" — the UI points at the named
+        ancestor as the place to edit upstream.
         """
         cur = self.sess.get(Folder, folder.parent_id) if folder.parent_id else None
         while cur is not None:
-            if cur.owner_user_id == user_id:
-                return cur.folder_id, "owner"
             r = _grant_for(cur.shared_with or [], user_id)
             if r is not None:
                 return cur.folder_id, r
@@ -470,14 +399,12 @@ class FolderShareService:
     def _ancestor_granting(
         self, folder: Folder, user_id: str
     ) -> str | None:
-        """Return the folder_id of the nearest ancestor whose owner /
-        shared_with includes ``user_id``, or None. Used by
+        """Return the folder_id of the nearest ancestor whose
+        ``shared_with`` includes ``user_id``, or None. Used by
         remove_member to decide whether removal would violate the
         superset rule."""
         cur = self.sess.get(Folder, folder.parent_id) if folder.parent_id else None
         while cur is not None:
-            if cur.owner_user_id == user_id:
-                return cur.folder_id
             if _grant_for(cur.shared_with or [], user_id) is not None:
                 return cur.folder_id
             cur = (

@@ -378,9 +378,9 @@ def test_cannot_delete_self(store):
 
 
 def test_delete_cascades_per_schema(store):
-    """Conversations the user owned get hard-deleted (CASCADE);
-    folders they owned have owner_user_id set to NULL — admin
-    cleans up via transfer-ownership later."""
+    """Conversations the user had get hard-deleted (CASCADE).
+    Folder.shared_with entries for the user get swept in Python
+    (no FK on JSON columns)."""
     ids = _seed(store)
     with store.transaction() as sess:
         sess.add(
@@ -397,7 +397,10 @@ def test_delete_cascades_per_schema(store):
                 path_lower="/bob_proj",
                 parent_id="__root__",
                 name="bob_proj",
-                owner_user_id=ids["bob"],
+                shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
+                    {"user_id": ids["admin1"], "role": "rw"},
+                ],
             )
         )
         sess.commit()
@@ -412,7 +415,10 @@ def test_delete_cascades_per_schema(store):
     with store.transaction() as sess:
         # Conversation cascaded.
         assert sess.get(Conversation, "c_bob_1") is None
-        # Folder remains, owner nulled out — admin will transfer later.
+        # Folder remains; bob's shared_with entry is swept; admin1's
+        # entry stays.
         f = sess.get(Folder, "f_bob_proj")
         assert f is not None
-        assert f.owner_user_id is None
+        users_in_share = [e["user_id"] for e in (f.shared_with or [])]
+        assert ids["bob"] not in users_in_share
+        assert ids["admin1"] in users_in_share

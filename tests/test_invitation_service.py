@@ -82,7 +82,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.commit()

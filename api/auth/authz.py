@@ -5,13 +5,13 @@ Authentication (who you are) lives in ``api/auth/middleware.py``.
 This module is *authorization* (what you're allowed to do) and is the
 single source of truth for every search-bearing API.
 
-Three public methods, all O(1) per call once the folder row is in
-memory:
+Three public methods:
 
     can(user_id, folder_id, action) -> bool
-        The atomic permission check. Routes call this before any
-        mutation; retrieval callers call it indirectly via
-        resolve_paths.
+        The atomic permission check. Walks the folder + every
+        ancestor and returns the strongest ``shared_with`` grant on
+        the chain; ``rw`` covers every action, ``r`` covers reads
+        only.
 
     resolve_paths(user_id, requested) -> list[str]
         Turns an optional ``path_filters: list[str] | None`` from the
@@ -25,32 +25,33 @@ memory:
         Used by the sidebar / scope picker to render the user's
         folder tree. Excludes folders inside trash.
 
-Action vocabulary:
+Action vocabulary (frozensets exported alongside the service):
 
-    READ      — search, list documents, view chunks
-    WRITE     — upload, edit, soft-delete
-    MANAGE    — edit shared_with, transfer ownership, purge trash,
-                hard-delete folder
+    READ_ACTIONS    — search, list documents, view chunks
+    WRITE_ACTIONS   — upload, edit, soft-delete, rename
+    MANAGE_ACTIONS  — edit shared_with, purge trash, delete folder
 
 Permission matrix (non-admin):
 
-    Action  | owner | rw  | r  | other
-    --------|-------|-----|----|------
-    READ    |   ✓   |  ✓  | ✓  |
-    WRITE   |   ✓   |  ✓  |    |
-    MANAGE  |   ✓   |     |    |
+    Action  | rw  | r  | other
+    --------|-----|----|------
+    READ    |  ✓  | ✓  |
+    WRITE   |  ✓  |    |
+    MANAGE  |  ✓  |    |
 
-Admin role bypasses all of the above on every folder. Privacy-
-sensitive surfaces (conversations, research sessions) check user_id
-directly and do NOT use admin bypass — they're the user's, not the
-org's.
+``rw`` covers every action — there is no separate "owner" tier; the
+single design knob is "is this user in shared_with at rw level on
+this folder or some ancestor." Admin role bypasses all of the above
+on every folder. Privacy-sensitive surfaces (conversations,
+research sessions) check user_id directly and do NOT use admin
+bypass — they're the user's, not the org's.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from persistence.models import AuthUser, Folder
 
@@ -81,10 +82,19 @@ Action = Literal[
 # this module dependency-light.
 _TRASH_PREFIX = "/__trash__"
 
-# Numeric role weights so ``can()`` can pick the strongest grant up
-# the ancestor chain. Owner is sentinel-only (we short-circuit on it
-# inside the walk).
-_ROLE_WEIGHT: dict[str, int] = {"r": 1, "rw": 2}
+
+def _action_allowed_for(role: str, action: Action) -> bool:
+    """Map (role, action) to allow / deny under the new role matrix.
+
+    rw covers everything, r covers reads only. Anything else is
+    rejected. Used by ``can()`` once the strongest grant on the
+    ancestor chain has been determined.
+    """
+    if role == "rw":
+        return action in READ_ACTIONS or action in WRITE_ACTIONS or action in MANAGE_ACTIONS
+    if role == "r":
+        return action in READ_ACTIONS
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -181,14 +191,17 @@ class AuthorizationService:
         folders, or insufficient grant. Admin role bypasses all
         non-privacy checks.
 
-        Resolution walks the folder + every ancestor: owner of any
-        ancestor implicitly has owner-level rights on the descendant
-        (this is the "subfolder permissions ⊇ parent" rule applied
-        to ownership, so a user who owns ``/shared`` keeps full
-        control even when someone with rw access creates a
-        ``/shared/sub`` and takes ownership of it). The strongest
-        grant on the chain wins; we stop on the first owner match
-        (no stronger grant exists).
+        Resolution walks the folder + every ancestor and picks the
+        strongest ``shared_with`` grant on the chain. ``rw`` covers
+        every action (READ / WRITE / MANAGE); ``r`` covers READ
+        only. The walk early-terminates on a first ``rw`` hit since
+        no stronger grant exists.
+
+        The ancestor walk is a defensive read-side fallback —
+        cascade keeps each folder's ``shared_with`` materialised so
+        a single-folder lookup is usually sufficient. The walk
+        ensures correctness when cascade hasn't run (legacy data,
+        manual SQL fixes, etc.).
         """
         with self._store.transaction() as sess:
             user = sess.get(AuthUser, user_id)
@@ -205,16 +218,11 @@ class AuthorizationService:
 
             best_role: str | None = None  # 'r' / 'rw' / None
             while cur is not None:
-                # Owner of self or any ancestor → full rights, including
-                # MANAGE. Stop here — no stronger grant exists.
-                if cur.owner_user_id == user_id:
-                    return True
                 role = _role_in_shared_with(cur.shared_with or [], user_id)
-                if role is not None and (
-                    best_role is None
-                    or _ROLE_WEIGHT[role] > _ROLE_WEIGHT[best_role]
-                ):
-                    best_role = role
+                if role == "rw":
+                    return _action_allowed_for("rw", action)
+                if role == "r" and best_role is None:
+                    best_role = "r"
                 cur = (
                     sess.get(Folder, cur.parent_id)
                     if cur.parent_id
@@ -223,16 +231,7 @@ class AuthorizationService:
 
             if best_role is None:
                 return False
-            if action in MANAGE_ACTIONS:
-                # Manage requires explicit ownership / admin (handled
-                # above). Inherited shared_with grants — even rw — do
-                # NOT confer manage rights.
-                return False
-            if action in WRITE_ACTIONS:
-                return best_role == "rw"
-            if action in READ_ACTIONS:
-                return best_role in ("r", "rw")
-            return False
+            return _action_allowed_for(best_role, action)
 
     # ------------------------------------------------------------------
     # resolve_paths()
@@ -276,12 +275,16 @@ class AuthorizationService:
                     requested[0] if requested else "/"
                 )
 
-            # Admin: no validation; pass requested through untouched
-            # (or fall back to admin's own accessible set when omitted).
+            # Admin: no validation; pass requested through untouched.
+            # Default scope (no explicit list) is the whole tree —
+            # admins can search everything by virtue of role bypass,
+            # and their own accessible_paths set is typically empty
+            # (no shared_with grants needed) so falling back to that
+            # would yield an empty search by default.
             if user.role == "admin":
                 if requested:
                     return list(requested)
-                return minimize_paths(self._accessible_paths(sess, user_id))
+                return ["/"]
 
             accessible = self._accessible_paths(sess, user_id)
 
@@ -316,25 +319,17 @@ class AuthorizationService:
 
             # Non-admin: filter in Python — cross-dialect JSON ops
             # are awkward, total folder count is small (< 10K typical
-            # before this becomes a hot path), and the GIN-index
-            # optimisation is reserved for when telemetry shows it
-            # paying off. See the migration's "find folders shared
-            # with X" note for the future direction.
-            rows = sess.execute(
-                stmt.where(
-                    or_(
-                        Folder.owner_user_id == user_id,
-                        # JSON contains check pulled into Python
-                        # below; the SQL filter just narrows out
-                        # the obvious "no chance" rows.
-                        Folder.shared_with.isnot(None),
-                    )
-                )
-            ).scalars().all()
+            # before this becomes a hot path), and a GIN-index
+            # optimisation on ``(shared_with->'user_id')`` is
+            # reserved for when telemetry shows it paying off.
+            #
+            # The cascade keeps shared_with materialised on every
+            # descendant, so a direct membership check is sufficient
+            # — we don't need the ancestor walk here.
+            rows = sess.execute(stmt).scalars().all()
             return [
                 f for f in rows
-                if f.owner_user_id == user_id
-                or _role_in_shared_with(f.shared_with or [], user_id) is not None
+                if _role_in_shared_with(f.shared_with or [], user_id) is not None
             ]
 
     # ------------------------------------------------------------------
@@ -342,16 +337,17 @@ class AuthorizationService:
     # ------------------------------------------------------------------
 
     def _accessible_paths(self, sess, user_id: str) -> list[str]:
-        """The list of folder paths where ``user_id`` is owner or in
-        shared_with, excluding trashed content. Used by ``resolve_paths``."""
+        """The list of folder paths where ``user_id`` has any
+        ``shared_with`` grant, excluding trashed content. Used by
+        ``resolve_paths``."""
         rows = sess.execute(
-            select(Folder.path, Folder.owner_user_id, Folder.shared_with).where(
+            select(Folder.path, Folder.shared_with).where(
                 Folder.trashed_metadata.is_(None),
                 ~Folder.path.like(_TRASH_PREFIX + "%"),
             )
         ).all()
-        out: list[str] = []
-        for path, owner, shared in rows:
-            if owner == user_id or _role_in_shared_with(shared or [], user_id) is not None:
-                out.append(path)
-        return out
+        return [
+            path
+            for path, shared in rows
+            if _role_in_shared_with(shared or [], user_id) is not None
+        ]

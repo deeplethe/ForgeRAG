@@ -63,10 +63,13 @@ def test_auth_tokens_has_scope_columns(store: Store):
     assert {"scope_path", "scope_role"} <= cols
 
 
-def test_folders_has_owner_and_shared_with(store: Store):
+def test_folders_has_shared_with(store: Store):
     insp = inspect(store._engine)
     cols = {c["name"] for c in insp.get_columns("folders")}
-    assert {"owner_user_id", "shared_with"} <= cols
+    assert "shared_with" in cols
+    # ``owner_user_id`` was dropped in 20260506_drop_folder_owner —
+    # ``shared_with`` is the sole authz field on folders now.
+    assert "owner_user_id" not in cols
 
 
 def test_documents_has_owner_user_id(store: Store):
@@ -135,8 +138,6 @@ def test_folder_default_shared_with_is_empty(store: Store):
     assert root is not None
     # SQLite stores JSON as text; SQLAlchemy decodes back to list.
     assert root.shared_with == []
-    # No bootstrap admin yet — owner is NULL.
-    assert root.owner_user_id is None
 
 
 def test_auth_token_scope_columns_default_null(store: Store):
@@ -190,11 +191,12 @@ def test_folder_shared_with_round_trips(store: Store):
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap → admin owns __root__, __trash__ stays ownerless
+# Bootstrap — creates an active admin row; admin reaches everything
+# via role bypass (no per-folder ownership needed)
 # ---------------------------------------------------------------------------
 
 
-def test_bootstrap_makes_admin_owner_of_root(store: Store):
+def test_bootstrap_creates_active_admin(store: Store):
     from api.auth.bootstrap import bootstrap_if_empty
 
     class _Cfg:
@@ -210,15 +212,14 @@ def test_bootstrap_makes_admin_owner_of_root(store: Store):
         assert admin.status == "active"
         assert admin.is_active is True
 
+        # __root__ has no shared_with — admin doesn't need a grant
+        # to reach it; ``can()`` short-circuits on role=admin.
         root = sess.get(Folder, "__root__")
-        assert root.owner_user_id == admin.user_id
-        # __trash__ stays ownerless — admins manage it via role bypass.
-        trash = sess.get(Folder, "__trash__")
-        assert trash.owner_user_id is None
+        assert root.shared_with == []
 
 
 def test_bootstrap_is_idempotent(store: Store):
-    """Second call must not duplicate the admin or change ownership."""
+    """Second call must not duplicate the admin."""
     from api.auth.bootstrap import bootstrap_if_empty
 
     class _Cfg:
@@ -243,9 +244,6 @@ def test_bootstrap_skips_when_auth_disabled(store: Store):
     with store.transaction() as sess:
         users = sess.execute(select(AuthUser)).scalars().all()
         assert users == []
-        # __root__ stays ownerless when auth is off.
-        root = sess.get(Folder, "__root__")
-        assert root.owner_user_id is None
 
 
 # ---------------------------------------------------------------------------

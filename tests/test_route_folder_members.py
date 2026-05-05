@@ -75,7 +75,7 @@ def seeded(store: Store) -> dict[str, str]:
             )
         sess.flush()
 
-        sess.get(Folder, "__root__").owner_user_id = ids["admin"]
+        # __root__ has no shared_with — admin reaches it via role bypass.
         sess.add(
             Folder(
                 folder_id="f_research",
@@ -83,7 +83,7 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id=ids["alice"],
+                shared_with=[{"user_id": ids["alice"], "role": "rw"}],
             )
         )
         sess.add(
@@ -93,8 +93,10 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/legal",
                 parent_id="__root__",
                 name="legal",
-                owner_user_id=ids["bob"],
-                shared_with=[{"user_id": ids["carol"], "role": "r"}],
+                shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
+                    {"user_id": ids["carol"], "role": "r"},
+                ],
             )
         )
         sess.flush()
@@ -105,8 +107,10 @@ def seeded(store: Store) -> dict[str, str]:
                 path_lower="/legal/contracts",
                 parent_id="f_legal",
                 name="contracts",
-                owner_user_id=ids["bob"],
-                shared_with=[{"user_id": ids["carol"], "role": "r"}],
+                shared_with=[
+                    {"user_id": ids["bob"], "role": "rw"},
+                    {"user_id": ids["carol"], "role": "r"},
+                ],
             )
         )
         sess.commit()
@@ -145,14 +149,14 @@ def client(store, seeded):
 # ---------------------------------------------------------------------------
 
 
-def test_list_members_returns_owner_and_shared(client):
+def test_list_members_returns_direct_grants(client):
     c, ids = client
     r = c.get("/api/v1/folders/f_legal/members")
     assert r.status_code == 200, r.text
     rows = r.json()
     by_user = {m["user_id"]: m for m in rows}
-    assert by_user[ids["bob"]]["role"] == "owner"
-    assert by_user[ids["bob"]]["source"] == "owner"
+    assert by_user[ids["bob"]]["role"] == "rw"
+    assert by_user[ids["bob"]]["source"] == "direct"
     assert by_user[ids["carol"]]["role"] == "r"
     assert by_user[ids["carol"]]["source"] == "direct"
 
@@ -290,10 +294,12 @@ def test_delete_member_with_ancestor_grant_409(client):
     assert "f_legal" in r.json()["detail"]
 
 
-def test_delete_owner_400(client):
-    """Owners are removed via transfer_ownership, not delete-member.
-    The service raises a generic FolderShareError -> 400."""
+def test_delete_last_rw_member_is_allowed(client):
+    """Removing the last rw member of a folder is allowed; admin can
+    still manage it via role bypass. There's no special-case
+    protection — the admin is responsible for not locking themselves
+    + their team out of a folder."""
     c, ids = client
     r = c.delete(f"/api/v1/folders/f_research/members/{ids['alice']}")
-    assert r.status_code == 400
-    assert "transfer_ownership" in r.json()["detail"]
+    assert r.status_code == 200
+    assert ids["alice"] not in {m["user_id"] for m in r.json()}

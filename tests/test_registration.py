@@ -307,7 +307,7 @@ def _seed_invitation(store, *, role: str = "rw") -> str:
                 path_lower="/research",
                 parent_id="__root__",
                 name="research",
-                owner_user_id="u_admin",
+                shared_with=[{"user_id": "u_admin", "role": "rw"}],
             )
         )
         sess.flush()
