@@ -25,6 +25,13 @@ from .authz import (
     minimize_paths,
 )
 from .bootstrap import bootstrap_if_empty
+from .kg_visibility import (
+    AccessibleSet,
+    Visibility,
+    build_accessible_set,
+    filter_entity,
+    filter_relation,
+)
 from .middleware import AuthenticatedPrincipal, AuthError, AuthMiddleware
 from .primitives import (
     generate_session_id,
@@ -38,6 +45,7 @@ __all__ = [
     "MANAGE_ACTIONS",
     "READ_ACTIONS",
     "WRITE_ACTIONS",
+    "AccessibleSet",
     "Action",
     "AuthError",
     "AuthMiddleware",
@@ -45,7 +53,11 @@ __all__ = [
     "AuthorizationService",
     "AuthzError",
     "UnauthorizedPath",
+    "Visibility",
     "bootstrap_if_empty",
+    "build_accessible_set",
+    "filter_entity",
+    "filter_relation",
     "generate_session_id",
     "generate_sk",
     "hash_password",
