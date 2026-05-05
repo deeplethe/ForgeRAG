@@ -356,6 +356,7 @@ class _DocLookupRequest(BaseModel):
 def lookup_documents(
     body: _DocLookupRequest,
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ) -> list[DocumentOut]:
     """Batch-fetch documents by doc_id list. One SQL roundtrip.
 
@@ -363,6 +364,11 @@ def lookup_documents(
     conversation's references doesn't fan out into N parallel
     GET /documents/{id} calls. Missing IDs are silently dropped from
     the response (caller already knows what it asked for).
+
+    Authz: each returned doc is gated by ``authz.can(folder_id,
+    "read")``. Inaccessible docs are silently dropped (same as
+    missing — never reveal which ids exist but are outside the
+    caller's scope).
     """
     # Cap to keep a single call from blowing up DB IO. Frontend caches
     # so this is sized for "all citations on one screen".
@@ -370,6 +376,16 @@ def lookup_documents(
     if not ids:
         return []
     rows = state.store.get_documents_by_ids(ids)
+    if state.cfg.auth.enabled and principal.via != "auth_disabled":
+        if principal.role != "admin":
+            rows = [
+                r
+                for r in rows
+                if r.get("folder_id")
+                and state.authz.can(
+                    principal.user_id, r["folder_id"], "read"
+                )
+            ]
     return [_doc_out(r, state) for r in rows]
 
 
@@ -388,6 +404,7 @@ def delete_document(
     doc_id: str,
     hard: bool = Query(False, description="Skip trash and purge immediately"),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
     """Soft-delete by default — moves the document into ``/__trash__``.
 
@@ -397,12 +414,17 @@ def delete_document(
     The trash path stashes ``original_path`` in metadata; restore replays
     it via ``FolderService.ensure_path`` (Windows Recycle Bin semantics).
     Vector / KG / file blobs stay until permanent purge.
+
+    Authz: caller must have ``rw`` on the doc's containing folder.
+    Hard-delete additionally requires manage-tier (``purge``) since
+    it bypasses the trash recovery window. Cross-user → 404.
     """
     from persistence.trash_service import TrashService
 
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+    # Soft-delete → write tier; hard-delete → manage tier (purge
+    # is destructive and outside the trash recovery contract).
+    action = "purge" if hard else "soft_delete"
+    row = require_doc_access(state, principal, doc_id, action=action)
 
     svc = TrashService(state)
     if hard:
@@ -703,12 +725,14 @@ def reparse_document(
     doc_id: str,
     enrich_summary: bool | None = Query(None),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
+    """Authz: caller must have ``rw`` on the doc's folder.
+    Reparse is a heavy LLM/CPU op — gating it on write also
+    prevents cross-user resource exhaustion. Cross-user → 404."""
     from ingestion.queue import IngestionJob
 
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+    row = require_doc_access(state, principal, doc_id, action="edit")
     file_id = row.get("file_id")
     if not file_id:
         raise HTTPException(400, "document has no file_id, cannot reparse")
@@ -801,10 +825,15 @@ def reparse_document(
 
 
 @router.post("/{doc_id}/stop", status_code=200)
-def stop_document(doc_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+def stop_document(
+    doc_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have ``rw`` on the doc's folder.
+    Stopping an in-flight job is a write op (cancels work). Cross-
+    user → 404."""
+    row = require_doc_access(state, principal, doc_id, action="edit")
     current = row.get("status")
     if current in ("ready", "error"):
         raise HTTPException(400, f"document is already {current}")
@@ -874,10 +903,15 @@ def list_chunks(
 
 
 @router.get("/{doc_id}/tree", response_model=TreeOut)
-def get_tree(doc_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+def get_tree(
+    doc_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have read on the doc's folder. Cross-user
+    requests for the doc tree (which exposes section titles +
+    summaries and block coordinates) → 404."""
+    row = require_doc_access(state, principal, doc_id)
     pv = row["active_parse_version"]
     tree = state.store.load_tree(doc_id, pv)
     if not tree:
@@ -911,10 +945,15 @@ def get_tree(doc_id: str, state: AppState = Depends(get_state)):
 
 
 @router.get("/{doc_id}/tree/{node_id}", response_model=TreeNodeOut)
-def get_tree_node(doc_id: str, node_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+def get_tree_node(
+    doc_id: str,
+    node_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have read on the doc's folder. Cross-user
+    → 404 (same as a missing node)."""
+    row = require_doc_access(state, principal, doc_id)
     tree = state.store.load_tree(doc_id, row["active_parse_version"])
     if not tree:
         raise HTTPException(404, "tree not found")

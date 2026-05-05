@@ -371,3 +371,97 @@ class TestDocumentRename:
                 json={"new_filename": "admin-renamed.pdf"},
             )
         assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/documents/lookup — batch fetch with authz silent-drop
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentLookup:
+    def test_silent_drop_inaccessible(self, store, seeded):
+        """alice asks for [d_research, d_scratch]. d_research returns
+        normally; d_scratch is silently dropped — same shape as a
+        missing id, so the caller can't distinguish "doesn't exist"
+        from "exists but you can't see it"."""
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/documents/lookup",
+                json={"doc_ids": ["d_research", "d_scratch"]},
+            )
+        assert r.status_code == 200
+        ids = {d["doc_id"] for d in r.json()}
+        assert ids == {"d_research"}
+
+    def test_admin_bypass(self, store, seeded):
+        app = _build_app(store, _admin(seeded))
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/documents/lookup",
+                json={"doc_ids": ["d_research", "d_scratch"]},
+            )
+        assert r.status_code == 200
+        ids = {d["doc_id"] for d in r.json()}
+        assert ids == {"d_research", "d_scratch"}
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/documents/{id} — DELETE soft / hard
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentDelete:
+    def test_cross_user_soft_404(self, store, seeded):
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.delete("/api/v1/documents/d_scratch")
+        assert r.status_code == 404
+
+    def test_cross_user_hard_404(self, store, seeded):
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.delete("/api/v1/documents/d_scratch?hard=true")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/documents/{id}/reparse + /stop — write-tier authz
+# ---------------------------------------------------------------------------
+
+
+class TestReparseAndStop:
+    def test_cross_user_reparse_404(self, store, seeded):
+        """Reparse is heavy LLM/CPU — cross-user must not be able to
+        kick it off. 404, not 202."""
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.post("/api/v1/documents/d_scratch/reparse")
+        assert r.status_code == 404
+
+    def test_cross_user_stop_404(self, store, seeded):
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.post("/api/v1/documents/d_scratch/stop")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/documents/{id}/tree + /tree/{node_id} — read-tier authz
+# ---------------------------------------------------------------------------
+
+
+class TestTreeAccess:
+    def test_cross_user_tree_404(self, store, seeded):
+        """Tree exposes section titles + summaries + block coords —
+        cross-user must not see it."""
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.get("/api/v1/documents/d_scratch/tree")
+        assert r.status_code == 404
+
+    def test_cross_user_tree_node_404(self, store, seeded):
+        app = _build_app(store, _alice(seeded))
+        with TestClient(app) as c:
+            r = c.get("/api/v1/documents/d_scratch/tree/some-node")
+        assert r.status_code == 404
