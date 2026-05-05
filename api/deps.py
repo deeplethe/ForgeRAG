@@ -110,6 +110,22 @@ def require_doc_access(
     return row
 
 
+def require_admin(
+    state: AppState, principal: AuthenticatedPrincipal
+) -> None:
+    """Gate an endpoint on the caller having ``role=admin``.
+
+    Auth-disabled deployments synthesise a local-admin principal so
+    the check passes through unchanged for single-user dev setups.
+
+    Raises 403 (not 404) — admin-only endpoints aren't trying to
+    hide their existence; they're advertising a privilege the
+    caller doesn't have. Mirrors ``api/routes/admin.py::_require_admin``.
+    """
+    if state.cfg.auth.enabled and principal.role != "admin":
+        raise HTTPException(403, "admin role required")
+
+
 def require_folder_access(
     state: AppState,
     principal: AuthenticatedPrincipal,

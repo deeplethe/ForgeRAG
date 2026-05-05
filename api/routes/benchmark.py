@@ -5,6 +5,13 @@ Benchmark API endpoints.
     POST   /api/v1/benchmark/cancel   — cancel a running benchmark
     GET    /api/v1/benchmark/status   — poll current status / results
     GET    /api/v1/benchmark/report   — download full report as JSON
+    GET    /api/v1/benchmark/reports  — list saved reports for replay
+
+ALL endpoints are admin-only. A benchmark run consumes LLM quota
+and writes per-question doc_ids + ground_truths from the corpus
+to ``benchmark_results/`` — both the cost and the content are
+admin concerns. Auth-disabled single-user deployments synthesise a
+local-admin principal so the gate is a passthrough there.
 """
 
 from __future__ import annotations
@@ -19,7 +26,8 @@ from pydantic import BaseModel, Field
 from benchmark.report import build_report
 from benchmark.runner import BenchmarkRunner
 
-from ..deps import get_state
+from ..auth import AuthenticatedPrincipal
+from ..deps import get_principal, get_state, require_admin
 from ..state import AppState
 
 log = logging.getLogger(__name__)
@@ -50,7 +58,12 @@ class BenchmarkStartRequest(BaseModel):
 
 
 @router.post("/start")
-def start_benchmark(req: BenchmarkStartRequest, state: AppState = Depends(get_state)):
+def start_benchmark(
+    req: BenchmarkStartRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    require_admin(state, principal)
     if _runner.running:
         raise HTTPException(409, "A benchmark is already running")
 
@@ -110,9 +123,13 @@ def _load_replay_from_disk(run_id: str) -> list[dict] | None:
 
 
 @router.get("/reports")
-def list_reports() -> dict:
+def list_reports(
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+) -> dict:
     """List available saved report files for replay. Returns just the run_id
     and some summary metrics so the UI can populate a 'replay from...' dropdown."""
+    require_admin(state, principal)
     from pathlib import Path
 
     results_dir = Path("benchmark_results")
@@ -142,18 +159,30 @@ def list_reports() -> dict:
 
 
 @router.post("/cancel")
-def cancel_benchmark():
+def cancel_benchmark(
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    require_admin(state, principal)
     _runner.cancel()
     return {"ok": True}
 
 
 @router.get("/status")
-def benchmark_status():
+def benchmark_status(
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    require_admin(state, principal)
     return _runner.get_status()
 
 
 @router.get("/report")
-def download_report():
+def download_report(
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    require_admin(state, principal)
     status = _runner.get_status()
     if status["status"] != "done":
         raise HTTPException(400, "Benchmark not complete yet")
