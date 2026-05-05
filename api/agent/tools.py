@@ -13,17 +13,15 @@ Each ``ToolSpec`` has:
     bearing tools should also call ``register_chunk`` to seed the
     citation pool.
 
-This v1 ships three tools — the minimum to validate the dispatch
-+ authz pipeline:
+Current tools:
 
-    search_bm25   — keyword / lexical (best for filename-y queries
-                    and exact-term lookup)
-    search_vector — semantic / dense embedding (best for paraphrase
-                    + cross-lingual)
-    read_chunk    — pull a single chunk's full content by chunk_id
+    search_bm25    — keyword / lexical
+    search_vector  — semantic / dense embedding
+    read_chunk     — pull full content of one chunk by chunk_id
+    graph_explore  — knowledge graph entity + relation lookup,
+                     visibility-filtered
 
-graph_explore / read_tree / web_search / rerank / expand_query
-land in subsequent commits.
+read_tree / web_search / rerank land in subsequent commits.
 
 Result shape contract for search-style tools:
 
@@ -43,6 +41,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..auth import filter_entity, filter_relation
 from .dispatch import (
     DispatchError,
     ToolContext,
@@ -381,8 +380,195 @@ _READ_CHUNK_SPEC = ToolSpec(
 )
 
 
+# ---------------------------------------------------------------------------
+# Tool: graph_explore
+# ---------------------------------------------------------------------------
+#
+# Knowledge graph access via name search. Different from chunk
+# retrieval: returns LLM-synthesised entity / relation descriptions
+# instead of raw passages. Useful for "who is X" / "how does X relate
+# to Y" queries where the answer benefits from cross-document
+# synthesis.
+#
+# Visibility (S5.3) is **stricter** here than on the API surface —
+# partial AND hidden both drop. Same reasoning as
+# retrieval/kg_path.py::_scope_kg_context: LLM context can't render
+# the "1/3 sources visible" banner that the UI shows for partial
+# entries, and a name-only entry would risk leaking entity existence
+# without contributing useful text.
+#
+# Each entity / relation carries up to ``_GRAPH_CHUNK_PREVIEW`` source
+# chunk_ids back to the LLM so it can call ``read_chunk`` on the
+# specific chunk that grounds a claim.
+
+_GRAPH_DEFAULT_TOP_K = 5
+_GRAPH_MAX_TOP_K = 20
+_GRAPH_CHUNK_PREVIEW = 3
+
+
+def _handle_graph_explore(params: dict, ctx: ToolContext) -> dict:
+    gs = getattr(ctx.state, "graph_store", None)
+    if gs is None:
+        return DispatchError(
+            error="knowledge graph not configured", tool="graph_explore"
+        ).to_result()
+
+    query = params["query"]
+    top_k = min(
+        int(params.get("top_k", _GRAPH_DEFAULT_TOP_K)), _GRAPH_MAX_TOP_K
+    )
+
+    try:
+        # Over-fetch — visibility filter drops partial / hidden.
+        candidates = gs.search_entities(query, top_k=top_k * 3)
+    except Exception as e:
+        return DispatchError(
+            error=f"graph search failed: {type(e).__name__}",
+            tool="graph_explore",
+        ).to_result()
+
+    out_entities: list[dict] = []
+    accepted_eids: set[str] = set()
+    name_cache: dict[str, str] = {}
+
+    for ent in candidates:
+        ent_dict = {
+            "entity_id": ent.entity_id,
+            "name": ent.name,
+            "entity_type": ent.entity_type,
+            "description": ent.description,
+            "source_doc_ids": sorted(ent.source_doc_ids),
+            "source_chunk_ids": sorted(ent.source_chunk_ids),
+        }
+        # Filter — full only. ``filter_entity`` returns
+        # ``(None, None)`` for hidden, ``(dict, Visibility)`` for
+        # partial, ``(dict, None)`` for full. Drop the first two.
+        filtered, vis = filter_entity(ent_dict, accessible=ctx.accessible)
+        if filtered is None or vis is not None:
+            continue
+        accepted_eids.add(ent.entity_id)
+        name_cache[ent.entity_id] = ent.name
+        out_entities.append(
+            {
+                "entity_id": ent.entity_id,
+                "name": ent.name,
+                "type": ent.entity_type,
+                "description": filtered["description"],
+                # Cap chunk preview — full source_chunk_ids list can
+                # be hundreds for hub entities; LLM only needs a few
+                # to ground citations.
+                "source_chunk_ids": filtered["source_chunk_ids"][
+                    :_GRAPH_CHUNK_PREVIEW
+                ],
+            }
+        )
+        if len(out_entities) >= top_k:
+            break
+
+    if not out_entities:
+        return {"entities": [], "relations": []}
+
+    # Pull relations involving the accepted entities. Dedup by
+    # relation_id — a relation between two accepted entities will
+    # come back from both endpoints' get_relations call.
+    relations_out: list[dict] = []
+    seen_rids: set[str] = set()
+
+    for ent_data in out_entities:
+        eid = ent_data["entity_id"]
+        try:
+            relations = gs.get_relations(eid)
+        except Exception:
+            continue
+        for rel in relations:
+            if rel.relation_id in seen_rids:
+                continue
+            rel_dict = {
+                "relation_id": rel.relation_id,
+                "source_entity": rel.source_entity,
+                "target_entity": rel.target_entity,
+                "keywords": rel.keywords,
+                "description": rel.description,
+                "source_doc_ids": sorted(rel.source_doc_ids),
+                "source_chunk_ids": sorted(rel.source_chunk_ids),
+            }
+            filtered_rel = filter_relation(rel_dict, accessible=ctx.accessible)
+            if filtered_rel is None:
+                continue
+            # Partial relations come back with description=None;
+            # treat same as hidden in agent context.
+            if not filtered_rel.get("description"):
+                continue
+            seen_rids.add(rel.relation_id)
+
+            # Resolve endpoint names — query the graph for any
+            # endpoint whose entity didn't make our top-k cut.
+            for endpoint in ("source_entity", "target_entity"):
+                other_eid = filtered_rel[endpoint]
+                if other_eid in name_cache:
+                    continue
+                try:
+                    other_ent = gs.get_entity(other_eid)
+                    name_cache[other_eid] = (
+                        other_ent.name if other_ent else other_eid
+                    )
+                except Exception:
+                    name_cache[other_eid] = other_eid
+
+            relations_out.append(
+                {
+                    "source": name_cache.get(
+                        rel.source_entity, rel.source_entity
+                    ),
+                    "target": name_cache.get(
+                        rel.target_entity, rel.target_entity
+                    ),
+                    "keywords": filtered_rel["keywords"],
+                    "description": filtered_rel["description"],
+                    "source_chunk_ids": filtered_rel.get(
+                        "source_chunk_ids", []
+                    )[:_GRAPH_CHUNK_PREVIEW],
+                }
+            )
+
+    return {"entities": out_entities, "relations": relations_out}
+
+
+_GRAPH_EXPLORE_SPEC = ToolSpec(
+    name="graph_explore",
+    description=(
+        "Knowledge graph search by entity name. Returns matched entities + "
+        "their relations as LLM-synthesised descriptions across all "
+        "(accessible) source documents. Use this when the user asks "
+        "about a specific concept / person / company and you want "
+        "high-level synthesis instead of raw chunks. Each entry carries "
+        "source_chunk_ids — call read_chunk on a specific id to ground a "
+        "citation. Default top_k=5."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Entity name or topic to look up.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": (
+                    f"Number of entities to return. Default "
+                    f"{_GRAPH_DEFAULT_TOP_K}, max {_GRAPH_MAX_TOP_K}."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+    handler=_handle_graph_explore,
+)
+
+
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     _BM25_SPEC.name: _BM25_SPEC,
     _VECTOR_SPEC.name: _VECTOR_SPEC,
     _READ_CHUNK_SPEC.name: _READ_CHUNK_SPEC,
+    _GRAPH_EXPLORE_SPEC.name: _GRAPH_EXPLORE_SPEC,
 }

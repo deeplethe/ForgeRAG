@@ -309,7 +309,10 @@ def _principal(seeded, name, role="user", via="session"):
 
 
 def test_registry_has_v1_tools():
-    assert set(TOOL_REGISTRY.keys()) == {"search_bm25", "search_vector", "read_chunk"}
+    # Registry grows as step 3 lands new tools (graph_explore,
+    # read_tree, web_search, rerank). Pin the minimum set so a typo
+    # rename gets caught; we don't assert exact equality.
+    assert {"search_bm25", "search_vector", "read_chunk"} <= set(TOOL_REGISTRY)
     for name, spec in TOOL_REGISTRY.items():
         assert spec.name == name
         assert spec.description, "tool needs a description"
