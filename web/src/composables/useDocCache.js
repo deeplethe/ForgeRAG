@@ -88,6 +88,15 @@ function getFilename(docId) {
   return cache.value.get(docId)?.filename || ''
 }
 
+function getFileId(docId) {
+  // Returns the file_id alongside doc_id from the cached
+  // DocumentOut. Agent citations carry only ``chunk_id`` /
+  // ``doc_id`` / ``page``, so the chat citation card resolves
+  // ``file_id`` here to build PDF preview URLs.
+  if (!docId) return ''
+  return cache.value.get(docId)?.file_id || ''
+}
+
 function invalidate(docId) {
   if (!docId) return
   const next = new Map(cache.value)
@@ -96,5 +105,5 @@ function invalidate(docId) {
 }
 
 export function useDocCache() {
-  return { ensure, getFilename, invalidate, cache }
+  return { ensure, getFilename, getFileId, invalidate, cache }
 }

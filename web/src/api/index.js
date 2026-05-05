@@ -61,11 +61,8 @@ export {
   getBlocksByPage,
 } from './chunks'
 
-// Query (检索 + 生成)
-export {
-  askQuery,
-  askQueryStream,
-} from './query'
+// Agent chat (post-cutover replacement for /query)
+export { agentChatStream } from './agent'
 
 // Search (检索本体, 无 LLM)
 export {

@@ -44,7 +44,7 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { askQueryStream, createConversation, addMessage, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
+import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
 
 const { t } = useI18n()
 import { renderMarkdown } from '@/utils/renderMarkdown'
@@ -72,7 +72,9 @@ const router = useRouter()
 // current filename here so renames / re-ingests are reflected without
 // having to re-query. ``ensure`` fires the fetch lazily; ``docName``
 // returns whatever we have right now (re-renders when fetch lands).
-const { ensure: ensureDocName, getFilename: docName } = useDocCache()
+// ``docFileId`` resolves the file_id that the PDF preview URL needs
+// (agent citations carry chunk_id + doc_id but not file_id).
+const { ensure: ensureDocName, getFilename: docName, getFileId: docFileId } = useDocCache()
 // Combined: kick off the fetch (idempotent) and return the current
 // best name. Gives us a one-call expression for templates.
 function docNameFor(c) {
@@ -211,18 +213,18 @@ const progressSummary = computed(() => {
   return { text: names.join(', '), done: false, elapsed: maxElapsed }
 })
 
+// Tool name → human label. Post-cutover the agent loop emits one
+// "phase" per tool call; we reuse the existing livePhases UI by
+// keying entries on call_id and storing the tool name as ``name``.
+// The progress widget reads ``pLabel[name]`` to display.
 const pLabel = {
-  query_understanding: 'Understanding query',
-  query_expansion: 'Expanding queries',
-  bm25_path: 'BM25 search',
-  vector_path: 'Vector search',
-  tree_path: 'Tree navigation',
-  kg_path: 'KG traversal',
-  rrf_merge: 'Merging',
-  expansion: 'Expanding context',
-  rerank: 'Reranking',
-  citations: 'Building citations',
-  generation: 'Generating',
+  search_bm25:   'Keyword search',
+  search_vector: 'Semantic search',
+  read_chunk:    'Reading chunk',
+  read_tree:     'Reading section',
+  graph_explore: 'Graph lookup',
+  web_search:    'Web search',
+  rerank:        'Reranking',
 }
 
 /* ── Load conversation ── */
@@ -322,6 +324,28 @@ function normalizeCitations(raw) {
   if (!raw?.length) return null
   if (typeof raw[0] === 'object' && raw[0] !== null) return raw
   return raw.map(id => (typeof id === 'string' ? { citation_id: id, _needsEnrich: true } : id))
+}
+
+// Convert agent-path citations into the shape the existing
+// citation card / PDF preview expects. Agent citations carry
+// only ``chunk_id`` / ``doc_id`` / ``page_start`` / ``content``;
+// the legacy chat UI expects ``citation_id`` / ``page_no`` /
+// ``snippet`` / ``highlights`` / ``file_id``. ``file_id`` is
+// resolved lazily at click time via ``docFileId(doc_id)``.
+function _agentCitationsToOldShape(cits) {
+  if (!cits || !cits.length) return null
+  return cits.map((c) => ({
+    citation_id: c.chunk_id,
+    chunk_id: c.chunk_id,
+    doc_id: c.doc_id,
+    page_no: c.page_start || c.page || 1,
+    snippet: typeof c.content === 'string'
+      ? c.content.slice(0, 280)
+      : (c.snippet || ''),
+    score: c.score ?? null,
+    file_id: null,                // resolved on click via docFileId
+    highlights: c.page_start ? [{ page_no: c.page_start, bbox: null }] : [],
+  }))
 }
 
 async function enrichHistoricalCitations() {
@@ -455,7 +479,6 @@ async function send(text) {
   const preset = presetQA.find(p => p.q === q)
   if (preset) {
     const myGenId = ++_presetGenId
-    const cid = convId.value
     streaming.value = true; streamText.value = ''
     scroll()
     const text = preset.a
@@ -471,12 +494,10 @@ async function send(text) {
     msgs.value.push({ role: 'assistant', content: text, citations: null })
     streaming.value = false
     scroll()
-    // Persist both messages to backend
-    try {
-      await addMessage(cid, 'user', q)
-      await addMessage(cid, 'assistant', text)
-      loadConvs()
-    } catch {}
+    // Preset answers don't go through the agent loop — the backend
+    // hasn't seen them. Skip persistence; they re-render from
+    // ``presetQA`` on reload anyway.
+    loadConvs()
     return
   }
 
@@ -488,49 +509,81 @@ async function send(text) {
   abortCtrl.value = new AbortController()
   try {
     let fin = null
-    let traceSpans = null   // OTel spans payload from the "trace" SSE event
-    for await (const { event, data } of askQueryStream({
-      query: q,
+    let citationsList = null
+    // Map agent SSE events onto the existing livePhases UI:
+    //   tool.call_start → push a "running" entry keyed by call_id
+    //   tool.call_end   → flip the entry to "done" + record latency
+    //   answer          → set streamText (single block, no token streaming yet)
+    //   done            → final state with citations + stop_reason
+    //
+    // turn_start / turn_end are ignored for UI simplicity — phase
+    // labels are per-tool, not per-turn. Persistence happens server-
+    // side once the SSE stream closes (see api/routes/agent.py
+    // `_persist_turn`); no frontend addMessage call needed.
+    for await (const evt of agentChatStream({
+      message: q,
       conversationId: convId.value,
-      pathFilter: pathFilter.value || null,
-      generationOverrides: genTools.value,
+      pathFilters: pathFilter.value ? [pathFilter.value] : null,
       signal: abortCtrl.value.signal,
     })) {
-      // If conversation switched away, stop updating UI but don't abort request
+      // If conversation switched away, stop updating UI (but don't
+      // abort the request — backend persistence still runs).
       if (myGenId !== _streamGenId) break
-      if (event === 'progress') {
-        const { phase, status, detail } = data
-        const now = Date.now()
-        const ex = livePhases.value[phase]
-        if (status === 'running') {
-          livePhases.value = { ...livePhases.value, [phase]: { status: 'running', detail, t0: now } }
-        } else {
-          livePhases.value = { ...livePhases.value, [phase]: { status: 'done', detail, t0: ex?.t0 || now, t1: now } }
+      const t = evt.type
+      if (t === 'tool.call_start') {
+        const detail = evt.params?.query || evt.params?.chunk_id || evt.params?.doc_id || ''
+        livePhases.value = {
+          ...livePhases.value,
+          [evt.id]: {
+            name: evt.tool,
+            status: 'running',
+            detail: typeof detail === 'string' ? detail.slice(0, 64) : '',
+            t0: Date.now(),
+          },
         }
         scroll()
-      } else if (event === 'retrieval') { retInfo.value = data }
-      else if (event === 'thinking') { streamThinking.value += data.text; scroll() }
-      else if (event === 'delta') { streamText.value += data.text; scroll() }
-      else if (event === 'trace') { traceSpans = data }   // OTel {spans: [...]}
-      else if (event === 'error') {
-        const errMsg = typeof data === 'string' ? data : (data?.error || data?.detail || 'Unknown error')
-        fin = { text: `Error: ${errMsg}`, citations_used: null, stats: null, trace_id: null }
-      } else if (event === 'done') {
-        fin = data
-        if (livePhases.value.generation) {
-          livePhases.value = { ...livePhases.value, generation: { ...livePhases.value.generation, status: 'done', t1: Date.now() } }
+      } else if (t === 'tool.call_end') {
+        const ex = livePhases.value[evt.id]
+        const summary = evt.result_summary || {}
+        const sumText = summary.hit_count != null ? `${summary.hit_count} hits`
+          : summary.entity_count != null ? `${summary.entity_count} entities`
+          : summary.chunk_count != null ? `${summary.chunk_count} chunks`
+          : summary.error ? 'error'
+          : ''
+        livePhases.value = {
+          ...livePhases.value,
+          [evt.id]: {
+            name: evt.tool,
+            status: 'done',
+            detail: sumText || ex?.detail || '',
+            t0: ex?.t0 || Date.now() - (evt.latency_ms || 0),
+            t1: (ex?.t0 || Date.now()) + (evt.latency_ms || 0),
+          },
         }
+      } else if (t === 'answer') {
+        streamText.value = evt.text || ''
+        scroll()
+      } else if (t === 'done') {
+        fin = evt
+        citationsList = evt.citations || null
       }
     }
     if (fin && myGenId === _streamGenId) {
       msgs.value.push({
         role: 'assistant',
-        content: fin.text,
-        thinking: streamThinking.value || (fin.stats?.reasoning_text || ''),
-        citations: fin.citations_used,
-        stats: fin.stats,
-        trace: traceSpans,
-        traceId: fin.trace_id || null,
+        content: fin.answer || streamText.value || '',
+        thinking: '',  // thinking is disabled in the agent LLM call
+        citations: _agentCitationsToOldShape(citationsList),
+        stats: {
+          stop_reason: fin.stop_reason,
+          iterations: fin.iterations,
+          tool_calls_count: fin.tool_calls_count,
+          tokens_in: fin.tokens_in,
+          tokens_out: fin.tokens_out,
+          total_latency_ms: fin.total_latency_ms,
+        },
+        trace: null,
+        traceId: null,
       })
       streamText.value = ''
       streamThinking.value = ''
@@ -587,14 +640,21 @@ function onCiteClick(c) {
     return { page_no: h.page_no, bbox }
   })
 
+  // file_id resolution: agent-path citations carry only doc_id /
+  // chunk_id, so we resolve file_id from the doc cache (which the
+  // citation card's name lookup already populates). Falls back to
+  // any explicit file_id on the citation (legacy /query payloads).
+  if (c.doc_id) ensureDocName(c.doc_id)
+  const resolvedFileId = c.file_id || docFileId(c.doc_id) || ''
+
   // Download URLs
-  const dlUrl = fileDownloadUrl(c.file_id)
+  const dlUrl = resolvedFileId ? fileDownloadUrl(resolvedFileId) : ''
   const srcUrl = c.source_file_id ? fileDownloadUrl(c.source_file_id) : ''
   const srcLabel = c.source_format ? c.source_format.toUpperCase() : ''
 
   Object.assign(pdf, {
     show: true,
-    url: filePreviewUrl(c.file_id),
+    url: resolvedFileId ? filePreviewUrl(resolvedFileId) : '',
     page: c.page_no || 1,
     highlights: hl,
     cite: c,
