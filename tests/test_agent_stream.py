@@ -532,3 +532,172 @@ class TestSSERoute:
             r = c.post("/api/v1/agent/chat", json={"message": ""})
         # FastAPI / pydantic returns 422 for min_length violation.
         assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Conversation persistence (the multi-turn fix)
+# ---------------------------------------------------------------------------
+
+
+class TestConversationPersistence:
+    """Wired in the cutover commit. Goal: frontend doesn't have to
+    track history — it just sends a ``conversation_id`` and the
+    server loads + persists messages."""
+
+    def test_creates_conversation_on_first_turn(self, store, seeded):
+        """Unknown ``conversation_id`` → server creates the row +
+        writes user msg + assistant msg. Subsequent calls find the
+        conv + load history."""
+        llm = _StubLLM(
+            [
+                LLMResponse(text="first answer", tool_calls=[]),
+                LLMResponse(text="second answer", tool_calls=[]),
+            ]
+        )
+        principal = _alice(seeded)
+        app = _build_app(store, principal, llm)
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/agent/chat",
+                json={"message": "first turn", "conversation_id": "cv_alice"},
+            )
+            assert r.status_code == 200
+            # Drain the SSE stream so the post-stream persist runs.
+            _ = _parse_sse(r.content)
+
+        # Row created, messages written.
+        conv = store.get_conversation("cv_alice")
+        assert conv is not None
+        assert conv["user_id"] == seeded["users"]["alice"]
+        msgs = store.get_messages("cv_alice")
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert msgs[0]["content"] == "first turn"
+        assert msgs[1]["content"] == "first answer"
+
+    def test_history_loaded_into_second_turn_messages(self, store, seeded):
+        """Second turn — server loads prior turns from DB and
+        injects them as agent history. The LLM sees the full
+        conversation, frontend sent only the new message."""
+        llm = _StubLLM(
+            [
+                LLMResponse(text="first answer", tool_calls=[]),
+                LLMResponse(text="second answer", tool_calls=[]),
+            ]
+        )
+        principal = _alice(seeded)
+        app = _build_app(store, principal, llm)
+        with TestClient(app) as c:
+            c.post(
+                "/api/v1/agent/chat",
+                json={"message": "first turn", "conversation_id": "cv_x"},
+            )
+            r2 = c.post(
+                "/api/v1/agent/chat",
+                json={"message": "second turn", "conversation_id": "cv_x"},
+            )
+        assert r2.status_code == 200
+        # The LLM's second call should have seen the full history
+        # (system + first turn user + first answer assistant + new user).
+        second_call_msgs = llm.calls[1]["messages"]
+        contents = [m.get("content") for m in second_call_msgs]
+        assert "first turn" in contents
+        assert "first answer" in contents
+        assert "second turn" in contents
+
+    def test_cross_user_conversation_404(self, store, seeded):
+        """alice's conversation, bob asks → 404. Per S5.2 admins
+        also don't bypass, but this path wires only alice."""
+        llm = _StubLLM([LLMResponse(text="ok", tool_calls=[])])
+        # First turn as alice creates the row.
+        app_alice = _build_app(store, _alice(seeded), llm)
+        with TestClient(app_alice) as c:
+            c.post(
+                "/api/v1/agent/chat",
+                json={"message": "alice msg", "conversation_id": "cv_priv"},
+            )
+        # Now bob tries to reuse the id.
+        bob = AuthenticatedPrincipal(
+            user_id="u_bob",
+            username="bob",
+            role="user",
+            via="session",
+        )
+        with store.transaction() as sess:
+            from persistence.models import AuthUser
+            sess.add(
+                AuthUser(
+                    user_id="u_bob",
+                    username="bob",
+                    email="bob@example.com",
+                    password_hash="x",
+                    role="user",
+                    status="active",
+                    is_active=True,
+                )
+            )
+            sess.commit()
+        llm2 = _StubLLM([LLMResponse(text="should not run", tool_calls=[])])
+        app_bob = _build_app(store, bob, llm2)
+        with TestClient(app_bob) as c:
+            r = c.post(
+                "/api/v1/agent/chat",
+                json={"message": "intrude", "conversation_id": "cv_priv"},
+            )
+        assert r.status_code == 404
+        # Bob's LLM never invoked — privacy gate fired before stream.
+        assert llm2.calls == []
+
+    def test_citations_persisted_on_assistant_message(self, store, seeded):
+        """When the agent collects chunks via tools, the citation
+        pool snapshot lands on the assistant row's
+        ``citations_json``. Frontend "click chunk → open PDF" flow
+        works on next page-load because the data is in the row."""
+        llm = _StubLLM(
+            [
+                LLMResponse(
+                    text="",
+                    tool_calls=[_bm25_call()],
+                ),
+                LLMResponse(text="grounded answer", tool_calls=[]),
+            ]
+        )
+        principal = _alice(seeded)
+        app = _build_app(store, principal, llm)
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/agent/chat",
+                json={
+                    "message": "what does alice own?",
+                    "conversation_id": "cv_cite",
+                },
+            )
+            assert r.status_code == 200
+            _ = _parse_sse(r.content)
+        msgs = store.get_messages("cv_cite")
+        assistant = msgs[1]
+        assert assistant["role"] == "assistant"
+        assert assistant["content"] == "grounded answer"
+        cits = assistant.get("citations_json") or []
+        assert any(c.get("chunk_id") == "d_research:1:c1" for c in cits)
+
+    def test_no_conversation_id_works_stateless(self, store, seeded):
+        """Backwards compat: passing ``history`` without
+        ``conversation_id`` still works for one-off / stateless
+        callers (tests, scripts, eval harnesses)."""
+        llm = _StubLLM([LLMResponse(text="ok", tool_calls=[])])
+        principal = _alice(seeded)
+        app = _build_app(store, principal, llm)
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/agent/chat",
+                json={
+                    "message": "now what?",
+                    "history": [
+                        {"role": "user", "content": "earlier"},
+                        {"role": "assistant", "content": "earlier reply"},
+                    ],
+                },
+            )
+        assert r.status_code == 200
+        # No conversation row created — request was stateless.
+        assert store.count_conversations() == 0
