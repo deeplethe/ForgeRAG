@@ -4,6 +4,20 @@ TrashService — restore / permanent delete / auto-purge.
 Works on the /__trash__ folder subtree populated by FolderService.move_to_trash
 and the soft-delete path for documents. Permanent deletion cascades through
 the relational DB, vector store, BM25 index, and KG graph store.
+
+Multi-user authz: every trashed item carries
+``trashed_metadata.original_folder_id`` pointing at the folder the
+item lived in (for documents) or its parent (for folders) BEFORE
+the move-to-trash. ``list`` / ``restore`` / ``purge`` accept
+``user_id`` + ``is_admin`` and filter / gate per-item using
+``state.authz.can(original_folder_id, action)``. When ``user_id``
+is None (single-user dev) or ``is_admin`` is True the filter is a
+passthrough and the call behaves as before.
+
+Items whose ``original_folder_id`` is no longer resolvable
+(orphans — the source folder was hard-deleted while the item sat in
+trash) are visible / actionable to admins only; non-admins simply
+don't see them in ``list`` and get a deny in ``restore`` / ``purge``.
 """
 
 from __future__ import annotations
@@ -59,8 +73,20 @@ class TrashService:
 
     # ── Listing ────────────────────────────────────────────────────
 
-    def list(self) -> dict:
-        """Return all items (docs + top-level trashed folders) currently in trash."""
+    def list(
+        self,
+        *,
+        user_id: str | None = None,
+        is_admin: bool = False,
+    ) -> dict:
+        """Return all items (docs + top-level trashed folders) currently in trash.
+
+        When ``user_id`` is provided and ``is_admin`` is False, items
+        are filtered by ``authz.can(original_folder_id, "read")`` —
+        the user only sees trash from folders they currently have at
+        least read access to. Orphans (original folder hard-deleted)
+        are admin-only.
+        """
         with self.store.transaction() as sess:
             trashed_folders = list(
                 sess.execute(
@@ -77,12 +103,42 @@ class TrashService:
             raw_docs = list(sess.execute(select(Document).where(Document.path.like(TRASH_PATH + "/%"))).scalars())
             top_level_docs = [d for d in raw_docs if not any(d.path.startswith(p) for p in trashed_folder_prefixes)]
 
+            if not is_admin and user_id is not None:
+                trashed_folders = [
+                    f for f in trashed_folders
+                    if self._user_can(user_id, _orig_folder_id(f), "read")
+                ]
+                top_level_docs = [
+                    d for d in top_level_docs
+                    if self._user_can(user_id, _orig_folder_id(d), "read")
+                ]
+
             items: list[dict] = []
             for f in trashed_folders:
                 items.append(_folder_to_trash_item(f))
             for d in top_level_docs:
                 items.append(_doc_to_trash_item(d))
         return {"items": items, "count": len(items)}
+
+    # ── authz helper ───────────────────────────────────────────────
+
+    def _user_can(
+        self, user_id: str, original_folder_id: str | None, action: str
+    ) -> bool:
+        """Per-trash-item access check.
+
+        ``original_folder_id`` comes from the item's
+        ``trashed_metadata`` and points at the source folder. ``None``
+        means orphan (legacy row missing the field, or original
+        folder was hard-deleted) — treat as "no access" so non-admins
+        don't see them.
+        """
+        if not original_folder_id:
+            return False
+        authz = getattr(self.state, "authz", None)
+        if authz is None:
+            return True  # single-user dev: no authz layer
+        return authz.can(user_id, original_folder_id, action)
 
     # ── Soft-delete (single document) ──────────────────────────────
 
@@ -117,9 +173,11 @@ class TrashService:
             trash_filename = f"{ts}_{original_filename}"
             new_path = unique_document_path(sess, trash_folder, trash_filename)
 
+            original_folder_id = doc.folder_id
             doc.folder_id = TRASH_FOLDER_ID
             doc.path = new_path
             doc.trashed_metadata = {
+                "original_folder_id": original_folder_id,
                 "original_path": original_path,
                 "trashed_at": _dt.utcnow().isoformat(),
                 "trashed_by": self.actor_id,
@@ -158,13 +216,22 @@ class TrashService:
         *,
         doc_ids: list[str] | None = None,
         folder_paths: list[str] | None = None,
+        user_id: str | None = None,
+        is_admin: bool = False,
     ) -> dict:
         """
         Move items out of trash back to their original path.
         Destination conflicts resolved by appending "(restored)" or "(N)".
+
+        When ``user_id`` is provided and ``is_admin`` is False, each
+        item is gated by ``authz.can(original_folder_id, "soft_delete")``.
+        Items the caller can't act on land in ``denied`` rather than
+        ``errors`` — partial-success semantics so a batch with one
+        unauthorized item doesn't fail the whole call.
         """
         restored: list[dict] = []
         errors: list[dict] = []
+        denied: list[dict] = []
 
         with self.store.transaction() as sess:
             svc = FolderService(sess, actor_id=self.actor_id)
@@ -175,6 +242,12 @@ class TrashService:
                     errors.append({"doc_id": doc_id, "error": "not in trash"})
                     continue
                 meta = doc.trashed_metadata or {}
+                if not is_admin and user_id is not None:
+                    if not self._user_can(
+                        user_id, meta.get("original_folder_id"), "soft_delete"
+                    ):
+                        denied.append({"doc_id": doc_id, "error": "forbidden"})
+                        continue
                 original_path = meta.get("original_path") or ""
 
                 # Windows Recycle Bin semantics: rebuild the original
@@ -219,6 +292,14 @@ class TrashService:
                     errors.append({"folder_path": folder_path, "error": "not in trash"})
                     continue
                 meta = folder.trashed_metadata or {}
+                if not is_admin and user_id is not None:
+                    if not self._user_can(
+                        user_id, meta.get("original_folder_id"), "soft_delete"
+                    ):
+                        denied.append(
+                            {"folder_path": folder_path, "error": "forbidden"}
+                        )
+                        continue
                 original_parent_id = meta.get("original_folder_id") or ROOT_FOLDER_ID
                 original_path = meta.get("original_path") or ""
                 target_parent = sess.get(Folder, original_parent_id)
@@ -257,7 +338,7 @@ class TrashService:
                     )
                 )
 
-        return {"restored": restored, "errors": errors}
+        return {"restored": restored, "errors": errors, "denied": denied}
 
     # ── Permanent delete ───────────────────────────────────────────
 
@@ -266,8 +347,19 @@ class TrashService:
         *,
         doc_ids: list[str] | None = None,
         folder_paths: list[str] | None = None,
+        user_id: str | None = None,
+        is_admin: bool = False,
     ) -> dict:
-        """Permanently delete items (must already be in trash)."""
+        """Permanently delete items (must already be in trash).
+
+        When ``user_id`` is provided and ``is_admin`` is False, each
+        item is gated by ``authz.can(original_folder_id, "purge")``.
+        Items the caller can't act on are reported in ``denied`` and
+        are NOT included in the cascade — partial-success semantics
+        (one unauthorized item shouldn't block the rest of the
+        batch).
+        """
+        denied: list[dict] = []
         # Collect ids to purge in a read-only pass
         with self.store.transaction() as sess:
             purge_doc_ids: list[str] = []
@@ -275,24 +367,40 @@ class TrashService:
 
             for doc_id in doc_ids or []:
                 doc = sess.get(Document, doc_id)
-                if doc is not None and _doc_in_trash(doc):
-                    purge_doc_ids.append(doc_id)
+                if doc is None or not _doc_in_trash(doc):
+                    continue
+                if not is_admin and user_id is not None:
+                    meta = doc.trashed_metadata or {}
+                    if not self._user_can(
+                        user_id, meta.get("original_folder_id"), "purge"
+                    ):
+                        denied.append({"doc_id": doc_id, "error": "forbidden"})
+                        continue
+                purge_doc_ids.append(doc_id)
 
             for fp in folder_paths or []:
                 f = FolderService(sess).get_by_path(fp)
-                if f is not None and _folder_in_trash(f):
-                    # Collect folder + all descendants + their docs
-                    purge_folder_ids.append(f.folder_id)
-                    subtree = FolderService(sess).list_descendants(f.folder_id)
-                    purge_folder_ids.extend(x.folder_id for x in subtree)
-                    subtree_paths = [f.path] + [x.path for x in subtree]
-                    for p in subtree_paths:
-                        docs = list(
-                            sess.execute(
-                                select(Document.doc_id).where((Document.path == p) | (Document.path.like(p + "/%")))
-                            ).scalars()
-                        )
-                        purge_doc_ids.extend(docs)
+                if f is None or not _folder_in_trash(f):
+                    continue
+                if not is_admin and user_id is not None:
+                    meta = f.trashed_metadata or {}
+                    if not self._user_can(
+                        user_id, meta.get("original_folder_id"), "purge"
+                    ):
+                        denied.append({"folder_path": fp, "error": "forbidden"})
+                        continue
+                # Collect folder + all descendants + their docs
+                purge_folder_ids.append(f.folder_id)
+                subtree = FolderService(sess).list_descendants(f.folder_id)
+                purge_folder_ids.extend(x.folder_id for x in subtree)
+                subtree_paths = [f.path] + [x.path for x in subtree]
+                for p in subtree_paths:
+                    docs = list(
+                        sess.execute(
+                            select(Document.doc_id).where((Document.path == p) | (Document.path.like(p + "/%")))
+                        ).scalars()
+                    )
+                    purge_doc_ids.extend(docs)
 
         # De-dup
         purge_doc_ids = sorted(set(purge_doc_ids))
@@ -383,6 +491,7 @@ class TrashService:
         return {
             "purged_documents": len(purge_doc_ids),
             "purged_folders": len(purge_folder_ids),
+            "denied": denied,
         }
 
     # ── Empty trash ────────────────────────────────────────────────
@@ -437,6 +546,18 @@ class TrashService:
 # ---------------------------------------------------------------------------
 # DTO helpers
 # ---------------------------------------------------------------------------
+
+
+def _orig_folder_id(item) -> str | None:
+    """Pull the source folder id off a trashed Folder or Document.
+
+    For trashed folders the metadata's ``original_folder_id`` is the
+    parent the folder lived under; for documents it's the folder
+    directly containing the doc. Either way, that's the folder whose
+    grants gate access in the new authz model.
+    """
+    meta = getattr(item, "trashed_metadata", None) or {}
+    return meta.get("original_folder_id")
 
 
 def _folder_to_trash_item(f: Folder) -> dict:
