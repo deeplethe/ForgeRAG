@@ -66,6 +66,11 @@
       "graph_explore": "Concept network",
       "web_search": "Web search",
       "rerank": "Refining results"
+    },
+    "thinking_phase": {
+      "planning": "Understanding the question",
+      "reviewing": "Reviewing results",
+      "composing": "Composing answer"
     }
   },
   "search": {

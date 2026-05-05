@@ -18,6 +18,17 @@ const _livePhases = ref({})
 const _liveElapsed = ref({})
 const _abortCtrl = ref(null)
 const _progressExpanded = ref(false)
+// Thinking phase between LLM tool-call rounds. Drives the
+// "🧠 理解问题中... 3s" / "🧠 审视检索结果中... 5s" indicator that
+// fills the gap between when an LLM call starts and when it
+// produces tool calls or an answer. Three contexts:
+//   'planning'  — first turn, before any tool has been called
+//   'reviewing' — mid-loop turn, integrating prior tool results
+//   'composing' — forced synthesis turn (budget hit)
+//   null        — no thinking (tools are running OR done)
+const _thinkingPhase = ref(null)
+const _thinkingT0 = ref(0)
+const _thinkingElapsed = ref(0)   // integer seconds since _thinkingT0
 // Generation overrides set via the Tools popup. ``null`` = use yaml
 // defaults; otherwise a {reasoning_effort?, temperature?} dict that
 // gets posted to the API as ``generation_overrides``.
@@ -35,6 +46,12 @@ function _startTimer() {
       obj[k] = p.status === 'running' ? now - p.t0 : (p.t1 || now) - p.t0
     }
     _liveElapsed.value = obj
+    // Thinking-phase elapsed counter — integer seconds, updated
+    // every 200ms so the displayed value advances within ~1s of
+    // wall-clock truth without re-rendering at sub-second cadence.
+    if (_thinkingPhase.value && _thinkingT0.value) {
+      _thinkingElapsed.value = Math.floor((now - _thinkingT0.value) / 1000)
+    }
   }, 200)
 }
 function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
@@ -109,6 +126,8 @@ const liveElapsed = _liveElapsed
 const abortCtrl = _abortCtrl
 const progressExpanded = _progressExpanded
 const genTools = _genTools
+const thinkingPhase = _thinkingPhase
+const thinkingElapsed = _thinkingElapsed
 
 // Thinking lives inside ``genTools`` (so the API gets one
 // ``generation_overrides`` payload), but the UI exposes it through a
@@ -510,6 +529,7 @@ async function send(text) {
 
   streaming.value = true; streamText.value = ''; streamThinking.value = ''; retInfo.value = null
   livePhases.value = {}; liveElapsed.value = {}; progressExpanded.value = false
+  thinkingPhase.value = null; thinkingElapsed.value = 0
   startTimer(); scroll()
 
   const myGenId = ++_streamGenId
@@ -517,16 +537,22 @@ async function send(text) {
   try {
     let fin = null
     let citationsList = null
-    // Map agent SSE events onto the existing livePhases UI:
-    //   tool.call_start → push a "running" entry keyed by call_id
-    //   tool.call_end   → flip the entry to "done" + record latency
-    //   answer          → set streamText (single block, no token streaming yet)
-    //   done            → final state with citations + stop_reason
+    let turnsCompleted = 0  // count of agent.turn_end events seen so far
+    // Map agent SSE events onto live UI state:
+    //   agent.turn_start → set thinkingPhase ('planning' on iter 1,
+    //                      'reviewing' on subsequent, 'composing' if
+    //                      synthesis_only). LLM is reasoning right now.
+    //   tool.call_start  → clear thinkingPhase (tools running),
+    //                      push livePhases entry keyed by call_id
+    //   tool.call_end    → flip livePhases entry to done + latency
+    //   agent.turn_end   → bump turnsCompleted (drives planning vs
+    //                      reviewing on the NEXT turn_start)
+    //   answer           → clear thinkingPhase, set streamText
+    //   done             → final state with citations + stop_reason
     //
-    // turn_start / turn_end are ignored for UI simplicity — phase
-    // labels are per-tool, not per-turn. Persistence happens server-
-    // side once the SSE stream closes (see api/routes/agent.py
-    // `_persist_turn`); no frontend addMessage call needed.
+    // Persistence happens server-side once the SSE stream closes
+    // (see api/routes/agent.py `_persist_turn`); no frontend
+    // addMessage call needed.
     for await (const evt of agentChatStream({
       message: q,
       conversationId: convId.value,
@@ -537,7 +563,20 @@ async function send(text) {
       // abort the request — backend persistence still runs).
       if (myGenId !== _streamGenId) break
       const t = evt.type
-      if (t === 'tool.call_start') {
+      if (t === 'agent.turn_start') {
+        // 3-way phase choice: forced synthesis (budget hit) → composing;
+        // first turn → planning; otherwise → reviewing.
+        thinkingPhase.value = evt.synthesis_only
+          ? 'composing'
+          : (turnsCompleted === 0 ? 'planning' : 'reviewing')
+        _thinkingT0.value = Date.now()
+        thinkingElapsed.value = 0
+        scroll()
+      } else if (t === 'agent.turn_end') {
+        turnsCompleted += 1
+      } else if (t === 'tool.call_start') {
+        // Tools are running → thinking phase ends.
+        thinkingPhase.value = null
         const detail = evt.params?.query || evt.params?.chunk_id || evt.params?.doc_id || ''
         livePhases.value = {
           ...livePhases.value,
@@ -568,6 +607,10 @@ async function send(text) {
           },
         }
       } else if (t === 'answer') {
+        // Answer arrived → no more thinking (some other turn might
+        // still emit, but the current visible "thinking" phase is
+        // closed by the answer landing).
+        thinkingPhase.value = null
         streamText.value = evt.text || ''
         scroll()
       } else if (t === 'done') {
@@ -998,8 +1041,22 @@ function onTraceClick(m) {
             <!-- ═══ Streaming: lightweight progress ═══ -->
             <div v-if="streaming" class="fadein">
               <div v-if="!streamText" class="text-[12px] text-t3 leading-6">
-                <!-- No phases yet -->
-                <template v-if="!Object.keys(livePhases).length">
+                <!-- Thinking phase: between LLM turns the agent is
+                     reasoning over results — show what context it's
+                     in (planning the first call vs reviewing tool
+                     results vs composing the final answer). Drives
+                     the "🧠 审视检索结果中... 5s" indicator. -->
+                <template v-if="thinkingPhase">
+                  <span class="text-t2">
+                    <span class="inline-block mr-1">🧠</span>
+                    {{ t(`chat.thinking_phase.${thinkingPhase}`) }}…
+                    <span class="text-t3 text-[11px] ml-1.5">{{ thinkingElapsed }}s</span>
+                  </span>
+                </template>
+
+                <!-- No phases yet AND not in thinking — initial empty
+                     state right after submit, before any event lands. -->
+                <template v-else-if="!Object.keys(livePhases).length">
                   <Spinner size="sm" />
                 </template>
 

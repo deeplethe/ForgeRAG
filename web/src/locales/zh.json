@@ -66,6 +66,11 @@
       "graph_explore": "全局知识理解",
       "web_search": "联网搜索",
       "rerank": "结果筛选整理"
+    },
+    "thinking_phase": {
+      "planning": "理解问题中",
+      "reviewing": "审视检索结果中",
+      "composing": "整理答案中"
     }
   },
   "search": {
