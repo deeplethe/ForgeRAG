@@ -50,9 +50,64 @@ def query(
     # streaming path.
     resolved = resolve_path_filters(state, principal, req.path_filters)
 
+    # Conversation privacy: a conversation_id supplied by the client
+    # must already belong to them; one that doesn't exist gets
+    # pre-created with the caller's user_id so the answering
+    # pipeline finds an owned row and skips its own create branch.
+    # 404 (not 403) on cross-user access — never confirms a
+    # stranger's conversation_id exists.
+    _ensure_conversation_owned(state, principal, req)
+
     if req.stream:
         return _stream_response(req, state, resolved)
     return _normal_response(req, state, resolved)
+
+
+def _ensure_conversation_owned(
+    state: AppState,
+    principal: AuthenticatedPrincipal,
+    req: QueryRequest,
+) -> None:
+    """Privacy guard for /query's auto-conversation behaviour.
+
+    The answering pipeline auto-creates the conversation row when the
+    given ``conversation_id`` doesn't exist. Without this guard the
+    user_id wouldn't get set, and a malicious client could write
+    into someone else's conversation by guessing their id. Here we
+    either confirm ownership of an existing row or pre-create the
+    row with the right user_id so answering finds it.
+    """
+    if not req.conversation_id:
+        return  # standalone query — no conversation row will be created
+
+    # Auth disabled / synthetic local admin: no privacy filter, just
+    # let answering do whatever it does today.
+    if not state.cfg.auth.enabled:
+        return
+
+    owner = principal.user_id
+    existing = state.store.get_conversation(req.conversation_id)
+    if existing is None:
+        # Pre-create with our user_id. Use the same title-from-query
+        # default the answering pipeline would have used; if the row
+        # already lands here, answering's "if not conv: create" branch
+        # is a no-op and the title we set wins.
+        state.store.create_conversation(
+            {
+                "conversation_id": req.conversation_id,
+                "title": req.query[:100],
+                "user_id": owner,
+            }
+        )
+        return
+
+    # Row exists — must be ours.
+    row_user = existing.get("user_id")
+    if row_user == owner:
+        return
+    if row_user is None and owner == "local":
+        return  # legacy row from auth-disabled history
+    raise HTTPException(404, "conversation not found")
 
 
 # ---------------------------------------------------------------------------

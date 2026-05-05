@@ -795,20 +795,36 @@ class Store:
                     if hasattr(row, k):
                         setattr(row, k, v)
 
-    def list_conversations(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
+    def list_conversations(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        user_id: str | None = None,
+    ) -> list[dict]:
+        """List conversations, newest first.
+
+        ``user_id`` is the privacy filter — when set, only that user's
+        conversations are returned. Conversations are user-private
+        regardless of admin role; passing ``None`` means "no filter"
+        (used by auth-disabled deployments and background jobs).
+        """
         with self._session() as s:
-            rows = (
-                s.execute(select(Conversation).order_by(Conversation.updated_at.desc()).limit(limit).offset(offset))
-                .scalars()
-                .all()
-            )
+            stmt = select(Conversation).order_by(Conversation.updated_at.desc())
+            if user_id is not None:
+                stmt = stmt.where(Conversation.user_id == user_id)
+            stmt = stmt.limit(limit).offset(offset)
+            rows = s.execute(stmt).scalars().all()
             return [_conversation_to_dict(r) for r in rows]
 
-    def count_conversations(self) -> int:
+    def count_conversations(self, *, user_id: str | None = None) -> int:
         with self._session() as s:
             from sqlalchemy import func as sa_func
 
-            return s.execute(select(sa_func.count()).select_from(Conversation)).scalar() or 0
+            stmt = select(sa_func.count()).select_from(Conversation)
+            if user_id is not None:
+                stmt = stmt.where(Conversation.user_id == user_id)
+            return s.execute(stmt).scalar() or 0
 
     def delete_conversation(self, conversation_id: str) -> None:
         with self._session() as s:
@@ -1203,6 +1219,7 @@ def _conversation_to_dict(row: Conversation) -> dict:
     return {
         "conversation_id": row.conversation_id,
         "title": row.title,
+        "user_id": row.user_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},
