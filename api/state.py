@@ -15,7 +15,6 @@ import contextlib
 import logging
 import threading
 
-from answering.pipeline import AnsweringPipeline
 from config import AppConfig
 from embedder.base import Embedder, make_embedder
 from ingestion import IngestionPipeline
@@ -28,6 +27,7 @@ from parser.tree_builder import TreeBuilder
 from persistence.files import FileStore
 from persistence.store import Store
 from persistence.vector.base import VectorStore, make_vector_store
+from retrieval.bm25 import build_bm25_index
 from retrieval.file_search import (
     UnifiedSearcher,
     build_filename_bm25_index,
@@ -35,7 +35,6 @@ from retrieval.file_search import (
     remove_filename_index_for_doc,
     update_filename_index_for_doc,
 )
-from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 
 log = logging.getLogger(__name__)
 
@@ -273,13 +272,48 @@ class AppState:
         except Exception:
             log.exception("KG recovery failed")
 
-        # BM25 index is lazy -- built on first /ask
+        # BM25 index is lazy -- built on first chat / search call.
         self._init_lock = threading.RLock()
         self._bm25 = None
         self._filename_bm25 = None
-        self._retrieval: RetrievalPipeline | None = None
-        self._answering: AnsweringPipeline | None = None
         self._unified_search: UnifiedSearcher | None = None
+
+        # Reranker — eager since the agent's ``rerank`` tool reads
+        # ``state.reranker`` directly. Cheap to construct (just stores
+        # config); first call to .rerank() does the actual work.
+        try:
+            from retrieval.rerank import make_reranker
+
+            self.reranker = make_reranker(cfg.retrieval.rerank)
+        except Exception as e:
+            log.warning("reranker init failed: %s — rerank tool will return error", e)
+            self.reranker = None
+
+        # Web search provider + cache — opt-in. When the deployment
+        # didn't fill in API keys (single-user dev, most cases), the
+        # provider is None and the agent's ``web_search`` tool returns
+        # a clean DispatchError telling the LLM to skip web.
+        self.web_search_provider = None
+        self.web_search_cache = None
+        try:
+            from retrieval.web_search import (
+                WebSearchCache,
+                make_web_search_provider,
+            )
+
+            ws_cfg = getattr(cfg, "web_search", None)
+            if ws_cfg is not None and getattr(ws_cfg, "enabled", False):
+                self.web_search_provider = make_web_search_provider(ws_cfg)
+                self.web_search_cache = WebSearchCache(
+                    max_entries=getattr(ws_cfg, "cache_size", 256),
+                    ttl_seconds=getattr(ws_cfg, "cache_ttl_seconds", 300),
+                )
+                log.info(
+                    "web_search provider initialized: %s",
+                    self.web_search_provider.name,
+                )
+        except Exception as e:
+            log.warning("web_search init failed: %s", e)
 
         # Multi-user authorization. Stateless once constructed; the
         # store reference is enough. Built eagerly because ``can()`` is
@@ -290,88 +324,41 @@ class AppState:
         self.authz = AuthorizationService(self.store)
 
     # ------------------------------------------------------------------
-    def _ensure_retrieval(self) -> RetrievalPipeline:
-        if self._retrieval is not None:
-            return self._retrieval
+    def _ensure_indices(self) -> None:
+        """Build the BM25 + filename BM25 indices on first need.
+
+        Replaces the old ``_ensure_retrieval`` (which also built the
+        defunct RetrievalPipeline). The agent path reads
+        ``state._bm25`` directly via the ``search_bm25`` tool, and
+        ``state.unified_search`` consumes both indices for the
+        BM25-only ``/search`` endpoint.
+        """
+        if self._bm25 is not None and self._filename_bm25 is not None:
+            return
         with self._init_lock:
-            if self._retrieval is not None:
-                return self._retrieval
-            cache_path = self.cfg.cache.bm25_path if self.cfg.cache.bm25_persistence else ""
+            if self._bm25 is not None and self._filename_bm25 is not None:
+                return
+            cache_path = (
+                self.cfg.cache.bm25_path if self.cfg.cache.bm25_persistence else ""
+            )
             self._bm25 = build_bm25_index(
                 self.store,
                 self.cfg.retrieval.bm25,
                 cache_path=cache_path,
             )
-            # Build the doc-keyed filename index alongside the content
-            # BM25 so /search has both signals on first call. Reuses the
-            # same BM25Config (k1/b) — filenames tokenize the same way.
             self._filename_bm25 = build_filename_bm25_index(
                 self.store,
                 self.cfg.retrieval.bm25,
                 cache_path=filename_index_path(self.cfg),
             )
 
-            # Build LLM tree navigator if configured
-            tree_nav = None
-            tp = self.cfg.retrieval.tree_path
-            if tp.llm_nav_enabled:
-                from retrieval.tree_navigator import LLMTreeNavigator
-
-                tree_nav = LLMTreeNavigator(
-                    model=tp.nav.model,
-                    api_key=tp.nav.api_key,
-                    api_key_env=tp.nav.api_key_env,
-                    api_base=tp.nav.api_base,
-                    temperature=tp.nav.temperature,
-                    timeout=tp.nav.timeout,
-                    max_nodes=tp.nav.max_nodes,
-                    system_prompt=tp.nav.system_prompt,
-                )
-
-            self._retrieval = RetrievalPipeline(
-                self.cfg.retrieval,
-                embedder=self.embedder,
-                vector_store=self.vector,
-                relational_store=self.store,
-                bm25_index=self._bm25,
-                tree_navigator=tree_nav,
-                graph_store=self.graph_store,
-            )
-            return self._retrieval
-
-    def _ensure_answering(self) -> AnsweringPipeline:
-        if self._answering is not None:
-            return self._answering
-        with self._init_lock:
-            if self._answering is not None:
-                return self._answering
-            retrieval = self._ensure_retrieval()
-            self._answering = AnsweringPipeline(
-                self.cfg.answering,
-                retrieval=retrieval,
-                store=self.store,
-            )
-            return self._answering
-
-    # ------------------------------------------------------------------
-    @property
-    def retrieval(self) -> RetrievalPipeline:
-        return self._ensure_retrieval()
-
-    @property
-    def answering(self) -> AnsweringPipeline:
-        return self._ensure_answering()
-
     # ------------------------------------------------------------------
     @property
     def unified_search(self) -> UnifiedSearcher:
         """Lazy-init the ``/search`` searcher.
 
-        ``/search`` is BM25-only (no vector / KG / tree / rerank), so we
-        only need the content + filename BM25 indices, not the full
-        retrieval pipeline. We still call ``_ensure_retrieval`` to
-        guarantee both indices are built — it sets ``_bm25`` and
-        ``_filename_bm25`` as a side effect alongside the pipeline.
+        ``/search`` is BM25-only (no vector / KG / tree / rerank), so
+        we only need the content + filename BM25 indices.
         Constructed once per process — searchers hold no per-request
         state.
         """
@@ -380,7 +367,7 @@ class AppState:
         with self._init_lock:
             if self._unified_search is not None:
                 return self._unified_search
-            self._ensure_retrieval()  # populates _bm25 + _filename_bm25
+            self._ensure_indices()
             assert self._bm25 is not None
             assert self._filename_bm25 is not None
             self._unified_search = UnifiedSearcher(
@@ -419,8 +406,6 @@ class AppState:
         with self._init_lock:
             self._bm25 = new_bm25
             self._filename_bm25 = new_filename
-            if self._retrieval is not None:
-                self._retrieval.bm25 = new_bm25
             if self._unified_search is not None:
                 self._unified_search.bm25 = new_bm25
                 self._unified_search.filename_index = new_filename

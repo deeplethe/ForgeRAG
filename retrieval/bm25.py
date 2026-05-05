@@ -9,6 +9,13 @@ finalize() + save() instead of rebuilding everything.
 Zero external dependencies. Good up to ~100K chunks. For larger
 corpora, swap in DB-native full-text (Postgres tsvector, SQLite
 FTS5) behind the same search_chunks / search_docs interface.
+
+Also exposes ``build_bm25_index`` — a convenience builder that
+loads from disk cache when fresh, falls back to scanning the
+relational store. Used by ``api.state.AppState`` at startup and
+by the ingestion pipeline to refresh after a doc is added. Lives
+here (not in a separate ``builder.py``) so the index class and
+its lifecycle stay in one file.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import math
 import os
 import pickle
 import re
+import time
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -25,6 +33,12 @@ from pathlib import Path
 from config import BM25Config
 
 log = logging.getLogger(__name__)
+
+
+# Default on-disk path for the persisted BM25 index. Caller can
+# override per-instance via the ``cache_path`` arg of
+# ``build_bm25_index`` / ``InMemoryBM25Index.save``.
+BM25_CACHE_PATH = "./storage/bm25_index.pkl"
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
 
@@ -241,3 +255,93 @@ class InMemoryBM25Index:
 
     def __contains__(self, chunk_id: str) -> bool:
         return chunk_id in self._chunk_set
+
+
+# ---------------------------------------------------------------------------
+# Builder (relocated from retrieval/pipeline.py during agent cutover)
+# ---------------------------------------------------------------------------
+
+
+def build_bm25_index(
+    relational,
+    cfg: BM25Config,
+    *,
+    doc_ids: list[str] | None = None,
+    cache_path: str = BM25_CACHE_PATH,
+    force_rebuild: bool = False,
+) -> InMemoryBM25Index:
+    """Build or load the on-disk BM25 index.
+
+    1. Try loading from disk cache (fast, <50ms for 10K chunks).
+    2. If cache is missing/corrupt or ``force_rebuild`` is True:
+       full rebuild from the relational store's ``chunks`` table.
+    3. Save to disk for next startup.
+
+    Incremental updates: after ingesting a new doc, call
+    ``index.add(...) + index.finalize() + index.save(cache_path)``
+    instead of a full rebuild.
+
+    Used by ``api.state.AppState`` at startup and by ingestion
+    to refresh after each parse-version commit. Originally lived
+    in ``retrieval/pipeline.py``; relocated here so the agent
+    path doesn't depend on the (now-deleted) RetrievalPipeline.
+    """
+    # Try cache first.
+    if not force_rebuild and cache_path:
+        cached = InMemoryBM25Index.load(cache_path, cfg)
+        if cached is not None and len(cached) > 0:
+            return cached
+
+    # Full rebuild.
+    t0 = time.time()
+    index = InMemoryBM25Index(cfg)
+
+    if doc_ids is None:
+        doc_ids = _list_all_doc_ids(relational)
+
+    for doc_id in doc_ids:
+        row = relational.get_document(doc_id)
+        if not row:
+            continue
+        pv = row["active_parse_version"]
+        chunks = relational.get_chunks(doc_id, pv)
+        for c in chunks:
+            section = " ".join(c.get("section_path") or [])
+            text = c.get("content") or ""
+            if section:
+                text = section + "\n" + text
+            index.add(
+                chunk_id=c["chunk_id"],
+                doc_id=c["doc_id"],
+                text=text,
+            )
+    index.finalize()
+    elapsed = int((time.time() - t0) * 1000)
+    log.info(
+        "BM25 index built: %d chunks, %d docs, %dms",
+        len(index),
+        len(set(index.doc_ids)),
+        elapsed,
+    )
+
+    if cache_path:
+        try:
+            index.save(cache_path)
+        except Exception as e:
+            log.warning("BM25 cache save failed: %s", e)
+
+    return index
+
+
+def _list_all_doc_ids(relational) -> list[str]:
+    """All doc_ids in the relational store. Used by ``build_bm25_index``
+    when the caller didn't pass an explicit list.
+
+    Stores that don't expose ``list_document_ids`` (older test
+    doubles) get an empty list — caller passes an explicit doc_ids
+    arg in that case.
+    """
+    lister = getattr(relational, "list_document_ids", None)
+    if callable(lister):
+        return list(lister())
+    return []

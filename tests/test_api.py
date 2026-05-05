@@ -32,26 +32,6 @@ def _wait_ingest(state):
     state.ingest_queue._queue.join()
 
 
-class FakeGenerator:
-    backend = "fake"
-    model = "fake/test"
-
-    def generate(self, messages, *, overrides=None):
-        from answering.prompts import extract_cited_ids
-
-        content = "\n".join(m["content"] for m in messages if m["role"] == "user")
-        marker = "[c_1]"
-        text = f"Answer {marker}." if marker in content else "I don't know."
-        return {
-            "text": text,
-            "finish_reason": "stop",
-            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
-            "model": self.model,
-            "cited_ids": extract_cited_ids(text),
-            "latency_ms": 2,
-        }
-
-
 @pytest.fixture
 def client(tmp_path, sample_pdf):
     cfg = AppConfig()
@@ -84,14 +64,11 @@ def client(tmp_path, sample_pdf):
     fake_emb = FakeEmbedder()
     state = AppState(cfg, vector_store=fake_vec, embedder=fake_emb)
 
-    from answering.pipeline import AnsweringPipeline
-
-    state._answering = AnsweringPipeline(
-        cfg.answering,
-        retrieval=state.retrieval,
-        generator=FakeGenerator(),
-        store=state.store,
-    )
+    # Note: this fixture used to inject a FakeGenerator into a now-
+    # deleted AnsweringPipeline so /query tests could run without
+    # network. The /api/v1/query route is gone post-cutover; chat
+    # tests live in tests/test_agent_stream.py against the agent
+    # loop with a stub LLM directly.
 
     app = create_app(state=state)
     with TestClient(app) as c:
@@ -274,31 +251,12 @@ class TestChunksBlocks:
 
 
 # --- Query ---
-
-
-class TestQuery:
-    def test_ask(self, client, sample_pdf):
-        c, state, _ = client
-        with open(sample_pdf, "rb") as f:
-            c.post("/api/v1/documents/upload-and-ingest", files={"file": ("s.pdf", f, "application/pdf")})
-        _wait_ingest(state)
-        # Test fixtures have no LLM credentials; QU and rerank now run on
-        # every retrieve unless explicitly disabled, so opt out per-request.
-        r = c.post(
-            "/api/v1/query",
-            json={
-                "query": "introduction",
-                "overrides": {"query_understanding": False, "rerank": False},
-            },
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["finish_reason"] in ("stop", "no_context")
-
-    def test_empty_query(self, client):
-        c, *_ = client
-        r = c.post("/api/v1/query", json={"query": "   "})
-        assert r.status_code == 400
+#
+# /api/v1/query was removed post-cutover. Chat tests now live
+# in tests/test_agent_stream.py — they exercise the SSE event
+# stream + tool dispatch directly against AgentLoop with a
+# deterministic stub LLM, no need for the heavy AppState +
+# FakeGenerator + ingest fixtures.
 
 
 # --- Settings ---

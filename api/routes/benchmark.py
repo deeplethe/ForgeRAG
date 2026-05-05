@@ -80,7 +80,7 @@ def start_benchmark(
         run_id = _runner.start(
             cfg=state.cfg,
             store=state.store,
-            answering=state.answering,
+            state=state,
             num_questions=req.num_questions,
             replay_items=replay_items,
         )

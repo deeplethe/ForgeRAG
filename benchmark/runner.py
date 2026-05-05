@@ -119,22 +119,22 @@ class BenchmarkRunner:
         *,
         cfg,
         store,
-        answering,
+        state,
         num_questions: int = 30,
         replay_items: list | None = None,
     ):
-        """
-        Start a benchmark run.
+        """Start a benchmark run.
 
-        Parameters
-        ----------
-        replay_items
-            If provided, skip the question-generation phase and reuse these
-            questions verbatim (typically loaded from a prior run's report).
-            Each entry is a dict with at least {question, ground_truth,
-            doc_id, doc_title} — i.e. the BenchmarkItem dict shape. Lets
-            users perform strict A/B comparisons (same questions, changed
-            config) instead of sampling new questions each time.
+        Post-cutover: the runner drives the agent path
+        (``api.agent.AgentLoop``) instead of the deleted
+        AnsweringPipeline. ``state`` is the full AppState so the
+        agent's tool dispatch can reach BM25 / vector / graph /
+        rerank / web_search / store directly via the dispatch
+        layer's ``ToolContext``.
+
+        ``replay_items`` — when provided, skip question generation
+        and reuse the listed questions verbatim. Each entry is a
+        dict with ``{question, ground_truth, doc_id, doc_title}``.
         """
         with self._lock:
             if self.running:
@@ -154,7 +154,7 @@ class BenchmarkRunner:
             )
         self._thread = threading.Thread(
             target=self._run,
-            args=(cfg, store, answering, num_questions),
+            args=(cfg, store, state, num_questions),
             kwargs={"replay_items": replay_items},
             daemon=True,
         )
@@ -181,10 +181,38 @@ class BenchmarkRunner:
         per_item = elapsed / completed
         return int((total - completed) * per_item * 1000)
 
-    def _run(self, cfg, store, answering, num_questions: int, *, replay_items: list | None = None):
+    def _run(self, cfg, store, state, num_questions: int, *, replay_items: list | None = None):
+        from api.agent import AgentConfig, AgentLoop, LiteLLMClient, build_tool_context
+        from api.auth import AuthenticatedPrincipal
+
         from .metrics import score_items
         from .report import sanitize_config
         from .testset import generate_testset
+
+        # Build the agent loop once for the run. Same model + key the
+        # answering generator was configured with — fairest baseline
+        # for any prior /api/v1/benchmark numbers.
+        gen_cfg = cfg.answering.generator
+        agent_cfg = AgentConfig(
+            model=gen_cfg.model,
+            api_key=gen_cfg.api_key,
+            api_base=gen_cfg.api_base,
+        )
+        agent_llm = LiteLLMClient(
+            model=agent_cfg.model,
+            api_key=agent_cfg.api_key,
+            api_base=agent_cfg.api_base,
+        )
+        agent = AgentLoop(agent_cfg, agent_llm)
+
+        # Synthetic auth-disabled admin → benchmark sees the whole
+        # corpus without folder scoping.
+        bench_principal = AuthenticatedPrincipal(
+            user_id="local",
+            username="bench-runner",
+            role="admin",
+            via="auth_disabled",
+        )
 
         items: list[BenchmarkItem] = []
         try:
@@ -235,37 +263,40 @@ class BenchmarkRunner:
                     self._update(status="cancelled", phase="Cancelled")
                     return
                 try:
-                    t0 = time.time()
-                    answer = answering.ask(item.question)
-                    item.latency_ms = int((time.time() - t0) * 1000)
-                    item.answer = answer.text
-                    # Capture both raw chunk snippets AND the synthesized KG
-                    # context (entities + relations injected into the prompt).
-                    # The LLM judge needs to see the full prompt input;
-                    # otherwise answers grounded in KG synthesis look like
-                    # hallucinations and faithfulness / context_precision
-                    # are under-reported.
-                    item.contexts = [c.snippet or "" for c in answer.citations_all if c.snippet]
-                    kg_ctx = (answer.stats or {}).get("kg_context") or {}
-                    for e in kg_ctx.get("entities", []):
-                        desc = (e.get("description") or "").strip()
-                        if desc:
-                            item.contexts.append(f"[KG entity] {e.get('name', '')}: {desc}")
-                    for r in kg_ctx.get("relations", []):
-                        desc = (r.get("description") or "").strip()
-                        if desc:
-                            item.contexts.append(f"[KG relation] {r.get('source', '')} → {r.get('target', '')}: {desc}")
-                    item.citations = [
-                        {"citation_id": c.citation_id, "doc_id": c.doc_id, "page_no": c.page_no, "snippet": c.snippet}
-                        for c in answer.citations_used
+                    ctx = build_tool_context(state, bench_principal)
+                    result = agent.run(item.question, ctx)
+                    item.latency_ms = result.total_latency_ms
+                    item.answer = result.answer
+                    # Contexts for the judge come from the citation
+                    # pool — every chunk the agent fetched (via search
+                    # or read_chunk) is in there with full content.
+                    # Cap each at 1k chars to keep the judge prompt
+                    # bounded.
+                    item.contexts = [
+                        (c.get("content") or "")[:1000]
+                        for c in (result.citations or [])
+                        if c.get("content")
                     ]
-                    # Capture per-path top-5 chunk ids for attribution analysis
-                    # (e.g. "for CP=0 items, which path actually had the GT chunk?")
-                    stats_dict = answer.stats or {}
-                    for _k in ("bm25_top_ids", "vector_top_ids", "tree_top_ids", "kg_top_ids"):
-                        v = stats_dict.get(_k)
-                        if v:
-                            item.path_top_ids[_k.replace("_top_ids", "")] = list(v)
+                    item.citations = [
+                        {
+                            "citation_id": c.get("chunk_id"),
+                            "doc_id": c.get("doc_id"),
+                            "page_no": c.get("page_start"),
+                            "snippet": (c.get("content") or "")[:200],
+                        }
+                        for c in (result.citations or [])
+                    ]
+                    # Tool-attribution analysis: which tools the agent
+                    # used to find the chunks. Replaces the old
+                    # per-path top-id breakdown.
+                    tool_counts: dict[str, int] = {}
+                    for entry in (result.tool_calls_log or []):
+                        t = entry.get("tool")
+                        if t:
+                            tool_counts[t] = tool_counts.get(t, 0) + 1
+                    item.path_top_ids = {
+                        f"agent_{k}": [str(v)] for k, v in tool_counts.items()
+                    }
                 except Exception as e:
                     item.error = str(e)
                     log.warning("benchmark item %d failed: %s", i, e)

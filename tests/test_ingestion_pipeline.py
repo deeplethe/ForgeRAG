@@ -15,7 +15,6 @@ from config import (
     ChunkerConfig,
     FilesConfig,
     RelationalConfig,
-    RetrievalSection,
     SQLiteConfig,
     TreeBuilderConfig,
 )
@@ -27,7 +26,6 @@ from parser.tree_builder import TreeBuilder
 from persistence.files import FileStore
 from persistence.store import Store
 from persistence.vector.base import VectorHit, VectorItem
-from retrieval.pipeline import RetrievalPipeline, build_bm25_index
 
 pytest.importorskip("fitz")
 pytest.importorskip("sqlalchemy")
@@ -199,29 +197,10 @@ class TestConvenience:
         assert row["file_id"] == result.file_id
 
 
-class TestCitationHasFileId:
-    @pytest.mark.skipif(
-        True,
-        reason="Requires LLM-enabled tree building for multi-chunk results; fallback tree produces single chunk with no citation match",
-    )
-    def test_citation_carries_file_id(self, pipeline, sample_pdf):
-        pipe, rel, _blob, vec = pipeline
-        result = pipe.upload_and_ingest(
-            sample_pdf,
-            original_name="sample.pdf",
-            mime_type="application/pdf",
-        )
-        bm25 = build_bm25_index(rel, RetrievalSection().bm25)
-        retrieval = RetrievalPipeline(
-            RetrievalSection(),
-            embedder=pipe.embedder,
-            vector_store=vec,
-            relational_store=rel,
-            bm25_index=bm25,
-        )
-        out = retrieval.retrieve("ForgeRAG parser test")
-        assert out.citations
-        for c in out.citations:
-            assert c.file_id == result.file_id
-            assert c.doc_id == result.doc_id
-            assert c.highlights
+# NOTE: a previous ``TestCitationHasFileId`` test exercised the
+# RetrievalPipeline → Citations chain end-to-end; it was always
+# skipped (LLM-enabled tree builder required for multi-chunk
+# results). Removed during the agent cutover when RetrievalPipeline
+# was deleted. Equivalent end-to-end coverage now lives in
+# tests/test_agent_dispatch.py + the benchmark harness in
+# scripts/bench_agent_vs_fixed.py.
