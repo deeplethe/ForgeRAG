@@ -241,6 +241,89 @@ def test_unknown_folder_returns_false(authz, users):
 
 
 # ---------------------------------------------------------------------------
+# Ancestor-walk semantics — bob owns /shared, alice creates a subfolder
+# inside and takes ownership; bob must keep full rights via the walk.
+# ---------------------------------------------------------------------------
+
+
+def test_ancestor_owner_can_manage_descendant_owned_by_someone_else(
+    authz, store, users
+):
+    """Bob owns /research's parent (the root). After alice creates
+    /research and takes ownership, bob (admin OR ancestor owner)
+    must still be able to manage it.
+
+    To exercise the ancestor-walk specifically (not the admin
+    bypass), we use the existing fixture where admin owns / and
+    alice owns /research. Demote admin first so we're testing the
+    walk, not the role bypass."""
+    with store.transaction() as sess:
+        from persistence.models import AuthUser
+
+        admin = sess.get(AuthUser, users["admin"])
+        admin.role = "user"  # neutralise admin bypass
+        sess.commit()
+
+    # admin still owns / (the root). /research's owner is alice.
+    # ancestor-walk lookup should give admin owner-level rights on
+    # /research because they own /.
+    for action in ("read", "upload", "share", "transfer", "purge"):
+        assert authz.can(users["admin"], "f_research", action) is True
+
+
+def test_inherited_rw_does_not_grant_manage(authz, store, users):
+    """Alice has rw on /legal via shared_with. /legal/sub (a hypothetical
+    subfolder) inherits the rw grant via cascade. Alice can READ and
+    WRITE on /legal/sub, but cannot MANAGE — manage requires explicit
+    ownership or admin role, not inheritance."""
+    with store.transaction() as sess:
+        sess.add(
+            Folder(
+                folder_id="f_legal_sub",
+                path="/legal/sub",
+                path_lower="/legal/sub",
+                parent_id="f_legal",
+                name="sub",
+                owner_user_id=users["bob"],
+                # cascade copy of /legal's shared_with
+                shared_with=[
+                    {"user_id": users["alice"], "role": "rw"},
+                    {"user_id": users["carol"], "role": "r"},
+                ],
+            )
+        )
+        sess.commit()
+    alice = users["alice"]
+    assert authz.can(alice, "f_legal_sub", "read") is True
+    assert authz.can(alice, "f_legal_sub", "upload") is True
+    assert authz.can(alice, "f_legal_sub", "share") is False
+    assert authz.can(alice, "f_legal_sub", "transfer") is False
+
+
+def test_carol_inherited_read_via_ancestor_walk(authz, store, users):
+    """Carol has r on /legal. If a subfolder /legal/draft exists with
+    EMPTY shared_with (cascade hadn't run, e.g. legacy data), carol
+    should still resolve via the ancestor walk."""
+    with store.transaction() as sess:
+        sess.add(
+            Folder(
+                folder_id="f_legal_draft",
+                path="/legal/draft",
+                path_lower="/legal/draft",
+                parent_id="f_legal",
+                name="draft",
+                owner_user_id=users["bob"],
+                shared_with=[],  # legacy / pre-cascade
+            )
+        )
+        sess.commit()
+    carol = users["carol"]
+    assert authz.can(carol, "f_legal_draft", "read") is True
+    assert authz.can(carol, "f_legal_draft", "upload") is False  # only r
+    assert authz.can(carol, "f_legal_draft", "share") is False
+
+
+# ---------------------------------------------------------------------------
 # resolve_paths()
 # ---------------------------------------------------------------------------
 

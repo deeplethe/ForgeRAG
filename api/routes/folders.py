@@ -188,8 +188,33 @@ def folder_info(
 
 
 @router.post("", response_model=FolderOut, status_code=201)
-def create_folder(body: CreateFolderReq, state: AppState = Depends(get_state)):
+def create_folder(
+    body: CreateFolderReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
     scope = ScopeService(state.store)
+    # When auth is on the principal must have at least write access
+    # under the parent (owner / rw / admin). When auth is off the
+    # synthetic local-admin principal passes the check trivially.
+    if state.cfg.auth.enabled:
+        with state.store.transaction() as sess:
+            parent = FolderService(sess).require_by_path(body.parent_path)
+            if not state.authz.can(
+                principal.user_id, parent.folder_id, "upload"
+            ):
+                raise HTTPException(
+                    403, f"forbidden: write under {body.parent_path!r}"
+                )
+    # New folders are owned by the creator. The synthetic ``local``
+    # principal in auth-disabled mode has no ``auth_users`` row, so
+    # we skip ownership in that case (folder gets created with
+    # owner_user_id=NULL — admin-managed via role bypass).
+    creator_id: str | None = (
+        principal.user_id
+        if state.cfg.auth.enabled and principal.via != "auth_disabled"
+        else None
+    )
     with state.store.transaction() as sess:
         svc = FolderService(sess)
         try:
@@ -198,7 +223,9 @@ def create_folder(body: CreateFolderReq, state: AppState = Depends(get_state)):
             raise HTTPException(404, f"parent folder not found: {body.parent_path!r}")
         scope.require_folder(parent.folder_id, ScopeMode.WRITE)
         try:
-            new = svc.create(body.parent_path, body.name)
+            new = svc.create(
+                body.parent_path, body.name, owner_user_id=creator_id
+            )
         except InvalidFolderName as e:
             raise HTTPException(422, str(e))
         except FolderAlreadyExists as e:

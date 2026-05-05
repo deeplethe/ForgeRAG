@@ -81,6 +81,11 @@ Action = Literal[
 # this module dependency-light.
 _TRASH_PREFIX = "/__trash__"
 
+# Numeric role weights so ``can()`` can pick the strongest grant up
+# the ancestor chain. Owner is sentinel-only (we short-circuit on it
+# inside the walk).
+_ROLE_WEIGHT: dict[str, int] = {"r": 1, "rw": 2}
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -174,7 +179,17 @@ class AuthorizationService:
         """Return True iff ``user_id`` may perform ``action`` on
         ``folder_id``. False on disabled / suspended users, missing
         folders, or insufficient grant. Admin role bypasses all
-        non-privacy checks."""
+        non-privacy checks.
+
+        Resolution walks the folder + every ancestor: owner of any
+        ancestor implicitly has owner-level rights on the descendant
+        (this is the "subfolder permissions ⊇ parent" rule applied
+        to ownership, so a user who owns ``/shared`` keeps full
+        control even when someone with rw access creates a
+        ``/shared/sub`` and takes ownership of it). The strongest
+        grant on the chain wins; we stop on the first owner match
+        (no stronger grant exists).
+        """
         with self._store.transaction() as sess:
             user = sess.get(AuthUser, user_id)
             if user is None:
@@ -184,24 +199,39 @@ class AuthorizationService:
             if user.role == "admin":
                 return True
 
-            folder = sess.get(Folder, folder_id)
-            if folder is None:
+            cur = sess.get(Folder, folder_id)
+            if cur is None:
                 return False
 
-            # Owner has full control on their own folder.
-            if folder.owner_user_id == user_id:
-                return True
+            best_role: str | None = None  # 'r' / 'rw' / None
+            while cur is not None:
+                # Owner of self or any ancestor → full rights, including
+                # MANAGE. Stop here — no stronger grant exists.
+                if cur.owner_user_id == user_id:
+                    return True
+                role = _role_in_shared_with(cur.shared_with or [], user_id)
+                if role is not None and (
+                    best_role is None
+                    or _ROLE_WEIGHT[role] > _ROLE_WEIGHT[best_role]
+                ):
+                    best_role = role
+                cur = (
+                    sess.get(Folder, cur.parent_id)
+                    if cur.parent_id
+                    else None
+                )
 
-            # Otherwise look up the role granted via shared_with.
-            role = _role_in_shared_with(folder.shared_with or [], user_id)
-            if role is None:
+            if best_role is None:
                 return False
-            if action in READ_ACTIONS:
-                return role in ("r", "rw")
+            if action in MANAGE_ACTIONS:
+                # Manage requires explicit ownership / admin (handled
+                # above). Inherited shared_with grants — even rw — do
+                # NOT confer manage rights.
+                return False
             if action in WRITE_ACTIONS:
-                return role == "rw"
-            # MANAGE_ACTIONS require owner / admin only — both already
-            # handled above, so a shared member can never reach here.
+                return best_role == "rw"
+            if action in READ_ACTIONS:
+                return best_role in ("r", "rw")
             return False
 
     # ------------------------------------------------------------------
