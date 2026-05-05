@@ -166,6 +166,8 @@ class LLMTreeNavigator:
             # actual wait N*timeout, which easily exceeds the outer
             # tree_path worker timeout and creates the "49s outlier" effect.
             num_retries=0,
+            # Thinking-disabled invariant — see api/agent/llm.py.
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self._api_key:
             kwargs["api_key"] = self._api_key

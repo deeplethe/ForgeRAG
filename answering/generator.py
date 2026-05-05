@@ -96,17 +96,21 @@ class LiteLLMGenerator:
     # ------------------------------------------------------------------
     def generate(self, messages: list[dict], *, overrides: Any = None) -> dict:
         litellm = self._ensure()
-        # Connection-level kwargs only. Per-call generation params
-        # (temperature / max_tokens / reasoning_effort / thinking) come
-        # exclusively from per-request ``overrides``. If a request
-        # doesn't set them, we don't pass them — the model's own
-        # defaults apply. yaml is intentionally not a place to pin
-        # them, so users picking those settings via the chat UI is
-        # the single source of truth.
+        # Provider thinking is hard-disabled at this level. Reasoning:
+        # the agent loop in ``api/agent/loop.py`` is OpenCraig's
+        # thinking layer (visible iterations + tool calls + citations);
+        # provider-side CoT (DeepSeek V4-Pro thinking, o1, Anthropic
+        # extended thinking) is opaque, burns tokens unpredictably,
+        # and creates a parallel "thinking" concept in the UI that
+        # confuses users. Per-call ``overrides`` may flip it back on
+        # for power users via settings (see _apply_gen_overrides),
+        # but the default everywhere — chat, ingestion, judge — is
+        # OFF.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
             timeout=self.cfg.timeout,
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
@@ -159,13 +163,14 @@ class LiteLLMGenerator:
     # ------------------------------------------------------------------
     def generate_stream(self, messages: list[dict], *, overrides: Any = None):
         litellm = self._ensure()
-        # See ``generate`` — connection-level kwargs only; per-call
-        # generation params come from ``overrides`` or stay unset.
+        # See ``generate`` — provider thinking hard-disabled by
+        # default; overrides can flip back on for power users.
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model,
             messages=messages,
             timeout=self.cfg.timeout,
             stream=True,
+            extra_body={"thinking": {"type": "disabled"}},
         )
         if self._api_key:
             kwargs["api_key"] = self._api_key

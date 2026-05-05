@@ -108,6 +108,12 @@ class LLMJudge:
             ],
             "temperature": self.temperature,
             "timeout": self.timeout,
+            # Thinking-disabled invariant: judges score short JSON
+            # outputs; CoT tokens just clip the budget and risk
+            # truncating the score (see benchmark/metrics.py for the
+            # original bug report). Same flag every other LLM call
+            # in OpenCraig uses.
+            "extra_body": {"thinking": {"type": "disabled"}},
         }
         if self.api_base:
             kwargs["api_base"] = self.api_base

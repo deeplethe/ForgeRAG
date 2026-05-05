@@ -116,6 +116,10 @@ def generate_testset(
                 temperature=0.7,
                 max_tokens=1024,
                 timeout=60.0,
+                # Test-question generation is structured JSON output;
+                # CoT just clips the budget and risks truncation.
+                # Same flag every other LLM call in OpenCraig uses.
+                extra_body={"thinking": {"type": "disabled"}},
             )
             if api_key:
                 kwargs["api_key"] = api_key
