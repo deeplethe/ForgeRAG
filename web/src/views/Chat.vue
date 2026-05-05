@@ -75,7 +75,9 @@ const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
-import ThinkingPicker from '@/components/ThinkingPicker.vue'
+// ThinkingPicker removed post-cutover (provider CoT permanently
+// disabled; see commit d07f673). Component file kept for now —
+// settings UI may reuse it as an advanced/debug toggle later.
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
@@ -129,20 +131,12 @@ const genTools = _genTools
 const thinkingPhase = _thinkingPhase
 const thinkingElapsed = _thinkingElapsed
 
-// Thinking lives inside ``genTools`` (so the API gets one
-// ``generation_overrides`` payload), but the UI exposes it through a
-// dedicated chip. This adapter reads/writes just the ``thinking``
-// field while preserving any other fields a programmatic caller may
-// have set (reasoning_effort, temperature, ...).
-const thinkingValue = computed({
-  get: () => (typeof genTools.value?.thinking === 'boolean' ? genTools.value.thinking : null),
-  set: (v) => {
-    const next = { ...(genTools.value || {}) }
-    if (v === null || v === undefined) delete next.thinking
-    else next.thinking = v
-    genTools.value = Object.keys(next).length ? next : null
-  },
-})
+// (Pre-agent-cutover this section adapted ``genTools.thinking``
+// for the ThinkingPicker chip. The chip was removed when the
+// agent loop became OpenAI's thinking layer; provider-side CoT
+// is hard-disabled at every callsite — see commit ``d07f673``.
+// Power users who need to re-enable it can set the override via
+// settings.)
 
 // Per-instance state (OK to reset on remount)
 const input = ref('')
@@ -925,7 +919,11 @@ function onTraceClick(m) {
                  belonging to the input card below. -->
             <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <ThinkingPicker v-model="thinkingValue" />
+              <!-- ThinkingPicker removed post-cutover. Provider CoT
+                   is permanently disabled (the agent loop is the
+                   thinking layer); users see the agent's reasoning
+                   inline as "🧠 审视检索结果中…" between tool rounds.
+                   See commit d07f673. -->
               <!-- Web search placeholder. Disabled chip until a
                    real retriever (Tavily / SearXNG / etc.) lands. -->
               <span
@@ -1108,29 +1106,12 @@ function onTraceClick(m) {
                 </template>
               </div>
 
-              <!-- Live thinking pane (reasoning models stream this).
-                   Rendered ABOVE the answer to match the persisted layout
-                   below — otherwise the pane jumps from below-answer (live)
-                   to above-answer (history) the moment the SSE ``done``
-                   event flips the message into ``msgs[]``. Chronological
-                   order anyway: the model thinks first, then answers. -->
-              <div v-if="streamThinking" class="mb-3 border-l-2 border-line pl-3">
-                <button class="text-[11px] text-t3 hover:text-t2 flex items-center gap-1 mb-1.5"
-                  @click="streamThinkingCollapsed = !streamThinkingCollapsed">
-                  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
-                    <path fill-rule="evenodd" clip-rule="evenodd" d="M9.97165 1.29981C11.5853 0.718916 13.271 0.642197 14.3144 1.68555C15.3577 2.72902 15.2811 4.41466 14.7002 6.02833C14.4707 6.66561 14.1504 7.32937 13.75 8.00001C14.1504 8.67062 14.4707 9.33444 14.7002 9.97169C15.2811 11.5854 15.3578 13.271 14.3144 14.3145C13.271 15.3579 11.5854 15.2811 9.97165 14.7002C9.3344 14.4708 8.67059 14.1505 7.99997 13.75C7.32933 14.1505 6.66558 14.4708 6.02829 14.7002C4.41461 15.2811 2.72899 15.3578 1.68552 14.3145C0.642155 13.271 0.71887 11.5854 1.29977 9.97169C1.52915 9.33454 1.84865 8.67049 2.24899 8.00001C1.84866 7.32953 1.52915 6.66544 1.29977 6.02833C0.718852 4.41459 0.64207 2.729 1.68552 1.68555C2.72897 0.642112 4.41456 0.718887 6.02829 1.29981C6.66541 1.52918 7.32949 1.8487 7.99997 2.24903C8.67045 1.84869 9.33451 1.52919 9.97165 1.29981ZM12.9404 9.2129C12.4391 9.893 11.8616 10.5681 11.2148 11.2149C10.568 11.8616 9.89296 12.4391 9.21286 12.9404C9.62532 13.1579 10.0271 13.338 10.4121 13.4766C11.9146 14.0174 12.9172 13.8738 13.3955 13.3955C13.8737 12.9173 14.0174 11.9146 13.4765 10.4121C13.3379 10.0271 13.1578 9.62535 12.9404 9.2129ZM3.05856 9.2129C2.84121 9.62523 2.66197 10.0272 2.52341 10.4121C1.98252 11.9146 2.12627 12.9172 2.60446 13.3955C3.08278 13.8737 4.08544 14.0174 5.58786 13.4766C5.97264 13.338 6.37389 13.1577 6.7861 12.9404C6.10624 12.4393 5.43168 11.8614 4.78513 11.2149C4.13823 10.5679 3.55992 9.89313 3.05856 9.2129ZM7.99899 3.792C7.23179 4.31419 6.45306 4.95512 5.70407 5.70411C4.95509 6.45309 4.31415 7.23184 3.79196 7.99903C4.3143 8.76666 4.95471 9.54653 5.70407 10.2959C6.45309 11.0449 7.23271 11.6848 7.99997 12.207C8.76725 11.6848 9.54683 11.0449 10.2959 10.2959C11.0449 9.54686 11.6848 8.76729 12.207 8.00001C11.6848 7.23275 11.0449 6.45312 10.2959 5.70411C9.5465 4.95475 8.76662 4.31434 7.99899 3.792ZM5.58786 2.52344C4.08533 1.98255 3.08272 2.12625 2.60446 2.6045C2.12621 3.08275 1.98252 4.08536 2.52341 5.5879C2.66189 5.97253 2.8414 6.37409 3.05856 6.78614C3.55983 6.10611 4.1384 5.43189 4.78513 4.78516C5.43186 4.13843 6.10606 3.55987 6.7861 3.0586C6.37405 2.84144 5.97249 2.66192 5.58786 2.52344ZM13.3955 2.6045C12.9172 2.12631 11.9146 1.98257 10.4121 2.52344C10.0272 2.66201 9.62519 2.84125 9.21286 3.0586C9.8931 3.55996 10.5679 4.13827 11.2148 4.78516C11.8614 5.43172 12.4392 6.10627 12.9404 6.78614C13.1577 6.37393 13.338 5.97267 13.4765 5.5879C14.0174 4.08549 13.8736 3.08281 13.3955 2.6045Z"/>
-                  </svg>
-                  Thinking
-                  <span v-if="!streamText" class="text-t3/50 ml-0.5 inline-flex items-center gap-1"><Spinner size="xs" /></span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                    class="ml-0.5 transition-transform" :class="streamThinkingCollapsed ? '-rotate-90' : ''">
-                    <path d="M6 9l6 6 6-6"/>
-                  </svg>
-                </button>
-                <div v-if="!streamThinkingCollapsed"
-                  ref="thinkingStreamEl"
-                  class="text-[12px] text-t3 leading-6 whitespace-pre-wrap max-h-[140px] overflow-y-auto pr-2">{{ streamThinking }}</div>
-              </div>
+              <!-- Live provider-CoT pane removed post-cutover: with
+                   provider thinking hard-disabled (commit d07f673),
+                   ``streamThinking`` is never populated. The agent's
+                   own between-turn reasoning is shown instead via the
+                   ``thinkingPhase`` indicator above; persisted CoT
+                   on legacy assistant messages still renders below. -->
 
               <!-- Streaming text (rendered after thinking — same order as
                    the persisted assistant message above). -->
@@ -1153,7 +1134,11 @@ function onTraceClick(m) {
                  with the rounded input box below. -->
             <div class="mb-1.5 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <ThinkingPicker v-model="thinkingValue" />
+              <!-- ThinkingPicker removed post-cutover. Provider CoT
+                   is permanently disabled (the agent loop is the
+                   thinking layer); users see the agent's reasoning
+                   inline as "🧠 审视检索结果中…" between tool rounds.
+                   See commit d07f673. -->
               <!-- Web search placeholder. Disabled chip until a
                    real retriever (Tavily / SearXNG / etc.) lands. -->
               <span
