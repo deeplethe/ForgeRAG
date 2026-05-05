@@ -127,6 +127,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path.startswith("/api/v1/auth/login") or path.startswith("/api/v1/auth/logout"):
             return await call_next(request)
+        # Self-registration runs unauthenticated by definition — the
+        # caller doesn't have an account yet. Rate-limiting is the
+        # only defence we'd want here; deferred to a future
+        # middleware that watches POST volume per source IP.
+        if path == "/api/v1/auth/register":
+            return await call_next(request)
         # Folder-invitation preview / consume routes run before the
         # recipient is logged in (they're following the link from
         # their email). The token in the URL is the auth.

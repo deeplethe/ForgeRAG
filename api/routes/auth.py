@@ -115,6 +115,86 @@ class SessionOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
+class RegisterReq(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=8, max_length=200)
+    display_name: str | None = Field(None, max_length=64)
+    invitation_token: str | None = None
+
+
+class RegisterResp(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    display_name: str | None = None
+    role: str
+    status: str
+    redeemed_folder_path: str | None = None
+
+
+@router.post("/register", response_model=RegisterResp, status_code=201)
+def register(body: RegisterReq, state: AppState = Depends(get_state)):
+    """Self-registration. The first successful call against an empty
+    auth_users table promotes the registrant to admin (regardless of
+    registration_mode); subsequent calls follow the configured mode.
+    A valid invitation token always produces an active account.
+
+    The endpoint does NOT log the new user in — they call
+    ``/auth/login`` afterwards. This keeps the login session shape
+    identical between bootstrapped admins and self-registered users
+    and lets the registration response stay agnostic of cookie flags.
+    """
+    if not state.cfg.auth.enabled:
+        raise HTTPException(
+            400, "auth is disabled — registration has no meaning here"
+        )
+    from ..auth.registration import (
+        EmailTaken,
+        InvalidEmail,
+        InvalidUsername,
+        InvitationProblem,
+        RegistrationClosed,
+        UsernameTaken,
+        WeakPassword,
+        register_user,
+    )
+
+    with state.store.transaction() as sess:
+        try:
+            result = register_user(
+                cfg=state.cfg,
+                sess=sess,
+                email=body.email,
+                username=body.username,
+                password=body.password,
+                display_name=body.display_name,
+                invitation_token=body.invitation_token,
+            )
+        except (InvalidEmail, InvalidUsername, WeakPassword) as e:
+            raise HTTPException(400, str(e))
+        except (EmailTaken, UsernameTaken) as e:
+            raise HTTPException(409, str(e))
+        except RegistrationClosed as e:
+            raise HTTPException(403, str(e))
+        except InvitationProblem as e:
+            raise HTTPException(400, str(e))
+    return RegisterResp(
+        user_id=result.user_id,
+        username=result.username,
+        email=result.email,
+        display_name=result.display_name,
+        role=result.role,
+        status=result.status,
+        redeemed_folder_path=result.redeemed_folder_path,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Login / logout / change password / me
 # ---------------------------------------------------------------------------
 
@@ -140,11 +220,36 @@ def login(
         }
 
     with state.store.transaction() as sess:
-        user = sess.execute(select(AuthUser).where(AuthUser.username == body.username)).scalar_one_or_none()
-        if user is None or not user.is_active:
+        # Accept either username OR email as the identifier — multi-user
+        # registration creates email-keyed accounts but legacy admins
+        # only have a username. Try both columns; the first match wins.
+        ident = body.username
+        user = sess.execute(
+            select(AuthUser).where(AuthUser.username == ident)
+        ).scalar_one_or_none()
+        if user is None and "@" in ident:
+            user = sess.execute(
+                select(AuthUser).where(AuthUser.email == ident.lower())
+            ).scalar_one_or_none()
+        if user is None:
             raise HTTPException(401, "invalid credentials")
         if not verify_password(body.password, user.password_hash):
             raise HTTPException(401, "invalid credentials")
+        # Status gate (after password verification — we don't leak
+        # which usernames exist by returning 403 to wrong-password
+        # attempts on suspended accounts). pending_approval /
+        # suspended / deleted users have a valid password but cannot
+        # log in. Distinct error so the frontend can render a precise
+        # message instead of the generic "invalid credentials".
+        if user.status != "active" or not user.is_active:
+            raise HTTPException(
+                403,
+                {
+                    "pending_approval": "account pending admin approval",
+                    "suspended": "account suspended",
+                    "deleted": "account deleted",
+                }.get(user.status, f"account status: {user.status}"),
+            )
         if needs_rehash(user.password_hash):
             user.password_hash = hash_password(body.password)
 

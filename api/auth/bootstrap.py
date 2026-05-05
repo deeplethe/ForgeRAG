@@ -37,8 +37,21 @@ def bootstrap_if_empty(cfg, store) -> None:
 
     Safe to call repeatedly — checks the table and returns immediately
     when an admin already exists.
+
+    When ``cfg.auth.initial_password`` is empty / unset, bootstrap is
+    skipped entirely. This is the "no pre-provisioned admin" mode
+    the multi-user registration flow relies on: the first user who
+    registers via ``POST /auth/register`` is auto-promoted to admin
+    (because no active admin exists yet).
     """
     if not cfg.auth.enabled:
+        return
+    if not (cfg.auth.initial_password or "").strip():
+        log.info(
+            "auth bootstrap: initial_password is empty; skipping admin "
+            "auto-provision. The first user to register via /auth/register "
+            "will be promoted to admin."
+        )
         return
 
     from sqlalchemy import func, select
