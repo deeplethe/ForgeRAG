@@ -79,16 +79,33 @@ class ToolSpec:
     handler: Callable[[dict, ToolContext], dict]
 
     def to_anthropic_tool(self) -> dict:
-        """Render in the shape the Anthropic tools API expects.
+        """Render in the shape the Anthropic native tools API expects.
 
-        Same schema works for Anthropic, OpenAI, and litellm's
-        unified tool format — the wrapper at the agent loop just
-        repacks the outer envelope per provider.
+        Used when calling Anthropic SDK directly. The agent loop uses
+        ``to_openai_tool`` because litellm normalises every provider
+        through the OpenAI tool format internally.
         """
         return {
             "name": self.name,
             "description": self.description,
             "input_schema": self.params_schema,
+        }
+
+    def to_openai_tool(self) -> dict:
+        """Render in the OpenAI / litellm unified tool format.
+
+        litellm translates from this shape to whichever native
+        format the underlying provider needs (Anthropic tool_use,
+        OpenAI function-call, etc.) — so the agent loop only knows
+        one envelope.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.params_schema,
+            },
         }
 
 

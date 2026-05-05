@@ -42,11 +42,22 @@ from .dispatch import (
     build_tool_context,
     dispatch,
 )
+from .llm import LiteLLMClient, LLMClient, LLMResponse, ToolCall
+from .loop import AgentConfig, AgentLoop, AgentResult
+from .prompts import SYSTEM_PROMPT
 from .tools import TOOL_REGISTRY, ToolSpec
 
 __all__ = [
+    "SYSTEM_PROMPT",
     "TOOL_REGISTRY",
+    "AgentConfig",
+    "AgentLoop",
+    "AgentResult",
     "DispatchError",
+    "LLMClient",
+    "LLMResponse",
+    "LiteLLMClient",
+    "ToolCall",
     "ToolContext",
     "ToolSpec",
     "build_tool_context",
