@@ -12,7 +12,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..deps import get_state
+from ..auth import AuthenticatedPrincipal
+from ..deps import get_principal, get_state, resolve_path_filters
 from ..schemas import (
     ChunkMatchOut,
     FileHitOut,
@@ -27,7 +28,11 @@ router = APIRouter(prefix="/api/v1", tags=["search"])
 
 
 @router.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchResponse:
+def search(
+    req: SearchRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+) -> SearchResponse:
     """Run BM25 keyword search. Returns chunks by default; opt-in
     ``include=["files"]`` adds a file-level rollup view.
 
@@ -53,12 +58,18 @@ def search(req: SearchRequest, state: AppState = Depends(get_state)) -> SearchRe
         if req.limit.files is not None:
             limit_dict["files"] = req.limit.files
 
+    # Authz: resolve / validate the caller's requested path_filters
+    # against their accessible folder set. Admin role bypasses the
+    # check; non-admins get 403 on the first unauthorised path.
+    # When auth is disabled this is a passthrough.
+    path_prefixes = resolve_path_filters(state, principal, req.path_filters)
+
     result = state.unified_search.search(
         req.query,
         include=include,
         limit=limit_dict or None,
         filter=req.filter,
-        path_prefixes=req.path_filters,
+        path_prefixes=path_prefixes,
         overrides=req.overrides,
     )
 

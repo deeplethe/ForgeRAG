@@ -13,7 +13,8 @@ from fastapi.responses import StreamingResponse
 
 from parser.schema import Citation
 
-from ..deps import get_state
+from ..auth import AuthenticatedPrincipal
+from ..deps import get_principal, get_state, resolve_path_filters
 from ..schemas import CitationOut, HighlightOut, QueryRequest, QueryResponse
 from ..state import AppState
 
@@ -36,13 +37,22 @@ def _citation_out(c: Citation) -> CitationOut:
 
 
 @router.post("/query")
-def query(req: QueryRequest, state: AppState = Depends(get_state)):
+def query(
+    req: QueryRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
     if not req.query or not req.query.strip():
         raise HTTPException(400, "query must not be empty")
 
+    # Authz happens once at the route boundary; the resolved list is
+    # what reaches retrieval. No per-iteration re-validation in the
+    # streaming path.
+    resolved = resolve_path_filters(state, principal, req.path_filters)
+
     if req.stream:
-        return _stream_response(req, state)
-    return _normal_response(req, state)
+        return _stream_response(req, state, resolved)
+    return _normal_response(req, state, resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -50,31 +60,36 @@ def query(req: QueryRequest, state: AppState = Depends(get_state)):
 # ---------------------------------------------------------------------------
 
 
-def _inject_path_filter(req: QueryRequest) -> dict | None:
+def _inject_path_filters(
+    req: QueryRequest, resolved: list[str] | None
+) -> dict | None:
     """
-    Merge ``path_filters`` (list) into the retrieval filter dict under
-    the reserved key '_path_filters'. RetrievalPipeline reads it to
-    build the OR'd path-prefix scope and per-prefix doc_id whitelist.
+    Merge the resolved ``path_filters`` (list) into the retrieval
+    filter dict under the reserved key '_path_filters'. RetrievalPipeline
+    reads it to build the OR'd path-prefix scope and per-prefix doc_id
+    whitelist.
 
-    The schema's model_validator already promotes the legacy
-    ``path_filter`` (str) into ``path_filters``, so this helper only
-    has to look at the plural form.
+    ``resolved`` comes from ``resolve_path_filters``: when auth is on,
+    it's the validated list (admin bypass / shared_with check applied);
+    when auth is off, it's whatever the request body carried.
     """
-    if not req.path_filters:
+    if not resolved:
         return req.filter
     merged = dict(req.filter or {})
-    merged["_path_filters"] = list(req.path_filters)
+    merged["_path_filters"] = list(resolved)
     return merged
 
 
-def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
+def _normal_response(
+    req: QueryRequest, state: AppState, resolved: list[str] | None
+) -> QueryResponse:
     from retrieval.pipeline import RetrievalError
     from retrieval.telemetry import RequestSpanCollector, spans_to_payload
 
     try:
         answer = state.answering.ask(
             req.query,
-            filter=_inject_path_filter(req),
+            filter=_inject_path_filters(req, resolved),
             conversation_id=req.conversation_id,
             overrides=req.overrides,
             gen_overrides=req.generation_overrides,
@@ -122,7 +137,9 @@ def _normal_response(req: QueryRequest, state: AppState) -> QueryResponse:
 # ---------------------------------------------------------------------------
 
 
-def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
+def _stream_response(
+    req: QueryRequest, state: AppState, resolved: list[str] | None
+) -> StreamingResponse:
     """
     Server-Sent Events stream. Three event types:
 
@@ -170,7 +187,7 @@ def _stream_response(req: QueryRequest, state: AppState) -> StreamingResponse:
         try:
             for event in state.answering.ask_stream(
                 req.query,
-                filter=_inject_path_filter(req),
+                filter=_inject_path_filters(req, resolved),
                 conversation_id=req.conversation_id,
                 overrides=req.overrides,
                 gen_overrides=req.generation_overrides,

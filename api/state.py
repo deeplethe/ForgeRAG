@@ -281,6 +281,14 @@ class AppState:
         self._answering: AnsweringPipeline | None = None
         self._unified_search: UnifiedSearcher | None = None
 
+        # Multi-user authorization. Stateless once constructed; the
+        # store reference is enough. Built eagerly because ``can()`` is
+        # cheap and request-time creation would race the auth
+        # middleware on the first request.
+        from .auth.authz import AuthorizationService
+
+        self.authz = AuthorizationService(self.store)
+
     # ------------------------------------------------------------------
     def _ensure_retrieval(self) -> RetrievalPipeline:
         if self._retrieval is not None:
