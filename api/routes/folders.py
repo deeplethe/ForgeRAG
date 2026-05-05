@@ -51,7 +51,7 @@ from persistence.models import AuthUser, Folder
 from persistence.scope import ScopeMode, ScopeService
 
 from ..auth import AuthenticatedPrincipal
-from ..deps import get_principal, get_state
+from ..deps import get_principal, get_state, require_folder_access
 from ..state import AppState
 
 log = logging.getLogger(__name__)
@@ -254,7 +254,12 @@ def _apply_post_commit_cross_store(
 
 
 @router.patch("/rename", response_model=FolderOut)
-def rename_folder(body: RenameFolderReq, state: AppState = Depends(get_state)):
+def rename_folder(
+    body: RenameFolderReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have ``rw`` on the folder being renamed."""
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
@@ -263,6 +268,7 @@ def rename_folder(body: RenameFolderReq, state: AppState = Depends(get_state)):
             folder = svc.require_by_path(body.path)
         except FolderNotFound:
             raise HTTPException(404, f"folder not found: {body.path!r}")
+        require_folder_access(state, principal, folder.folder_id, "rename")
         scope.require_folder(folder.folder_id, ScopeMode.WRITE)
         try:
             updated = svc.rename(folder.folder_id, body.new_name)
@@ -282,7 +288,14 @@ def rename_folder(body: RenameFolderReq, state: AppState = Depends(get_state)):
 
 
 @router.post("/move", response_model=FolderOut)
-def move_folder(body: MoveFolderReq, state: AppState = Depends(get_state)):
+def move_folder(
+    body: MoveFolderReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Authz: caller must have ``rw`` on BOTH the folder being
+    moved AND the new parent folder. Cross-folder moves between
+    folders the caller can't both write are rejected."""
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
@@ -292,6 +305,8 @@ def move_folder(body: MoveFolderReq, state: AppState = Depends(get_state)):
             new_parent = svc.require_by_path(body.to_parent_path)
         except FolderNotFound as e:
             raise HTTPException(404, str(e))
+        require_folder_access(state, principal, folder.folder_id, "rename")
+        require_folder_access(state, principal, new_parent.folder_id, "upload")
         scope.require_folder(folder.folder_id, ScopeMode.WRITE)
         scope.require_folder(new_parent.folder_id, ScopeMode.WRITE)
         try:
@@ -312,8 +327,14 @@ def move_folder(body: MoveFolderReq, state: AppState = Depends(get_state)):
 def delete_folder(
     path: str = Query(..., description="Folder path to send to trash"),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
-    """Soft-delete: move the folder (and its whole subtree) into /__trash__."""
+    """Soft-delete: move the folder (and its whole subtree) into /__trash__.
+
+    Authz: caller must have ``rw`` (manage-level) on the folder.
+    Per the action matrix in ``api/auth/authz.py``,
+    ``delete_folder`` falls under MANAGE — only ``rw`` members
+    pass; ``r`` members do not. Admin role bypasses."""
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
@@ -322,6 +343,9 @@ def delete_folder(
             folder = svc.require_by_path(path)
         except FolderNotFound:
             raise HTTPException(404, f"folder not found: {path!r}")
+        require_folder_access(
+            state, principal, folder.folder_id, "delete_folder"
+        )
         scope.require_folder(folder.folder_id, ScopeMode.MANAGE)
         try:
             trashed = svc.move_to_trash(folder.folder_id)

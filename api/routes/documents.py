@@ -13,7 +13,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel
 
 from ..auth import AuthenticatedPrincipal
-from ..deps import get_principal, get_state, require_doc_access
+from ..deps import (
+    get_principal,
+    get_state,
+    require_doc_access,
+    require_folder_access,
+)
 from ..schemas import (
     BlockOut,
     ChunkOut,
@@ -431,8 +436,20 @@ class BulkMoveReq(BaseModel):
 
 
 @router.patch("/{doc_id}/path")
-def move_document(doc_id: str, body: MoveDocumentReq, state: AppState = Depends(get_state)):
-    """Move a single document to another folder."""
+def move_document(
+    doc_id: str,
+    body: MoveDocumentReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Move a single document to another folder.
+
+    Authz: caller must have ``rw`` on BOTH the source folder (the
+    move is a soft-delete from there) AND the target folder (the
+    move is a write into there). Cross-folder moves between two
+    folders the caller can't both write are rejected — admin role
+    bypasses both checks. Missing source / target → 404 (same
+    response as no-access, to avoid existence confirmation)."""
     from persistence.folder_service import (
         FolderNotFound,
         FolderService,
@@ -441,9 +458,9 @@ def move_document(doc_id: str, body: MoveDocumentReq, state: AppState = Depends(
     from persistence.scope import ScopeMode, ScopeService
 
     scope = ScopeService(state.store)
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+    # Source-folder authz first — also surfaces 404 for cross-user
+    # moves of docs the caller can't see in the first place.
+    require_doc_access(state, principal, doc_id, action="soft_delete")
 
     with state.store.transaction() as sess:
         svc = FolderService(sess)
@@ -451,6 +468,8 @@ def move_document(doc_id: str, body: MoveDocumentReq, state: AppState = Depends(
             target = svc.require_by_path(body.to_path)
         except FolderNotFound:
             raise HTTPException(404, f"target folder not found: {body.to_path!r}")
+        # Target-folder authz — caller must be able to write into it.
+        require_folder_access(state, principal, target.folder_id, "upload")
         scope.require_folder(target.folder_id, ScopeMode.WRITE)
 
         from persistence.models import Document
@@ -487,8 +506,18 @@ def move_document(doc_id: str, body: MoveDocumentReq, state: AppState = Depends(
 
 
 @router.post("/bulk-move")
-def bulk_move_documents(body: BulkMoveReq, state: AppState = Depends(get_state)):
-    """Move many documents at once."""
+def bulk_move_documents(
+    body: BulkMoveReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Move many documents at once.
+
+    Authz: caller must have ``rw`` on the target folder AND ``rw``
+    on each source doc's folder. A doc whose source folder the
+    caller can't write reports ``error: not found`` in the result
+    (same as a missing doc — never confirms existence) — the rest
+    of the batch still moves."""
     from persistence.folder_service import (
         FolderNotFound,
         FolderService,
@@ -505,13 +534,27 @@ def bulk_move_documents(body: BulkMoveReq, state: AppState = Depends(get_state))
             target = svc.require_by_path(body.to_path)
         except FolderNotFound:
             raise HTTPException(404, f"target folder not found: {body.to_path!r}")
+        # Target-folder authz first — if the caller can't write
+        # there, the whole batch fails up-front.
+        require_folder_access(state, principal, target.folder_id, "upload")
         scope.require_folder(target.folder_id, ScopeMode.WRITE)
 
         from persistence.models import AuditLogRow, Document
 
+        auth_active = (
+            state.cfg.auth.enabled and principal.via != "auth_disabled"
+        )
         for doc_id in body.doc_ids:
             doc = sess.get(Document, doc_id)
             if doc is None:
+                errors.append({"doc_id": doc_id, "error": "not found"})
+                continue
+            # Per-doc source-folder write check. Same not-found
+            # surface so cross-user enumeration via batch-move
+            # doesn't leak doc existence.
+            if auth_active and not state.authz.can(
+                principal.user_id, doc.folder_id, "soft_delete"
+            ):
                 errors.append({"doc_id": doc_id, "error": "not found"})
                 continue
             filename = doc.filename or (doc.path.rsplit("/", 1)[-1] if doc.path else doc_id)
@@ -542,7 +585,12 @@ class RenameDocumentReq(BaseModel):
 
 
 @router.patch("/{doc_id}/filename")
-def rename_document(doc_id: str, body: RenameDocumentReq, state: AppState = Depends(get_state)):
+def rename_document(
+    doc_id: str,
+    body: RenameDocumentReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
     """Rename a document's user-facing filename in place.
 
     Updates ``Document.filename``, ``Document.path``, and the
@@ -550,6 +598,9 @@ def rename_document(doc_id: str, body: RenameDocumentReq, state: AppState = Depe
     same path in the vector store (so folder-scoped retrieval keeps
     matching) and the graph store (entity ``source_paths`` references).
     Returns 409 on collision with a sibling document.
+
+    Authz: caller must have ``rw`` on the doc's containing folder.
+    Cross-user rename → 404 (same as a missing doc).
     """
     from sqlalchemy import select, update
 
@@ -568,6 +619,11 @@ def rename_document(doc_id: str, body: RenameDocumentReq, state: AppState = Depe
         new_filename = normalize_name(body.new_filename)
     except InvalidFolderName as e:
         raise HTTPException(422, str(e))
+
+    # Authz on the doc's folder up-front. require_doc_access fetches
+    # + checks in one go; we re-fetch the SQLAlchemy object below for
+    # the mutation.
+    require_doc_access(state, principal, doc_id, action="rename")
 
     scope = ScopeService(state.store)
 

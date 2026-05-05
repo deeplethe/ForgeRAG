@@ -110,6 +110,29 @@ def require_doc_access(
     return row
 
 
+def require_folder_access(
+    state: AppState,
+    principal: AuthenticatedPrincipal,
+    folder_id: str,
+    action: str,
+) -> None:
+    """Verify the principal has *action* on *folder_id* (or any
+    ancestor that grants it). Raises 404 on no access — same code
+    as a missing folder, to avoid existence confirmation.
+
+    Auth-disabled / synthetic-local-admin principals pass through.
+
+    Action vocabulary (see ``api/auth/authz.py`` for the full
+    matrix): "read" / "list" need at least ``r``; "upload" /
+    "edit" / "soft_delete" / "rename" need ``rw``;
+    "share" / "delete_folder" / "purge" / "set_grant" / "transfer"
+    need ``rw`` AND aren't bypassed by ``r``-only members."""
+    if not state.cfg.auth.enabled or principal.via == "auth_disabled":
+        return
+    if not state.authz.can(principal.user_id, folder_id, action):
+        raise HTTPException(404, "folder not found")
+
+
 def require_chunk_access(
     state: AppState,
     principal: AuthenticatedPrincipal,
