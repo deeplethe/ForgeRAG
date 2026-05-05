@@ -134,10 +134,14 @@ def build_tool_context(
 
     resolver = PathScopeResolver(state.store)
     raw_filters: list[str] | None = None
-    if auth_enabled and not is_admin:
+    enforce_scope = auth_enabled and not is_admin
+    if enforce_scope:
         # Run through authz.resolve_paths → user's spanning set or
         # validated subset. Raises UnauthorizedPath for explicit
         # asks the user can't see; the agent route catches that.
+        # Note: a user with zero folder grants gets back ``[]`` —
+        # we MUST preserve that as "no docs accessible", NOT collapse
+        # it to None ("admin / no scope").
         raw_filters = state.authz.resolve_paths(
             principal.user_id, requested_path_filters
         )
@@ -145,6 +149,25 @@ def build_tool_context(
         # Admin / auth-disabled: trust requested as-is (None means
         # no scope = the whole corpus).
         raw_filters = requested_path_filters
+
+    if enforce_scope and not raw_filters:
+        # User has zero folder access → no scope means no docs.
+        # PathScopeResolver doesn't have a "deny everything" mode
+        # (its empty list = "no scope"), so we short-circuit.
+        accessible = build_accessible_set(
+            state,
+            principal.user_id,
+            is_admin=False,
+            auth_enabled=True,
+        )
+        return ToolContext(
+            state=state,
+            principal=principal,
+            accessible=accessible,
+            path_filters=[],
+            allowed_doc_ids=set(),
+            trashed_doc_ids=set(),
+        )
 
     scope = resolver.run({"_path_filters": raw_filters} if raw_filters else None)
 

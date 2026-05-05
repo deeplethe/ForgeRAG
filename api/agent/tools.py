@@ -18,10 +18,11 @@ Current tools:
     search_bm25    — keyword / lexical
     search_vector  — semantic / dense embedding
     read_chunk     — pull full content of one chunk by chunk_id
+    read_tree      — navigate a document's section tree one node at a time
     graph_explore  — knowledge graph entity + relation lookup,
                      visibility-filtered
 
-read_tree / web_search / rerank land in subsequent commits.
+web_search / rerank land in subsequent commits.
 
 Result shape contract for search-style tools:
 
@@ -534,6 +535,115 @@ def _handle_graph_explore(params: dict, ctx: ToolContext) -> dict:
     return {"entities": out_entities, "relations": relations_out}
 
 
+# ---------------------------------------------------------------------------
+# Tool: read_tree
+# ---------------------------------------------------------------------------
+#
+# Document section tree — navigate one level at a time. Useful when
+# the user asks about a paper's structure ("what does section 3
+# cover", "summarise the methodology") and the agent wants the
+# section's pre-computed summary + children list rather than 50
+# raw chunks.
+#
+# Drill-down pattern: call read_tree(doc_id) for the root, see the
+# children list, call read_tree(doc_id, node_id=<child>) for the
+# section. Cheap (one DB read per call) — keeps the tree out of
+# context until the agent navigates to a specific node.
+
+_TREE_CHILDREN_PREVIEW = 20
+
+
+def _handle_read_tree(params: dict, ctx: ToolContext) -> dict:
+    doc_id = params["doc_id"]
+    node_id = params.get("node_id")
+
+    # Authz: same gate as require_doc_access — fetch + scope-check.
+    row = ctx.state.store.get_document(doc_id)
+    if row is None or not doc_passes_scope(ctx, doc_id):
+        return DispatchError(
+            error=f"document not found: {doc_id!r}", tool="read_tree"
+        ).to_result()
+
+    pv = row.get("active_parse_version", 1)
+    tree = ctx.state.store.load_tree(doc_id, pv)
+    if not tree:
+        return DispatchError(
+            error=f"tree not built for document: {doc_id!r}",
+            tool="read_tree",
+        ).to_result()
+
+    nodes = tree.get("nodes", {})
+    target_id = node_id or tree.get("root_id", "")
+    node = nodes.get(target_id)
+    if not node:
+        return DispatchError(
+            error=f"node not found: {target_id!r}", tool="read_tree"
+        ).to_result()
+
+    # Children: just title + node_id so the agent can navigate.
+    # Drop everything else (level, blocks, etc.) — agent doesn't
+    # need them for navigation, and dumping all child summaries
+    # would defeat the per-node lazy load.
+    children_preview: list[dict] = []
+    for child_id in (node.get("children") or [])[:_TREE_CHILDREN_PREVIEW]:
+        child = nodes.get(child_id)
+        if child is None:
+            continue
+        children_preview.append(
+            {
+                "node_id": child_id,
+                "title": child.get("title", ""),
+                "page_start": child.get("page_start"),
+                "page_end": child.get("page_end"),
+                "has_summary": bool(child.get("summary")),
+            }
+        )
+
+    return {
+        "doc_id": doc_id,
+        "node_id": target_id,
+        "title": node.get("title", ""),
+        "level": node.get("level", 0),
+        "page_start": node.get("page_start"),
+        "page_end": node.get("page_end"),
+        "summary": node.get("summary"),
+        "key_entities": node.get("key_entities") or [],
+        "role": node.get("role", "main"),
+        "parent_id": node.get("parent_id"),
+        "children": children_preview,
+        "is_root": target_id == tree.get("root_id"),
+    }
+
+
+_READ_TREE_SPEC = ToolSpec(
+    name="read_tree",
+    description=(
+        "Navigate a document's section tree one node at a time. Without "
+        "node_id returns the root + its children list (titles only). "
+        "With node_id returns that node's pre-computed summary + key "
+        "entities + immediate children. Drill down by calling read_tree "
+        "again with a child's node_id. Use this to answer 'what is in "
+        "section N' / 'summarise the methodology' style questions "
+        "without pulling raw chunks."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "doc_id": {
+                "type": "string",
+                "description": "Document id (from search_bm25 / search_vector hit).",
+            },
+            "node_id": {
+                "type": "string",
+                "description": "Optional. Defaults to the root.",
+            },
+        },
+        "required": ["doc_id"],
+    },
+    handler=_handle_read_tree,
+)
+
+
 _GRAPH_EXPLORE_SPEC = ToolSpec(
     name="graph_explore",
     description=(
@@ -570,5 +680,6 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _BM25_SPEC.name: _BM25_SPEC,
     _VECTOR_SPEC.name: _VECTOR_SPEC,
     _READ_CHUNK_SPEC.name: _READ_CHUNK_SPEC,
+    _READ_TREE_SPEC.name: _READ_TREE_SPEC,
     _GRAPH_EXPLORE_SPEC.name: _GRAPH_EXPLORE_SPEC,
 }
