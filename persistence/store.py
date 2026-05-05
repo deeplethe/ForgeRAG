@@ -1252,7 +1252,6 @@ def _message_to_dict(row: Message) -> dict:
         "content": row.content,
         "trace_id": row.trace_id,
         "citations_json": row.citations_json,
-        "thinking": row.thinking,
         "created_at": row.created_at,
     }
 
