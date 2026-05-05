@@ -223,13 +223,31 @@ def _call_judge(
     api_base: str | None,
     prompt: str,
 ) -> float:
-    """Call LLM judge and extract score."""
+    """Call LLM judge and extract score.
+
+    Two important quirks driving the kwargs below:
+
+      * Thinking-mode models (DeepSeek V4-Pro, OpenAI o1, etc.)
+        emit CoT tokens that count against ``max_tokens``. The old
+        cap of 200 was too tight — for the Faithfulness / CP
+        prompts (which embed up to 8KB of context), the model
+        would burn the budget on thinking and never reach the
+        ``{"score": ...}`` JSON, falling through to the 0.0
+        ``_extract_score`` fallback. Net effect: F + CP reported
+        ~0 across the board even when the answer was correct.
+        Bumped to 500 so the JSON has room.
+      * ``extra_body={"thinking": {"type": "disabled"}}`` tells
+        Anthropic / DeepSeek to skip CoT entirely. Saves tokens
+        and removes the truncation risk altogether. Same flag the
+        agent loop + query understanding use.
+    """
     kwargs = dict(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=200,
+        max_tokens=500,
         timeout=30.0,
+        extra_body={"thinking": {"type": "disabled"}},
     )
     if api_key:
         kwargs["api_key"] = api_key

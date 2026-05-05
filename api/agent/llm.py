@@ -130,6 +130,20 @@ class LiteLLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "timeout": self.timeout,
+            # Disable extended thinking / CoT for agentic loops.
+            # Two reasons:
+            #   1. The agent ITSELF is the thinking layer — it
+            #      iterates with tool calls. An extra thinking
+            #      block before each tool decision burns tokens
+            #      with no gain.
+            #   2. Some thinking models (notably DeepSeek R1) emit
+            #      thinking content that confuses tool_use parsers
+            #      when paired with a small max_tokens cap.
+            # Same flag as retrieval/query_understanding.py uses
+            # for the same reason. LiteLLM passes ``extra_body``
+            # through to providers that understand it (Anthropic);
+            # others ignore it.
+            "extra_body": {"thinking": {"type": "disabled"}},
         }
         if tools:
             kwargs["tools"] = tools
