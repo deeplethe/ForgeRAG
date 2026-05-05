@@ -57,7 +57,16 @@
     "stop_generation": "停止生成",
     "thinking": "思考",
     "trace": "Trace",
-    "citation_untitled": "（未命名）"
+    "citation_untitled": "（未命名）",
+    "tool": {
+      "search_bm25": "关键字检索",
+      "search_vector": "语义搜索",
+      "read_chunk": "查阅原文",
+      "read_tree": "梳理文章结构",
+      "graph_explore": "全局知识理解",
+      "web_search": "联网搜索",
+      "rerank": "结果筛选整理"
+    }
   },
   "search": {
     "title": "搜索",

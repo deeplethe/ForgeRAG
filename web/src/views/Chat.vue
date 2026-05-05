@@ -203,11 +203,11 @@ const progressSummary = computed(() => {
     const done = allPhasesSorted.value.filter(p => p.status === 'done')
     if (done.length) {
       const last = done[done.length - 1]
-      return { text: pLabel[last.name] || last.name, done: true, elapsed: liveElapsed.value[last.name] }
+      return { text: pLabel.value[last.name] || last.name, done: true, elapsed: liveElapsed.value[last.name] }
     }
     return null
   }
-  const names = running.map(p => pLabel[p.name] || p.name)
+  const names = running.map(p => pLabel.value[p.name] || p.name)
   // Show longest-running phase's elapsed time
   const maxElapsed = Math.max(...running.map(p => liveElapsed.value[p.name] || 0))
   return { text: names.join(', '), done: false, elapsed: maxElapsed }
@@ -217,15 +217,22 @@ const progressSummary = computed(() => {
 // "phase" per tool call; we reuse the existing livePhases UI by
 // keying entries on call_id and storing the tool name as ``name``.
 // The progress widget reads ``pLabel[name]`` to display.
-const pLabel = {
-  search_bm25:   'Keyword search',
-  search_vector: 'Semantic search',
-  read_chunk:    'Reading chunk',
-  read_tree:     'Reading section',
-  graph_explore: 'Graph lookup',
-  web_search:    'Web search',
-  rerank:        'Reranking',
-}
+//
+// Labels are intentionally non-technical (i18n keys at
+// ``chat.tool.*``): "关键字检索 / Keyword search" /
+// "语义搜索 / Semantic search" / "全局知识理解 / Concept network"
+// rather than "BM25" / "Vector" / "KG explore". Users don't think
+// in implementation terms; the chat log should read like a
+// research assistant's working notes.
+const pLabel = computed(() => ({
+  search_bm25:   t('chat.tool.search_bm25'),
+  search_vector: t('chat.tool.search_vector'),
+  read_chunk:    t('chat.tool.read_chunk'),
+  read_tree:     t('chat.tool.read_tree'),
+  graph_explore: t('chat.tool.graph_explore'),
+  web_search:    t('chat.tool.web_search'),
+  rerank:        t('chat.tool.rerank'),
+}))
 
 /* ── Load conversation ── */
 let _pollTimer = null
