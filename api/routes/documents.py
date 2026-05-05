@@ -12,7 +12,8 @@ import logging
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from ..deps import get_state
+from ..auth import AuthenticatedPrincipal
+from ..deps import get_principal, get_state, require_doc_access
 from ..schemas import (
     BlockOut,
     ChunkOut,
@@ -368,10 +369,12 @@ def lookup_documents(
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
-def get_document(doc_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+def get_document(
+    doc_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    row = require_doc_access(state, principal, doc_id)
     return _doc_out(row, state)
 
 
@@ -770,10 +773,9 @@ def list_blocks(
     limit: int = Query(100, ge=1, le=2000),
     offset: int = Query(0, ge=0),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+    row = require_doc_access(state, principal, doc_id)
     pv = row["active_parse_version"]
     blocks = state.store.get_blocks_paginated(doc_id, pv, limit=limit, offset=offset)
     total = state.store.count_blocks(doc_id, pv)
@@ -796,10 +798,9 @@ def list_chunks(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
-    row = state.store.get_document(doc_id)
-    if not row:
-        raise HTTPException(404, "document not found")
+    row = require_doc_access(state, principal, doc_id)
     pv = row["active_parse_version"]
     chunks = state.store.get_chunks_paginated(doc_id, pv, limit=limit, offset=offset)
     total = state.store.count_chunks(doc_id, pv)

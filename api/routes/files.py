@@ -22,7 +22,8 @@ from config.tables import (
 )
 from ingestion.converter import LEGACY_OFFICE_EXTENSIONS
 
-from ..deps import get_state
+from ..auth import AuthenticatedPrincipal
+from ..deps import get_principal, get_state, require_file_access
 from ..schemas import FileOut, PaginatedResponse, UploadUrlRequest
 from ..state import AppState
 
@@ -193,18 +194,22 @@ def list_files(
 
 
 @router.get("/{file_id}", response_model=FileOut)
-def get_file(file_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_file(file_id)
-    if not row:
-        raise HTTPException(404, "file not found")
+def get_file(
+    file_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    row = require_file_access(state, principal, file_id)
     return _to_out(row)
 
 
 @router.get("/{file_id}/download")
-def download_file(file_id: str, state: AppState = Depends(get_state)):
-    row = state.store.get_file(file_id)
-    if not row:
-        raise HTTPException(404, "file not found")
+def download_file(
+    file_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    row = require_file_access(state, principal, file_id)
     url = state.blob.url_for(row["storage_key"])
     if url and url.startswith(("http://", "https://")):
         return RedirectResponse(url, status_code=302)
@@ -221,11 +226,13 @@ def download_file(file_id: str, state: AppState = Depends(get_state)):
 
 
 @router.get("/{file_id}/preview")
-def preview_file(file_id: str, state: AppState = Depends(get_state)):
+def preview_file(
+    file_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
     """Serve file inline for iframe/embed — never redirect, always stream."""
-    row = state.store.get_file(file_id)
-    if not row:
-        raise HTTPException(404, "file not found")
+    row = require_file_access(state, principal, file_id)
     try:
         data = state.blob.get(row["storage_key"])
     except FileNotFoundError:

@@ -747,6 +747,24 @@ class Store:
             )
             return _file_to_dict(row) if row else None
 
+    def find_documents_by_file_id(self, file_id: str) -> list[dict]:
+        """Documents that reference this file_id (either as the source
+        upload or as a converted PDF). Used by the file-access authz
+        helper to check if any referencing doc lives in an accessible
+        folder."""
+        with self._session() as s:
+            rows = (
+                s.execute(
+                    select(Document).where(
+                        (Document.file_id == file_id)
+                        | (Document.pdf_file_id == file_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [_doc_to_dict(r) for r in rows]
+
     # =======================================================================
     # Query Traces
     # =======================================================================
@@ -1278,6 +1296,7 @@ def _file_to_dict(row: File) -> dict:
         "display_name": row.display_name,
         "size_bytes": row.size_bytes,
         "mime_type": row.mime_type,
+        "owner_user_id": row.owner_user_id,
         "uploaded_at": row.uploaded_at,
         "metadata_json": row.metadata_json or {},
     }
