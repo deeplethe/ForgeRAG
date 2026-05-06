@@ -34,29 +34,16 @@ onMounted(async () => {
   try { me.value = await getMe() } catch {}
 })
 
-// Sub-nav data. Admin-only sections are filtered out for regular
-// users — same pattern as the route guard in router.js, just
-// keeps the visible UI clean. Add new sub-routes here when they
-// land (preferences, system, audit, …).
-const sections = computed(() => {
+// Flat link list. We deliberately don't group into sections —
+// with only 2-3 entries the ACCOUNT / WORKSPACE labels were
+// noisier than the links themselves. If this ever grows past
+// ~6 items, reintroduce sections then.
+const links = computed(() => {
   const all = [
-    {
-      key: 'account',
-      label: t('settings.section.account'),
-      links: [
-        { path: '/settings/profile', label: t('settings.nav.profile') },
-      ],
-    },
-    {
-      key: 'workspace',
-      label: t('settings.section.workspace'),
-      adminOnly: true,
-      links: [
-        { path: '/settings/users', label: t('settings.nav.users') },
-      ],
-    },
+    { path: '/settings/profile', label: t('settings.nav.profile') },
+    { path: '/settings/users', label: t('settings.nav.users'), adminOnly: true },
   ]
-  return all.filter((s) => !s.adminOnly || isAdmin.value)
+  return all.filter((l) => !l.adminOnly || isAdmin.value)
 })
 
 function isActive(path) {
@@ -82,17 +69,14 @@ function goBack() {
         <span>{{ t('settings.back') }}</span>
       </button>
       <h1 class="sub-nav-title">{{ t('settings.title') }}</h1>
-      <nav>
-        <div v-for="section in sections" :key="section.key" class="section">
-          <div class="section-label">{{ section.label }}</div>
-          <router-link
-            v-for="link in section.links"
-            :key="link.path"
-            :to="link.path"
-            class="nav-link"
-            :class="{ 'is-active': isActive(link.path) }"
-          >{{ link.label }}</router-link>
-        </div>
+      <nav class="link-list">
+        <router-link
+          v-for="link in links"
+          :key="link.path"
+          :to="link.path"
+          class="nav-link"
+          :class="{ 'is-active': isActive(link.path) }"
+        >{{ link.label }}</router-link>
       </nav>
     </aside>
 
@@ -138,14 +122,7 @@ function goBack() {
   margin: 0 6px 16px;
   letter-spacing: -0.01em;
 }
-.section { margin-bottom: 16px; }
-.section-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-t3);
-  margin: 0 6px 4px;
-}
+.link-list { display: flex; flex-direction: column; gap: 2px; }
 .nav-link {
   display: block;
   padding: 6px 10px;

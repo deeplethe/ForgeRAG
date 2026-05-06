@@ -116,3 +116,9 @@ export {
   listTrash, getTrashStats,
   restoreFromTrash, purgeTrashItems, emptyTrash,
 } from './trash'
+
+// Admin (user management)
+export {
+  listUsers, getUser, approveUser, suspendUser, reactivateUser,
+  patchUser, deleteUser, patchMe,
+} from './admin'

@@ -16,6 +16,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getMe, changePassword } from '@/api/auth'
+import { patchMe } from '@/api/admin'
 
 const { t } = useI18n()
 
@@ -57,14 +58,14 @@ onMounted(async () => {
 async function onSaveDisplayName() {
   dnError.value = ''
   dnSuccess.value = false
-  // Endpoint TBD — the /auth route doesn't expose a profile-edit
-  // PATCH yet; this is wired so the UI is ready when the backend
-  // lands. For now we just update the local copy so the form
-  // reflects the user's intent.
   dnSaving.value = true
   try {
-    // await patchProfile({ display_name: displayName.value })
-    if (me.value) me.value.display_name = displayName.value
+    const updated = await patchMe({ display_name: displayName.value })
+    me.value = updated
+    // Backend may have normalised whitespace / cleared the field —
+    // re-sync the input so the disabled-when-unchanged button
+    // reflects the saved state, not the typed-and-stripped state.
+    displayName.value = updated.display_name || ''
     dnSuccess.value = true
   } catch (e) {
     dnError.value = e.message || 'Save failed'

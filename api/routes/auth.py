@@ -90,6 +90,18 @@ class ChangePasswordReq(BaseModel):
     new_password: str = Field(..., min_length=4, max_length=200)
 
 
+class PatchMeReq(BaseModel):
+    """Self-edit fields a regular user can change without admin help.
+
+    Currently just ``display_name``. Email is the login identifier
+    (admin-only mutation), role is admin-only, status is the admin
+    user-management surface. Password has its own dedicated endpoint
+    (``/auth/change-password``) because it needs the old password.
+    """
+
+    display_name: str | None = Field(None, max_length=64)
+
+
 class TokenCreateReq(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     expires_days: int | None = Field(None, ge=1, le=3650)
@@ -389,32 +401,60 @@ def change_password(
     return {"status": "password_changed"}
 
 
+def _me_response(principal: AuthenticatedPrincipal, user: AuthUser | None) -> MeOut:
+    return MeOut(
+        user_id=principal.user_id,
+        username=principal.username,
+        # New canonical identity fields. The frontend's UserMenu /
+        # Settings page now keys off email + display_name (with
+        # ``display_name`` falling back to email-prefix or
+        # username when not set). ``username`` stays in the
+        # response so old clients still parse the body.
+        email=user.email if user else None,
+        display_name=(
+            (user.display_name if user else None)
+            or (user.email.split("@")[0] if user and user.email else None)
+            or principal.username
+        ),
+        role=principal.role,
+        via=principal.via,
+        must_change_password=bool(user.must_change_password if user else False),
+        token_id=principal.token_id,
+        token_name=principal.token_name,
+        session_id=principal.session_id,
+    )
+
+
 @router.get("/me", response_model=MeOut)
 def me(request: Request, state: AppState = Depends(get_state)):
     principal = _require_principal(request)
     with state.store.transaction() as sess:
         user = sess.get(AuthUser, principal.user_id)
-        return MeOut(
-            user_id=principal.user_id,
-            username=principal.username,
-            # New canonical identity fields. The frontend's UserMenu /
-            # Settings page now keys off email + display_name (with
-            # ``display_name`` falling back to email-prefix or
-            # username when not set). ``username`` stays in the
-            # response so old clients still parse the body.
-            email=user.email if user else None,
-            display_name=(
-                (user.display_name if user else None)
-                or (user.email.split("@")[0] if user and user.email else None)
-                or principal.username
-            ),
-            role=principal.role,
-            via=principal.via,
-            must_change_password=bool(user.must_change_password if user else False),
-            token_id=principal.token_id,
-            token_name=principal.token_name,
-            session_id=principal.session_id,
-        )
+        return _me_response(principal, user)
+
+
+@router.patch("/me", response_model=MeOut)
+def patch_me(
+    body: PatchMeReq,
+    request: Request,
+    state: AppState = Depends(get_state),
+):
+    """Self-edit. Only fields the user can change for themselves go
+    here — role / status / email stay admin-only via /admin/users.
+
+    ``display_name`` is normalised: empty / whitespace-only resets it
+    back to NULL so the /me fallback chain (email-prefix → username)
+    takes over again, rather than leaving a blank string in the DB.
+    """
+    principal = _require_principal(request)
+    with state.store.transaction() as sess:
+        user = sess.get(AuthUser, principal.user_id)
+        if user is None:
+            raise HTTPException(404, "user not found")
+        if body.display_name is not None:
+            cleaned = body.display_name.strip()
+            user.display_name = cleaned or None
+        return _me_response(principal, user)
 
 
 # ---------------------------------------------------------------------------
