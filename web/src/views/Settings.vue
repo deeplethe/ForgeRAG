@@ -145,6 +145,10 @@ function goBack() {
   min-width: 0;
   overflow-y: auto;
   padding: 32px 40px;
-  background: var(--color-bg);
+  /* Match the sub-nav's bg2 so the entire Settings surface
+     reads as one canvas. Cards inside use ``var(--color-bg)``
+     which is one step darker — they sit slightly recessed,
+     same layering Vercel's settings pages use in dark mode. */
+  background: var(--color-bg2);
 }
 </style>
