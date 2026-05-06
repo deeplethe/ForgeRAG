@@ -303,6 +303,15 @@ class Message(Base):
     # turns lose the "Thought for Xs · N tools" header completely on
     # reload). Schema added in 20260512_add_agent_trace.
     agent_trace_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Per-turn LLM token accounting. Populated on the assistant row
+    # only — user rows always have 0/0. Both default to 0 (NOT NULL)
+    # so the /usage SUM queries don't have to coalesce. Added in
+    # 20260513_add_message_tokens. ``query_traces`` (the legacy
+    # /query route's audit table) tracked these in its trace_json
+    # blob, but the agent path writes only to messages, so usage
+    # aggregation has to read from here.
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # ``thinking`` column dropped in 20260508_drop_message_thinking —
     # provider CoT is no longer captured (agent loop is the thinking
     # layer). Future deep-research mode will get its own data model

@@ -21,7 +21,12 @@ const router = createRouter({
     { path: '/simulation', component: () => import('@/views/Simulation.vue') },
     { path: '/metrics', component: () => import('@/views/Metrics.vue') },
     { path: '/benchmark', component: () => import('@/views/Benchmark.vue') },
-    { path: '/tokens', component: () => import('@/views/Tokens.vue') },
+    // Legacy redirect: /tokens (the old "Tokens & Sessions" page) is
+    // gone — it split into /settings/sessions (everyone) and
+    // /settings/tokens (admin-only). Land both groups on the page
+    // they're allowed to see; the admin sub-nav inside Settings
+    // surfaces /settings/tokens for the ones who can manage SKs.
+    { path: '/tokens', redirect: '/settings/sessions' },
     // ── Settings ─────────────────────────────────────────────────
     // /settings is a shell with its own left sub-nav rendered inside
     // ``Settings.vue``. Sub-routes (account / preferences / users
@@ -35,6 +40,12 @@ const router = createRouter({
       redirect: '/settings/profile',
       children: [
         { path: 'profile', component: () => import('@/views/settings/Profile.vue') },
+        { path: 'sessions', component: () => import('@/views/settings/Sessions.vue') },
+        {
+          path: 'tokens',
+          component: () => import('@/views/settings/Tokens.vue'),
+          meta: { requiresAdmin: true },
+        },
         {
           path: 'users',
           component: () => import('@/views/settings/Users.vue'),

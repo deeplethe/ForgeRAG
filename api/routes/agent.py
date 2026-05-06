@@ -180,11 +180,20 @@ def agent_chat(
         # "Thought for Xs · N tools" header / row breakdown all
         # disappear (the trace was previously frontend-only state).
         trace: list[dict] = []
+        # Per-turn token totals — captured from the loop's final
+        # ``done`` event (see api/agent/loop.py). Persisted onto the
+        # assistant message so per-user usage aggregation can SUM
+        # over messages without re-parsing the trace blob.
+        tokens_in: int = 0
+        tokens_out: int = 0
         try:
             for evt in loop.stream(body.message, ctx, history=history):
                 kind = evt.get("type")
                 if kind == "answer":
                     final_answer = evt.get("text") or final_answer
+                elif kind == "done":
+                    tokens_in = int(evt.get("tokens_in") or 0)
+                    tokens_out = int(evt.get("tokens_out") or 0)
                 _accumulate_trace(trace, evt)
                 yield _sse_chunk(evt)
         except Exception:
@@ -202,6 +211,7 @@ def agent_chat(
             try:
                 _persist_turn(
                     state, conv_id, body.message, final_answer, ctx, trace,
+                    tokens_in=tokens_in, tokens_out=tokens_out,
                 )
             except Exception:
                 log.exception("agent_chat: conversation persist failed")
@@ -408,11 +418,19 @@ def _persist_turn(
     assistant_answer: str,
     ctx,
     trace: list[dict] | None = None,
+    *,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
 ) -> None:
     """Write the new user message + final assistant answer to the
     DB. Citations are serialised onto the assistant row's
     ``citations_json`` so the conversation viewer can render them
     later.
+
+    Token counts (``tokens_in`` / ``tokens_out``) come from the
+    agent loop's final ``done`` event and land on the ASSISTANT
+    row only — the user row stays at 0/0. Per-user usage views sum
+    over messages → conversations → user_id.
 
     Idempotent against partial failure: each ``add_message`` is its
     own transaction so a crash between the two writes doesn't lose
@@ -475,6 +493,8 @@ def _persist_turn(
             "content": assistant_answer,
             "citations_json": cits or None,
             "agent_trace_json": persisted_trace,
+            "input_tokens": tokens_in,
+            "output_tokens": tokens_out,
         }
     )
 

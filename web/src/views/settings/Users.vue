@@ -31,6 +31,7 @@ import {
   reactivateUser,
   patchUser,
   deleteUser,
+  listUserUsage,
 } from '@/api/admin'
 import { getMe } from '@/api/auth'
 import { useDialog } from '@/composables/useDialog'
@@ -42,6 +43,10 @@ const { confirm, toast } = useDialog()
 const users = ref([])
 const me = ref(null)
 const loading = ref(true)
+// Per-user usage: { user_id → { input_tokens, output_tokens, total_tokens, message_count } }
+// Fetched once on mount; not refreshed on row mutations because the
+// numbers don't change with role/status edits — only after new chats.
+const usageByUser = ref({})
 const filter = ref('all') // 'all' | 'active' | 'pending_approval' | 'suspended'
 const query = ref('')
 const openMenuId = ref(null)
@@ -58,15 +63,33 @@ const filteredUsers = computed(() => {
 })
 
 onMounted(async () => {
-  // Pull /me first so we can mark the current admin's row as
-  // "you" and disable the self-mutation actions. The two
-  // requests can run in parallel — neither depends on the other.
-  const [_me, _users] = await Promise.allSettled([getMe(), listUsers()])
+  // Pull /me, /users, and /users/usage all in parallel — none of
+  // them depends on another, and the page can paint the moment
+  // any one comes back. Usage failure isn't fatal: the column
+  // just shows zeros if it doesn't load.
+  const [_me, _users, _usage] = await Promise.allSettled([
+    getMe(),
+    listUsers(),
+    listUserUsage(),
+  ])
   if (_me.status === 'fulfilled') me.value = _me.value
   if (_users.status === 'fulfilled') users.value = _users.value
   else toast(t('settings.users.error_load'), { variant: 'error' })
+  if (_usage.status === 'fulfilled') {
+    const map = {}
+    for (const row of _usage.value || []) map[row.user_id] = row
+    usageByUser.value = map
+  }
   loading.value = false
 })
+
+function usageOf(u) {
+  return usageByUser.value[u.user_id] || null
+}
+
+function fmtNum(n) {
+  return (n || 0).toLocaleString()
+}
 
 // Click-outside closes any open per-row menu. The menu is small
 // (3-4 items), so a global listener is simpler than per-row refs.
@@ -262,6 +285,7 @@ function promotable(u) {
         <div class="col-user">{{ t('settings.users.col_user') }}</div>
         <div class="col-role">{{ t('settings.users.col_role') }}</div>
         <div class="col-status">{{ t('settings.users.col_status') }}</div>
+        <div class="col-usage">{{ t('settings.usage.total_tokens') }}</div>
         <div class="col-login">{{ t('settings.users.col_last_login') }}</div>
         <div class="col-actions"></div>
       </div>
@@ -299,6 +323,11 @@ function promotable(u) {
           <span class="status-pill" :class="`status-${u.status}`">
             {{ statusLabel(u.status) }}
           </span>
+        </div>
+
+        <!-- Usage (admin sees per-user token totals) -->
+        <div class="col-usage" :title="usageOf(u) ? `in ${fmtNum(usageOf(u).input_tokens)} · out ${fmtNum(usageOf(u).output_tokens)} · ${fmtNum(usageOf(u).message_count)} answers` : ''">
+          <span class="usage-num">{{ fmtNum(usageOf(u)?.total_tokens) }}</span>
         </div>
 
         <!-- Last login -->
@@ -449,10 +478,18 @@ function promotable(u) {
 }
 .table-head, .row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) 80px 100px 110px 130px;
+  grid-template-columns: minmax(220px, 1.6fr) 80px 100px 90px 110px 130px;
   gap: 12px;
   align-items: center;
   padding: 0 16px;
+}
+.col-usage {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-t2);
+}
+.usage-num {
+  font-size: 12px;
 }
 .table-head {
   height: 36px;

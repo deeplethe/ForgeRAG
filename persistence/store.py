@@ -1253,6 +1253,8 @@ def _message_to_dict(row: Message) -> dict:
         "trace_id": row.trace_id,
         "citations_json": row.citations_json,
         "agent_trace_json": row.agent_trace_json,
+        "input_tokens": row.input_tokens,
+        "output_tokens": row.output_tokens,
         "created_at": row.created_at,
     }
 

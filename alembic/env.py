@@ -27,10 +27,10 @@ def _get_url() -> str:
     """Resolve DB URL from ForgeRAG config, same as the app does."""
     try:
         from config.loader import load_config
-        from persistence.engine import build_engine
+        from persistence.engine import make_engine
 
         cfg = load_config(os.environ.get("OPENCRAIG_CONFIG"))
-        engine = build_engine(cfg.persistence.relational)
+        engine = make_engine(cfg.persistence.relational)
         return str(engine.url)
     except Exception:
         # Fallback: try env var

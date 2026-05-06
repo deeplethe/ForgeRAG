@@ -90,6 +90,31 @@
       </div>
     </section>
 
+    <!-- Per-user token usage table -->
+    <section v-if="userUsage.length" class="panel panel-table">
+      <div class="panel-head">Tokens by user <span class="text-t3">· lifetime</span></div>
+      <table class="t">
+        <thead>
+          <tr>
+            <th>user</th>
+            <th class="w-[80px] tabular">input</th>
+            <th class="w-[80px] tabular">output</th>
+            <th class="w-[90px] tabular">total</th>
+            <th class="w-[70px] tabular">answers</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in userUsage" :key="u.user_id">
+            <td class="truncate">{{ u.display_name || u.email || u.username || u.user_id }}</td>
+            <td class="tabular text-t3">{{ (u.input_tokens || 0).toLocaleString() }}</td>
+            <td class="tabular text-t3">{{ (u.output_tokens || 0).toLocaleString() }}</td>
+            <td class="tabular">{{ (u.total_tokens || 0).toLocaleString() }}</td>
+            <td class="tabular text-t3">{{ (u.message_count || 0).toLocaleString() }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <!-- Slow queries table -->
     <section class="panel panel-table">
       <div class="panel-head">Slow queries <span class="text-t3">· top 10</span></div>
@@ -149,6 +174,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { get } from '@/api/client'
+import { listUserUsage } from '@/api/admin'
 import LineChart from '@/components/metrics/LineChart.vue'
 import StackedBars from '@/components/metrics/StackedBars.vue'
 import HBars from '@/components/metrics/HBars.vue'
@@ -168,6 +194,8 @@ const tokens = ref([])
 const pathTiming = ref([])
 const slow = ref([])
 const failures = ref([])
+// Admin-only; a 403 just leaves it empty so the panel disappears.
+const userUsage = ref([])
 
 const bucketLabel = computed(() => ({ '24h': '15 min', '7d': 'hour', '30d': '6 hrs' }[range.value]))
 
@@ -205,6 +233,14 @@ async function refresh() {
     pathTiming.value = pth || []
     slow.value = slw || []
     failures.value = fl || []
+
+    // Per-user usage runs in its own try so a non-admin's 403 here
+    // doesn't kill the rest of the metrics page.
+    try {
+      userUsage.value = (await listUserUsage()) || []
+    } catch {
+      userUsage.value = []
+    }
     lastRefreshedAt.value = Date.now()
   } catch (e) {
     err.value = e?.message || String(e)

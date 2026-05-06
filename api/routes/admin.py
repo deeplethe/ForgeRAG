@@ -64,6 +64,28 @@ class UpdateUserReq(BaseModel):
     display_name: str | None = Field(None, max_length=64)
 
 
+class UserUsageOut(BaseModel):
+    """One row of per-user usage. Sorted by ``total_tokens`` DESC
+    by the aggregator so admins see the heaviest users first.
+
+    Includes ``username`` / ``email`` / ``display_name`` so the
+    list view doesn't need a second round-trip to label the
+    rows. Legacy ``user_id IS NULL`` conversations bucket under
+    a synthetic ``"local"`` row (see ``api/auth/usage.py``); we
+    label that row ``local`` / no email so the UI can render it
+    without crashing.
+    """
+
+    user_id: str
+    username: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    message_count: int
+
+
 # ---------------------------------------------------------------------------
 # Auth gate
 # ---------------------------------------------------------------------------
@@ -120,6 +142,99 @@ def list_users(
             stmt = stmt.where(AuthUser.role == role)
         rows = list(sess.execute(stmt).scalars())
     return [_user_to_out(u) for u in rows]
+
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+#
+# Registered BEFORE the dynamic ``/users/{user_id}`` route below
+# because FastAPI / Starlette match routes in registration order:
+# the literal ``/users/usage`` would otherwise be swallowed by
+# ``/users/{user_id}`` with ``user_id="usage"`` and 404 in the
+# user lookup. ``/users/{user_id}/usage`` doesn't have the same
+# collision (the trailing segment disambiguates) but we keep it
+# in the same block for cohesion.
+
+
+@router.get("/users/usage", response_model=list[UserUsageOut])
+def list_user_usage(
+    request: Request,
+    state: AppState = Depends(get_state),
+):
+    """Per-user token totals across every user with at least one
+    assistant turn. Sorted by total_tokens DESC.
+
+    The route is registered BEFORE ``/users/{user_id}`` so
+    FastAPI's path-matcher resolves the literal path first;
+    otherwise ``/users/usage`` would match the dynamic route
+    with ``user_id="usage"`` and 404 in the SELECT.
+    """
+    _require_admin(request, state)
+    from ..auth.usage import all_user_usage
+
+    with state.store.transaction() as sess:
+        totals = all_user_usage(sess)
+        # Fold the auth_users metadata in so the UI can label rows
+        # without a second round-trip. Synthetic "local" bucket
+        # keeps no metadata.
+        user_rows: dict[str, AuthUser] = {}
+        if totals:
+            ids = [t.user_id for t in totals if t.user_id and t.user_id != "local"]
+            if ids:
+                rows = sess.execute(
+                    select(AuthUser).where(AuthUser.user_id.in_(ids))
+                ).scalars()
+                user_rows = {r.user_id: r for r in rows}
+
+    out: list[UserUsageOut] = []
+    for t in totals:
+        u = user_rows.get(t.user_id) if t.user_id else None
+        out.append(
+            UserUsageOut(
+                user_id=t.user_id or "local",
+                username=u.username if u else None,
+                email=u.email if u else None,
+                display_name=u.display_name if u else None,
+                input_tokens=t.input_tokens,
+                output_tokens=t.output_tokens,
+                total_tokens=t.total_tokens,
+                message_count=t.message_count,
+            )
+        )
+    return out
+
+
+@router.get("/users/{user_id}/usage", response_model=UserUsageOut)
+def get_user_usage(
+    user_id: str,
+    request: Request,
+    state: AppState = Depends(get_state),
+):
+    _require_admin(request, state)
+    from ..auth.usage import user_usage
+
+    with state.store.transaction() as sess:
+        user = sess.get(AuthUser, user_id) if user_id != "local" else None
+        if user_id != "local" and user is None:
+            raise HTTPException(404, "user not found")
+        totals = user_usage(sess, user_id)
+    return UserUsageOut(
+        user_id=user_id,
+        username=user.username if user else None,
+        email=user.email if user else None,
+        display_name=user.display_name if user else None,
+        input_tokens=totals.input_tokens,
+        output_tokens=totals.output_tokens,
+        total_tokens=totals.total_tokens,
+        message_count=totals.message_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Single-user GET (lives AFTER /users/usage so the literal route
+# wins, see comment above).
+# ---------------------------------------------------------------------------
 
 
 @router.get("/users/{user_id}", response_model=AdminUserOut)

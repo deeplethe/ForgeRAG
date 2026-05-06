@@ -433,6 +433,41 @@ def me(request: Request, state: AppState = Depends(get_state)):
         return _me_response(principal, user)
 
 
+class UsageOut(BaseModel):
+    """Per-user LLM token usage totals.
+
+    ``message_count`` counts assistant turns only — i.e. how many
+    answers the user has received. Aligns with the way the
+    aggregator in ``api/auth/usage.py`` filters ``role='assistant'``
+    so users → conversations → messages stays one number per turn.
+    """
+
+    user_id: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    message_count: int
+
+
+@router.get("/me/usage", response_model=UsageOut)
+def me_usage(request: Request, state: AppState = Depends(get_state)):
+    """The caller's own token usage. Cheap read — single SUM/COUNT
+    over the (small) messages table joined to conversations.
+    """
+    principal = _require_principal(request)
+    from ..auth.usage import user_usage
+
+    with state.store.transaction() as sess:
+        totals = user_usage(sess, principal.user_id)
+    return UsageOut(
+        user_id=totals.user_id or principal.user_id,
+        input_tokens=totals.input_tokens,
+        output_tokens=totals.output_tokens,
+        total_tokens=totals.total_tokens,
+        message_count=totals.message_count,
+    )
+
+
 @router.patch("/me", response_model=MeOut)
 def patch_me(
     body: PatchMeReq,

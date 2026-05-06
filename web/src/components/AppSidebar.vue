@@ -38,7 +38,9 @@ const tabs = computed(() => [
   { path: '/simulation', label_key: 'sidebar.tabs.simulation' },
   { path: '/metrics', label_key: 'sidebar.tabs.metrics' },
   { path: '/benchmark', label_key: 'sidebar.tabs.benchmark', dev: true },
-  { path: '/tokens', label_key: 'sidebar.tabs.tokens' },
+  // /tokens used to live here; it's now /settings/tokens (admin) /
+  // /settings/sessions (everyone). The avatar menu's Settings link
+  // is the entry point.
 ])
 
 function isTabDisabled(tab) {

@@ -41,6 +41,8 @@ onMounted(async () => {
 const links = computed(() => {
   const all = [
     { path: '/settings/profile', label: t('settings.nav.profile') },
+    { path: '/settings/sessions', label: t('settings.nav.sessions') },
+    { path: '/settings/tokens', label: t('settings.nav.tokens'), adminOnly: true },
     { path: '/settings/users', label: t('settings.nav.users'), adminOnly: true },
   ]
   return all.filter((l) => !l.adminOnly || isAdmin.value)

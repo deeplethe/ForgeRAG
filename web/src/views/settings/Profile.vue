@@ -16,12 +16,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getMe, changePassword } from '@/api/auth'
-import { patchMe } from '@/api/admin'
+import { patchMe, getMyUsage } from '@/api/admin'
 
 const { t } = useI18n()
 
 const me = ref(null)
 const loading = ref(true)
+const usage = ref(null) // { input_tokens, output_tokens, total_tokens, message_count }
 
 // Password form state — kept in a single reactive object so the
 // "save" handler can clear it cleanly on success.
@@ -48,12 +49,21 @@ const avatarBg = computed(() => {
 })
 
 onMounted(async () => {
-  try {
-    me.value = await getMe()
+  // /me and /me/usage are independent — fire them in parallel so
+  // the avatar/email card and the usage card paint together
+  // instead of usage flickering in late.
+  const [meRes, usageRes] = await Promise.allSettled([getMe(), getMyUsage()])
+  if (meRes.status === 'fulfilled') {
+    me.value = meRes.value
     displayName.value = me.value?.display_name || ''
-  } catch {}
+  }
+  if (usageRes.status === 'fulfilled') usage.value = usageRes.value
   loading.value = false
 })
+
+function fmtNum(n) {
+  return (n || 0).toLocaleString()
+}
 
 async function onSaveDisplayName() {
   dnError.value = ''
@@ -109,6 +119,30 @@ async function onSavePassword() {
         <div class="identity-meta">
           <div class="email">{{ me.email || me.username || '—' }}</div>
           <div class="role">{{ me.role === 'admin' ? t('user_menu.role_admin') : t('user_menu.role_user') }}</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Usage ── -->
+    <section v-if="usage" class="card">
+      <h3 class="card-title">{{ t('settings.usage.title') }}</h3>
+      <p class="card-hint">{{ t('settings.usage.subtitle') }}</p>
+      <div class="usage-grid">
+        <div class="usage-stat">
+          <div class="usage-num">{{ fmtNum(usage.input_tokens) }}</div>
+          <div class="usage-label">{{ t('settings.usage.input_tokens') }}</div>
+        </div>
+        <div class="usage-stat">
+          <div class="usage-num">{{ fmtNum(usage.output_tokens) }}</div>
+          <div class="usage-label">{{ t('settings.usage.output_tokens') }}</div>
+        </div>
+        <div class="usage-stat usage-stat-emphasis">
+          <div class="usage-num">{{ fmtNum(usage.total_tokens) }}</div>
+          <div class="usage-label">{{ t('settings.usage.total_tokens') }}</div>
+        </div>
+        <div class="usage-stat">
+          <div class="usage-num">{{ fmtNum(usage.message_count) }}</div>
+          <div class="usage-label">{{ t('settings.usage.messages') }}</div>
         </div>
       </div>
     </section>
@@ -252,4 +286,34 @@ async function onSavePassword() {
 
 .form-error { margin-top: 8px; font-size: 11px; color: var(--color-err-fg); }
 .form-success { margin-top: 8px; font-size: 11px; color: var(--color-ok-fg); }
+
+/* Usage stat grid — 4 cells, the third (Total) is faintly emphasised
+   so the eye lands there. Numbers are tabular for clean alignment. */
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.usage-stat {
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-sm);
+  background: var(--color-bg);
+}
+.usage-stat-emphasis {
+  background: var(--color-bg2);
+}
+.usage-num {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-t1);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.usage-label {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-t3);
+}
 </style>

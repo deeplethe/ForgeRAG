@@ -38,6 +38,17 @@ export const patchUser = (userId, updates) =>
 export const deleteUser = (userId) =>
   del(`/api/v1/admin/users/${userId}`)
 
+// Per-user LLM token usage (admin scope).
+export const listUserUsage = () =>
+  get('/api/v1/admin/users/usage')
+
+export const getUserUsage = (userId) =>
+  get(`/api/v1/admin/users/${userId}/usage`)
+
 // Self-edit (regular users) — currently just display_name.
 export const patchMe = (updates) =>
   patch('/api/v1/auth/me', updates)
+
+// Self usage (every user can see their own).
+export const getMyUsage = () =>
+  get('/api/v1/auth/me/usage')
