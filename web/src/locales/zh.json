@@ -236,29 +236,18 @@
   },
   "search": {
     "title": "搜索",
-    "subtitle": "在你的文档里找文件和片段——不调 LLM、不生成答案，只列匹配项。",
-    "placeholder": "搜索文件名、路径、文档内容…",
+    "subtitle": "语义搜索——跨语言匹配，不调 LLM、不生成答案，只列最相关的段落。",
+    "placeholder": "用任何语言提问——跨语言语义匹配…",
     "submit": "搜索",
     "clear": "清空",
+    "page": "第 {n} 页",
     "empty": {
-      "idle": "输入关键词在全部文档中搜索。",
-      "hint": "提示：文件名、文件夹、内容都会一起匹配。点击结果跳到原文。",
+      "idle": "输入查询在全部文档中找相关段落。",
+      "hint": "提示：跨语言——搜「bees」或「蜜蜂」，两边的文档都会出现。",
       "searching": "搜索中…",
       "none": "没有匹配 \"{query}\" 的结果。"
     },
-    "section": {
-      "files": "文件",
-      "chunks": "段落"
-    },
-    "badge": {
-      "filename": "文件名",
-      "content": "内容",
-      "both": "全部"
-    },
-    "tooltip": {
-      "boosted": "因为该文档的文件名也匹配查询，排名被略微提升。"
-    },
-    "footer": "{chunks} 个段落 · {files} 个文件 · {ms} ms"
+    "footer_v2": "{chunks} 个段落 · {ms} ms"
   },
   "tools": {
     "label": "工具",

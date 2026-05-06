@@ -1,28 +1,37 @@
 <!--
-  Search view — workspace-level "find me things" page.
+  Search view — semantic (embedding) search over passages.
 
-  Calls POST /api/v1/search (BM25-only keyword search, no LLM) with
-  include=["chunks","files"] so users see both:
+  Calls POST /api/v1/search which now runs a dense ANN pass: the
+  query gets embedded once, the vector index returns top-K
+  passages by cosine similarity, then they're hydrated with
+  filename / folder path / page so each row links back to the
+  source. Cross-lingual recall comes for free — searching ``蜜蜂``
+  surfaces English passages mentioning ``bees`` because the
+  multilingual embedder maps both into the same space.
 
-    * file-level rollups at the top  (which document matches?)
-    * chunk-level snippets below      (what's the actual passage?)
+  Distinct from Chat (which calls /agent and gets a streamed
+  LLM answer with citations). This page is for navigation /
+  discovery — click a row to jump to the source doc + scroll
+  the right pane to that passage.
 
-  Distinct from the Chat view (which calls /query and gets a streamed
-  LLM answer + citations). This page is for navigation / discovery —
-  click a chunk row to jump straight into the source doc.
+  No more files-vs-passages split: the vector backend returns
+  ranked chunks, each row carries enough file context (filename,
+  folder, page) inline that a separate file rollup would be
+  redundant. Click → opens DocDetail with &chunk=… set so the
+  preview lands on the matched passage.
 
-  Styling matches Chat.vue: Tailwind utilities + design-token colors
-  (--color-bg, --color-line, --color-t1/t2/t3, --color-brand). No
-  mono fonts — search results are prose, not code.
+  No more keyword highlighting: there are no "matched tokens"
+  with semantic search — the score is similarity, not term
+  overlap. The snippet renders plain. Score is shown so users
+  who care about "how confident is this match" have the signal.
 
-  Keeps state at module level so navigating away and back preserves
-  the user's last query + results. Same idiom as Chat.vue.
+  Module-level refs persist last query + results across nav.
 -->
 <script>
 import { ref } from 'vue'
 export default { name: 'SearchView' }
 const _query = ref('')
-const _results = ref(null)   // { chunks, files, stats } | null
+const _results = ref(null)   // { chunks: [...], stats: {...} } | null
 const _loading = ref(false)
 const _error = ref('')
 </script>
@@ -31,7 +40,7 @@ const _error = ref('')
 import { computed, onMounted, ref as setupRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Search, FileText, FileSearch, AlertCircle, Loader2 } from 'lucide-vue-next'
+import { Search, FileSearch, AlertCircle, Loader2 } from 'lucide-vue-next'
 
 import { search as searchApi } from '@/api'
 
@@ -40,12 +49,10 @@ const router = useRouter()
 
 const inputEl = setupRef(null)
 
-// Auto-focus the search input on mount so the page is keyboard-first.
 onMounted(() => {
   if (inputEl.value) inputEl.value.focus()
 })
 
-// ── Submit handler ────────────────────────────────────────────────
 async function runSearch() {
   const q = _query.value.trim()
   if (!q) return
@@ -54,8 +61,8 @@ async function runSearch() {
   try {
     const res = await searchApi({
       query: q,
-      include: ['chunks', 'files'],
-      limit: { chunks: 30, files: 10 },
+      include: ['chunks'],
+      limit: { chunks: 30 },
     })
     _results.value = res
   } catch (e) {
@@ -73,63 +80,15 @@ function clearAll() {
   if (inputEl.value) inputEl.value.focus()
 }
 
-// ── Result navigation ─────────────────────────────────────────────
-// Clicking a file or chunk row opens the doc in the workspace's
-// embedded DocDetail (same URL convention the workspace uses).
-// Chunks pass an additional &chunk=<id> hint so DocDetail can scroll
-// the right pane straight to the matched chunk on mount.
 function openDoc(docId, chunkId) {
   const q = { doc: docId }
   if (chunkId) q.chunk = chunkId
   router.push({ path: '/workspace', query: q })
 }
 
-// ── Computed views over the loaded result ─────────────────────────
-const files = computed(() => _results.value?.files || [])
 const chunks = computed(() => _results.value?.chunks || [])
 const stats = computed(() => _results.value?.stats || null)
-
-const hasResults = computed(() => files.value.length > 0 || chunks.value.length > 0)
-
-function fmtBadge(matched) {
-  // matched = ["filename"] | ["content"] | ["filename", "content"]
-  if (!Array.isArray(matched) || matched.length === 0) return ''
-  if (matched.length === 2) return t('search.badge.both')
-  return matched[0] === 'filename' ? t('search.badge.filename') : t('search.badge.content')
-}
-
-function badgeClass(matched) {
-  if (!Array.isArray(matched)) return ''
-  if (matched.length === 2) return 'bg-amber-500/10 text-amber-600'
-  if (matched[0] === 'filename') return 'bg-brand-bg text-brand'
-  return 'bg-emerald-500/10 text-emerald-600'
-}
-
-// ── Highlight ─────────────────────────────────────────────────────
-// Wraps occurrences of any matched token in <mark> tags. Used for
-// both filenames (with f.filename_tokens) and chunk snippets (with
-// c.matched_tokens). Tokens are server-tokenised + lowercased so the
-// case-insensitive flag handles whatever casing the displayed text has.
-function highlightTokens(text, tokens) {
-  if (!text) return ''
-  if (!Array.isArray(tokens) || tokens.length === 0) return escapeHtml(text)
-  const escaped = tokens.map(escapeRegExp).filter(Boolean)
-  if (escaped.length === 0) return escapeHtml(text)
-  const re = new RegExp(`(${escaped.join('|')})`, 'gi')
-  return escapeHtml(text).replace(re, '<mark>$1</mark>')
-}
-
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
+const hasResults = computed(() => chunks.value.length > 0)
 </script>
 
 <template>
@@ -140,7 +99,6 @@ function escapeRegExp(s) {
       <p class="mt-1.5 mb-4 text-[13px] text-t3">{{ t('search.subtitle') }}</p>
 
       <form class="flex items-center gap-2 max-w-[720px]" @submit.prevent="runSearch">
-        <!-- Input wrapper: matches Chat.vue's textarea wrapper for visual consistency. -->
         <div class="relative flex-1 flex items-center px-4 py-2.5 rounded-xl border border-line shadow-sm bg-bg">
           <Search :size="16" class="text-t3 shrink-0" />
           <input
@@ -197,79 +155,28 @@ function escapeRegExp(s) {
         <p>{{ t('search.empty.none', { query: _query }) }}</p>
       </div>
 
-      <div v-else class="max-w-[880px] flex flex-col gap-6">
-        <!-- ── Files section ─────────────────────────────────────── -->
-        <section v-if="files.length">
-          <div class="flex items-center gap-2 pb-2.5 mb-2 border-b border-line text-t2">
-            <FileText :size="14" />
-            <span class="text-[12px] font-semibold uppercase tracking-wider">
-              {{ t('search.section.files') }}
-            </span>
-            <span class="text-[12px] text-t3">{{ files.length }}</span>
-          </div>
-          <ul class="list-none p-0 m-0 flex flex-col gap-2">
-            <li
-              v-for="f in files"
-              :key="f.doc_id"
-              class="px-3.5 py-3 bg-bg border border-line rounded-md cursor-pointer hover:border-t3 hover:bg-bg2 transition-colors"
-              @click="openDoc(f.doc_id, f.best_chunk?.chunk_id)"
-            >
-              <div class="flex items-center gap-2.5">
-                <span
-                  class="text-sm font-medium text-t1 flex-1 break-all hl"
-                  v-html="highlightTokens(f.filename, f.filename_tokens)"
-                />
-                <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0" :class="badgeClass(f.matched_in)">
-                  {{ fmtBadge(f.matched_in) }}
-                </span>
-              </div>
-              <div class="flex items-center gap-3 mt-1 text-[12px] text-t3">
-                <span>{{ f.path || '/' }}</span>
-                <span v-if="f.format" class="px-1.5 py-px bg-bg2 rounded text-[10px]">{{ f.format.toUpperCase() }}</span>
-              </div>
-              <div
-                v-if="f.best_chunk"
-                class="mt-2 text-[13px] text-t2 leading-relaxed line-clamp-2 hl"
-                v-html="highlightTokens(f.best_chunk.snippet, f.best_chunk.matched_tokens)"
-              />
-            </li>
-          </ul>
-        </section>
+      <div v-else class="max-w-[880px] flex flex-col gap-2">
+        <ul class="list-none p-0 m-0 flex flex-col gap-2">
+          <li
+            v-for="c in chunks"
+            :key="c.chunk_id"
+            class="px-3.5 py-3 bg-bg border border-line rounded-md cursor-pointer hover:border-t3 hover:bg-bg2 transition-colors"
+            @click="openDoc(c.doc_id, c.chunk_id)"
+          >
+            <!-- Row header: filename · path · page · score -->
+            <div class="flex items-center gap-2 mb-1.5 text-[12px] text-t3 min-w-0">
+              <span class="text-t2 font-medium truncate">{{ c.filename || c.doc_id }}</span>
+              <span v-if="c.path" class="truncate">· {{ c.path }}</span>
+              <span v-if="c.page_no" class="shrink-0">· {{ t('search.page', { n: c.page_no }) }}</span>
+              <span class="ml-auto shrink-0 text-[11px] tabular-nums">{{ c.score?.toFixed(3) }}</span>
+            </div>
+            <div class="text-[13px] text-t1 leading-relaxed">{{ c.snippet }}</div>
+          </li>
+        </ul>
 
-        <!-- ── Chunks section ────────────────────────────────────── -->
-        <section v-if="chunks.length">
-          <div class="flex items-center gap-2 pb-2.5 mb-2 border-b border-line text-t2">
-            <FileSearch :size="14" />
-            <span class="text-[12px] font-semibold uppercase tracking-wider">
-              {{ t('search.section.chunks') }}
-            </span>
-            <span class="text-[12px] text-t3">{{ chunks.length }}</span>
-          </div>
-          <ul class="list-none p-0 m-0 flex flex-col gap-2">
-            <li
-              v-for="c in chunks"
-              :key="c.chunk_id"
-              class="px-3.5 py-3 bg-bg border border-line rounded-md cursor-pointer hover:border-t3 hover:bg-bg2 transition-colors"
-              @click="openDoc(c.doc_id, c.chunk_id)"
-            >
-              <div class="flex items-center gap-2 mb-1.5 text-[12px] text-t3">
-                <span class="text-t2">{{ c.filename || c.doc_id }}</span>
-                <span v-if="c.boosted_by_filename" class="text-brand font-bold cursor-help" :title="t('search.tooltip.boosted')">↑</span>
-                <span v-if="c.page_no">p.{{ c.page_no }}</span>
-              </div>
-              <div
-                class="text-[13px] text-t1 leading-relaxed hl"
-                v-html="highlightTokens(c.snippet, c.matched_tokens)"
-              />
-            </li>
-          </ul>
-        </section>
-
-        <!-- ── Footer stats ──────────────────────────────────────── -->
-        <div v-if="stats" class="mt-4 pt-3 border-t border-line text-[12px] text-t3">
-          {{ t('search.footer', {
+        <div v-if="stats" class="mt-3 pt-3 border-t border-line text-[12px] text-t3">
+          {{ t('search.footer_v2', {
             chunks: stats.chunk_hits ?? 0,
-            files: stats.file_hits ?? 0,
             ms: stats.elapsed_ms ?? 0,
           }) }}
         </div>
@@ -277,13 +184,3 @@ function escapeRegExp(s) {
     </main>
   </div>
 </template>
-
-<style scoped>
-/* Highlight style — soft amber wash, doesn't fight the body text. */
-.hl :deep(mark) {
-  background: rgba(251, 191, 36, 0.25);
-  color: inherit;
-  padding: 0 1px;
-  border-radius: 2px;
-}
-</style>

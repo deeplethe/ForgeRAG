@@ -16,24 +16,61 @@ const router = useRouter()
 const convs = ref([])
 const convsLoading = ref(false)        // true on first load only — drives sidebar skeleton
 const convsLoaded = ref(false)
+const convsLoadingMore = ref(false)    // append-load in flight; sidebar shows tail spinner
+const convsHasMore = ref(true)         // false once an empty page comes back
 const deletingConvs = ref(new Set())   // optimistic-delete in-flight set
 const convId = ref(null)
 const me = ref(null)
 const showForcedPwd = ref(false)
 
+const CONVS_PAGE_SIZE = 30
+
 const isPublicRoute = computed(() => !!route.meta?.public)
 
 async function loadConvs() {
-  // Show the skeleton only on the very first load — refreshes after
-  // user actions (new chat / delete) keep the existing list visible to
-  // avoid an annoying re-flicker.
+  // First page only. Show the skeleton on the very first load —
+  // refreshes after user actions (new chat / delete) keep the
+  // existing list visible to avoid a re-flicker.
   if (!convsLoaded.value) convsLoading.value = true
   try {
-    convs.value = (await listConversations({ limit: 100 })).items || []
+    const res = await listConversations({ limit: CONVS_PAGE_SIZE, offset: 0 })
+    const items = res?.items || []
+    convs.value = items
+    convsHasMore.value = items.length === CONVS_PAGE_SIZE
   } catch {
   } finally {
     convsLoading.value = false
     convsLoaded.value = true
+  }
+}
+
+async function loadMoreConvs() {
+  // Append-only: fetch the next page using current length as offset.
+  // Bail out if a page is already in flight or we've hit the end.
+  if (convsLoadingMore.value || !convsHasMore.value) return
+  convsLoadingMore.value = true
+  try {
+    const res = await listConversations({
+      limit: CONVS_PAGE_SIZE,
+      offset: convs.value.length,
+    })
+    const items = res?.items || []
+    if (items.length === 0) {
+      convsHasMore.value = false
+    } else {
+      // De-dupe by conversation_id in case a new turn pushed an
+      // older row across the page boundary between fetches.
+      const seen = new Set(convs.value.map((c) => c.conversation_id))
+      const fresh = items.filter((c) => !seen.has(c.conversation_id))
+      convs.value = [...convs.value, ...fresh]
+      convsHasMore.value = items.length === CONVS_PAGE_SIZE
+    }
+  } catch {
+    // Don't flip hasMore on a transient error — let the user
+    // scroll again to retry. The sentinel will fire once the
+    // observer re-observes (it's idempotent).
+  } finally {
+    convsLoadingMore.value = false
   }
 }
 
@@ -120,12 +157,15 @@ provide('loadConvs', loadConvs)
     <AppSidebar
       :conversations="convs"
       :conversations-loading="convsLoading"
+      :conversations-loading-more="convsLoadingMore"
+      :conversations-has-more="convsHasMore"
       :deleting-convs="deletingConvs"
       :currentConvId="convId"
       :me="me"
       @select-conv="selectConv"
       @new-chat="newChat"
       @delete-conv="delConv"
+      @load-more-conversations="loadMoreConvs"
     />
     <!-- Content host with cached pages. KeepAlive preserves component
          instances on navigation — state, scroll, DOM all survive. User

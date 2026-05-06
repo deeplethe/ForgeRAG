@@ -1,7 +1,15 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import {
+  MessageSquare,
+  Search,
+  FolderOpen,
+  Network,
+  BarChart3,
+  Loader2,
+} from 'lucide-vue-next'
 import UserMenu from './UserMenu.vue'
 import Skeleton from './Skeleton.vue'
 
@@ -16,6 +24,13 @@ const version = import.meta.env.VITE_APP_VERSION || '0.2.3'
 const props = defineProps({
   conversations: Array,
   conversationsLoading: { type: Boolean, default: false },
+  // Append-page in flight — drives the tail spinner under the list.
+  conversationsLoadingMore: { type: Boolean, default: false },
+  // False once we've fetched a partial / empty page. The sentinel
+  // stops triggering ``load-more-conversations`` once this flips,
+  // and the IntersectionObserver disconnects so it doesn't keep
+  // observing forever.
+  conversationsHasMore: { type: Boolean, default: true },
   // Set<string> of conversation_ids currently being deleted — those
   // rows hide their trash button to prevent a double-fire while the
   // optimistic removal is in flight (the row itself disappears from
@@ -25,16 +40,25 @@ const props = defineProps({
   currentConvId: String,
   me: { type: Object, default: null },
 })
-const emit = defineEmits(['select-conv', 'new-chat', 'delete-conv'])
+const emit = defineEmits([
+  'select-conv',
+  'new-chat',
+  'delete-conv',
+  'load-more-conversations',
+])
 
 // Tabs are i18n-driven; ``label_key`` resolves at render time so a
 // language toggle re-labels them live without re-rendering the array.
+// Lucide icon per tab — 14px, stroke 1.75 to match the app's
+// other icon usage (UserMenu, Settings sub-nav back button).
+// Network is the closest "graph" visual in lucide; BarChart3
+// reads as "metrics" without being too dashboard-y.
 const tabs = computed(() => [
-  { path: '/chat', label_key: 'sidebar.tabs.chat', isChat: true },
-  { path: '/search', label_key: 'sidebar.tabs.search' },
-  { path: '/workspace', label_key: 'sidebar.tabs.workspace' },
-  { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph' },
-  { path: '/metrics', label_key: 'sidebar.tabs.metrics' },
+  { path: '/chat', label_key: 'sidebar.tabs.chat', isChat: true, icon: MessageSquare },
+  { path: '/search', label_key: 'sidebar.tabs.search', icon: Search },
+  { path: '/workspace', label_key: 'sidebar.tabs.workspace', icon: FolderOpen },
+  { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph', icon: Network },
+  { path: '/metrics', label_key: 'sidebar.tabs.metrics', icon: BarChart3 },
   // /simulation + /benchmark + /tokens used to live here. /tokens
   // moved into /settings/{sessions,tokens}; simulation + benchmark
   // were removed (simulation hit the deleted /api/v1/query;
@@ -78,6 +102,64 @@ function isTabActive(tab) {
   if (tab.isChat && props.currentConvId) return false
   return true
 }
+
+/* ── Scroll-loading the conversation list ─────────────────────────
+ *
+ * We use IntersectionObserver against a 1px sentinel <div> placed
+ * AFTER the last row but inside the same scrolling container. As
+ * the user scrolls the sentinel into view (or near it via the 80px
+ * rootMargin pre-fetch buffer), we fire ``load-more-conversations``
+ * and the parent appends the next page.
+ *
+ * Edge cases handled:
+ *   - The first page may not fill the viewport (low conv count).
+ *     IntersectionObserver fires immediately on observe(), which
+ *     correctly triggers the next page fetch. The parent's
+ *     hasMore=false bail-out stops the loop.
+ *   - The observer is rebuilt whenever the sentinel ref changes
+ *     (template v-if false→true on first load) so we don't observe
+ *     a stale node.
+ */
+const sentinelEl = ref(null)
+let _io = null
+
+function _ensureObserver() {
+  if (_io) return
+  _io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting && props.conversationsHasMore && !props.conversationsLoadingMore) {
+        emit('load-more-conversations')
+      }
+    }
+  }, {
+    // Pre-fetch when the sentinel is within 80px of the viewport
+    // — feels like infinite scroll rather than "stutter then load".
+    rootMargin: '80px 0px',
+  })
+}
+
+watch(sentinelEl, (el, prev) => {
+  _ensureObserver()
+  if (prev) _io.unobserve(prev)
+  if (el) _io.observe(el)
+})
+
+watch(
+  () => props.conversationsHasMore,
+  (more) => {
+    // Once the parent says "no more pages", stop observing — the
+    // IO callback would no-op anyway (hasMore guard) but
+    // disconnecting is cheaper than a recurring no-op.
+    if (!more && _io && sentinelEl.value) _io.unobserve(sentinelEl.value)
+  },
+)
+
+onBeforeUnmount(() => {
+  if (_io) {
+    _io.disconnect()
+    _io = null
+  }
+})
 </script>
 
 <template>
@@ -115,13 +197,17 @@ function isTabActive(tab) {
         v-for="tab in tabs" :key="tab.path"
         @click="onTabClick(tab)"
         :disabled="isTabDisabled(tab)"
-        class="px-3 py-2 rounded-md text-[13px] text-left transition-colors"
+        class="px-3 py-2 rounded-md text-[13px] text-left transition-colors flex items-center gap-2.5"
         :class="isTabDisabled(tab)
           ? 'text-t3/80 cursor-not-allowed'
           : isTabActive(tab)
             ? 'bg-bg-selected text-t1 font-medium'
             : 'text-t2 hover:bg-bg3'"
-      >{{ t(tab.label_key) }}<span v-if="tab.dev" class="ml-1 text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span></button>
+      >
+        <component :is="tab.icon" :size="14" :stroke-width="1.75" class="shrink-0" />
+        <span class="flex-1">{{ t(tab.label_key) }}</span>
+        <span v-if="tab.dev" class="text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span>
+      </button>
     </div>
 
     <!-- Conversations (always visible) -->
@@ -159,6 +245,26 @@ function isTabActive(tab) {
           @click.stop="emit('delete-conv', c.conversation_id)"
         >✕</button>
       </div>
+
+      <!-- Tail spinner: visible while an append-page is in flight. -->
+      <div
+        v-if="conversationsLoadingMore"
+        class="flex items-center justify-center py-2 text-t3"
+      >
+        <Loader2 :size="12" :stroke-width="1.75" class="animate-spin" />
+      </div>
+
+      <!-- Sentinel: 1px element after the last row. The
+           IntersectionObserver fires ``load-more-conversations``
+           when it scrolls into view (or comes within 80px). Only
+           rendered while there's more to load — once hasMore flips
+           false the watcher disconnects the observer too. -->
+      <div
+        v-if="conversationsHasMore && conversations && conversations.length"
+        ref="sentinelEl"
+        class="h-px"
+        aria-hidden="true"
+      />
     </div>
 
     <!-- User card + popup menu. No top divider: padding + the card's

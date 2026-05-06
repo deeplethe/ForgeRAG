@@ -236,29 +236,18 @@
   },
   "search": {
     "title": "Search",
-    "subtitle": "Find files and passages across your documents — no LLM answer, just the matches.",
-    "placeholder": "Search filenames, paths, and document content…",
+    "subtitle": "Semantic search across your documents — cross-lingual, no LLM answer, just the closest passages.",
+    "placeholder": "Ask in any language — semantic match across all documents…",
     "submit": "Search",
     "clear": "Clear",
+    "page": "p.{n}",
     "empty": {
-      "idle": "Type a query to search across all documents.",
-      "hint": "Tip: filename, folder, and content all match. Click a result to jump to the source.",
+      "idle": "Type a query to find passages across all documents.",
+      "hint": "Tip: works across languages — search ‘bees’ or ‘蜜蜂’ and either turns up passages in both.",
       "searching": "Searching…",
       "none": "No results for \"{query}\"."
     },
-    "section": {
-      "files": "Files",
-      "chunks": "Passages"
-    },
-    "badge": {
-      "filename": "filename",
-      "content": "content",
-      "both": "both"
-    },
-    "tooltip": {
-      "boosted": "Ranked higher because the document's filename also matches your query."
-    },
-    "footer": "{chunks} passages · {files} files · {ms} ms"
+    "footer_v2": "{chunks} passages · {ms} ms"
   },
   "tools": {
     "label": "Tools",
