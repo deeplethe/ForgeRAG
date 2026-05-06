@@ -118,25 +118,69 @@ def search(
 
     files_out: list[FileHitOut] | None = None
     if result.files is not None:
-        files_out = [
-            FileHitOut(
-                doc_id=f.doc_id,
-                filename=f.filename,
-                path=f.path,
-                format=f.format,
-                score=f.score,
-                matched_in=f.matched_in,
-                best_chunk=ChunkMatchOut(
-                    chunk_id=f.best_chunk.chunk_id,
-                    snippet=f.best_chunk.snippet,
-                    page_no=f.best_chunk.page_no,
-                    score=f.best_chunk.score,
-                    matched_tokens=f.best_chunk.matched_tokens,
-                ) if f.best_chunk else None,
-                filename_tokens=f.filename_tokens,
+        # Hydrate document metadata + uploader display name in two
+        # bulk queries instead of N+1 round-trips. We only need
+        # what the row UI shows: created_at / updated_at /
+        # uploader_user_id and the uploader's display label
+        # (display_name or email-prefix or username, same fallback
+        # the rest of the UI uses).
+        doc_ids = [f.doc_id for f in result.files]
+        docs = (
+            state.store.get_documents_by_ids(doc_ids) if doc_ids else []
+        )
+        doc_by_id = {d["doc_id"]: d for d in docs}
+        uploader_ids = sorted({
+            d.get("user_id")
+            for d in docs
+            if d.get("user_id")
+        })
+        uploader_label_by_id: dict[str, str] = {}
+        if uploader_ids:
+            from sqlalchemy import select as _select
+
+            from persistence.models import AuthUser
+
+            with state.store.transaction() as sess:
+                rows = sess.execute(
+                    _select(AuthUser).where(AuthUser.user_id.in_(uploader_ids))
+                ).scalars()
+                for u in rows:
+                    label = (
+                        u.display_name
+                        or (u.email.split("@")[0] if u.email else None)
+                        or u.username
+                        or u.user_id
+                    )
+                    uploader_label_by_id[u.user_id] = label
+
+        files_out = []
+        for f in result.files:
+            doc = doc_by_id.get(f.doc_id) or {}
+            uploader_id = doc.get("user_id")
+            files_out.append(
+                FileHitOut(
+                    doc_id=f.doc_id,
+                    filename=f.filename,
+                    path=f.path,
+                    format=f.format,
+                    score=f.score,
+                    matched_in=f.matched_in,
+                    best_chunk=ChunkMatchOut(
+                        chunk_id=f.best_chunk.chunk_id,
+                        snippet=f.best_chunk.snippet,
+                        page_no=f.best_chunk.page_no,
+                        score=f.best_chunk.score,
+                        matched_tokens=f.best_chunk.matched_tokens,
+                    ) if f.best_chunk else None,
+                    filename_tokens=f.filename_tokens,
+                    created_at=doc.get("created_at"),
+                    updated_at=doc.get("updated_at"),
+                    uploader_user_id=uploader_id,
+                    uploader_display_name=(
+                        uploader_label_by_id.get(uploader_id) if uploader_id else None
+                    ),
+                )
             )
-            for f in result.files
-        ]
 
     # Surface the translation step in stats so the UI can show
     # how the query got expanded (useful for debugging / building

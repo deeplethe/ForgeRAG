@@ -23,10 +23,7 @@
       :class="{ '!bg-bg3': open }"
       @click="toggle"
     >
-      <span
-        class="w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold uppercase select-none"
-        :style="{ background: avatarBg, color: '#fff' }"
-      >{{ initial }}</span>
+      <UserAvatar :name="identityKey" :size="28" />
       <span class="flex-1 min-w-0 text-left">
         <span class="block text-[12px] text-t1 truncate">{{ displayLabel }}</span>
         <span class="block text-[10px] text-t3 truncate">
@@ -139,6 +136,7 @@ import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { useTheme } from '@/composables/useTheme'
 import { useDialog } from '@/composables/useDialog'
 import { logout } from '@/api/auth'
+import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
   me: { type: Object, default: null },
@@ -165,19 +163,6 @@ const identityKey = computed(() => {
     || '').trim()
 })
 const displayLabel = computed(() => identityKey.value || '?')
-const initial = computed(() => {
-  const k = identityKey.value
-  return k ? k.charAt(0).toUpperCase() : '?'
-})
-// Deterministic per-identity hue — stable across locale / theme
-// toggles, visually distinct between users. Keyed off the same
-// fallback chain so the avatar colour matches the visible label.
-const avatarBg = computed(() => {
-  const k = identityKey.value
-  let h = 0
-  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0
-  return `hsl(${h % 360}, 55%, 50%)`
-})
 
 function toggle() { open.value = !open.value }
 function close() { open.value = false }

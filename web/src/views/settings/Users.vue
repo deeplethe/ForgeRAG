@@ -36,6 +36,7 @@ import {
 import { getMe } from '@/api/auth'
 import { useDialog } from '@/composables/useDialog'
 import { Search, MoreHorizontal, ShieldCheck, ShieldOff, Trash2, UserCheck, PauseCircle } from 'lucide-vue-next'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const { t } = useI18n()
 const { confirm, toast } = useDialog()
@@ -111,16 +112,8 @@ function nameOf(u) {
   return u.display_name || (u.email ? u.email.split('@')[0] : null) || u.username
 }
 
-function avatarBg(u) {
-  const k = u.display_name || u.email || u.username || ''
-  let h = 0
-  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0
-  return `hsl(${h % 360}, 55%, 50%)`
-}
-
-function avatarInitial(u) {
-  const k = (u.display_name || u.email || u.username || '').trim()
-  return k ? k.charAt(0).toUpperCase() : '?'
+function avatarKey(u) {
+  return (u.display_name || u.email || u.username || '').trim()
 }
 
 function fmtDate(d) {
@@ -301,7 +294,7 @@ function promotable(u) {
       >
         <!-- User column: avatar + name + email -->
         <div class="col-user user-cell">
-          <span class="avatar" :style="{ background: avatarBg(u) }">{{ avatarInitial(u) }}</span>
+          <UserAvatar :name="avatarKey(u)" :size="28" />
           <div class="user-meta">
             <div class="name-row">
               <span class="name">{{ nameOf(u) }}</span>
@@ -519,13 +512,6 @@ function promotable(u) {
 
 /* User cell */
 .user-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.avatar {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600; color: #fff;
-  flex-shrink: 0;
-}
 .user-meta { min-width: 0; }
 .name-row { display: flex; align-items: center; gap: 6px; }
 .name {

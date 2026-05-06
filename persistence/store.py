@@ -1180,6 +1180,9 @@ def _doc_to_dict(row: Document) -> dict:
         # Folder membership — needed by workspace UI + retrieval path_filter
         "folder_id": getattr(row, "folder_id", None),
         "path": getattr(row, "path", None),
+        # Audit-only attribution: who uploaded this document. SET NULL
+        # on user delete, so callers must None-check.
+        "user_id": getattr(row, "user_id", None),
     }
 
 

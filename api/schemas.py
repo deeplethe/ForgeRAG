@@ -527,6 +527,16 @@ class FileHitOut(BaseModel):
     matched_in: list[str]
     best_chunk: ChunkMatchOut | None = None
     filename_tokens: list[str] | None = None
+    # Document metadata for the search-result row's "who / when"
+    # display. Hydrated by the /search route from documents +
+    # auth_users; absent on the in-memory FileHit dataclass that
+    # the searcher returns. ``uploader_user_id`` may be null
+    # (legacy single-user data, or the user has been deleted —
+    # documents.user_id has ON DELETE SET NULL).
+    created_at: Any = None
+    updated_at: Any = None
+    uploader_user_id: str | None = None
+    uploader_display_name: str | None = None
 
 
 class SearchResponse(BaseModel):

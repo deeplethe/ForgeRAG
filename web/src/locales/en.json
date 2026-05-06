@@ -246,16 +246,35 @@
     "pick_file": "Pick a file to see its matching passages.",
     "open_doc": "Open document",
     "expanded_label": "Also searching:",
+    "uploader_unknown": "Unknown",
     "badge": {
       "filename": "filename",
       "content": "content",
       "both": "both"
     },
+    "filter": {
+      "time_all": "Any time",
+      "time_7d": "Last 7 days",
+      "time_30d": "Last 30 days",
+      "time_1y": "Last year",
+      "uploader_all": "Anyone",
+      "format_all": "Any format",
+      "filtered_of": "filtered from {total}"
+    },
+    "time": {
+      "today": "today",
+      "yesterday": "yesterday",
+      "days_ago": "{n}d ago",
+      "weeks_ago": "{n}w ago",
+      "months_ago": "{n}mo ago",
+      "years_ago": "{n}y ago"
+    },
     "empty": {
       "idle": "Type a query to find passages across all documents.",
       "hint": "Tip: works across languages — search ‘bees’ or ‘蜜蜂’ and either turns up passages in both.",
       "searching": "Searching…",
-      "none": "No results for \"{query}\"."
+      "none": "No results for \"{query}\".",
+      "filtered": "No files match the current filters."
     },
     "footer_v3": "{files} files · {chunks} passages · {ms} ms"
   },

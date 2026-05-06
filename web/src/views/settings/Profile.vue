@@ -17,6 +17,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getMe, changePassword } from '@/api/auth'
 import { patchMe, getMyUsage } from '@/api/admin'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const { t } = useI18n()
 
@@ -37,16 +38,12 @@ const dnSaving = ref(false)
 const dnError = ref('')
 const dnSuccess = ref(false)
 
-const initial = computed(() => {
-  const k = (me.value?.display_name || me.value?.email || me.value?.username || '').trim()
-  return k ? k.charAt(0).toUpperCase() : '?'
-})
-const avatarBg = computed(() => {
-  const k = me.value?.display_name || me.value?.email || me.value?.username || ''
-  let h = 0
-  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0
-  return `hsl(${h % 360}, 55%, 50%)`
-})
+// Source string for the avatar — same fallback chain the UI
+// already shows next to the avatar so colour + initials match
+// the visible label.
+const identityKey = computed(() =>
+  (me.value?.display_name || me.value?.email || me.value?.username || '').trim()
+)
 
 onMounted(async () => {
   // /me and /me/usage are independent — fire them in parallel so
@@ -115,7 +112,7 @@ async function onSavePassword() {
     <!-- ── Identity card: avatar + email + role ── -->
     <section class="card">
       <div class="identity-row">
-        <span class="avatar" :style="{ background: avatarBg }">{{ initial }}</span>
+        <UserAvatar :name="identityKey" :size="40" />
         <div class="identity-meta">
           <div class="email">{{ me.email || me.username || '—' }}</div>
           <div class="role">{{ me.role === 'admin' ? t('user_menu.role_admin') : t('user_menu.role_user') }}</div>
@@ -236,18 +233,6 @@ async function onSavePassword() {
 }
 
 .identity-row { display: flex; align-items: center; gap: 12px; }
-.avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-  flex-shrink: 0;
-}
 .identity-meta { min-width: 0; }
 .email { font-size: 13px; color: var(--color-t1); font-weight: 500; }
 .role { font-size: 11px; color: var(--color-t3); margin-top: 2px; text-transform: lowercase; }
