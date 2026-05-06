@@ -23,6 +23,7 @@ from .observability import ObservabilityConfig
 from .parser import ParserSection
 from .persistence import PersistenceConfig
 from .retrieval import RetrievalSection
+from .search import SearchConfig
 from .storage import StorageModel
 from .tables import TableEnrichmentConfig
 from .web_search import WebSearchConfig
@@ -46,6 +47,7 @@ class AppConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
     @model_validator(mode="after")
     def _validate_dimensions(self) -> AppConfig:

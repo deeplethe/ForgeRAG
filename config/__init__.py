@@ -56,6 +56,7 @@ from .retrieval import (
     TreePathConfig,
     VectorSearchConfig,
 )
+from .search import SearchConfig, TranslationConfig
 from .storage import (
     LocalStorageModel,
     OSSStorageModel,
@@ -107,9 +108,11 @@ __all__ = [
     "RetrievalSection",
     "S3StorageModel",
     "SQLiteConfig",
+    "SearchConfig",
     "SentenceTransformersConfig",
     "StorageModel",
     "TavilyConfig",
+    "TranslationConfig",
     "TreeBuilderConfig",
     "TreePathConfig",
     "VectorConfig",

@@ -277,6 +277,11 @@ class AppState:
         self._bm25 = None
         self._filename_bm25 = None
         self._unified_search: UnifiedSearcher | None = None
+        # Search-page query translator (LRU-cached small-model
+        # cross-lingual expansion). Lazy: first /search call wires
+        # it up. None when ``cfg.search.translation.enabled`` is
+        # false — callers must None-check.
+        self._query_translator = None
 
         # Reranker — eager since the agent's ``rerank`` tool reads
         # ``state.reranker`` directly. Cheap to construct (just stores
@@ -376,6 +381,30 @@ class AppState:
                 rel=self.store,
             )
             return self._unified_search
+
+    # ------------------------------------------------------------------
+    @property
+    def query_translator(self):
+        """Lazy-init the Search-page query translator.
+
+        Returns None when translation is disabled in config — the
+        Search route falls back to the original query alone in
+        that case (BM25 still runs, just no cross-lingual
+        expansion). One translator instance per process; the
+        LRU cache lives inside it.
+        """
+        tcfg = getattr(getattr(self.cfg, "search", None), "translation", None)
+        if tcfg is None or not tcfg.enabled:
+            return None
+        if self._query_translator is not None:
+            return self._query_translator
+        with self._init_lock:
+            if self._query_translator is not None:
+                return self._query_translator
+            from .search.translation import QueryTranslator
+
+            self._query_translator = QueryTranslator(tcfg)
+            return self._query_translator
 
     # ------------------------------------------------------------------
     def refresh_bm25(self, *, force_rebuild: bool = True) -> None:

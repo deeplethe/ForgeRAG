@@ -1,20 +1,24 @@
-"""POST /api/v1/search — semantic (embedding) search over chunks.
+"""POST /api/v1/search — BM25 keyword search with cross-lingual
+query expansion.
 
-Distinct from ``/agent`` (the chat path that runs the full agent
-loop with BM25 + vector + KG + tree + rerank + LLM): this endpoint
-runs JUST the dense-embedding pass and returns ranked passages
-with file/page context. Used by the dedicated Search page in the
-frontend — meant to be cheap (one embed + one ANN call).
+Distinct from the agent path (``/agent``, which runs the full
+loop with vector + KG + tree + rerank + LLM): this endpoint runs
+JUST a lexical pass and returns ranked passages + a file rollup,
+both with matched-token lists for keyword highlighting in the UI.
 
-Why semantic, not BM25:
-  Cross-lingual recall. The embedding model maps queries and
-  passages into a shared multilingual vector space, so a Chinese
-  query like ``蜜蜂`` retrieves English passages mentioning
-  ``bees`` and vice versa. BM25 only matches identical tokens
-  and would never bridge the two. The earlier BM25 implementation
-  used a regex tokenizer (``[a-z0-9]+|[\\u4e00-\\u9fff]``) that
-  also segmented Chinese one character at a time, producing noisy
-  results — semantic search sidesteps that entirely.
+Cross-lingual is solved by a pre-pass:
+
+  1. Detect the query's language (CJK char heuristic).
+  2. Call a small LLM to translate it into the other supported
+     language(s) — see ``api/search/translation.py``.
+  3. Send the union (original + translations) into BM25 as a
+     single space-joined query.
+
+This keeps every property the dedicated Search page wants: BM25's
+predictable ranking, ``matched_tokens`` for the keyword highlight,
+file-as-primary visual via the rollup. Translation overhead is a
+single small-model completion (cached LRU per query, bypassed on
+config disable / failure).
 """
 
 from __future__ import annotations
@@ -26,17 +30,17 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import AuthenticatedPrincipal
 from ..deps import get_principal, get_state, resolve_path_filters
-from ..schemas import ScoredChunkOut, SearchRequest, SearchResponse
+from ..schemas import (
+    ChunkMatchOut,
+    FileHitOut,
+    ScoredChunkOut,
+    SearchRequest,
+    SearchResponse,
+)
 from ..state import AppState
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["search"])
-
-# Snippet trim — full chunk content lives in the chunks table; the
-# Search page only needs enough text to convey what was matched.
-_SNIPPET_CHARS = 320
-_DEFAULT_TOP_K = 30
-_MAX_TOP_K = 100
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -45,129 +49,106 @@ def search(
     state: AppState = Depends(get_state),
     principal: AuthenticatedPrincipal = Depends(get_principal),
 ) -> SearchResponse:
-    """Embed the query, run dense ANN search, hydrate hits with
-    filename / path / page so the UI can render them as clickable
-    rows. Path scope is honored via the vector backend's filter
-    (pgvector / Chroma / Qdrant all understand ``path_prefixes``).
+    """Run BM25 over the chunk + filename indices, optionally
+    expanding the query into other languages first via the
+    Search-page translator. Returns ranked chunks + a file
+    rollup (when requested via ``include=["files"]``).
     """
     if not req.query.strip():
         raise HTTPException(400, "query must not be empty")
 
-    embedder = getattr(state, "embedder", None)
-    vector = getattr(state, "vector", None)
-    if embedder is None or vector is None:
-        # Surface a precise error instead of a generic 500 — usually
-        # this means the deploy hasn't configured an embedder /
-        # vector backend yet (single-user dev rigs sometimes skip it).
-        raise HTTPException(503, "vector index not available")
+    include = req.include or ["chunks"]
+    limit_dict: dict[str, int] = {}
+    if req.limit:
+        if req.limit.chunks is not None:
+            limit_dict["chunks"] = req.limit.chunks
+        if req.limit.files is not None:
+            limit_dict["files"] = req.limit.files
 
-    top_k = _DEFAULT_TOP_K
-    if req.limit and req.limit.chunks is not None:
-        top_k = min(int(req.limit.chunks), _MAX_TOP_K)
-
-    # Authz: resolve the caller's requested path_filters against
-    # their accessible folder set. Admin role bypasses; non-admins
-    # get 403 on the first unauthorised path.
+    # Authz: resolve / validate the caller's requested path_filters
+    # against their accessible folder set. Admin role bypasses; non-
+    # admins get 403 on the first unauthorised path.
     path_prefixes = resolve_path_filters(state, principal, req.path_filters)
 
-    t0 = time.time()
-    try:
-        q_vec = embedder.embed_texts([req.query])[0]
-    except Exception as e:
-        log.exception("embed failed")
-        raise HTTPException(500, f"embedding failed: {type(e).__name__}") from e
+    # Cross-lingual expansion. The translator returns the original
+    # query first plus translations into the other configured
+    # languages; we space-join into one BM25 query string. On any
+    # error / disabled config / no-target the helper returns just
+    # the original, so this is always at least a no-op.
+    t_xform_ms = 0
+    expanded_query = req.query
+    translations: list[str] = [req.query]
+    translator = getattr(state, "query_translator", None)
+    if translator is not None:
+        t0 = time.time()
+        try:
+            translations = translator.expand(req.query)
+        except Exception:
+            log.exception("query translation failed; falling back to original")
+            translations = [req.query]
+        t_xform_ms = int((time.time() - t0) * 1000)
+        # de-dupe + space-join — see translation.join_for_bm25 docstring.
+        from ..search.translation import join_for_bm25
 
-    vfilter: dict | None = None
-    if path_prefixes:
-        vfilter = {"path_prefixes": list(path_prefixes)}
+        expanded_query = join_for_bm25(translations) or req.query
 
-    try:
-        # Over-fetch by 3x so the post-hydration scope filter
-        # still leaves room for top_k after dropping any
-        # trashed / out-of-scope rows.
-        hits = vector.search(q_vec, top_k=top_k * 3, filter=vfilter)
-    except Exception as e:
-        log.exception("vector search failed")
-        raise HTTPException(500, f"vector search failed: {type(e).__name__}") from e
+    result = state.unified_search.search(
+        expanded_query,
+        include=include,
+        limit=limit_dict or None,
+        filter=req.filter,
+        path_prefixes=path_prefixes,
+        overrides=req.overrides,
+    )
 
-    # Vector backends return either dicts or objects — normalise
-    # to (chunk_id, score) tuples in original ranking order.
-    raw: list[tuple[str, float]] = []
-    for h in hits:
-        cid = getattr(h, "chunk_id", None) or (h.get("chunk_id") if isinstance(h, dict) else None)
-        sc = getattr(h, "score", None)
-        if sc is None and isinstance(h, dict):
-            sc = h.get("score")
-        if cid:
-            raw.append((cid, float(sc or 0.0)))
+    chunks_out = [
+        ScoredChunkOut(
+            chunk_id=c.chunk_id,
+            doc_id=c.doc_id,
+            filename=c.filename,
+            path=c.path,
+            page_no=c.page_no,
+            snippet=c.snippet,
+            score=c.score,
+            boosted_by_filename=c.boosted_by_filename,
+            matched_tokens=c.matched_tokens,
+        )
+        for c in result.chunks
+    ]
 
-    chunks_out = _hydrate(state, raw, top_k=top_k)
-    elapsed_ms = int((time.time() - t0) * 1000)
+    files_out: list[FileHitOut] | None = None
+    if result.files is not None:
+        files_out = [
+            FileHitOut(
+                doc_id=f.doc_id,
+                filename=f.filename,
+                path=f.path,
+                format=f.format,
+                score=f.score,
+                matched_in=f.matched_in,
+                best_chunk=ChunkMatchOut(
+                    chunk_id=f.best_chunk.chunk_id,
+                    snippet=f.best_chunk.snippet,
+                    page_no=f.best_chunk.page_no,
+                    score=f.best_chunk.score,
+                    matched_tokens=f.best_chunk.matched_tokens,
+                ) if f.best_chunk else None,
+                filename_tokens=f.filename_tokens,
+            )
+            for f in result.files
+        ]
+
+    # Surface the translation step in stats so the UI can show
+    # how the query got expanded (useful for debugging / building
+    # user trust in the cross-lingual results).
+    stats = dict(result.stats or {})
+    stats["translations"] = translations if len(translations) > 1 else None
+    stats["translation_ms"] = t_xform_ms
+    stats["expanded_query"] = expanded_query if expanded_query != req.query else None
 
     return SearchResponse(
         query=req.query,
         chunks=chunks_out,
-        files=None,
-        stats={
-            "chunk_hits": len(chunks_out),
-            "file_hits": 0,
-            "elapsed_ms": elapsed_ms,
-            "backend": "vector",
-        },
+        files=files_out,
+        stats=stats,
     )
-
-
-def _hydrate(
-    state: AppState,
-    raw: list[tuple[str, float]],
-    *,
-    top_k: int,
-) -> list[ScoredChunkOut]:
-    """Bulk-hydrate ``(chunk_id, score)`` tuples into ScoredChunkOut.
-
-    Rebuilds ranking order from the original raw list (the bulk
-    fetcher may return rows in a different order). Drops rows whose
-    chunk has been deleted between the ANN fetch and the hydrate —
-    the vector index can lag behind the relational store briefly
-    after a re-parse.
-    """
-    if not raw:
-        return []
-    chunk_ids = [cid for cid, _ in raw]
-    score_by_id = {cid: sc for cid, sc in raw}
-
-    rows = state.store.get_chunks_by_ids(chunk_ids)
-    by_id = {r["chunk_id"]: r for r in rows}
-    doc_ids = list({r["doc_id"] for r in rows})
-    docs = state.store.get_documents_by_ids(doc_ids) if doc_ids else []
-    doc_by_id = {d["doc_id"]: d for d in docs}
-
-    out: list[ScoredChunkOut] = []
-    for cid, _sc in raw:
-        row = by_id.get(cid)
-        if row is None:
-            continue
-        doc = doc_by_id.get(row["doc_id"])
-        content = row.get("content") or ""
-        snippet = content[:_SNIPPET_CHARS]
-        if len(content) > _SNIPPET_CHARS:
-            snippet += "…"
-        out.append(
-            ScoredChunkOut(
-                chunk_id=cid,
-                doc_id=row["doc_id"],
-                filename=(doc or {}).get("filename") or "",
-                # Documents carry their folder path; chunks don't.
-                # Falling back to filename keeps the row legible
-                # if doc lookup somehow misses.
-                path=(doc or {}).get("path") or "",
-                page_no=row.get("page_start") or 0,
-                snippet=snippet,
-                score=round(score_by_id[cid], 4),
-                boosted_by_filename=False,
-                matched_tokens=None,
-            )
-        )
-        if len(out) >= top_k:
-            break
-    return out

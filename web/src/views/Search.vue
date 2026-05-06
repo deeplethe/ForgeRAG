@@ -1,25 +1,32 @@
 <!--
-  Search view — semantic (embedding) search over passages, with a
-  two-pane "file → passages" layout.
+  Search view — BM25 keyword search with cross-lingual query
+  expansion, in a two-pane "file → passages" layout.
 
-  Calls POST /api/v1/search which now runs a dense ANN pass: the
-  query gets embedded once, the vector index returns top-K
-  passages by cosine similarity, then they're hydrated with
-  filename / folder path / page so each row links back to the
-  source. Cross-lingual recall comes for free — searching ``蜜蜂``
-  surfaces English passages mentioning ``bees`` because the
-  multilingual embedder maps both into the same space.
+  Calls POST /api/v1/search which:
+    1. Detects the query's language and asks a small LLM to
+       translate it into the project's other supported languages
+       (LRU-cached, thinking-disabled).
+    2. Sends original + translations into BM25 as a single
+       expanded query string. Matched tokens come back per chunk
+       so we can highlight them in the snippets.
+    3. Returns both a flat chunks list AND a file rollup so the
+       UI can drive its master/detail layout off the server's
+       authoritative grouping (no client-side dedup needed).
 
   Layout:
-    * LEFT pane — one row per matching file, ranked by the best
-      chunk's score within that file. Click a row to select.
-    * RIGHT pane — shows all matching passages for the selected
-      file, in document order (by page, then chunk_id). Click a
-      passage to open the source doc scrolled to that passage.
+    * LEFT pane — one row per matching file, ranked by the file
+      rollup's score. Each row shows filename, folder, format,
+      and a one-line preview from the best chunk (highlighted).
+    * RIGHT pane — all matching passages of the selected file,
+      in document order. Click a passage to open DocDetail
+      scrolled to that chunk.
 
-  The grouping is done client-side from the flat ``chunks`` list
-  the backend returns — the API contract stays simple, the UI
-  handles the rollup.
+  Why server-rolled files over client grouping: the rollup score
+  reflects "how relevant is this file overall" (filename match
+  bonus, multi-chunk score combination) which a client-side
+  ``max(chunk.score)`` would lose. We rely on the rollup for
+  ordering and on the flat chunks list (filtered by doc_id) for
+  the right-pane detail view.
 
   Module-level refs persist last query + results across nav.
 -->
@@ -27,10 +34,10 @@
 import { ref } from 'vue'
 export default { name: 'SearchView' }
 const _query = ref('')
-const _results = ref(null)   // { chunks: [...], stats: {...} } | null
+const _results = ref(null)   // { chunks, files, stats } | null
 const _loading = ref(false)
 const _error = ref('')
-const _selectedDocId = ref(null) // sticks across nav so user comes back to the same file
+const _selectedDocId = ref(null)
 </script>
 
 <script setup>
@@ -58,14 +65,13 @@ async function runSearch() {
   try {
     const res = await searchApi({
       query: q,
-      include: ['chunks'],
-      limit: { chunks: 60 },
+      include: ['chunks', 'files'],
+      limit: { chunks: 60, files: 20 },
     })
     _results.value = res
     // Auto-select the first (highest-ranked) file so the right
-    // pane has content to show. The user can click another file
-    // to swap; this just avoids a "blank right pane" on land.
-    _selectedDocId.value = files.value[0]?.doc_id || null
+    // pane has content to show.
+    _selectedDocId.value = res.files?.[0]?.doc_id || null
   } catch (e) {
     _error.value = (e && e.message) || String(e)
     _results.value = null
@@ -90,51 +96,47 @@ function openDoc(docId, chunkId) {
 }
 
 const chunks = computed(() => _results.value?.chunks || [])
+const files = computed(() => _results.value?.files || [])
 const stats = computed(() => _results.value?.stats || null)
 
-// ── File rollup ───────────────────────────────────────────────────
-// Group chunks by doc_id. Each file carries:
-//   - top score (max chunk score) — drives the left-pane ranking
-//   - hit count (how many of its chunks matched)
-//   - all chunks for the right-pane detail view
-// Sort: by top score DESC. Within a file, chunks are ordered by
-// page, then by descending score (so the strongest match in a
-// given page rank wins ties).
-const files = computed(() => {
-  const map = new Map()
-  for (const c of chunks.value) {
-    let f = map.get(c.doc_id)
-    if (!f) {
-      f = {
-        doc_id: c.doc_id,
-        filename: c.filename || c.doc_id,
-        path: c.path || '',
-        topScore: c.score || 0,
-        chunks: [],
-      }
-      map.set(c.doc_id, f)
-    }
-    f.chunks.push(c)
-    if ((c.score || 0) > f.topScore) f.topScore = c.score
-  }
-  for (const f of map.values()) {
-    f.chunks.sort((a, b) => {
-      const pa = a.page_no || 0
-      const pb = b.page_no || 0
-      if (pa !== pb) return pa - pb
-      return (b.score || 0) - (a.score || 0)
-    })
-  }
-  return Array.from(map.values()).sort((a, b) => b.topScore - a.topScore)
+// Translations chip — shows what the query got expanded to so
+// users see WHY their Chinese query just turned up English docs.
+// Only renders when the translator actually produced something
+// new (server returns null otherwise).
+const translations = computed(() => {
+  const arr = stats.value?.translations
+  if (!Array.isArray(arr) || arr.length <= 1) return null
+  // [original, ...translated]
+  return arr.slice(1)
 })
 
 const selectedFile = computed(() =>
   files.value.find((f) => f.doc_id === _selectedDocId.value) || null,
 )
 
-// If the selected doc disappears from a fresh result set (e.g.
-// user re-runs the same query and the backend returns a different
-// top-K), fall back to whatever's first.
+// Chunks for the right pane — filter the flat list by selected
+// doc, then sort by page asc, score desc. Falls back to the
+// rollup's best_chunk when the flat list happens to be empty
+// (e.g. tight per-file limits on the backend).
+const selectedChunks = computed(() => {
+  if (!selectedFile.value) return []
+  const sel = chunks.value.filter((c) => c.doc_id === selectedFile.value.doc_id)
+  if (!sel.length && selectedFile.value.best_chunk) {
+    return [{
+      ...selectedFile.value.best_chunk,
+      doc_id: selectedFile.value.doc_id,
+      filename: selectedFile.value.filename,
+      path: selectedFile.value.path,
+    }]
+  }
+  return sel.sort((a, b) => {
+    const pa = a.page_no || 0
+    const pb = b.page_no || 0
+    if (pa !== pb) return pa - pb
+    return (b.score || 0) - (a.score || 0)
+  })
+})
+
 watch(files, (list) => {
   if (!list.length) {
     _selectedDocId.value = null
@@ -146,6 +148,31 @@ watch(files, (list) => {
 })
 
 const hasResults = computed(() => files.value.length > 0)
+
+// ── Highlight helpers ─────────────────────────────────────────
+// Wrap occurrences of any matched token in <mark>. Tokens come
+// from the BM25 backend pre-lowercased; we use case-insensitive
+// regex so the displayed-case version still highlights.
+function highlightTokens(text, tokens) {
+  if (!text) return ''
+  if (!Array.isArray(tokens) || tokens.length === 0) return escapeHtml(text)
+  const escaped = tokens.map(escapeRegExp).filter(Boolean)
+  if (escaped.length === 0) return escapeHtml(text)
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi')
+  return escapeHtml(text).replace(re, '<mark>$1</mark>')
+}
+
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 </script>
 
 <template>
@@ -188,9 +215,21 @@ const hasResults = computed(() => files.value.length > 0)
           <span v-else>{{ t('search.submit') }}</span>
         </button>
       </form>
+
+      <!-- Translation expansion chip — shows what the LLM rewrote
+           the query to. Hides itself silently when the translator
+           is disabled or returned only the original. -->
+      <div v-if="translations" class="mt-3 flex items-center gap-2 max-w-[720px] flex-wrap text-[11px] text-t3">
+        <span>{{ t('search.expanded_label') }}</span>
+        <span
+          v-for="(tx, i) in translations"
+          :key="i"
+          class="px-1.5 py-0.5 bg-bg2 border border-line rounded text-t2"
+        >{{ tx }}</span>
+      </div>
     </header>
 
-    <!-- ── Empty / error / loading states (full-width, no panes) ── -->
+    <!-- ── Empty / error / loading states (full-width) ────────── -->
     <div v-if="_error" class="px-8 pt-5">
       <div class="flex items-center gap-2 px-3.5 py-2.5 text-[13px] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
         <AlertCircle :size="16" />
@@ -216,7 +255,7 @@ const hasResults = computed(() => files.value.length > 0)
     <!-- ── Two-pane results body ────────────────────────────────── -->
     <main v-else class="flex-1 flex min-h-0">
       <!-- Left: file list -->
-      <aside class="w-[340px] shrink-0 border-r border-line overflow-y-auto bg-bg2/40">
+      <aside class="w-[360px] shrink-0 border-r border-line overflow-y-auto bg-bg2/40">
         <div class="px-4 py-3 border-b border-line text-[11px] uppercase tracking-wider text-t3 sticky top-0 bg-bg2/95 backdrop-blur z-10">
           {{ t('search.section_files', { n: files.length }) }}
         </div>
@@ -233,11 +272,22 @@ const hasResults = computed(() => files.value.length > 0)
             <div class="flex items-start gap-2 min-w-0">
               <FileText :size="13" :stroke-width="1.75" class="text-t3 shrink-0 mt-0.5" />
               <div class="min-w-0 flex-1">
-                <div class="text-[13px] text-t1 font-medium truncate">{{ f.filename }}</div>
+                <div
+                  class="text-[13px] text-t1 font-medium truncate hl"
+                  v-html="highlightTokens(f.filename, f.filename_tokens)"
+                />
                 <div v-if="f.path" class="text-[11px] text-t3 truncate mt-0.5">{{ f.path }}</div>
+                <!-- One-line snippet preview from the best chunk —
+                     gives the user a feel for WHY this file matched
+                     before they click into it. -->
+                <div
+                  v-if="f.best_chunk"
+                  class="text-[12px] text-t2 mt-1 line-clamp-2 leading-snug hl"
+                  v-html="highlightTokens(f.best_chunk.snippet, f.best_chunk.matched_tokens)"
+                />
                 <div class="flex items-center gap-2 mt-1.5 text-[11px] text-t3">
-                  <span>{{ t('search.hit_count', { n: f.chunks.length }) }}</span>
-                  <span class="ml-auto tabular-nums">{{ f.topScore.toFixed(3) }}</span>
+                  <span v-if="f.format" class="px-1 bg-bg2 rounded">{{ f.format.toUpperCase() }}</span>
+                  <span class="ml-auto tabular-nums">{{ f.score.toFixed(3) }}</span>
                 </div>
               </div>
             </div>
@@ -245,7 +295,7 @@ const hasResults = computed(() => files.value.length > 0)
         </ul>
         <div v-if="stats" class="px-4 py-3 text-[11px] text-t3 border-t border-line/60">
           {{ t('search.footer_v3', {
-            files: files.length,
+            files: stats.file_hits ?? files.length,
             chunks: stats.chunk_hits ?? chunks.length,
             ms: stats.elapsed_ms ?? 0,
           }) }}
@@ -262,7 +312,10 @@ const hasResults = computed(() => files.value.length > 0)
           <div class="flex items-start gap-3 pb-4 mb-4 border-b border-line">
             <FileText :size="16" :stroke-width="1.75" class="text-t3 shrink-0 mt-0.5" />
             <div class="min-w-0 flex-1">
-              <div class="text-[15px] text-t1 font-semibold">{{ selectedFile.filename }}</div>
+              <div
+                class="text-[15px] text-t1 font-semibold hl"
+                v-html="highlightTokens(selectedFile.filename, selectedFile.filename_tokens)"
+              />
               <div v-if="selectedFile.path" class="text-[12px] text-t3 mt-0.5">{{ selectedFile.path }}</div>
             </div>
             <button
@@ -278,16 +331,19 @@ const hasResults = computed(() => files.value.length > 0)
           <!-- Passages list -->
           <ul class="list-none p-0 m-0 flex flex-col gap-2">
             <li
-              v-for="c in selectedFile.chunks"
+              v-for="c in selectedChunks"
               :key="c.chunk_id"
               class="px-3.5 py-3 bg-bg border border-line rounded-md cursor-pointer hover:border-t3 hover:bg-bg2 transition-colors"
-              @click="openDoc(c.doc_id, c.chunk_id)"
+              @click="openDoc(c.doc_id || selectedFile.doc_id, c.chunk_id)"
             >
               <div class="flex items-center gap-2 mb-1.5 text-[11px] text-t3">
                 <span v-if="c.page_no" class="px-1.5 py-px bg-bg2 rounded">{{ t('search.page', { n: c.page_no }) }}</span>
                 <span class="ml-auto shrink-0 tabular-nums">{{ c.score?.toFixed(3) }}</span>
               </div>
-              <div class="text-[13px] text-t1 leading-relaxed">{{ c.snippet }}</div>
+              <div
+                class="text-[13px] text-t1 leading-relaxed hl"
+                v-html="highlightTokens(c.snippet, c.matched_tokens)"
+              />
             </li>
           </ul>
         </div>
@@ -295,3 +351,13 @@ const hasResults = computed(() => files.value.length > 0)
     </main>
   </div>
 </template>
+
+<style scoped>
+/* Highlight style — soft amber wash, doesn't fight the body text. */
+.hl :deep(mark) {
+  background: rgba(251, 191, 36, 0.25);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+</style>
