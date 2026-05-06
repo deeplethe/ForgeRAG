@@ -85,16 +85,14 @@
           class="status-badge status-badge--error"
           :title="d.error_message || 'Ingestion failed'"
         ></span>
-        <!-- In-flight: bare spinner overlaid on the corner — no
-             coloured disc behind it. Vercel-style: monochrome currentColor,
-             only the motion conveys "active". -->
-        <Loader2
-          v-else-if="isDocInFlight(d)"
-          class="status-spinner"
-          :title="inFlightStage(d)"
-          :size="11"
-          :stroke-width="2"
-        />
+        <!-- In-flight indicator deliberately omitted from the
+             workspace list. Per product decision: only the FAILED
+             state earns visual prominence on the file rail; an
+             amber spinner on every parsing card was visual noise
+             that hijacked attention from the one row the user
+             actually needs to click (the failed one). The doc
+             detail page still surfaces full per-stage status for
+             when the user wants to drill in. -->
       </div>
       <input
         v-if="isRenamingDoc(d)"
@@ -115,13 +113,12 @@
         <template v-if="d.status === 'error'">
           <span class="meta-error" :title="d.error_message || ''">failed</span>
         </template>
-        <template v-else-if="isDocInFlight(d)">
-          <!-- Plain inline label — Vercel-style: no chip, no fill,
-               neutral muted color (the badge spinner above already
-               signals motion). Lowercase to read as a status word
-               rather than a button. -->
-          <span class="meta-pending">{{ inFlightStage(d) }}</span>
-        </template>
+        <!-- In-flight docs render the same neutral file-size /
+             format meta as ready docs — the user shouldn't have
+             to scan an "embedding" / "building graph" badge on
+             every row. If they want stage detail they open the
+             doc detail page where the full per-stage status
+             panel still lives. -->
         <template v-else-if="d.file_size_bytes">{{ fmtSize(d.file_size_bytes) }}</template>
         <template v-else-if="d.format">{{ d.format }}</template>
       </div>
@@ -136,7 +133,6 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue'
-import { Loader2 } from 'lucide-vue-next'
 
 import FileIcon from './FileIcon.vue'
 
@@ -197,19 +193,14 @@ function _stageInFlight(s, terminalSet) {
   return !terminalSet.has(s)
 }
 function isDocInFlight(d) {
+  // Still computed because the context menu uses it to disable
+  // certain actions (rename, delete) on a doc that's mid-ingest.
+  // The visual badge / spinner that used to expose this state on
+  // the row was removed (see template comment).
   return _stageInFlight(d.status, _DOC_TERMINAL_STATUSES)
       || _stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)
       || _stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)
       || _stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)
-}
-function inFlightStage(d) {
-  // Pick the most informative non-terminal stage to surface in the
-  // meta line. Order matters: parse → embed → enrich → kg.
-  if (_stageInFlight(d.status, _DOC_TERMINAL_STATUSES)) return d.status
-  if (_stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)) return 'embedding'
-  if (_stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)) return 'enriching'
-  if (_stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)) return 'building graph'
-  return null
 }
 watch(() => props.renamingKey, async (key) => {
   if (!key) return
@@ -396,28 +387,12 @@ function fmtSize(n) {
   cursor: help;
 }
 .status-badge--error   { background: var(--color-err-fg); }
-/* Bare spinner overlaid on the file icon's corner — amber so the
-   in-flight cards pop visually against ready ones. ``--color-warn-fg``
-   keeps it theme-adaptive (amber-400 dark / amber-700 light). */
-.status-spinner {
-  position: absolute;
-  right: -4px;
-  bottom: -4px;
-  color: var(--color-warn-fg);
-  background: var(--color-bg2);
-  border-radius: 50%;
-  padding: 1px;
-  animation: status-spin 0.9s linear infinite;
-}
-@keyframes status-spin { to { transform: rotate(360deg); } }
+/* In-flight CSS removed — see template comment. The
+   ``.status-spinner`` and ``.meta-pending`` rules used to render
+   amber spinners + labels on every parsing card; they hijacked
+   attention from the actually-actionable failed state. */
 .file-card--error .file-card__title { color: var(--color-err-fg); }
 .meta-error { color: var(--color-err-fg); cursor: help; }
-/* In-flight label — amber so it scans clearly amongst neutral file
-   sizes. No italics: italic + tiny + amber together read as
-   apologetic; amber alone is enough emphasis. */
-.meta-pending {
-  color: var(--color-warn-fg);
-}
 
 /* Inline new-folder editor — the input itself carries the focus ring,
    so the card stays on the same neutral tint as a hovered card.

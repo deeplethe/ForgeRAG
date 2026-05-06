@@ -130,14 +130,10 @@
                 class="status-chip status-chip--error"
                 :title="d.error_message || 'Ingestion failed'"
               >failed</span>
-              <span
-                v-else-if="isDocInFlight(d)"
-                class="status-pending"
-                :title="inFlightStage(d)"
-              >
-                <Loader2 class="status-pending__spinner" :size="11" :stroke-width="2" />
-                <span>{{ inFlightStage(d) }}</span>
-              </span>
+              <!-- In-flight indicator removed from the workspace
+                   rail per product decision: only failed earns
+                   visual prominence. The doc detail page still
+                   surfaces full per-stage status. -->
             </div>
           </td>
           <td>{{ fmtType(d.filename || d.file_name) }}</td>
@@ -155,7 +151,6 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Loader2 } from 'lucide-vue-next'
 
 import FileIcon from './FileIcon.vue'
 
@@ -213,15 +208,6 @@ function isDocInFlight(d) {
       || _stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)
       || _stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)
       || _stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)
-}
-// Same stage-picker the grid uses, so the chip label is consistent
-// across list / grid views (parsing → embedding → enriching → graph).
-function inFlightStage(d) {
-  if (_stageInFlight(d.status, _DOC_TERMINAL_STATUSES)) return d.status
-  if (_stageInFlight(d.embed_status, _SUB_TERMINAL_STATUSES)) return 'embedding'
-  if (_stageInFlight(d.enrich_status, _SUB_TERMINAL_STATUSES)) return 'enriching'
-  if (_stageInFlight(d.kg_status, _SUB_TERMINAL_STATUSES)) return 'building graph'
-  return null
 }
 watch(() => props.renamingKey, async (key) => {
   if (!key) return
@@ -518,20 +504,8 @@ function fmtType(name) {
   vertical-align: middle;
 }
 .status-chip--error   { background: var(--color-err-bg); color: var(--color-err-fg); }
-/* In-flight label — amber so it scans clearly in the row. No italic
-   (italic + tiny + amber together looked apologetic; the colour and
-   spinner alone are enough emphasis). */
-.status-pending {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: 8px;
-  color: var(--color-warn-fg);
-  font-size: 11px;
-}
-.status-pending__spinner {
-  color: var(--color-warn-fg);
-  animation: status-pending-spin 0.9s linear infinite;
-}
-@keyframes status-pending-spin { to { transform: rotate(360deg); } }
+/* In-flight CSS removed per product decision — see template
+   comment. Failed is the only state that earns visual weight
+   on the workspace rail; per-stage status moved entirely to
+   the doc-detail page. */
 </style>
