@@ -297,6 +297,12 @@ class Message(Base):
     # For assistant messages: link back to the trace + citations
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Agent reasoning chain — array of {kind: 'phase'|'thought'|'tool',
+    # ...} entries the frontend rendered during the live stream. Persisted
+    # so a page refresh keeps the chain visible (otherwise direct-answer
+    # turns lose the "Thought for Xs · N tools" header completely on
+    # reload). Schema added in 20260512_add_agent_trace.
+    agent_trace_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # ``thinking`` column dropped in 20260508_drop_message_thinking —
     # provider CoT is no longer captured (agent loop is the thinking
     # layer). Future deep-research mode will get its own data model

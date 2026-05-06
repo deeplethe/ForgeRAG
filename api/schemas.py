@@ -400,6 +400,15 @@ class MessageOut(BaseModel):
     content: str
     trace_id: str | None = None
     citations_json: list | None = None
+    # Persisted agent reasoning chain (sequence of phase / thought
+    # / tool entries). Populated by ``_persist_turn`` when an agent
+    # message is written; surfaced here so the frontend's
+    # ``AgentMessageBody`` can rebuild the inline tool chips +
+    # narration paragraphs after a page refresh. Without this
+    # field on the response schema, Pydantic silently dropped
+    # ``agent_trace_json`` from message-list responses, so reload
+    # showed only the answer body — no chips, no chain.
+    agent_trace_json: list | None = None
     created_at: Any = None
 
 

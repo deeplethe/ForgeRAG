@@ -39,16 +39,20 @@ agent runs 3 searches in parallel and gets back 60 hits.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 from ..auth import filter_entity, filter_relation
+
+log = logging.getLogger(__name__)
 from .dispatch import (
     DispatchError,
     ToolContext,
     doc_passes_scope,
     register_chunk,
+    resolve_chunk_id,
 )
 
 # Snippet length sent back to the LLM in search-style tool results.
@@ -116,12 +120,31 @@ class ToolSpec:
 
 
 def _handle_search_bm25(params: dict, ctx: ToolContext) -> dict:
+    # The content BM25 index is lazy — initialised on first call to
+    # ``state._ensure_indices``. Without this trigger, the agent's
+    # FIRST BM25 call after a backend boot hits ``_bm25=None`` and
+    # returns "BM25 index not available", which the user sees as a
+    # red ``error`` chip in the chain UI. Subsequent calls would
+    # still fail until something else (e.g. the /search endpoint)
+    # triggers the build. Eager-init here so the agent's first call
+    # works.
+    ensure = getattr(ctx.state, "_ensure_indices", None)
+    if callable(ensure):
+        try:
+            ensure()
+        except Exception as e:
+            return DispatchError(
+                error=f"BM25 index build failed: {type(e).__name__}",
+                tool="search_bm25",
+            ).to_result()
+
     bm25 = getattr(ctx.state, "_bm25", None)
     if bm25 is None or len(bm25) == 0:
-        # No index built — surface as an error so the agent can
-        # try a different tool rather than silently no-op.
+        # Genuinely empty corpus — surface so the agent can try a
+        # different tool rather than silently no-op.
         return DispatchError(
-            error="BM25 index not available", tool="search_bm25"
+            error="BM25 index empty (no documents indexed yet)",
+            tool="search_bm25",
         ).to_result()
 
     query = params["query"]
@@ -193,11 +216,17 @@ def _handle_search_vector(params: dict, ctx: ToolContext) -> dict:
 
 
 def _handle_read_chunk(params: dict, ctx: ToolContext) -> dict:
-    chunk_id = params["chunk_id"]
+    raw_id = params["chunk_id"]
+    # Resolve cite-label confusion: when the LLM passes ``c_3``
+    # (the user-facing display label) instead of the real chunk_id
+    # (``d_abc:1:cN``), look it up in the citation pool. Without
+    # this, every read fails with "chunk not found: 'c_3'" and the
+    # chain UI fills with red error chips — see resolve_chunk_id.
+    chunk_id = resolve_chunk_id(ctx, raw_id)
     row = ctx.state.store.get_chunk(chunk_id)
     if row is None:
         return DispatchError(
-            error=f"chunk not found: {chunk_id!r}", tool="read_chunk"
+            error=f"chunk not found: {raw_id!r}", tool="read_chunk"
         ).to_result()
     if not doc_passes_scope(ctx, row.get("doc_id")):
         # Same 404-equivalent treatment as the per-resource read
@@ -214,10 +243,13 @@ def _handle_read_chunk(params: dict, ctx: ToolContext) -> dict:
         page_start=row.get("page_start"),
         page_end=row.get("page_end"),
         path=row.get("path"),
+        block_ids=row.get("block_ids") or [],
         source="read_chunk",
     )
+    cite_id = ctx.citation_pool.get(chunk_id, {}).get("cite_id", "")
     return {
         "chunk_id": chunk_id,
+        "cite": cite_id,
         "doc_id": row["doc_id"],
         "path": row.get("path"),
         "page_start": row.get("page_start"),
@@ -282,11 +314,18 @@ def _hydrate_hits(
             page_end=row.get("page_end"),
             path=row.get("path"),
             score=score_by_id[cid],
+            block_ids=row.get("block_ids") or [],
             source=source,
         )
+        # Carry the per-pool sequential cite_id back to the LLM so
+        # it can reference this hit in its answer as ``[c_N]``.
+        # Frontend resolves the marker to a clickable citation
+        # chip + PDF preview.
+        cite_id = ctx.citation_pool.get(cid, {}).get("cite_id", "")
         hits.append(
             {
                 "chunk_id": cid,
+                "cite": cite_id,
                 "doc_id": row["doc_id"],
                 "doc_name": doc_name_by_id.get(row["doc_id"], ""),
                 "page": row.get("page_start"),
@@ -420,20 +459,68 @@ def _handle_graph_explore(params: dict, ctx: ToolContext) -> dict:
         int(params.get("top_k", _GRAPH_DEFAULT_TOP_K)), _GRAPH_MAX_TOP_K
     )
 
-    try:
-        # Over-fetch — visibility filter drops partial / hidden.
-        candidates = gs.search_entities(query, top_k=top_k * 3)
-    except Exception as e:
-        return DispatchError(
-            error=f"graph search failed: {type(e).__name__}",
-            tool="graph_explore",
-        ).to_result()
+    # Two-stage search:
+    #   1. Embedding-based — cross-lingual via the multilingual
+    #      embedder. A Chinese query vector lands near the English
+    #      entity name vectors that encode them, so "养蜂人"
+    #      surfaces "Beekeeper" / "New beekeeper" / etc. The full-
+    #      text name search (fallback below) does literal-string
+    #      matching only and misses every cross-lingual match —
+    #      see graph/neo4j_store.py::search_entities_by_embedding.
+    #   2. Full-text name search — kept as a fallback for queries
+    #      that match an entity name verbatim AND for backends that
+    #      don't expose embedding search (NetworkXStore in tests).
+    candidates: list = []
+    embedder = getattr(ctx.state, "embedder", None)
+    embed_search = getattr(gs, "search_entities_by_embedding", None)
+    if embedder is not None and callable(embed_search):
+        try:
+            q_vec = embedder.embed_texts([query])[0]
+            # Honour the user's path scope at the Cypher level —
+            # the Neo4j embedding search filters by ``source_paths``
+            # in one round-trip when ``path_prefixes_or`` is given.
+            # Without this, a user who selected /agriculture/beekeeping
+            # would still see entities from /mushrooms/* leak into
+            # graph_explore results.
+            ranked = embed_search(
+                q_vec,
+                top_k=top_k * 3,
+                path_prefixes_or=ctx.path_filters,
+            )
+            # ``search_entities_by_embedding`` returns
+            # ``list[tuple[Entity, score]]``; flatten to entities.
+            candidates = [e for (e, _score) in ranked]
+        except Exception:
+            log.exception("graph_explore embedding search failed; falling back to name search")
+            candidates = []
+    if not candidates:
+        try:
+            # Over-fetch — visibility filter drops partial / hidden.
+            # The fallback name search doesn't accept a path filter
+            # parameter; we apply it client-side below via
+            # ``allowed_doc_ids`` intersection.
+            candidates = gs.search_entities(query, top_k=top_k * 3)
+        except Exception as e:
+            return DispatchError(
+                error=f"graph search failed: {type(e).__name__}",
+                tool="graph_explore",
+            ).to_result()
 
     out_entities: list[dict] = []
     accepted_eids: set[str] = set()
     name_cache: dict[str, str] = {}
 
     for ent in candidates:
+        # Path scope post-filter (defense in depth + fallback path).
+        # If the user has a doc whitelist, drop entities whose
+        # source documents are ENTIRELY outside it — the entity
+        # was extracted only from out-of-scope docs and would
+        # surface knowledge the user shouldn't see.
+        if ctx.allowed_doc_ids is not None:
+            ent_docs = set(ent.source_doc_ids or [])
+            if not ent_docs & ctx.allowed_doc_ids:
+                continue
+
         ent_dict = {
             "entity_id": ent.entity_id,
             "name": ent.name,
@@ -785,18 +872,23 @@ def _handle_rerank(params: dict, ctx: ToolContext) -> dict:
             error="reranker not configured", tool="rerank"
         ).to_result()
 
-    chunk_ids = params["chunk_ids"]
-    if not isinstance(chunk_ids, list):
+    raw_ids = params["chunk_ids"]
+    if not isinstance(raw_ids, list):
         return DispatchError(
             error="chunk_ids must be a list of strings", tool="rerank"
         ).to_result()
-    if not chunk_ids:
+    if not raw_ids:
         return {"chunks": []}
 
     query = params["query"]
     top_k = min(
         int(params.get("top_k", _RERANK_DEFAULT_TOP_K)), _RERANK_MAX_TOP_K
     )
+
+    # Resolve any cite-label confusion (model passed ``c_3``-style
+    # display IDs from search hits instead of real chunk_ids) before
+    # hitting the DB. Same mapping as read_chunk uses.
+    chunk_ids = [resolve_chunk_id(ctx, c) for c in raw_ids if isinstance(c, str)]
 
     # Resolve content + apply scope. Out-of-scope chunks silently
     # dropped — the LLM may have hallucinated a chunk_id from an
@@ -854,6 +946,7 @@ def _handle_rerank(params: dict, ctx: ToolContext) -> dict:
             page_end=row.get("page_end"),
             path=row.get("path"),
             score=score,
+            block_ids=row.get("block_ids") or [],
             source="rerank",
         )
         out.append(
@@ -957,13 +1050,35 @@ _WEB_SEARCH_SPEC = ToolSpec(
 _GRAPH_EXPLORE_SPEC = ToolSpec(
     name="graph_explore",
     description=(
-        "Knowledge graph search by entity name. Returns matched entities + "
-        "their relations as LLM-synthesised descriptions across all "
-        "(accessible) source documents. Use this when the user asks "
-        "about a specific concept / person / company and you want "
-        "high-level synthesis instead of raw chunks. Each entry carries "
-        "source_chunk_ids — call read_chunk on a specific id to ground a "
-        "citation. Default top_k=5."
+        "PREFER THIS whenever the question calls for GLOBAL / "
+        "BIG-PICTURE understanding of the corpus, or for how things "
+        "relate, connect, interact, or depend on each other — it "
+        "short-circuits what would otherwise take 10+ search+"
+        "read_chunk calls.\n"
+        "\n"
+        "Returns LLM-synthesised entity descriptions + relation "
+        "summaries across ALL (accessible) source documents — already "
+        "cross-doc, already condensed. The chunk-level search/"
+        "read_chunk path can't easily answer multi-hop, holistic, or "
+        "relationship questions because the answer is spread across "
+        "many chunks; the graph_explore answer is one synthesised "
+        "paragraph per entity / relation, drawing on the whole corpus.\n"
+        "\n"
+        "Strong triggers (use graph_explore FIRST, before search):\n"
+        "  • Global / corpus-wide synthesis: '总体来看…', 'overall…', "
+        "'综述', 'in general', 'big picture', '主要观点', 'main themes'\n"
+        "  • 'X 和 Y 的关系' / 'how does X relate to Y' / 'connection between …'\n"
+        "  • 'X 的角色 / 作用 / 用法' (role / function / usage of X)\n"
+        "  • 'X 影响 Y' / 'X depends on Y' / 'X causes Y' patterns\n"
+        "  • 'who supplies X' / 'who works with X' / 'compare X and Y'\n"
+        "  • Any multi-hop question: bridges between two named things\n"
+        "  • Any time you need an entity OVERVIEW spanning multiple "
+        "    documents — graph_explore IS the global-knowledge tool, "
+        "    chunk search only hits one passage at a time.\n"
+        "\n"
+        "Each entity returned carries source_chunk_ids — pass one to "
+        "read_chunk if you need a verbatim quote to ground a citation. "
+        "Default top_k=5."
     ),
     params_schema={
         "type": "object",
@@ -987,7 +1102,26 @@ _GRAPH_EXPLORE_SPEC = ToolSpec(
 
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {
-    _BM25_SPEC.name: _BM25_SPEC,
+    # ``search_bm25`` (``_BM25_SPEC``) intentionally OMITTED from
+    # the agent's tool registry pending two fixes:
+    #
+    #   1. Build path produces an empty index (DB has thousands
+    #      of chunks but ``state._bm25`` ends up with 0 entries
+    #      after refresh — root cause TBD; see /api/v1/chunks/search
+    #      returning 0 hits even for "test" / "the").
+    #   2. The character-level tokenizer treats every Chinese
+    #      ideogram as its own "word" — ``"蜂群"`` becomes
+    #      ``["蜂", "群"]`` — making BM25 effectively a substring
+    #      OR-match for CJK. For meaningful Chinese keyword search
+    #      we need jieba-style word segmentation.
+    #
+    # Vector search alone is empirically sufficient for the
+    # document-QA queries the agent handles (returns 20 hits
+    # consistently for both Chinese and English questions). The
+    # ``/api/v1/chunks/search`` and ``/api/v1/search`` HTTP routes
+    # still expose BM25 for the file-search UI; this only
+    # excludes BM25 from the LLM's tool-decision loop where the
+    # 0-hit responses were just burning iterations.
     _VECTOR_SPEC.name: _VECTOR_SPEC,
     _READ_CHUNK_SPEC.name: _READ_CHUNK_SPEC,
     _READ_TREE_SPEC.name: _READ_TREE_SPEC,

@@ -30,12 +30,21 @@ Each event is one ``data: <json>\\n\\n`` block. The client receives
 events in order:
 
     agent.turn_start   { turn, synthesis_only? }
+    agent.thought      { turn, text }
+        (only on DSML-fallback turns where deltas were suppressed —
+        normally the model's preface streams as ``answer.delta``)
     tool.call_start    { id, tool, params }
     tool.call_end      { id, tool, latency_ms, result_summary }
         (parallel tool calls land in completion order, not
         submission order — fast BM25 lands before slow vector)
     agent.turn_end     { turn, tools_called, decision }
+    answer.delta       { text }
+        (token-by-token stream of the model's content; for
+        tool-decision turns this is the preface text, for
+        direct-answer turns it's the final answer)
     answer             { text }
+        (final aggregated text — same content as the deltas;
+        non-streaming consumers read this)
     done               { stop_reason, citations, total_latency_ms,
                          tokens_in, tokens_out, ... }
 
@@ -164,10 +173,19 @@ def agent_chat(
         # stream closes. Generator-local var; SSE downstream still
         # gets the answer event in real time.
         final_answer: str = ""
+        # Build the agent reasoning trace from the events we
+        # forward to the client. Persisted onto the assistant
+        # message so a page refresh keeps the chain visible —
+        # without this, reload shows just the answer body and the
+        # "Thought for Xs · N tools" header / row breakdown all
+        # disappear (the trace was previously frontend-only state).
+        trace: list[dict] = []
         try:
             for evt in loop.stream(body.message, ctx, history=history):
-                if evt.get("type") == "answer":
+                kind = evt.get("type")
+                if kind == "answer":
                     final_answer = evt.get("text") or final_answer
+                _accumulate_trace(trace, evt)
                 yield _sse_chunk(evt)
         except Exception:
             # Catch-all so the stream always terminates with a
@@ -183,7 +201,7 @@ def agent_chat(
         if conv_id is not None:
             try:
                 _persist_turn(
-                    state, conv_id, body.message, final_answer, ctx
+                    state, conv_id, body.message, final_answer, ctx, trace,
                 )
             except Exception:
                 log.exception("agent_chat: conversation persist failed")
@@ -220,25 +238,26 @@ def _sse_chunk(event: dict) -> bytes:
 def _agent_config_for(state: AppState) -> AgentConfig:
     """Build an AgentConfig from app state.
 
-    For now we read defaults from ``AgentConfig()`` plus the
-    answering model + API key already configured on AppState.
-    A dedicated ``config/agent.py`` config block lands when we
-    want per-deployment knob overrides; v1 ships with sane
-    defaults baked in.
+    Inherits the answering generator's model + key + api_base —
+    same configured LLM the (now-deleted) AnsweringPipeline used.
+    Saves operators from filling in a second key for the agent.
+
+    The model + key live at ``cfg.answering.generator.{model,
+    api_key, api_base}`` — NOT directly on ``cfg.answering``
+    (that was the v1 wiring bug that surfaced as "x-api-key
+    header is required" against Anthropic when the agent fell
+    through to the AgentConfig default model
+    ``anthropic/claude-sonnet-4-5`` with no key).
     """
     cfg = AgentConfig()
-    # Inherit the answering model + key when configured — saves
-    # operators from setting a second key. ``answering`` may not be
-    # wired (single-user dev), so be defensive.
     answering = getattr(state.cfg, "answering", None) if hasattr(state, "cfg") else None
-    if answering is not None:
-        model = getattr(answering, "model", None)
+    gen = getattr(answering, "generator", None) if answering is not None else None
+    if gen is not None:
+        model = getattr(gen, "model", None)
         if model:
             cfg.model = model
-        # api_key may be on the cfg or env-resolved; agent will read
-        # ANTHROPIC_API_KEY etc. from env when not explicit.
-        cfg.api_key = getattr(answering, "api_key", None)
-        cfg.api_base = getattr(answering, "api_base", None)
+        cfg.api_key = getattr(gen, "api_key", None)
+        cfg.api_base = getattr(gen, "api_base", None)
     return cfg
 
 
@@ -299,12 +318,96 @@ def _load_or_create_conversation(
     return []
 
 
+def _accumulate_trace(trace: list[dict], evt: dict) -> None:
+    """Build the agent reasoning chain from SSE events, mirroring
+    the Vue frontend's logic in ``Chat.vue`` so a refreshed page
+    sees the same shape it would build live.
+
+    Trace entry shapes (matches frontend's ``streamTrace``):
+      * {kind: 'phase', phase, text, status: 'done'} — bare or
+        thought (text populated when the model narrated before
+        tool calls or via ``agent.thought`` event).
+      * {kind: 'tool', call_id, name, detail, summary,
+         elapsedMs, status: 'done'}
+    Phase entries carry ``elapsedSec``, tools carry ``elapsedMs``;
+    we don't have wall-clock here (events arrive in real time
+    but we don't track t0 per entry server-side) so timing stays
+    at zero. The summary header on the persisted side just shows
+    "Reasoned · N tools" without a duration; live mode still
+    has the full timer experience.
+
+    The frontend's ``tool.call_start`` handler folds streamed
+    preface text into the trailing phase entry — we mirror that
+    by using ``last_phase_text_buffer`` to track what would
+    have been the streamed preface.
+    """
+    kind = evt.get("type")
+    if kind == "agent.turn_start":
+        trace.append({
+            "kind": "phase",
+            "phase": "composing" if evt.get("synthesis_only") else (
+                "planning" if not any(e["kind"] == "phase" for e in trace) else "reviewing"
+            ),
+            "text": "",
+            "elapsedSec": 0,
+            "status": "running",
+        })
+    elif kind == "agent.thought":
+        # Find the trailing running phase, attach text.
+        for e in reversed(trace):
+            if e["kind"] == "phase" and e.get("status") == "running":
+                e["text"] = evt.get("text") or ""
+                break
+    elif kind == "tool.call_start":
+        # Mark trailing phase done.
+        for e in reversed(trace):
+            if e["kind"] == "phase" and e.get("status") == "running":
+                e["status"] = "done"
+                break
+        params = evt.get("params") or {}
+        detail = params.get("query") or params.get("chunk_id") or params.get("doc_id") or ""
+        if not isinstance(detail, str):
+            detail = str(detail)
+        trace.append({
+            "kind": "tool",
+            "call_id": evt.get("id"),
+            "name": evt.get("tool"),
+            "detail": detail[:64],
+            "summary": "",
+            "elapsedMs": 0,
+            "status": "running",
+        })
+    elif kind == "tool.call_end":
+        cid = evt.get("id")
+        summary = evt.get("result_summary") or {}
+        sum_text = (
+            f"{summary.get('hit_count')} hits" if summary.get("hit_count") is not None
+            else f"{summary.get('entity_count')} entities" if summary.get("entity_count") is not None
+            else f"{summary.get('chunk_count')} chunks" if summary.get("chunk_count") is not None
+            else "error" if summary.get("error")
+            else ""
+        )
+        for e in trace:
+            if e["kind"] == "tool" and e.get("call_id") == cid:
+                e["status"] = "done"
+                e["summary"] = sum_text
+                e["elapsedMs"] = evt.get("latency_ms") or 0
+                break
+    elif kind == "agent.turn_end":
+        # Mark any remaining running phase done.
+        for e in reversed(trace):
+            if e["kind"] == "phase" and e.get("status") == "running":
+                e["status"] = "done"
+                break
+
+
 def _persist_turn(
     state: AppState,
     conv_id: str,
     user_message: str,
     assistant_answer: str,
     ctx,
+    trace: list[dict] | None = None,
 ) -> None:
     """Write the new user message + final assistant answer to the
     DB. Citations are serialised onto the assistant row's
@@ -328,17 +431,42 @@ def _persist_turn(
     # Compact citation snapshot — frontend's "click citation → open
     # PDF" flow needs chunk_id + doc_id + page; full content lives
     # in the chunks table.
+    # Enrichment ran already during the SSE response — pool entries
+    # carry the highlights / file_id / source_file_id / source_format
+    # fields (see api/agent/dispatch.py::enrich_citations). Persist
+    # them so reloaded conversations open the PDF preview on the
+    # right page with the right rectangles, no second-pass needed.
     cits = []
     for c in (getattr(ctx, "citation_pool", {}) or {}).values():
         cits.append(
             {
+                # ``cite_id`` is what the inline ``[c_N]`` markers in
+                # the answer reference — must round-trip to DB so a
+                # reloaded conversation still wires markers back to
+                # citation chips. Without this, reloads show inline
+                # markers but the rail can't match them.
+                "cite_id": c.get("cite_id"),
                 "chunk_id": c.get("chunk_id"),
                 "doc_id": c.get("doc_id"),
                 "page_start": c.get("page_start"),
                 "page_end": c.get("page_end"),
                 "score": c.get("score"),
+                # Preview rendering payload — populated by
+                # enrich_citations, possibly empty on legacy rows.
+                "file_id": c.get("file_id"),
+                "source_file_id": c.get("source_file_id"),
+                "source_format": c.get("source_format"),
+                "highlights": c.get("highlights") or [],
             }
         )
+    # Filter the trace to entries with actual content. Bare phases
+    # (``status='done'`` but no text) carry no information once the
+    # live timer is gone, but we keep them anyway because the
+    # frontend renders them as italic "pause beats" between actions
+    # and dropping them would make the persisted chain feel
+    # truncated. Tools always retain their detail + summary so
+    # "Read 8 passages" / "Semantic search '…'" survive reload.
+    persisted_trace = list(trace) if trace else None
     state.store.add_message(
         {
             "message_id": uuid4().hex,
@@ -346,6 +474,7 @@ def _persist_turn(
             "role": "assistant",
             "content": assistant_answer,
             "citations_json": cits or None,
+            "agent_trace_json": persisted_trace,
         }
     )
 

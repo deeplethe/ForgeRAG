@@ -315,18 +315,27 @@ def register_chunk(
     path: str | None = None,
     score: float | None = None,
     source: str = "",
+    block_ids: list[str] | None = None,
     extra: dict | None = None,
 ) -> None:
     """Add a chunk to the citation pool. Idempotent — a chunk hit
     by multiple tools merges sources / takes max score.
 
-    The agent's final ``done(citations=[id...])`` picks from this
-    pool to attach citations to the answer; the chunk → bbox
-    rendering downstream is unchanged.
+    The agent's final ``done(citations=[…])`` runs ``enrich_citations``
+    over the pool to compute pixel-precise highlights from
+    ``block_ids`` → ``parsed_blocks.bbox``. Storing ``block_ids``
+    here is what lets that enrichment run later without re-querying
+    chunks.
     """
     existing = ctx.citation_pool.get(chunk_id)
     if existing is None:
+        # Sequential ``c_N`` cite ID — assigned on first registration
+        # and stable for the rest of the query so the LLM can refer
+        # to it in its answer ("see [c_3]"). The frontend resolves
+        # ``[c_N]`` markers to clickable citation chips.
+        cite_id = f"c_{len(ctx.citation_pool) + 1}"
         ctx.citation_pool[chunk_id] = {
+            "cite_id": cite_id,
             "chunk_id": chunk_id,
             "doc_id": doc_id,
             "content": content,
@@ -334,6 +343,7 @@ def register_chunk(
             "page_end": page_end,
             "path": path,
             "score": score,
+            "block_ids": list(block_ids or []),
             "sources": {source} if source else set(),
             **(extra or {}),
         }
@@ -346,9 +356,164 @@ def register_chunk(
             existing["score"] = score
     if source:
         existing.setdefault("sources", set()).add(source)
+    # Backfill block_ids if a later tool has them and the earlier
+    # registration didn't (e.g. KG path registered first, search
+    # registered second with the full chunk row).
+    if block_ids and not existing.get("block_ids"):
+        existing["block_ids"] = list(block_ids)
     if extra:
         for k, v in extra.items():
             existing.setdefault(k, v)
+
+
+# ---------------------------------------------------------------------------
+# Citation enrichment — chunk_id + block_ids → highlights + file_id
+# ---------------------------------------------------------------------------
+#
+# Reuses the architecture the now-deleted ``retrieval/citations.py``
+# established for the fixed-pipeline path. Each citation that comes
+# back to the frontend needs:
+#
+#   * highlights: [{page_no, bbox}] — one rectangle per parsed block
+#                 the chunk covers, used by the PDF viewer overlay
+#                 to draw the precise highlight.
+#   * file_id:    the PDF the viewer should render. For converted
+#                 uploads (DOCX/PPTX/HTML/MD) that's ``pdf_file_id``;
+#                 for native PDFs it's the original ``file_id``.
+#                 Without this preference the viewer gets handed the
+#                 .docx blob and pdfjs throws "Invalid PDF structure".
+#   * source_file_id: original upload's file_id, for the "download
+#                 source" button. None when source IS the PDF.
+#   * source_format: "pdf" / "docx" / "pptx" / etc. Used by the
+#                 frontend to label the download button.
+#
+# All resolved in TWO batched store calls (blocks + documents)
+# regardless of how many citations are in the pool. O(1) round trips.
+
+
+def enrich_citations(ctx: ToolContext) -> None:
+    """Walk ``ctx.citation_pool`` and attach highlights + file_id
+    fields IN PLACE. Idempotent — re-running on an already-enriched
+    pool is a no-op. Safe to call once at the end of a query.
+
+    Failures (missing blocks, missing doc rows, store errors) are
+    swallowed per-citation: the citation keeps whatever fields it
+    had and the frontend renders without highlights rather than
+    blowing up the whole response. Logged at WARN.
+    """
+    pool = ctx.citation_pool
+    if not pool:
+        return
+
+    # 1. Gather every block_id referenced by every chunk; batch-load
+    #    once. Some citations may have empty block_ids (legacy /
+    #    KG-only registrations) — they end up with empty highlights,
+    #    same as a chunk whose blocks were trashed mid-session.
+    wanted_block_ids: list[str] = []
+    seen: set[str] = set()
+    for entry in pool.values():
+        for bid in entry.get("block_ids") or []:
+            if bid not in seen:
+                wanted_block_ids.append(bid)
+                seen.add(bid)
+
+    blocks_by_id: dict[str, dict] = {}
+    if wanted_block_ids:
+        try:
+            for row in ctx.state.store.get_blocks_by_ids(wanted_block_ids):
+                blocks_by_id[row["block_id"]] = row
+        except Exception:
+            log.exception("enrich_citations: get_blocks_by_ids failed")
+
+    # 2. Gather every doc_id; resolve file_id / pdf_file_id / format
+    #    in one batched lookup. ``get_documents_by_ids`` returns the
+    #    same dict shape ``DocumentOut`` derives from.
+    wanted_doc_ids = sorted({
+        e.get("doc_id") for e in pool.values() if e.get("doc_id")
+    })
+    docs_by_id: dict[str, dict] = {}
+    if wanted_doc_ids:
+        try:
+            for row in ctx.state.store.get_documents_by_ids(wanted_doc_ids):
+                docs_by_id[row["doc_id"]] = row
+        except Exception:
+            log.exception("enrich_citations: get_documents_by_ids failed")
+
+    # 3. Decorate each citation in place.
+    for entry in pool.values():
+        # Highlights from block bboxes — same shape the legacy
+        # ``retrieval.citations.HighlightRect`` produced. Skip blocks
+        # that didn't make it into the batch result (deleted /
+        # out-of-scope).
+        highlights: list[dict] = []
+        for bid in entry.get("block_ids") or []:
+            blk = blocks_by_id.get(bid)
+            if blk is None:
+                continue
+            bbox = {
+                "x0": blk.get("bbox_x0"),
+                "y0": blk.get("bbox_y0"),
+                "x1": blk.get("bbox_x1"),
+                "y1": blk.get("bbox_y1"),
+            }
+            highlights.append({"page_no": blk.get("page_no"), "bbox": bbox})
+        if highlights:
+            entry["highlights"] = highlights
+            # Also pin page_start to the first highlight's page if
+            # the chunk row didn't carry one (defensive).
+            if not entry.get("page_start"):
+                entry["page_start"] = highlights[0].get("page_no")
+
+        # file_id resolution: prefer the rendered PDF preview over
+        # the raw upload. Track source_file_id only when the source
+        # is genuinely different (converted uploads); native PDFs
+        # leave it None so the UI doesn't show a redundant download.
+        doc_row = docs_by_id.get(entry.get("doc_id") or "")
+        if doc_row is None:
+            continue
+        pdf_fid = doc_row.get("pdf_file_id")
+        orig_fid = doc_row.get("file_id")
+        fmt = doc_row.get("format", "") or ""
+        if pdf_fid:
+            entry["file_id"] = pdf_fid
+            entry["source_file_id"] = orig_fid
+        else:
+            entry["file_id"] = orig_fid
+            entry["source_file_id"] = None
+        entry["source_format"] = fmt
+
+
+_CITE_ID_RE = __import__("re").compile(r"^c_\d+$")
+
+
+def resolve_chunk_id(ctx: ToolContext, identifier: str) -> str:
+    """Map a possibly-confused identifier to a real chunk_id.
+
+    The hits we hand the LLM carry both ``chunk_id`` (the internal
+    DB id like ``d_abc:1:cN``) and ``cite`` (a sequential display
+    label like ``c_3``). Models — DeepSeek especially — sometimes
+    pass the cite back as ``chunk_id`` to ``read_chunk`` /
+    ``rerank``. Without resolution every read fails with
+    "chunk not found: 'c_3'", the chain shows a column of red
+    ``error`` chips, and the agent compounds the mistake by reading
+    more cite-IDs.
+
+    Strategy:
+      * If the identifier looks like a real chunk_id (anything not
+        matching ``^c_\\d+$``), pass it through unchanged.
+      * If it's a ``c_N`` cite label, look it up in the pool and
+        return the real chunk_id; fall back to the input on miss
+        (the downstream lookup will produce the proper "not found"
+        error).
+    """
+    if not identifier or not _CITE_ID_RE.match(identifier):
+        return identifier
+    for entry in ctx.citation_pool.values():
+        if entry.get("cite_id") == identifier:
+            real = entry.get("chunk_id")
+            if real:
+                return real
+    return identifier
 
 
 def doc_passes_scope(ctx: ToolContext, doc_id: str | None) -> bool:

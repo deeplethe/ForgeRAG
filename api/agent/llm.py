@@ -96,7 +96,7 @@ class LiteLLMClient:
         *,
         api_key: str | None = None,
         api_base: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = 45.0,
     ):
         self.model = model
         self.api_key = api_key
@@ -158,6 +158,127 @@ class LiteLLMClient:
 
         resp = litellm.completion(**kwargs)
         return _parse_response(resp)
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ):
+        """Streaming variant of ``chat`` — yields ``("delta", text)``
+        for each content chunk and finally ``("done", LLMResponse)``
+        with the assembled full response.
+
+        Used by the agent loop ONLY for the final-answer turn: when
+        the LLM is producing the user-facing text, stream it so the
+        chat UI can render token-by-token. Tool-decision turns stay
+        non-streaming (``chat``) — they need the full ``tool_calls``
+        list before the loop can dispatch.
+        """
+        litellm = self._ensure()
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "timeout": self.timeout,
+            "stream": True,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+
+        full_text = ""
+        finish_reason = "stop"
+        tokens_in = 0
+        tokens_out = 0
+        # Tool-call accumulation across delta chunks. OpenAI-style
+        # streams send partial tool_call fragments keyed by ``index``;
+        # the function name arrives in the first chunk for that
+        # index, ``arguments`` is built up across subsequent chunks
+        # as a JSON string. We assemble per-index then parse the
+        # final JSON when the stream ends.
+        tc_acc: dict[int, dict[str, Any]] = {}
+        try:
+            stream = litellm.completion(**kwargs)
+            for chunk in stream:
+                try:
+                    choice0 = chunk.choices[0]
+                    delta = choice0.delta
+                except (AttributeError, IndexError):
+                    continue
+                content = getattr(delta, "content", None)
+                if content:
+                    full_text += content
+                    yield ("delta", content)
+                # Accumulate tool_calls partials.
+                raw_tcs = getattr(delta, "tool_calls", None) or []
+                for raw_tc in raw_tcs:
+                    idx = getattr(raw_tc, "index", None)
+                    if idx is None:
+                        continue
+                    slot = tc_acc.setdefault(
+                        idx, {"id": None, "name": None, "args_str": ""}
+                    )
+                    if getattr(raw_tc, "id", None):
+                        slot["id"] = raw_tc.id
+                    fn = getattr(raw_tc, "function", None)
+                    if fn:
+                        if getattr(fn, "name", None):
+                            slot["name"] = fn.name
+                        args = getattr(fn, "arguments", None)
+                        if args:
+                            slot["args_str"] += args
+                fr = getattr(choice0, "finish_reason", None)
+                if fr:
+                    finish_reason = fr
+                # Some providers stream usage on the FINAL chunk only.
+                usage = getattr(chunk, "usage", None)
+                if usage:
+                    tokens_in = int(getattr(usage, "prompt_tokens", 0) or tokens_in)
+                    tokens_out = int(getattr(usage, "completion_tokens", 0) or tokens_out)
+        except Exception:  # noqa: BLE001
+            log.exception("LiteLLM streaming failed")
+            yield (
+                "done",
+                LLMResponse(text=full_text, stop_reason="error",
+                            tokens_in=tokens_in, tokens_out=tokens_out),
+            )
+            return
+
+        # Materialise accumulated tool calls.
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc.keys()):
+            slot = tc_acc[idx]
+            if not slot.get("id") or not slot.get("name"):
+                continue
+            try:
+                args = json.loads(slot["args_str"] or "{}")
+            except json.JSONDecodeError:
+                log.warning("malformed tool_call args in stream: %r", slot["args_str"])
+                args = {}
+            tool_calls.append(
+                ToolCall(id=slot["id"], name=slot["name"], arguments=args)
+            )
+
+        yield (
+            "done",
+            LLMResponse(
+                text=full_text,
+                tool_calls=tool_calls,
+                stop_reason=finish_reason,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            ),
+        )
 
 
 def _parse_response(resp: Any) -> LLMResponse:
