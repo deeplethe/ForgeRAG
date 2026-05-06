@@ -596,6 +596,13 @@ class AuthUser(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Optional uploaded avatar. Path is relative to the storage
+    # root (e.g. ``avatars/u_alice.png``); the file extension is
+    # part of the path so the GET handler can derive content-type
+    # without a separate column. NULL = no avatar set, UI falls
+    # back to initials (see web/src/components/UserAvatar.vue).
+    # Added in 20260514_add_user_avatar.
+    avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class AuthToken(Base):

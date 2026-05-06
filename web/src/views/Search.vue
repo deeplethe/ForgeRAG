@@ -50,6 +50,7 @@ import { useI18n } from 'vue-i18n'
 import { Search, FileSearch, AlertCircle, Loader2, FileText, Clock, User, FileType2, ChevronDown } from 'lucide-vue-next'
 
 import { search as searchApi } from '@/api'
+import { avatarUrlFor } from '@/api/admin'
 import UserAvatar from '@/components/UserAvatar.vue'
 
 const { t } = useI18n()
@@ -409,6 +410,7 @@ function fmtRelativeTime(d) {
               >
                 <UserAvatar
                   :name="f.uploader_display_name || f.uploader_user_id"
+                  :img-url="avatarUrlFor(f.uploader_user_id, f.uploader_has_avatar)"
                   :size="16"
                 />
                 <span v-if="f.uploader_display_name" class="text-t2">{{ f.uploader_display_name }}</span>

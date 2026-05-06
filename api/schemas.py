@@ -537,6 +537,10 @@ class FileHitOut(BaseModel):
     updated_at: Any = None
     uploader_user_id: str | None = None
     uploader_display_name: str | None = None
+    # Hint for the avatar component — true when the uploader has
+    # an uploaded image, so the row can fetch the avatar URL
+    # without a probe 404. Falls back to initials otherwise.
+    uploader_has_avatar: bool = False
 
 
 class SearchResponse(BaseModel):

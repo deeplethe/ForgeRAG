@@ -23,7 +23,7 @@
       :class="{ '!bg-bg3': open }"
       @click="toggle"
     >
-      <UserAvatar :name="identityKey" :size="28" />
+      <UserAvatar :name="identityKey" :img-url="avatarUrl" :size="28" />
       <span class="flex-1 min-w-0 text-left">
         <span class="block text-[12px] text-t1 truncate">{{ displayLabel }}</span>
         <span class="block text-[10px] text-t3 truncate">
@@ -136,6 +136,7 @@ import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { useTheme } from '@/composables/useTheme'
 import { useDialog } from '@/composables/useDialog'
 import { logout } from '@/api/auth'
+import { avatarUrlFor } from '@/api/admin'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
@@ -163,6 +164,12 @@ const identityKey = computed(() => {
     || '').trim()
 })
 const displayLabel = computed(() => identityKey.value || '?')
+
+// Avatar image URL — null when has_avatar=false so the
+// component falls straight back to initials without a 404.
+const avatarUrl = computed(() =>
+  avatarUrlFor(props.me?.user_id, props.me?.has_avatar),
+)
 
 function toggle() { open.value = !open.value }
 function close() { open.value = false }

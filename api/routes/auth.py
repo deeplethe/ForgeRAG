@@ -25,7 +25,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -123,6 +124,12 @@ class MeOut(BaseModel):
     token_id: str | None = None
     token_name: str | None = None
     session_id: str | None = None
+    # Truthy when the user has uploaded an avatar. The frontend
+    # constructs the image URL from the user_id, not from this
+    # field — we just need a flag so the avatar component knows
+    # to attempt the fetch (vs. falling back to initials
+    # immediately and saving a 404 round-trip).
+    has_avatar: bool = False
 
 
 class TokenOut(BaseModel):
@@ -422,6 +429,7 @@ def _me_response(principal: AuthenticatedPrincipal, user: AuthUser | None) -> Me
         token_id=principal.token_id,
         token_name=principal.token_name,
         session_id=principal.session_id,
+        has_avatar=bool(user and user.avatar_path),
     )
 
 
@@ -490,6 +498,177 @@ def patch_me(
             cleaned = body.display_name.strip()
             user.display_name = cleaned or None
         return _me_response(principal, user)
+
+
+# ---------------------------------------------------------------------------
+# Avatar
+# ---------------------------------------------------------------------------
+#
+# Three endpoints:
+#
+#   POST   /auth/me/avatar              upload (multipart, replaces existing)
+#   DELETE /auth/me/avatar              remove (UI falls back to initials)
+#   GET    /auth/users/{user_id}/avatar serve the file (any authed user)
+#
+# Storage: ``./storage/avatars/<user_id>.<ext>``. The path lives on
+# the AuthUser row (``avatar_path``); the ``.ext`` portion lets the
+# GET handler derive Content-Type without a separate column.
+#
+# Validation: only image/png, image/jpeg, image/webp are accepted.
+# Body capped at 2 MB — avatars don't need more, and the cap stops
+# someone from filling the disk via a malicious upload. We replace
+# the file in-place on every upload (one row, one file) so users
+# can't accumulate orphan blobs.
+#
+# Cache-busting: the GET handler returns ``Cache-Control: no-cache``
+# so a fresh upload shows up immediately. (We could use an Etag
+# keyed on the file mtime instead, but no-cache is simpler and the
+# images are tiny enough that re-fetching costs nothing.)
+
+
+_AVATAR_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+def _avatars_dir(state: AppState) -> "pathlib.Path":
+    """Resolve ``./storage/avatars`` from the configured storage
+    root. Falls back to ``./storage/avatars`` if the cfg shape
+    differs — the dir is always created on first write."""
+    import pathlib
+
+    storage_cfg = getattr(state.cfg, "storage", None)
+    local_cfg = getattr(storage_cfg, "local", None) if storage_cfg else None
+    blobs_root = getattr(local_cfg, "root", None) if local_cfg else None
+    if blobs_root:
+        # Storage root is e.g. ``./storage/blobs``; sibling
+        # ``./storage/avatars`` keeps avatars out of the blob
+        # store's content-addressed sha256 namespace.
+        base = pathlib.Path(blobs_root).resolve().parent
+    else:
+        base = pathlib.Path("./storage").resolve()
+    out = base / "avatars"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+@router.post("/me/avatar", response_model=MeOut)
+async def upload_my_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    state: AppState = Depends(get_state),
+):
+    """Upload (or replace) the caller's avatar image."""
+    principal = _require_principal(request)
+
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_MIME_EXT:
+        raise HTTPException(
+            415,
+            f"unsupported avatar format {mime!r}; use PNG, JPEG, or WebP",
+        )
+    ext = _AVATAR_MIME_EXT[mime]
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"avatar too large ({len(data)} bytes); max is {_AVATAR_MAX_BYTES}",
+        )
+
+    avatars_dir = _avatars_dir(state)
+    out_path = avatars_dir / f"{principal.user_id}{ext}"
+    # Remove any pre-existing file with a different extension so
+    # the row's ``avatar_path`` and the on-disk reality stay in
+    # sync (e.g. a user uploading a JPG over a previous PNG).
+    for stale_ext in _AVATAR_MIME_EXT.values():
+        if stale_ext == ext:
+            continue
+        stale = avatars_dir / f"{principal.user_id}{stale_ext}"
+        if stale.exists():
+            try:
+                stale.unlink()
+            except Exception:
+                log.exception("failed to clean stale avatar %s", stale)
+    out_path.write_bytes(data)
+
+    # Path stored relative-style so the row is portable across
+    # storage roots — the GET handler joins it to ``avatars_dir``
+    # at serve time.
+    rel_name = f"{principal.user_id}{ext}"
+    with state.store.transaction() as sess:
+        user = sess.get(AuthUser, principal.user_id)
+        if user is None:
+            raise HTTPException(404, "user not found")
+        user.avatar_path = rel_name
+        return _me_response(principal, user)
+
+
+@router.delete("/me/avatar", response_model=MeOut)
+def delete_my_avatar(
+    request: Request,
+    state: AppState = Depends(get_state),
+):
+    """Remove the caller's avatar. Idempotent."""
+    principal = _require_principal(request)
+    avatars_dir = _avatars_dir(state)
+    with state.store.transaction() as sess:
+        user = sess.get(AuthUser, principal.user_id)
+        if user is None:
+            raise HTTPException(404, "user not found")
+        if user.avatar_path:
+            f = avatars_dir / user.avatar_path
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    log.exception("failed to delete avatar %s", f)
+            user.avatar_path = None
+        return _me_response(principal, user)
+
+
+@router.get("/users/{user_id}/avatar")
+def get_user_avatar(
+    user_id: str,
+    request: Request,
+    state: AppState = Depends(get_state),
+):
+    """Serve another user's avatar. Authenticated-only — any
+    logged-in user can view any other user's avatar (they appear
+    next to one another in shared documents / chats anyway).
+
+    Returns 404 when the target user has no avatar set; that's
+    the signal the frontend's <UserAvatar> uses to fall back to
+    initials.
+    """
+    _require_principal(request)
+    with state.store.transaction() as sess:
+        user = sess.get(AuthUser, user_id)
+        if user is None or not user.avatar_path:
+            raise HTTPException(404, "no avatar")
+        rel = user.avatar_path
+    f = _avatars_dir(state) / rel
+    if not f.exists():
+        # DB says yes, disk says no — log and treat as missing
+        # rather than 500. The next upload self-heals.
+        log.warning("avatar row points to missing file: %s", f)
+        raise HTTPException(404, "no avatar")
+    # Derive media type from extension. We restrict uploads to
+    # png/jpg/webp so this stays a fixed lookup.
+    ext = f.suffix.lower()
+    mt = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}.get(ext, "application/octet-stream")
+    return FileResponse(
+        path=str(f),
+        media_type=mt,
+        # No-cache so a fresh upload shows up without query-string
+        # cache-busting on every callsite.
+        headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"},
+    )
 
 
 # ---------------------------------------------------------------------------

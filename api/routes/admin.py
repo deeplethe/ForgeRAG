@@ -57,6 +57,10 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: Any = None
     last_login_at: Any = None
+    # See MeOut.has_avatar — truthy iff the user has uploaded a
+    # profile image. Frontend constructs the URL from user_id +
+    # this flag (saves a 404 round-trip on users with no avatar).
+    has_avatar: bool = False
 
 
 class UpdateUserReq(BaseModel):
@@ -115,6 +119,7 @@ def _user_to_out(user: AuthUser) -> AdminUserOut:
         is_active=user.is_active,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
+        has_avatar=bool(user.avatar_path),
     )
 
 

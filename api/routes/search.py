@@ -135,6 +135,7 @@ def search(
             if d.get("user_id")
         })
         uploader_label_by_id: dict[str, str] = {}
+        uploader_has_avatar_by_id: dict[str, bool] = {}
         if uploader_ids:
             from sqlalchemy import select as _select
 
@@ -152,6 +153,7 @@ def search(
                         or u.user_id
                     )
                     uploader_label_by_id[u.user_id] = label
+                    uploader_has_avatar_by_id[u.user_id] = bool(u.avatar_path)
 
         files_out = []
         for f in result.files:
@@ -178,6 +180,9 @@ def search(
                     uploader_user_id=uploader_id,
                     uploader_display_name=(
                         uploader_label_by_id.get(uploader_id) if uploader_id else None
+                    ),
+                    uploader_has_avatar=(
+                        uploader_has_avatar_by_id.get(uploader_id, False) if uploader_id else False
                     ),
                 )
             )

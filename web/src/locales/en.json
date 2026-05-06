@@ -52,7 +52,18 @@
       "password_too_short": "New password must be at least 8 characters",
       "save": "Save",
       "saving": "Saving…",
-      "saved": "Saved"
+      "saved": "Saved",
+      "avatar_upload": "Upload avatar",
+      "avatar_change": "Change avatar",
+      "avatar_remove": "Remove",
+      "avatar_saved": "Avatar updated.",
+      "avatar_removed": "Avatar removed.",
+      "avatar_bad_type": "Use PNG, JPEG, or WebP.",
+      "avatar_too_big": "Avatar must be under 2 MB.",
+      "avatar_upload_failed": "Avatar update failed: {msg}",
+      "avatar_remove_confirm_title": "Remove avatar?",
+      "avatar_remove_confirm_desc": "Your avatar will fall back to initials in the disc.",
+      "avatar_remove_confirm_button": "Remove"
     },
     "sessions": {
       "title": "Sessions",

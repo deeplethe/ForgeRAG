@@ -111,9 +111,10 @@ export {
   restoreFromTrash, purgeTrashItems, emptyTrash,
 } from './trash'
 
-// Admin (user management) + per-user usage
+// Admin (user management) + per-user usage + avatar
 export {
   listUsers, getUser, approveUser, suspendUser, reactivateUser,
   patchUser, deleteUser, patchMe,
   listUserUsage, getUserUsage, getMyUsage,
+  uploadMyAvatar, deleteMyAvatar, avatarUrlFor,
 } from './admin'

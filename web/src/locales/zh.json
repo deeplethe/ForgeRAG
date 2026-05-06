@@ -52,7 +52,18 @@
       "password_too_short": "新密码至少需要 8 位",
       "save": "保存",
       "saving": "保存中…",
-      "saved": "已保存"
+      "saved": "已保存",
+      "avatar_upload": "上传头像",
+      "avatar_change": "更换头像",
+      "avatar_remove": "移除",
+      "avatar_saved": "头像已更新",
+      "avatar_removed": "头像已移除",
+      "avatar_bad_type": "仅支持 PNG / JPEG / WebP。",
+      "avatar_too_big": "头像需小于 2 MB。",
+      "avatar_upload_failed": "头像更新失败：{msg}",
+      "avatar_remove_confirm_title": "移除头像？",
+      "avatar_remove_confirm_desc": "头像会回退到首字母占位。",
+      "avatar_remove_confirm_button": "移除"
     },
     "sessions": {
       "title": "登录会话",

@@ -32,6 +32,7 @@ import {
   patchUser,
   deleteUser,
   listUserUsage,
+  avatarUrlFor,
 } from '@/api/admin'
 import { getMe } from '@/api/auth'
 import { useDialog } from '@/composables/useDialog'
@@ -294,7 +295,11 @@ function promotable(u) {
       >
         <!-- User column: avatar + name + email -->
         <div class="col-user user-cell">
-          <UserAvatar :name="avatarKey(u)" :size="28" />
+          <UserAvatar
+            :name="avatarKey(u)"
+            :img-url="avatarUrlFor(u.user_id, u.has_avatar)"
+            :size="28"
+          />
           <div class="user-meta">
             <div class="name-row">
               <span class="name">{{ nameOf(u) }}</span>

@@ -1,47 +1,53 @@
 <script setup>
 /**
  * UserAvatar — single source of truth for the project's avatar
- * disc. Replaces three earlier inline copies (Profile, Users,
- * UserMenu).
+ * disc. Used by Profile, UserMenu, Users, Search, and anywhere
+ * else a user identity needs a visual.
  *
- * Initials rule:
- *   1. If the name contains any CJK character, render the FIRST
- *      one. (Mixed names like "Mr. 张" still render "张" — the
- *      Chinese signal wins.)
- *   2. Else split on whitespace / dot / underscore / dash. If 2+
- *      parts, render the first letter of each of the first two
- *      parts (``"John Doe"`` → ``"JD"``). With one part, render
- *      its first two letters (``"alice"`` → ``"AL"``,
- *      ``"sam"`` → ``"SA"``, single-char ``"x"`` → ``"X"``).
- *   3. Empty / unparseable input falls back to ``"?"``.
+ * Two display modes:
+ *
+ *   1. ``imgUrl`` provided AND it loads → render the uploaded
+ *      avatar image (cover-fitted, never distorted).
+ *   2. No URL, OR the image errors / 404s → render colored disc
+ *      with initials.
+ *
+ * The fallback is automatic: an ``onerror`` flips a local
+ * ``imgFailed`` flag, swapping the <img> for the initials disc.
+ * Callers can pass ``imgUrl`` unconditionally without checking
+ * has_avatar themselves — a 404 just degrades gracefully. (The
+ * ``has-avatar`` flag from /me is used elsewhere as a hint to
+ * avoid the round-trip on users with no avatar; this component
+ * stays robust either way.)
+ *
+ * Initials rule (used in fallback):
+ *   1. CJK present anywhere in name → first matching codepoint
+ *      ("张三" → "张", "Mr. 王" → "王").
+ *   2. Else split on whitespace / dot / underscore / dash. 2+
+ *      parts → first letter of each of the first two
+ *      ("John Doe" → "JD"). 1 part → first 2 letters
+ *      ("alice" → "AL"). Single char → just it ("X" → "X").
+ *   3. Empty / unparseable → "?".
  *
  * Email-as-name is supported: the ``@example.com`` suffix is
- * stripped before initials extraction so ``"alice@x.com"`` reads
- * as ``"AL"`` not ``"AL"`` of the local part still works after the
- * strip.
+ * stripped before initials extraction.
  *
- * Color is a stable HSL hash of the source name string — same
- * ``hash * 31`` rule the previous inline avatars used, just
- * factored out so promote/demote / display-name changes all keep
- * generating the same colour for the same identity.
- *
- * Future: when real avatar images land (URL prop), the disc will
- * fall back to initials only when the URL fails to load. For now
- * everything is initials, so there's no img fallback machinery.
+ * Color is a stable HSL hash of the source name string. Same
+ * identity always gets the same colour across the app.
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
-  // The display name to source initials + colour from. Pass the
+  // Display name to source initials + colour from. Pass the
   // friendly label (display_name | email-prefix | username),
   // not the raw user_id.
   name: { type: String, default: '' },
-  // Disc edge length in px. Font-size auto-derives from this so
-  // the letters never overflow at unusual sizes.
+  // Optional uploaded-avatar URL. When the image loads
+  // successfully it's shown over the colored disc; on error /
+  // missing the disc + initials remain.
+  imgUrl: { type: String, default: '' },
+  // Disc edge length in px. Font-size auto-derives.
   size: { type: Number, default: 28 },
-  // Default = circle. Square is reserved for embed cases (e.g.
-  // a tag chip with avatar inside) where a circle next to other
-  // square chips would jar.
+  // Default = circle. Square reserved for embed cases.
   square: { type: Boolean, default: false },
 })
 
@@ -55,12 +61,8 @@ function _stripEmail(s) {
 const initials = computed(() => {
   const raw = (props.name || '').trim()
   if (!raw) return '?'
-  // CJK takes precedence — first matching codepoint wins.
   const m = raw.match(_CJK_RE)
   if (m) return m[0]
-  // Strip email suffix BEFORE splitting so domain dots don't
-  // become spurious word boundaries (``"a.b@x.com"`` → split on
-  // dot → first two parts of ``a.b`` → ``"AB"``, not ``"AX"``).
   const cleaned = _stripEmail(raw).trim()
   if (!cleaned) return '?'
   const parts = cleaned.split(/[\s._-]+/).filter(Boolean)
@@ -78,20 +80,26 @@ const bg = computed(() => {
   return `hsl(${h % 360}, 55%, 50%)`
 })
 
-// Font scales with disc size — ratio 0.45 reads cleanly from 16px
-// (badge dots) to 64px (profile cards). Single-char (CJK) sits a
-// hair smaller because the glyph fills more of its em-box than
-// two latin letters do.
 const fontSize = computed(() => {
   const ratio = initials.value.length === 1 ? 0.5 : 0.42
   return `${Math.round(props.size * ratio)}px`
 })
+
+// ── Image loading state ───────────────────────────────────
+// imgFailed flips on the first <img> error and pins the
+// fallback. Reset when the URL changes (e.g. after a fresh
+// upload — the no-cache header on the GET handler means the
+// browser refetches).
+const imgFailed = ref(false)
+watch(() => props.imgUrl, () => { imgFailed.value = false })
+
+const showImg = computed(() => !!props.imgUrl && !imgFailed.value)
 </script>
 
 <template>
   <span
     class="avatar"
-    :class="{ 'avatar-square': square }"
+    :class="{ 'avatar-square': square, 'avatar-with-img': showImg }"
     :style="{
       width: size + 'px',
       height: size + 'px',
@@ -99,7 +107,16 @@ const fontSize = computed(() => {
       fontSize: fontSize,
     }"
     :title="name || ''"
-  >{{ initials }}</span>
+  >
+    <img
+      v-if="showImg"
+      :src="imgUrl"
+      :alt="name || ''"
+      class="avatar-img"
+      @error="imgFailed = true"
+    />
+    <template v-else>{{ initials }}</template>
+  </span>
 </template>
 
 <style scoped>
@@ -113,6 +130,8 @@ const fontSize = computed(() => {
   letter-spacing: 0.01em;
   user-select: none;
   flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
   /* Counter-balance the perceived weight of a flat-fill disc on
      dark themes — a hairline inner shadow keeps it from pasting
      onto the background. */
@@ -120,5 +139,20 @@ const fontSize = computed(() => {
 }
 .avatar-square {
   border-radius: 4px;
+}
+/* When the <img> renders we don't want the bg colour to peek
+   through transparent PNGs — set bg to transparent so the image
+   carries the entire visual. The hash colour stays as a
+   "loading" tint for one paint, which is fine. */
+.avatar-with-img {
+  background: transparent !important;
+}
+.avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 </style>

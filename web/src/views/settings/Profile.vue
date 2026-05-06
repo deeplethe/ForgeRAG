@@ -16,14 +16,20 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getMe, changePassword } from '@/api/auth'
-import { patchMe, getMyUsage } from '@/api/admin'
+import { patchMe, getMyUsage, uploadMyAvatar, deleteMyAvatar, avatarUrlFor } from '@/api/admin'
 import UserAvatar from '@/components/UserAvatar.vue'
+import { useDialog } from '@/composables/useDialog'
+import { Camera, Trash2 } from 'lucide-vue-next'
 
 const { t } = useI18n()
+const { confirm, toast } = useDialog()
 
 const me = ref(null)
 const loading = ref(true)
 const usage = ref(null) // { input_tokens, output_tokens, total_tokens, message_count }
+const avatarBust = ref(0) // bumped after upload/delete to force img refresh
+const avatarBusy = ref(false)
+const fileInputEl = ref(null)
 
 // Password form state — kept in a single reactive object so the
 // "save" handler can clear it cleanly on success.
@@ -44,6 +50,66 @@ const dnSuccess = ref(false)
 const identityKey = computed(() =>
   (me.value?.display_name || me.value?.email || me.value?.username || '').trim()
 )
+
+// Avatar image URL — only when /me said has_avatar=true. The
+// ``avatarBust`` counter is appended on the URL so a fresh
+// upload bypasses any browser cache; the GET handler also
+// sends Cache-Control: no-cache as a defensive belt.
+const avatarUrl = computed(() =>
+  avatarUrlFor(me.value?.user_id, me.value?.has_avatar, avatarBust.value),
+)
+
+function pickAvatarFile() {
+  fileInputEl.value?.click()
+}
+
+async function onAvatarFileChosen(e) {
+  const file = e.target?.files?.[0]
+  // Reset the input so picking the same file again still fires
+  // ``change`` (the browser dedupes by default).
+  if (fileInputEl.value) fileInputEl.value.value = ''
+  if (!file) return
+  if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+    toast(t('settings.profile.avatar_bad_type'), { variant: 'error' })
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    toast(t('settings.profile.avatar_too_big'), { variant: 'error' })
+    return
+  }
+  avatarBusy.value = true
+  try {
+    const updated = await uploadMyAvatar(file)
+    me.value = updated
+    avatarBust.value = Date.now()
+    toast(t('settings.profile.avatar_saved'), { variant: 'success' })
+  } catch (err) {
+    toast(t('settings.profile.avatar_upload_failed', { msg: err.message || '' }), { variant: 'error' })
+  } finally {
+    avatarBusy.value = false
+  }
+}
+
+async function onAvatarRemove() {
+  const ok = await confirm({
+    title: t('settings.profile.avatar_remove_confirm_title'),
+    description: t('settings.profile.avatar_remove_confirm_desc'),
+    confirmText: t('settings.profile.avatar_remove_confirm_button'),
+    variant: 'destructive',
+  })
+  if (!ok) return
+  avatarBusy.value = true
+  try {
+    const updated = await deleteMyAvatar()
+    me.value = updated
+    avatarBust.value = Date.now()
+    toast(t('settings.profile.avatar_removed'), { variant: 'success' })
+  } catch (err) {
+    toast(t('settings.profile.avatar_upload_failed', { msg: err.message || '' }), { variant: 'error' })
+  } finally {
+    avatarBusy.value = false
+  }
+}
 
 onMounted(async () => {
   // /me and /me/usage are independent — fire them in parallel so
@@ -109,13 +175,54 @@ async function onSavePassword() {
   <div v-if="!loading && me" class="profile-page">
     <h2 class="page-title">{{ t('settings.profile.title') }}</h2>
 
-    <!-- ── Identity card: avatar + email + role ── -->
+    <!-- ── Identity card: avatar editor + email + role ── -->
     <section class="card">
       <div class="identity-row">
-        <UserAvatar :name="identityKey" :size="40" />
+        <!-- Click the disc → file picker. Hover shows the camera
+             overlay; while busy the disc dims to signal in-flight. -->
+        <button
+          type="button"
+          class="avatar-edit"
+          :class="{ 'is-busy': avatarBusy }"
+          :disabled="avatarBusy"
+          :title="t('settings.profile.avatar_change')"
+          @click="pickAvatarFile"
+        >
+          <UserAvatar
+            :name="identityKey"
+            :img-url="avatarUrl"
+            :size="56"
+          />
+          <span class="avatar-overlay">
+            <Camera :size="16" :stroke-width="2" />
+          </span>
+        </button>
+        <input
+          ref="fileInputEl"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          class="hidden-input"
+          @change="onAvatarFileChosen"
+        />
+
         <div class="identity-meta">
           <div class="email">{{ me.email || me.username || '—' }}</div>
           <div class="role">{{ me.role === 'admin' ? t('user_menu.role_admin') : t('user_menu.role_user') }}</div>
+          <div class="avatar-actions">
+            <button type="button" class="link-btn" @click="pickAvatarFile" :disabled="avatarBusy">
+              {{ me.has_avatar ? t('settings.profile.avatar_change') : t('settings.profile.avatar_upload') }}
+            </button>
+            <button
+              v-if="me.has_avatar"
+              type="button"
+              class="link-btn link-btn-destructive"
+              :disabled="avatarBusy"
+              @click="onAvatarRemove"
+            >
+              <Trash2 :size="11" :stroke-width="1.75" />
+              {{ t('settings.profile.avatar_remove') }}
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -232,10 +339,66 @@ async function onSavePassword() {
   line-height: 1.5;
 }
 
-.identity-row { display: flex; align-items: center; gap: 12px; }
+.identity-row { display: flex; align-items: center; gap: 14px; }
 .identity-meta { min-width: 0; }
 .email { font-size: 13px; color: var(--color-t1); font-weight: 500; }
 .role { font-size: 11px; color: var(--color-t3); margin-top: 2px; text-transform: lowercase; }
+
+/* Avatar editor — clickable disc with a hover camera overlay.
+   Same approach Linear uses on its profile page: the avatar IS
+   the picker, no separate "Upload" button cluttering the row. */
+.avatar-edit {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.avatar-edit:disabled { cursor: not-allowed; }
+.avatar-edit.is-busy { opacity: 0.6; pointer-events: none; }
+.avatar-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.avatar-edit:hover .avatar-overlay,
+.avatar-edit:focus-visible .avatar-overlay {
+  opacity: 1;
+}
+.hidden-input { display: none; }
+
+.avatar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: var(--color-t2);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.link-btn:hover:not(:disabled) { color: var(--color-t1); }
+.link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.link-btn-destructive { color: var(--color-err-fg, #b91c1c); }
+.link-btn-destructive:hover:not(:disabled) { color: #991b1b; }
 
 .form-row { display: flex; gap: 8px; }
 .form-row .input { flex: 1; }
