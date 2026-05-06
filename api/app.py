@@ -51,7 +51,6 @@ except Exception:
     pass
 
 from .routes import agent as agent_routes
-from .routes import benchmark as benchmark_routes
 from .routes import chunks as chunk_routes
 from .routes import conversations as conversation_routes
 from .routes import documents as document_routes
@@ -248,7 +247,6 @@ def create_app(
     app.include_router(trace_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(graph_routes.router)
-    app.include_router(benchmark_routes.router)
     app.include_router(folder_routes.router)
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)

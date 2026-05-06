@@ -18,9 +18,7 @@ const router = createRouter({
     },
     { path: '/ingestion', redirect: '/workspace' },
     { path: '/knowledge-graph', component: () => import('@/views/KnowledgeGraph.vue') },
-    { path: '/simulation', component: () => import('@/views/Simulation.vue') },
     { path: '/metrics', component: () => import('@/views/Metrics.vue') },
-    { path: '/benchmark', component: () => import('@/views/Benchmark.vue') },
     // Legacy redirect: /tokens (the old "Tokens & Sessions" page) is
     // gone — it split into /settings/sessions (everyone) and
     // /settings/tokens (admin-only). Land both groups on the page

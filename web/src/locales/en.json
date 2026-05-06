@@ -16,12 +16,9 @@
       "search": "Search",
       "workspace": "Workspace",
       "knowledge_graph": "Knowledge Graph",
-      "simulation": "Simulation",
-      "metrics": "Metrics",
-      "benchmark": "Benchmark"
+      "metrics": "Metrics"
     },
     "in_dev": "(In Dev)",
-    "locked": "locked",
     "recents": "Recents",
     "new_chat": "+ New chat",
     "untitled": "Untitled"

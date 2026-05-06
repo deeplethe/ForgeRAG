@@ -23,7 +23,6 @@ const props = defineProps({
   // race where the row is briefly re-added on rollback).
   deletingConvs: { type: Object, default: () => new Set() },
   currentConvId: String,
-  benchmarkRunning: { type: Boolean, default: false },
   me: { type: Object, default: null },
 })
 const emit = defineEmits(['select-conv', 'new-chat', 'delete-conv'])
@@ -35,18 +34,16 @@ const tabs = computed(() => [
   { path: '/search', label_key: 'sidebar.tabs.search' },
   { path: '/workspace', label_key: 'sidebar.tabs.workspace' },
   { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph' },
-  { path: '/simulation', label_key: 'sidebar.tabs.simulation' },
   { path: '/metrics', label_key: 'sidebar.tabs.metrics' },
-  { path: '/benchmark', label_key: 'sidebar.tabs.benchmark', dev: true },
-  // /tokens used to live here; it's now /settings/tokens (admin) /
-  // /settings/sessions (everyone). The avatar menu's Settings link
-  // is the entry point.
+  // /simulation + /benchmark + /tokens used to live here. /tokens
+  // moved into /settings/{sessions,tokens}; simulation + benchmark
+  // were removed (simulation hit the deleted /api/v1/query;
+  // benchmark will be rebuilt). The avatar menu's Settings link
+  // is the entry point for account / token / user management.
 ])
 
 function isTabDisabled(tab) {
-  if (tab.dev) return true
-  // When benchmark is running, only the Benchmark tab is clickable
-  return props.benchmarkRunning && tab.path !== '/benchmark'
+  return !!tab.dev
 }
 
 function onTabClick(tab) {
@@ -124,7 +121,7 @@ function isTabActive(tab) {
           : isTabActive(tab)
             ? 'bg-bg-selected text-t1 font-medium'
             : 'text-t2 hover:bg-bg3'"
-      >{{ t(tab.label_key) }}<span v-if="tab.dev" class="ml-1 text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span><span v-else-if="isTabDisabled(tab) && benchmarkRunning" class="ml-1 text-[10px] text-t3/30">{{ t('sidebar.locked') }}</span></button>
+      >{{ t(tab.label_key) }}<span v-if="tab.dev" class="ml-1 text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span></button>
     </div>
 
     <!-- Conversations (always visible) -->

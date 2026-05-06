@@ -1,7 +1,7 @@
 <script setup>
-import { ref, provide, onMounted, onUnmounted, computed } from 'vue'
+import { ref, provide, onMounted, computed } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { listConversations, deleteConversation, getBenchmarkStatus } from '@/api'
+import { listConversations, deleteConversation } from '@/api'
 import { onUnauthorized } from '@/api/client'
 import { getMe } from '@/api/auth'
 import { useCapabilitiesStore } from '@/stores/capabilities'
@@ -18,7 +18,6 @@ const convsLoading = ref(false)        // true on first load only — drives sid
 const convsLoaded = ref(false)
 const deletingConvs = ref(new Set())   // optimistic-delete in-flight set
 const convId = ref(null)
-const benchmarkRunning = ref(false)
 const me = ref(null)
 const showForcedPwd = ref(false)
 
@@ -63,30 +62,16 @@ function onPasswordChanged() {
   if (me.value) me.value.must_change_password = false
 }
 
-/* Poll benchmark status to lock/unlock tabs */
-let _bmPoll = null
-async function pollBenchmark() {
-  if (isPublicRoute.value) return
-  try {
-    const s = await getBenchmarkStatus()
-    benchmarkRunning.value = ['generating', 'running', 'scoring'].includes(s?.status)
-  } catch { benchmarkRunning.value = false }
-}
 const capabilities = useCapabilitiesStore()
 
 onMounted(() => {
   probeMe()
-  pollBenchmark()
-  _bmPoll = setInterval(pollBenchmark, 3000)
   // Fetch /health features once so the upload UI can pre-flight
   // image / legacy-office gates without a per-upload round-trip.
   capabilities.refresh()
 })
-onUnmounted(() => { if (_bmPoll) clearInterval(_bmPoll) })
 
 provide('me', me)
-
-provide('benchmarkRunning', benchmarkRunning)
 
 function selectConv(id) { convId.value = id }
 function newChat() { convId.value = null }
@@ -137,7 +122,6 @@ provide('loadConvs', loadConvs)
       :conversations-loading="convsLoading"
       :deleting-convs="deletingConvs"
       :currentConvId="convId"
-      :benchmarkRunning="benchmarkRunning"
       :me="me"
       @select-conv="selectConv"
       @new-chat="newChat"

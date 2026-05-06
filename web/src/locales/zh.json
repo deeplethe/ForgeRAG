@@ -16,12 +16,9 @@
       "search": "搜索",
       "workspace": "工作区",
       "knowledge_graph": "知识图谱",
-      "simulation": "模拟",
-      "metrics": "指标",
-      "benchmark": "基准测试"
+      "metrics": "指标"
     },
     "in_dev": "(开发中)",
-    "locked": "已锁定",
     "recents": "最近",
     "new_chat": "+ 新对话",
     "untitled": "未命名"

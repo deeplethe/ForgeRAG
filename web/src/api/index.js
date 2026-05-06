@@ -98,12 +98,6 @@ export {
   getGraphByDoc,
 } from './graph'
 
-// Benchmark
-export {
-  startBenchmark, cancelBenchmark, getBenchmarkStatus,
-  listBenchmarkReports, downloadBenchmarkReport,
-} from './benchmark'
-
 // Folders + document path
 export {
   listFolders, getFolderTree, getFolderInfo,
