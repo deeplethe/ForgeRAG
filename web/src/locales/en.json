@@ -246,6 +246,11 @@
     "pick_file": "Pick a file to see its matching passages.",
     "open_doc": "Open document",
     "expanded_label": "Also searching:",
+    "badge": {
+      "filename": "filename",
+      "content": "content",
+      "both": "both"
+    },
     "empty": {
       "idle": "Type a query to find passages across all documents.",
       "hint": "Tip: works across languages — search ‘bees’ or ‘蜜蜂’ and either turns up passages in both.",
