@@ -241,13 +241,17 @@
     "submit": "Search",
     "clear": "Clear",
     "page": "p.{n}",
+    "section_files": "Files · {n}",
+    "hit_count": "{n} passages",
+    "pick_file": "Pick a file to see its matching passages.",
+    "open_doc": "Open document",
     "empty": {
       "idle": "Type a query to find passages across all documents.",
       "hint": "Tip: works across languages — search ‘bees’ or ‘蜜蜂’ and either turns up passages in both.",
       "searching": "Searching…",
       "none": "No results for \"{query}\"."
     },
-    "footer_v2": "{chunks} passages · {ms} ms"
+    "footer_v3": "{files} files · {chunks} passages · {ms} ms"
   },
   "tools": {
     "label": "Tools",
