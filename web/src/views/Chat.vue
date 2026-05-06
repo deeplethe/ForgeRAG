@@ -10,25 +10,28 @@ export default { name: 'ChatView' }
 const _msgs = ref([])
 const _streaming = ref(false)
 const _streamText = ref('')
-const _streamThinking = ref('')   // legacy: never appended post-cutover
-const _streamThinkingCollapsed = ref(false)
-// _thinkingCollapsed dropped with the persisted CoT pane (commit F).
 const _retInfo = ref(null)
-const _livePhases = ref({})
-const _liveElapsed = ref({})
 const _abortCtrl = ref(null)
-const _progressExpanded = ref(false)
-// Thinking phase between LLM tool-call rounds. Drives the
-// "🧠 理解问题中... 3s" / "🧠 审视检索结果中... 5s" indicator that
-// fills the gap between when an LLM call starts and when it
-// produces tool calls or an answer. Three contexts:
-//   'planning'  — first turn, before any tool has been called
-//   'reviewing' — mid-loop turn, integrating prior tool results
-//   'composing' — forced synthesis turn (budget hit)
-//   null        — no thinking (tools are running OR done)
-const _thinkingPhase = ref(null)
-const _thinkingT0 = ref(0)
-const _thinkingElapsed = ref(0)   // integer seconds since _thinkingT0
+// Chronological trace of the in-flight turn — the "chain" the user
+// sees while the agent thinks-then-acts-then-thinks-then-answers.
+// Each entry is one of:
+//   { kind: 'phase',   phase: 'planning'|'reviewing'|'composing',
+//                      t0, elapsed, status: 'running'|'done' }
+//     LLM is in flight; renders "🧠 Planning… 3s". Morphs into
+//     'thought' once the model emits a content preface; otherwise
+//     stays as a bare timer marker.
+//   { kind: 'thought', phase, text, t0, elapsed, status }
+//     Same as 'phase' but with the LLM's natural-language reasoning
+//     attached. Comes from the new ``agent.thought`` SSE event.
+//   { kind: 'tool',    call_id, name, detail, t0, t1, status, summary }
+//     One tool dispatch. ``running`` while in flight, flips to
+//     ``done`` on tool.call_end.
+// On 'done' the trace is attached to the assistant message so the
+// reasoning chain stays visible after the stream closes. Reloads
+// from DB do NOT carry the trace — it's session-only state; users
+// who reload see just the answer + citations (the trace would
+// require a schema migration to persist).
+const _streamTrace = ref([])
 // Generation overrides set via the Tools popup. ``null`` = use yaml
 // defaults; otherwise a {reasoning_effort?, temperature?} dict that
 // gets posted to the API as ``generation_overrides``.
@@ -41,16 +44,15 @@ let _timer = null
 function _startTimer() {
   if (_timer) return
   _timer = setInterval(() => {
-    const now = Date.now(), obj = {}
-    for (const [k, p] of Object.entries(_livePhases.value)) {
-      obj[k] = p.status === 'running' ? now - p.t0 : (p.t1 || now) - p.t0
-    }
-    _liveElapsed.value = obj
-    // Thinking-phase elapsed counter — integer seconds, updated
-    // every 200ms so the displayed value advances within ~1s of
-    // wall-clock truth without re-rendering at sub-second cadence.
-    if (_thinkingPhase.value && _thinkingT0.value) {
-      _thinkingElapsed.value = Math.floor((now - _thinkingT0.value) / 1000)
+    // Tick elapsed counters on every running entry in the trace —
+    // keeps the "Planning… 3s" / "Searching… 1.2s" timers ticking
+    // without re-emitting events. Integer seconds for thoughts,
+    // ms for tools (matches their respective UI cadence).
+    const now = Date.now()
+    for (const e of _streamTrace.value) {
+      if (e.status !== 'running') continue
+      if (e.kind === 'tool') e.elapsedMs = now - (e.t0 || now)
+      else e.elapsedSec = Math.floor((now - (e.t0 || now)) / 1000)
     }
   }, 200)
 }
@@ -75,6 +77,7 @@ const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
+import AgentMessageBody from '@/components/AgentMessageBody.vue'
 // ThinkingPicker removed post-cutover (provider CoT permanently
 // disabled; see commit d07f673). Component file kept for now —
 // settings UI may reuse it as an advanced/debug toggle later.
@@ -119,16 +122,10 @@ watch(pathFilter, v => {
 const msgs = _msgs
 const streaming = _streaming
 const streamText = _streamText
-const streamThinking = _streamThinking
-const streamThinkingCollapsed = _streamThinkingCollapsed
 const retInfo = _retInfo
-const livePhases = _livePhases
-const liveElapsed = _liveElapsed
 const abortCtrl = _abortCtrl
-const progressExpanded = _progressExpanded
 const genTools = _genTools
-const thinkingPhase = _thinkingPhase
-const thinkingElapsed = _thinkingElapsed
+const streamTrace = _streamTrace
 
 // (Pre-agent-cutover this section adapted ``genTools.thinking``
 // for the ThinkingPicker chip. The chip was removed when the
@@ -140,15 +137,6 @@ const thinkingElapsed = _thinkingElapsed
 // Per-instance state (OK to reset on remount)
 const input = ref('')
 const chatEl = ref(null)
-const thinkingStreamEl = ref(null)   // live thinking pane element — auto-scrolls to bottom
-
-// Keep the live thinking pane scrolled to its latest content while
-// reasoning streams in. ``flush: 'post'`` runs after Vue has applied
-// the new ``streamThinking`` text to the DOM.
-watch(_streamThinking, () => {
-  if (!thinkingStreamEl.value) return
-  thinkingStreamEl.value.scrollTop = thinkingStreamEl.value.scrollHeight
-}, { flush: 'post' })
 const pdf = reactive({ show: false, url: '', page: 1, highlights: [], cite: null, downloadUrl: '', sourceDownloadUrl: '', sourceLabel: '' })
 // PdfViewer mount lifecycle is gated to the slide-pdf <Transition>:
 //   open  → wait for ``@after-enter`` → mount  (slide-in is GPU-clean)
@@ -202,49 +190,9 @@ onMounted(() => {
 const startTimer = _startTimer
 const stopTimer = _stopTimer
 
-const allPhasesSorted = computed(() =>
-  Object.entries(livePhases.value)
-    .sort((a, b) => a[1].t0 - b[1].t0)
-    .map(([name, p]) => ({ name, ...p }))
-)
-
-/** Current summary: what's running right now, as a single sentence */
-const progressSummary = computed(() => {
-  const running = allPhasesSorted.value.filter(p => p.status === 'running')
-  if (!running.length) {
-    const done = allPhasesSorted.value.filter(p => p.status === 'done')
-    if (done.length) {
-      const last = done[done.length - 1]
-      return { text: pLabel.value[last.name] || last.name, done: true, elapsed: liveElapsed.value[last.name] }
-    }
-    return null
-  }
-  const names = running.map(p => pLabel.value[p.name] || p.name)
-  // Show longest-running phase's elapsed time
-  const maxElapsed = Math.max(...running.map(p => liveElapsed.value[p.name] || 0))
-  return { text: names.join(', '), done: false, elapsed: maxElapsed }
-})
-
-// Tool name → human label. Post-cutover the agent loop emits one
-// "phase" per tool call; we reuse the existing livePhases UI by
-// keying entries on call_id and storing the tool name as ``name``.
-// The progress widget reads ``pLabel[name]`` to display.
-//
-// Labels are intentionally non-technical (i18n keys at
-// ``chat.tool.*``): "关键字检索 / Keyword search" /
-// "语义搜索 / Semantic search" / "全局知识理解 / Concept network"
-// rather than "BM25" / "Vector" / "KG explore". Users don't think
-// in implementation terms; the chat log should read like a
-// research assistant's working notes.
-const pLabel = computed(() => ({
-  search_bm25:   t('chat.tool.search_bm25'),
-  search_vector: t('chat.tool.search_vector'),
-  read_chunk:    t('chat.tool.read_chunk'),
-  read_tree:     t('chat.tool.read_tree'),
-  graph_explore: t('chat.tool.graph_explore'),
-  web_search:    t('chat.tool.web_search'),
-  rerank:        t('chat.tool.rerank'),
-}))
+// Tool labels live in ToolChip — that's the only consumer.
+// Friendly i18n keys at ``chat.tool.*`` ("关键字检索 / Keyword
+// search", etc.) are read directly inside the chain component.
 
 /* ── Load conversation ── */
 let _pollTimer = null
@@ -261,7 +209,7 @@ watch(convId, async (id) => {
   // backend persists the result via its own finally block).
   _streamGenId++
   streaming.value = false; streamText.value = ''; stopTimer(); stopPoll()
-  livePhases.value = {}; liveElapsed.value = {}
+  streamTrace.value = []
   msgs.value = []; pdf.show = false; activeCiteId.value = null; trace.show = false
   if (id) {
     await _loadAndPoll(id)
@@ -275,6 +223,14 @@ async function _loadAndPoll(id) {
       role: m.role,
       content: m.content,
       citations: normalizeCitations(m.citations_json),
+      // Restore the agent reasoning chain from the DB so refresh
+      // shows the same "Thought for Xs · N tools" panel it
+      // showed live. The backend persists the same shape the
+      // frontend's streamTrace builds (see _accumulate_trace in
+      // api/routes/agent.py). Older rows have no agent_trace_json
+      // column populated → undefined → AgentMessageBody renders
+      // just the answer body with no inline tool chips.
+      agentTrace: Array.isArray(m.agent_trace_json) ? m.agent_trace_json : null,
       traceId: m.trace_id || null,
     }))
   }
@@ -340,20 +296,101 @@ async function _loadAndPoll(id) {
 
 function normalizeCitations(raw) {
   if (!raw?.length) return null
-  if (typeof raw[0] === 'object' && raw[0] !== null) return raw
+  if (typeof raw[0] === 'object' && raw[0] !== null) {
+    // DB persistence (api/routes/agent.py::_persist_turn) writes
+    // pool entries verbatim: ``cite_id`` / ``page_start`` etc.
+    // The chip renderer + buildCiteDisplayMap read ``citation_id``
+    // / ``page_no`` (the shape ``_agentCitationsToOldShape``
+    // produces on the live stream path). Without this mapping
+    // every reload entry looks like ``citation_id=undefined`` →
+    // buildCiteDisplayMap's cidSet is empty → orderedCitations
+    // returns [] and the user sees zero chips after refresh.
+    // Mirror the live-path mapping here so both feeds present
+    // the same shape downstream.
+    return raw.map((c) => ({
+      ...c,
+      citation_id: c.citation_id || c.cite_id,
+      page_no: c.page_no || c.page_start || c.page || 1,
+    }))
+  }
   return raw.map(id => (typeof id === 'string' ? { citation_id: id, _needsEnrich: true } : id))
 }
 
 // Convert agent-path citations into the shape the existing
 // citation card / PDF preview expects. Agent citations carry
-// only ``chunk_id`` / ``doc_id`` / ``page_start`` / ``content``;
-// the legacy chat UI expects ``citation_id`` / ``page_no`` /
-// ``snippet`` / ``highlights`` / ``file_id``. ``file_id`` is
-// resolved lazily at click time via ``docFileId(doc_id)``.
-function _agentCitationsToOldShape(cits) {
+// ``cite_id`` (sequential ``c_N`` assigned by the dispatch layer
+// in registration order) + ``chunk_id`` / ``doc_id`` /
+// ``page_start`` / ``content``; the legacy chat UI expects
+// ``citation_id`` (matched against ``[c_N]`` markers in the
+// answer text) / ``page_no`` / ``snippet`` / ``highlights`` /
+// ``file_id``. ``file_id`` is resolved lazily at click time via
+// ``docFileId(doc_id)``.
+//
+// Ordering: walk the answer text in order, collect ``[c_N]``
+// markers, put those chunks first (in citation-appearance order).
+// Fill remaining slots up to ``_CITATION_DISPLAY_CAP`` with the
+// highest-scored unreferenced chunks. Net effect: the chip rail
+// reads top-to-bottom as ``[1] [2] [3]…`` matching the inline
+// markers, with a few extra "also looked at this" sources tacked
+// on if the LLM only cited a subset of the pool.
+const _CITATION_DISPLAY_CAP = 8
+
+function _agentCitationsToOldShape(cits, answerText) {
   if (!cits || !cits.length) return null
-  return cits.map((c) => ({
-    citation_id: c.chunk_id,
+
+  // Parse answer for ``[c_N]`` markers in first-appearance order.
+  const citedIds = []
+  if (answerText) {
+    const re = /\[(c_\d+(?:\s*,\s*c_\d+)*)\]/g
+    let m
+    while ((m = re.exec(answerText)) !== null) {
+      for (const cid of m[1].split(/\s*,\s*/).map((s) => s.trim())) {
+        if (cid && !citedIds.includes(cid)) citedIds.push(cid)
+      }
+    }
+  }
+
+  // Honour the model's citation choices strictly: only render
+  // chunks the answer actually references via ``[c_N]``. Earlier
+  // we padded the rail with the highest-scored unreferenced pool
+  // entries, but that misfires when the model decides the corpus
+  // didn't have what it needed — the answer carries zero markers
+  // (model fell back to general knowledge), yet the rail dumps 8
+  // unrelated chunks the search just happened to surface, making
+  // it look like the answer cited mushroom-farming docs to
+  // discuss Irish wooden flutes. If the model didn't cite, we
+  // show nothing.
+  if (!citedIds.length) return null
+
+  // Lookup the pool by cite_id; entries lacking cite_id (legacy
+  // pre-cite_id pool entries) get a synthesised one from index.
+  const byId = new Map()
+  cits.forEach((c, i) => {
+    const id = c.cite_id || `c_${i + 1}`
+    byId.set(id, { ...c, cite_id: id })
+  })
+
+  // Cited entries in answer order. We don't pad with unreferenced
+  // pool entries — the chain UI already shows the user that
+  // retrieval ran ("阅读了 N 个段落"); the citation rail is for
+  // grounded sources only.
+  //
+  // IMPORTANT: do NOT cap the inline list here. Every ``[c_N]``
+  // marker in the answer text needs a corresponding entry in
+  // ``m.citations`` so renderMsg can turn it into a clickable
+  // chip; capping at 8 silently broke the 9th, 10th, … markers
+  // (rendered as raw ``[c_11]`` text instead). The chip RAIL
+  // below the answer applies its own ``_CITATION_DISPLAY_CAP``
+  // for visual hygiene — see ``mergedCitationsForRail``.
+  const ordered = []
+  for (const cid of citedIds) {
+    if (byId.has(cid)) ordered.push(byId.get(cid))
+  }
+
+  if (!ordered.length) return null
+
+  return ordered.map((c) => ({
+    citation_id: c.cite_id,
     chunk_id: c.chunk_id,
     doc_id: c.doc_id,
     page_no: c.page_start || c.page || 1,
@@ -361,8 +398,21 @@ function _agentCitationsToOldShape(cits) {
       ? c.content.slice(0, 280)
       : (c.snippet || ''),
     score: c.score ?? null,
-    file_id: null,                // resolved on click via docFileId
-    highlights: c.page_start ? [{ page_no: c.page_start, bbox: null }] : [],
+    // file_id + highlights + source come straight from the backend's
+    // ``enrich_citations`` (api/agent/dispatch.py) — same fields the
+    // deleted retrieval/citations.py produced for the fixed pipeline.
+    // ``file_id`` is the renderable PDF (pdf_file_id when uploaded
+    // file is non-PDF, else original); ``highlights`` is one rect
+    // per parsed block the chunk covers, with real bboxes. Old
+    // clients (or pre-enrichment legacy citations on conversation
+    // reload) get the page-only fallback so the panel still opens
+    // on the right page even without bbox.
+    file_id: c.file_id || null,
+    source_file_id: c.source_file_id || null,
+    source_format: c.source_format || null,
+    highlights: Array.isArray(c.highlights) && c.highlights.length
+      ? c.highlights
+      : (c.page_start ? [{ page_no: c.page_start, bbox: null }] : []),
   }))
 }
 
@@ -486,12 +536,25 @@ Both use **knowledge graphs** to enhance RAG, but their architectural philosophi
 
 async function send(text) {
   const q = (text || input.value).trim(); if (!q || streaming.value) return; input.value = ''
+
+  // Optimistic UI: push the user bubble + flip the streaming flag
+  // BEFORE awaiting any network roundtrip. Without this, fresh
+  // conversations had a perceptible delay between clicking send
+  // and the loading indicator appearing — the await on
+  // ``createConversation`` (one HTTP roundtrip to the backend)
+  // blocked everything below, including ``streaming.value=true``
+  // and the user-bubble push. The user clicked send and stared at
+  // a still UI for ~1-3s.
+  msgs.value.push({ role: 'user', content: q })
+  streaming.value = true; streamText.value = ''; retInfo.value = null
+  streamTrace.value = []
+  startTimer(); scroll()
+
   if (!convId.value) try {
     _skipNextWatch = true  // prevent watch from resetting UI on convId change
     convId.value = (await createConversation(q.slice(0, 60))).conversation_id
     loadConvs()  // refresh sidebar immediately so the new conversation is visible
   } catch { _skipNextWatch = false }
-  msgs.value.push({ role: 'user', content: q })
 
   // Check if this is a preset question — simulate fast streaming + persist
   const preset = presetQA.find(p => p.q === q)
@@ -519,10 +582,8 @@ async function send(text) {
     return
   }
 
-  streaming.value = true; streamText.value = ''; streamThinking.value = ''; retInfo.value = null
-  livePhases.value = {}; liveElapsed.value = {}; progressExpanded.value = false
-  thinkingPhase.value = null; thinkingElapsed.value = 0
-  startTimer(); scroll()
+  // (streaming.value, streamText, streamTrace, startTimer already
+  // initialised at the top of send() via the optimistic-UI block.)
 
   const myGenId = ++_streamGenId
   abortCtrl.value = new AbortController()
@@ -530,21 +591,40 @@ async function send(text) {
     let fin = null
     let citationsList = null
     let turnsCompleted = 0  // count of agent.turn_end events seen so far
-    // Map agent SSE events onto live UI state:
-    //   agent.turn_start → set thinkingPhase ('planning' on iter 1,
-    //                      'reviewing' on subsequent, 'composing' if
-    //                      synthesis_only). LLM is reasoning right now.
-    //   tool.call_start  → clear thinkingPhase (tools running),
-    //                      push livePhases entry keyed by call_id
-    //   tool.call_end    → flip livePhases entry to done + latency
-    //   agent.turn_end   → bump turnsCompleted (drives planning vs
-    //                      reviewing on the NEXT turn_start)
-    //   answer           → clear thinkingPhase, set streamText
-    //   done             → final state with citations + stop_reason
+
+    // Helper: walk back through the trace and find the most-recent
+    // entry of one of the requested kinds. Used to find which phase
+    // entry to attach a thought event to or to mark done when tools
+    // start firing.
+    const lastEntry = (...kinds) => {
+      for (let i = streamTrace.value.length - 1; i >= 0; i--) {
+        if (kinds.includes(streamTrace.value[i].kind)) return streamTrace.value[i]
+      }
+      return null
+    }
+
+    // Map agent SSE events onto the chronological trace:
+    //   agent.turn_start → push a 'phase' entry (running). The
+    //                      timer ticks until the LLM produces
+    //                      tools or an answer.
+    //   agent.thought    → upgrade the trailing phase to 'thought'
+    //                      with the model's reasoning text.
+    //   tool.call_start  → mark the trailing phase/thought done,
+    //                      push a 'tool' entry (running).
+    //   tool.call_end    → flip the matching tool entry to done +
+    //                      attach latency / hit-count summary.
+    //   agent.turn_end   → mark the trailing phase/thought done
+    //                      (it may have been a no-op turn that
+    //                      went straight to answer with no tools).
+    //   answer.delta     → append to streamText (synthesis stream).
+    //   answer           → set streamText if empty (non-stream
+    //                      direct answer path).
+    //   done             → final state with citations + stop_reason.
     //
     // Persistence happens server-side once the SSE stream closes
-    // (see api/routes/agent.py `_persist_turn`); no frontend
-    // addMessage call needed.
+    // (see api/routes/agent.py `_persist_turn`); the trace itself
+    // is session-only — we attach it to the in-memory message
+    // below but it isn't written to the DB.
     for await (const evt of agentChatStream({
       message: q,
       conversationId: convId.value,
@@ -558,52 +638,114 @@ async function send(text) {
       if (t === 'agent.turn_start') {
         // 3-way phase choice: forced synthesis (budget hit) → composing;
         // first turn → planning; otherwise → reviewing.
-        thinkingPhase.value = evt.synthesis_only
+        const phase = evt.synthesis_only
           ? 'composing'
           : (turnsCompleted === 0 ? 'planning' : 'reviewing')
-        _thinkingT0.value = Date.now()
-        thinkingElapsed.value = 0
+        streamTrace.value.push({
+          kind: 'phase',
+          phase,
+          text: '',
+          t0: Date.now(),
+          elapsedSec: 0,
+          status: 'running',
+        })
+        scroll()
+      } else if (t === 'agent.thought') {
+        // The LLM produced a natural-language preface alongside
+        // tool calls. Upgrade the trailing phase entry into a
+        // thought entry by storing the text — same slot, richer
+        // content. Don't mark done yet; tool.call_start does that.
+        const last = lastEntry('phase', 'thought')
+        if (last && last.status === 'running') {
+          last.kind = 'thought'
+          last.text = evt.text || ''
+        } else {
+          // No active phase (shouldn't happen, but guard anyway):
+          // append a standalone thought so the text isn't lost.
+          streamTrace.value.push({
+            kind: 'thought',
+            phase: turnsCompleted === 0 ? 'planning' : 'reviewing',
+            text: evt.text || '',
+            t0: Date.now(),
+            elapsedSec: 0,
+            status: 'done',
+          })
+        }
         scroll()
       } else if (t === 'agent.turn_end') {
         turnsCompleted += 1
+        const last = lastEntry('phase', 'thought')
+        if (last && last.status === 'running') last.status = 'done'
       } else if (t === 'tool.call_start') {
-        // Tools are running → thinking phase ends.
-        thinkingPhase.value = null
-        const detail = evt.params?.query || evt.params?.chunk_id || evt.params?.doc_id || ''
-        livePhases.value = {
-          ...livePhases.value,
-          [evt.id]: {
-            name: evt.tool,
-            status: 'running',
-            detail: typeof detail === 'string' ? detail.slice(0, 64) : '',
-            t0: Date.now(),
-          },
+        // Mark the trailing phase/thought done. If we'd been
+        // streaming preface deltas into ``streamText`` for this
+        // turn (the model wrote "Let me search for X first..."
+        // before emitting the tool_call), MOVE that text into
+        // the trailing chain entry as a thought — text was a
+        // preface to the tool, not a final answer. The chain
+        // CSS renders thought text inline with the phase label
+        // ("Reviewing results — Let me search..."), so the move
+        // shifts the text from below the chain to inline within
+        // it on the tool.call_start boundary.
+        const last = lastEntry('phase', 'thought')
+        if (last && last.status === 'running') {
+          if (streamText.value) {
+            last.kind = 'thought'
+            last.text = streamText.value
+            streamText.value = ''
+          }
+          last.status = 'done'
         }
+        const detail = evt.params?.query || evt.params?.chunk_id || evt.params?.doc_id || ''
+        streamTrace.value.push({
+          kind: 'tool',
+          call_id: evt.id,
+          name: evt.tool,
+          detail: typeof detail === 'string' ? detail.slice(0, 64) : '',
+          t0: Date.now(),
+          t1: null,
+          elapsedMs: 0,
+          status: 'running',
+          summary: '',
+        })
         scroll()
       } else if (t === 'tool.call_end') {
-        const ex = livePhases.value[evt.id]
         const summary = evt.result_summary || {}
         const sumText = summary.hit_count != null ? `${summary.hit_count} hits`
           : summary.entity_count != null ? `${summary.entity_count} entities`
           : summary.chunk_count != null ? `${summary.chunk_count} chunks`
           : summary.error ? 'error'
           : ''
-        livePhases.value = {
-          ...livePhases.value,
-          [evt.id]: {
-            name: evt.tool,
-            status: 'done',
-            detail: sumText || ex?.detail || '',
-            t0: ex?.t0 || Date.now() - (evt.latency_ms || 0),
-            t1: (ex?.t0 || Date.now()) + (evt.latency_ms || 0),
-          },
+        const entry = streamTrace.value.find(
+          (e) => e.kind === 'tool' && e.call_id === evt.id,
+        )
+        if (entry) {
+          entry.status = 'done'
+          entry.t1 = (entry.t0 || Date.now()) + (evt.latency_ms || 0)
+          entry.elapsedMs = evt.latency_ms || 0
+          if (sumText) entry.summary = sumText
         }
+      } else if (t === 'answer.delta') {
+        // All deltas accumulate in streamText (rendered below the
+        // chain). On tool turns, ``tool.call_start`` will MOVE
+        // the accumulated text into the trailing chain entry as
+        // an inline thought ("Reviewing results — let me…").
+        // On direct-answer / synthesis turns, no tool.call_start
+        // fires, so streamText stays as the final answer body.
+        // This keeps the streaming → final-answer flow seamless
+        // (no text "jumping" from chain to body at the end of a
+        // long composing turn).
+        streamText.value += evt.text || ''
+        scroll()
       } else if (t === 'answer') {
-        // Answer arrived → no more thinking (some other turn might
-        // still emit, but the current visible "thinking" phase is
-        // closed by the answer landing).
-        thinkingPhase.value = null
-        streamText.value = evt.text || ''
+        // Final aggregated answer event — backend always emits
+        // this with the full answer text. For synthesis turns we
+        // already accumulated via deltas; for non-streaming direct
+        // answers (DSML fallback path) this is the only delivery.
+        // Mark trailing entry done. Set streamText if empty.
+        const last = lastEntry('phase', 'thought')
+        if (last && last.status === 'running') last.status = 'done'
+        if (!streamText.value) streamText.value = evt.text || ''
         scroll()
       } else if (t === 'done') {
         fin = evt
@@ -611,11 +753,25 @@ async function send(text) {
       }
     }
     if (fin && myGenId === _streamGenId) {
+      const answerContent = fin.answer || streamText.value || ''
+      // Snapshot the entire trace verbatim. Earlier we filtered
+      // out bare phase entries (no text, just a timer) so a
+      // trailing "Planning… 1s" wouldn't float above a direct
+      // answer — but that also dropped MID-stream phases
+      // ("Reviewing… 5s") whose timing is the most useful piece
+      // of feedback in the chain (it's what tells the user
+      // "model spent N seconds thinking between tool batches").
+      // The summary in the chain header sums elapsedSec over all
+      // entries; dropping phases zeroed it out. Keep everything;
+      // the UI chooses how to render bare phases (a slim
+      // "Reviewing · 3s" line).
+      const traceSnapshot = streamTrace.value.map((e) => ({ ...e }))
       msgs.value.push({
         role: 'assistant',
-        content: fin.answer || streamText.value || '',
+        content: answerContent,
         thinking: '',  // thinking is disabled in the agent LLM call
-        citations: _agentCitationsToOldShape(citationsList),
+        citations: _agentCitationsToOldShape(citationsList, answerContent),
+        agentTrace: traceSnapshot,
         stats: {
           stop_reason: fin.stop_reason,
           iterations: fin.iterations,
@@ -628,7 +784,7 @@ async function send(text) {
         traceId: null,
       })
       streamText.value = ''
-      streamThinking.value = ''
+      streamTrace.value = []
     }
   } catch (e) {
     // AbortError from user clicking stop — not an error
@@ -657,14 +813,19 @@ function stopGeneration() {
 
 function scroll() { nextTick(() => chatEl.value && (chatEl.value.scrollTop = chatEl.value.scrollHeight)) }
 function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!streaming.value) send() } }
-function fmtSec(ms) { return ms == null ? '' : ms < 1000 ? '<1s' : Math.round(ms / 1000) + 's' }
 
 /* ── PDF ── */
 const activeCiteId = ref(null)    // citation_id for legacy compat
 const activeChunkId = ref(null)   // chunk_id — the real identity
 
 function onCiteClick(c) {
-  if (!c?.file_id) return
+  // Agent-path citations carry only ``doc_id`` + ``chunk_id`` —
+  // ``file_id`` is resolved lazily below via the doc cache. So
+  // we can't bail early on ``!c.file_id`` (the old check skipped
+  // every agent click silently — clicked chip lit up but PDF
+  // never opened). Bail only if we have neither file_id nor
+  // doc_id to resolve from.
+  if (!c || (!c.file_id && !c.doc_id)) return
 
   // Toggle: click same chunk again → close PDF & clear highlight
   if (activeChunkId.value === c.chunk_id && pdf.show) {
@@ -744,12 +905,71 @@ function buildCiteDisplayMap(text, cites) {
 function orderedCitations(m) {
   const cites = m?.citations
   if (!cites?.length) return []
+  // Filter to citations the answer text ACTUALLY references via
+  // ``[c_N]`` markers, in first-appearance order. Two paths feed
+  // this:
+  //   * live stream — _agentCitationsToOldShape already pre-filtered
+  //                   (returns null when answer cited nothing)
+  //   * DB reload  — citations_json on the message row carries the
+  //                  full pool (every chunk any tool surfaced),
+  //                  not the cited subset. Without this gate, a
+  //                  reload would dump 40+ chips below the answer
+  //                  even though the model only [c_1] [c_18]'d
+  //                  two of them.
+  // No markers → no chips. Same invariant as the live path.
   const map = buildCiteDisplayMap(m.content || '', cites)
-  return [...cites].sort((a, b) => {
-    const pa = map[a.citation_id] ?? 999_999
-    const pb = map[b.citation_id] ?? 999_999
-    return pa - pb
-  })
+  if (!Object.keys(map).length) return []
+  return cites
+    .filter((c) => c?.citation_id && c.citation_id in map)
+    .sort((a, b) => map[a.citation_id] - map[b.citation_id])
+}
+
+/**
+ * Build the rail entries — same content as orderedCitations, but
+ * adjacent entries that share (doc_id, page_no) get folded into
+ * one chip with the labels concatenated (``[2,3,5] p114 …``).
+ *
+ * Why: the chunker splits long pages into multiple chunks, each
+ * with its own cite_id. The agent legitimately reads a few of
+ * them in different rounds, so the answer carries distinct
+ * ``[c_2]`` ``[c_3]`` ``[c_5]`` markers grounding different
+ * facts. The CHIP rail though shows them as three identical-
+ * looking rows ("p114 08_natural_beekeeping.md" three times),
+ * which reads like a mistake — same source listed thrice.
+ *
+ * Folding by (doc_id, page_no) preserves the inline marker
+ * granularity (each [N] still opens to its own chunk) while
+ * keeping the rail visually clean. Click on a merged chip uses
+ * the combined ``highlights`` so the PDF panel shows every
+ * bbox the merged chunks cover.
+ */
+function mergedCitationsForRail(m) {
+  const flat = orderedCitations(m)
+  const groups = []
+  for (let i = 0; i < flat.length; i++) {
+    const c = flat[i]
+    const label = i + 1
+    const key = `${c.doc_id || '?'}::${c.page_no || '?'}`
+    const last = groups[groups.length - 1]
+    if (last && last._key === key) {
+      last._labels.push(label)
+      last._chunkIds.push(c.chunk_id)
+      last.highlights = [...(last.highlights || []), ...(c.highlights || [])]
+    } else {
+      groups.push({
+        ...c,
+        _key: key,
+        _labels: [label],
+        _chunkIds: [c.chunk_id],
+      })
+    }
+  }
+  // Cap the RAIL only — inline ``[c_N]`` chips in the answer
+  // body rendered via renderMsg are NOT capped (every marker
+  // needs its citation entry to remain clickable). The rail
+  // is for visual-summary purposes; once you have ~8 distinct
+  // (doc, page) groups, more chips just clutter the rail.
+  return groups.slice(0, _CITATION_DISPLAY_CAP)
 }
 
 function renderMsg(text, cites) {
@@ -978,17 +1198,20 @@ function onTraceClick(m) {
               <div v-if="m.role === 'user'" class="flex justify-end mb-2">
                 <div class="px-4 py-2.5 rounded-2xl text-sm bg-bg3 text-t1 max-w-[75%]">{{ m.content }}</div>
               </div>
-              <!-- Assistant -->
+              <!-- Assistant — Claude-Code-style interleaved body:
+                   the model's narration text, tool-chip groups,
+                   and the final answer all weave together in
+                   chronological order. The standalone chain panel
+                   that used to hover above the body has been
+                   absorbed; thoughts now ARE the message text. -->
               <div v-else class="group mb-2">
-                <!-- Persisted thinking pane removed when the
-                     ``messages.thinking`` column was dropped (commit
-                     for F). Old conversations from the pre-cutover
-                     era lose their displayed CoT but keep their
-                     answer + citations intact. -->
-                <div class="msg-body text-sm leading-7 text-t1 max-w-[90%]"
-                  v-html="renderMsg(m.content, m.citations)"
-                  @click="onMsgClick($event, m.citations)">
-                </div>
+                <AgentMessageBody
+                  :trace="m.agentTrace || []"
+                  :content="m.content || ''"
+                  :citations="m.citations || null"
+                  :render-text="renderMsg"
+                  :on-cite-click="(e) => onMsgClick(e, m.citations)"
+                />
                 <div v-if="m.citations?.length" class="flex flex-wrap gap-1.5 mt-3">
                   <!-- Citation card: paper-style reference list under the
                        answer. Sorted to match the inline ``[1][2][3]``
@@ -999,13 +1222,20 @@ function onTraceClick(m) {
                        from useDocCache (keyed by doc_id) so renames
                        reflect immediately and persisted citations
                        never carry stale names. -->
-                  <button v-for="(c, ci) in orderedCitations(m)" :key="c.citation_id || ci"
+                  <!-- Rail chips folded by (doc_id, page_no) — see
+                       ``mergedCitationsForRail``. Inline ``[c_N]``
+                       markers in the answer body remain independent
+                       (each marker still opens its specific chunk
+                       via onMsgClick); the rail just stops listing
+                       p114 three times when the agent read three
+                       chunks of one page. -->
+                  <button v-for="(c, ci) in mergedCitationsForRail(m)" :key="c._key + ':' + ci"
                     class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] transition-colors"
-                    :class="activeChunkId === c.chunk_id
+                    :class="c._chunkIds.includes(activeChunkId)
                       ? 'border-brand bg-brand/10 text-brand'
                       : 'border-line text-t2 hover:bg-bg3'"
                     @click="onCiteClick(c)">
-                    <span class="font-medium" :class="activeChunkId === c.chunk_id ? '' : 'text-brand'">[{{ ci + 1 }}]</span>
+                    <span class="font-medium" :class="c._chunkIds.includes(activeChunkId) ? '' : 'text-brand'">[{{ c._labels.join(',') }}]</span>
                     <span v-if="c.page_no" class="text-t3">p{{ c.page_no }}</span>
                     <span v-if="c.doc_id" class="text-t2 truncate max-w-64">
                       {{ docNameFor(c) || t('chat.citation_untitled') }}
@@ -1021,87 +1251,31 @@ function onTraceClick(m) {
               </div>
             </div>
 
-            <!-- ═══ Streaming: lightweight progress ═══ -->
-            <div v-if="streaming" class="fadein">
-              <div v-if="!streamText" class="text-[12px] text-t3 leading-6">
-                <!-- Thinking phase: between LLM turns the agent is
-                     reasoning over results — show what context it's
-                     in (planning the first call vs reviewing tool
-                     results vs composing the final answer). Drives
-                     the "🧠 审视检索结果中... 5s" indicator. -->
-                <template v-if="thinkingPhase">
-                  <span class="text-t2">
-                    <span class="inline-block mr-1">🧠</span>
-                    {{ t(`chat.thinking_phase.${thinkingPhase}`) }}…
-                    <span class="text-t3 text-[11px] ml-1.5">{{ thinkingElapsed }}s</span>
-                  </span>
-                </template>
-
-                <!-- No phases yet AND not in thinking — initial empty
-                     state right after submit, before any event lands. -->
-                <template v-else-if="!Object.keys(livePhases).length">
-                  <Spinner size="sm" />
-                </template>
-
-                <template v-else>
-                  <!-- Summary line (always visible): "Searching... 3.2s ▾".
-                       The old "Thinking:" prefix collided with the actual
-                       Thinking pane below — they looked identical despite
-                       meaning different things ("model is in Generating
-                       phase" vs "the model's reasoning_content"). Drop
-                       the prefix, the phase name + spinner are enough. -->
-                  <span v-if="progressSummary && !progressSummary.done" class="text-t2">
-                    {{ progressSummary.text }}...
-                    <span class="text-t3 text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
-                  </span>
-                  <span v-else-if="progressSummary && progressSummary.done" class="text-t3">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" class="inline -mt-px mr-0.5 text-t1">
-                      <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    {{ progressSummary.text }}
-                    <span class="text-[11px] ml-1.5">{{ fmtSec(progressSummary.elapsed) }}</span>
-                  </span>
-
-                  <!-- Expand toggle -->
-                  <button class="ml-1 text-t3/50 hover:text-t3 align-middle" @click="progressExpanded = !progressExpanded">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                      class="inline transition-transform" :class="progressExpanded ? 'rotate-180' : ''">
-                      <path d="M6 9l6 6 6-6"/>
-                    </svg>
-                  </button>
-
-                  <!-- Expanded detail (each phase as inline text) -->
-                  <div v-if="progressExpanded" class="mt-1 text-[11px] text-t3 leading-5">
-                    <div v-for="p in allPhasesSorted" :key="p.name" class="phase-in">
-                      <template v-if="p.status === 'done'">
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" class="inline -mt-px mr-0.5 text-t1">
-                          <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                        {{ pLabel[p.name] || p.name }}
-                        <span v-if="p.detail" class="text-t3/50 ml-1">{{ p.detail }}</span>
-                        <span class="text-t3/40 text-[10px] ml-1.5">{{ fmtSec(liveElapsed[p.name]) }}</span>
-                      </template>
-                      <template v-else>
-                        <Spinner size="xs" class="mr-0.5 -mt-px" />
-                        <span class="text-t2">{{ pLabel[p.name] || p.name }}</span>
-                        <span class="text-t3/40 text-[10px] ml-1.5">{{ fmtSec(liveElapsed[p.name]) }}</span>
-                      </template>
-                    </div>
-                  </div>
-                </template>
-              </div>
-
-              <!-- Live provider-CoT pane removed post-cutover: with
-                   provider thinking hard-disabled (commit d07f673),
-                   ``streamThinking`` is never populated. The agent's
-                   own between-turn reasoning is shown instead via the
-                   ``thinkingPhase`` indicator above; persisted CoT
-                   on legacy assistant messages still renders below. -->
-
-              <!-- Streaming text (rendered after thinking — same order as
-                   the persisted assistant message above). -->
-              <div v-if="streamText" class="msg-body text-sm leading-7 text-t1">
-                <span v-html="renderStream(streamText)"></span><span class="inline-block w-0.5 h-4 ml-0.5 bg-brand animate-pulse rounded-sm"></span>
+            <!-- ═══ Streaming: live message body ═══
+                 Same component as the persisted assistant message,
+                 just driven by the in-flight streamTrace +
+                 streamText. The Claude-Code-style body weaves
+                 thought paragraphs and tool chips chronologically
+                 as events arrive. Once 'done' fires the streaming
+                 state moves into msgs[] and this branch unmounts. -->
+            <div v-if="streaming" class="fadein group mb-2">
+              <AgentMessageBody
+                :trace="streamTrace"
+                :content="streamText"
+                :citations="null"
+              />
+              <!-- Always-visible "thinking" indicator at the very
+                   bottom of the streaming message. Sparkle icon
+                   matches the rest of the agent identity, rotates
+                   slowly to signal "still working" — even when no
+                   text or tools are visible yet (the awkward gap
+                   between submit and the first SSE event). Stops
+                   when ``streaming.value`` flips false. -->
+              <div class="thinking-indicator">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="thinking-icon">
+                  <path d="M8.00192 6.64454C8.75026 6.64454 9.35732 7.25169 9.35739 8.00001C9.35739 8.74838 8.7503 9.35548 8.00192 9.35548C7.25367 9.35533 6.64743 8.74829 6.64743 8.00001C6.6475 7.25178 7.25371 6.64468 8.00192 6.64454Z"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M9.97165 1.29981C11.5853 0.718916 13.271 0.642197 14.3144 1.68555C15.3577 2.72902 15.2811 4.41466 14.7002 6.02833C14.4707 6.66561 14.1504 7.32937 13.75 8.00001C14.1504 8.67062 14.4707 9.33444 14.7002 9.97169C15.2811 11.5854 15.3578 13.271 14.3144 14.3145C13.271 15.3579 11.5854 15.2811 9.97165 14.7002C9.3344 14.4708 8.67059 14.1505 7.99997 13.75C7.32933 14.1505 6.66558 14.4708 6.02829 14.7002C4.41461 15.2811 2.72899 15.3578 1.68552 14.3145C0.642155 13.271 0.71887 11.5854 1.29977 9.97169C1.52915 9.33454 1.84865 8.67049 2.24899 8.00001C1.84866 7.32953 1.52915 6.66544 1.29977 6.02833C0.718852 4.41459 0.64207 2.729 1.68552 1.68555C2.72897 0.642112 4.41456 0.718887 6.02829 1.29981C6.66541 1.52918 7.32949 1.8487 7.99997 2.24903C8.67045 1.84869 9.33451 1.52919 9.97165 1.29981ZM12.9404 9.2129C12.4391 9.893 11.8616 10.5681 11.2148 11.2149C10.568 11.8616 9.89296 12.4391 9.21286 12.9404C9.62532 13.1579 10.0271 13.338 10.4121 13.4766C11.9146 14.0174 12.9172 13.8738 13.3955 13.3955C13.8737 12.9173 14.0174 11.9146 13.4765 10.4121C13.3379 10.0271 13.1578 9.62535 12.9404 9.2129ZM3.05856 9.2129C2.84121 9.62523 2.66197 10.0272 2.52341 10.4121C1.98252 11.9146 2.12627 12.9172 2.60446 13.3955C3.08278 13.8737 4.08544 14.0174 5.58786 13.4766C5.97264 13.338 6.37389 13.1577 6.7861 12.9404C6.10624 12.4393 5.43168 11.8614 4.78513 11.2149C4.13823 10.5679 3.55992 9.89313 3.05856 9.2129ZM7.99899 3.792C7.23179 4.31419 6.45306 4.95512 5.70407 5.70411C4.95509 6.45309 4.31415 7.23184 3.79196 7.99903C4.3143 8.76666 4.95471 9.54653 5.70407 10.2959C6.45309 11.0449 7.23271 11.6848 7.99997 12.207C8.76725 11.6848 9.54683 11.0449 10.2959 10.2959C11.0449 9.54686 11.6848 8.76729 12.207 8.00001C11.6848 7.23275 11.0449 6.45312 10.2959 5.70411C9.5465 4.95475 8.76662 4.31434 7.99899 3.792ZM5.58786 2.52344C4.08533 1.98255 3.08272 2.12625 2.60446 2.6045C2.12621 3.08275 1.98252 4.08536 2.52341 5.5879C2.66189 5.97253 2.8414 6.37409 3.05856 6.78614C3.55983 6.10611 4.1384 5.43189 4.78513 4.78516C5.43186 4.13843 6.10606 3.55987 6.7861 3.0586C6.37405 2.84144 5.97249 2.66192 5.58786 2.52344ZM13.3955 2.6045C12.9172 2.12631 11.9146 1.98257 10.4121 2.52344C10.0272 2.66201 9.62519 2.84125 9.21286 3.0586C9.8931 3.55996 10.5679 4.13827 11.2148 4.78516C11.8614 5.43172 12.4392 6.10627 12.9404 6.78614C13.1577 6.37393 13.338 5.97267 13.4765 5.5879C14.0174 4.08549 13.8736 3.08281 13.3955 2.6045Z"/>
+                </svg>
               </div>
             </div>
           </div>
@@ -1189,6 +1363,27 @@ function onTraceClick(m) {
 .fadein { animation: fadein .2s ease; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px) } }
 
+/* Always-on streaming indicator pinned at the bottom of the
+   in-flight assistant message. Visible the whole time
+   ``streaming.value`` is true — closes the "is anything happening?"
+   gap before the first SSE event lands and after the last one
+   while the model is still composing its final answer. The icon
+   matches the agent identity (4-pointed sparkle, same SVG used
+   on the original ThinkingPicker chip). 4s rotation period — slow
+   enough to read as "calm working" rather than "spinning out of
+   control". */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  color: var(--color-t3);
+}
+.thinking-icon {
+  animation: thinking-spin 4s linear infinite;
+  transform-origin: center;
+}
+@keyframes thinking-spin { to { transform: rotate(360deg); } }
+
 /* ── Markdown body styles ── */
 .msg-body :deep(p) { margin: 0.4em 0; }
 .msg-body :deep(p:first-child) { margin-top: 0; }
@@ -1250,8 +1445,6 @@ function onTraceClick(m) {
 .msg-body :deep(.cite-tag.cite-active) { background: var(--color-brand, #3d3d3d); color: #fff; }
 
 
-.phase-in { animation: phaseIn .15s ease; }
-@keyframes phaseIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* Slide panels animate ``transform`` (compositor, no per-frame reflow)
    instead of ``width`` (main-thread layout × 12+ frames at 60fps).

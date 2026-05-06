@@ -89,12 +89,19 @@ function getFilename(docId) {
 }
 
 function getFileId(docId) {
-  // Returns the file_id alongside doc_id from the cached
-  // DocumentOut. Agent citations carry only ``chunk_id`` /
-  // ``doc_id`` / ``page``, so the chat citation card resolves
-  // ``file_id`` here to build PDF preview URLs.
+  // Returns the file_id the chat PDF viewer should render.
+  //
+  // Live agent citations carry ``file_id`` directly (populated by
+  // backend ``enrich_citations`` — preferring ``pdf_file_id`` over
+  // raw ``file_id``), so this fallback path is only used for:
+  //   * legacy citations from old conversations reloaded by id
+  //   * any code path that holds only a doc_id at click time
+  // The same pdf_file_id-first preference applies — pdfjs can't
+  // parse a .docx blob, so handing it the rendered preview is
+  // always the right call.
   if (!docId) return ''
-  return cache.value.get(docId)?.file_id || ''
+  const doc = cache.value.get(docId)
+  return doc?.pdf_file_id || doc?.file_id || ''
 }
 
 function invalidate(docId) {

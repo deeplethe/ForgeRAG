@@ -27,16 +27,52 @@
     "new_chat": "+ 新对话",
     "untitled": "未命名"
   },
+  "settings": {
+    "title": "设置",
+    "back": "返回",
+    "section": {
+      "account": "账户",
+      "workspace": "工作区"
+    },
+    "nav": {
+      "profile": "个人资料",
+      "users": "用户管理"
+    },
+    "profile": {
+      "title": "个人资料",
+      "display_name": "显示名",
+      "display_name_hint": "在聊天、引用、操作日志中显示的友好名字。修改邮箱请联系管理员。",
+      "display_name_placeholder": "如：Alice",
+      "password": "修改密码",
+      "password_hint": "成功修改后会保留当前会话，其它会话会被吊销。",
+      "password_current": "当前密码",
+      "password_new": "新密码（至少 8 位）",
+      "password_confirm": "再次输入新密码",
+      "password_change": "修改密码",
+      "password_changed": "密码已更新",
+      "password_mismatch": "两次输入不一致",
+      "password_too_short": "新密码至少需要 8 位",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "已保存"
+    },
+    "users": {
+      "title": "用户管理",
+      "placeholder": "用户管理面板正在开发中——后续会支持添加用户、调整角色、停用账户。"
+    }
+  },
   "user_menu": {
     "language": "语言",
     "theme": "主题",
     "theme_light": "浅色",
     "theme_dark": "深色",
+    "settings": "设置",
     "sign_out": "退出登录",
     "sign_out_confirm_title": "退出登录？",
     "sign_out_confirm_desc": "你将被返回到登录页。",
     "sign_out_button": "退出",
-    "role_admin": "管理员"
+    "role_admin": "管理员",
+    "role_user": "用户"
   },
   "scope": {
     "all_documents": "全部文档",
@@ -71,6 +107,23 @@
       "planning": "理解问题中",
       "reviewing": "审视检索结果中",
       "composing": "整理答案中"
+    },
+    "chain": {
+      "summary": "推理 {sec}s · {tools} 个工具",
+      "read_passages": "阅读了 {n} 个段落",
+      "thinking": "思考中",
+      "reasoned": "推理完成 · {tools} 个工具",
+      "reasoned_for": "已思考（用时 {sec} 秒）"
+    },
+    "chip": {
+      "sep": "，",
+      "search_bm25": "关键字检索 {n} 次",
+      "search_vector": "语义搜索 {n} 次",
+      "read_chunk": "阅读 {n} 段",
+      "read_tree": "浏览 {n} 篇文档结构",
+      "graph_explore": "查询图谱 {n} 次",
+      "web_search": "联网搜索 {n} 次",
+      "rerank": "重排 {n} 次"
     }
   },
   "search": {

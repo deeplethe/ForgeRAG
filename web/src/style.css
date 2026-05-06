@@ -84,6 +84,12 @@
   --color-err-fg:  #b91c1c;  --color-err-bg:  #fef2f2;
   --color-warn-fg: #b45309;  --color-warn-bg: #fffbeb;
   --color-run-fg:  #1d4ed8;  --color-run-bg:  #eff6ff;
+
+  /* Amber — used for in-flight indicators in motion (agent chain
+     dot pulse, anywhere a "working on it" state needs presence
+     without committing to a terminal status color). Distinct from
+     ``--color-warn-fg`` which signals an actual warning state. */
+  --color-amber: #f5a623;
 }
 
 /* Non-color tokens (pure CSS custom properties — not Tailwind-exposed) */
@@ -166,6 +172,11 @@
   --color-err-fg:  #ef4444;  --color-err-bg:  #450a0a;
   --color-warn-fg: #fbbf24;  --color-warn-bg: #451a03;
   --color-run-fg:  #60a5fa;  --color-run-bg:  #0c1e3a;
+
+  /* Amber for in-flight motion (agent chain dot pulse). Slightly
+     brighter than the light-mode value so it pops on dark canvas
+     without going neon. */
+  --color-amber: #fbbf24;
 
   /* Focus ring — neutral white halo against pure-black canvas */
   --ring-focus: 0 0 0 3px rgba(255, 255, 255, 0.14);

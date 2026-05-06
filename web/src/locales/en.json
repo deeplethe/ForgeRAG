@@ -27,16 +27,52 @@
     "new_chat": "+ New chat",
     "untitled": "Untitled"
   },
+  "settings": {
+    "title": "Settings",
+    "back": "Back",
+    "section": {
+      "account": "Account",
+      "workspace": "Workspace"
+    },
+    "nav": {
+      "profile": "Profile",
+      "users": "Users"
+    },
+    "profile": {
+      "title": "Profile",
+      "display_name": "Display name",
+      "display_name_hint": "The friendly label shown in chat, citations, and the audit log. To change your email, contact an admin.",
+      "display_name_placeholder": "e.g. Alice",
+      "password": "Change password",
+      "password_hint": "Other sessions will be signed out after a successful change. Your current session stays.",
+      "password_current": "Current password",
+      "password_new": "New password (at least 8 characters)",
+      "password_confirm": "Confirm new password",
+      "password_change": "Change password",
+      "password_changed": "Password updated.",
+      "password_mismatch": "New passwords don't match",
+      "password_too_short": "New password must be at least 8 characters",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved"
+    },
+    "users": {
+      "title": "Users",
+      "placeholder": "User management panel is in development — will support adding users, role changes, and account suspension."
+    }
+  },
   "user_menu": {
     "language": "Language",
     "theme": "Theme",
     "theme_light": "Light",
     "theme_dark": "Dark",
+    "settings": "Settings",
     "sign_out": "Sign out",
     "sign_out_confirm_title": "Sign out?",
     "sign_out_confirm_desc": "You will be returned to the login screen.",
     "sign_out_button": "Sign out",
-    "role_admin": "admin"
+    "role_admin": "admin",
+    "role_user": "user"
   },
   "scope": {
     "all_documents": "All documents",
@@ -71,6 +107,23 @@
       "planning": "Understanding the question",
       "reviewing": "Reviewing results",
       "composing": "Composing answer"
+    },
+    "chain": {
+      "summary": "Reasoned for {sec}s · {tools} tools",
+      "read_passages": "Read {n} passages",
+      "thinking": "Thinking",
+      "reasoned": "Reasoned · {tools} tools",
+      "reasoned_for": "Thought for {sec}s"
+    },
+    "chip": {
+      "sep": ", ",
+      "search_bm25": "searched {n} keyword(s)",
+      "search_vector": "searched {n} time(s)",
+      "read_chunk": "read {n} passage(s)",
+      "read_tree": "browsed {n} outline(s)",
+      "graph_explore": "explored graph {n} time(s)",
+      "web_search": "searched web {n} time(s)",
+      "rerank": "reranked {n} time(s)"
     }
   },
   "search": {
