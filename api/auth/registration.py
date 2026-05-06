@@ -202,10 +202,35 @@ def register_user(
         select(AuthUser).where(AuthUser.email == email)
     ).scalar_one_or_none() is not None:
         raise EmailTaken(f"email already registered: {email!r}")
+    # Username uniqueness — when the route auto-derived this from
+    # the email local-part (the new email-only register flow), a
+    # collision should NOT 4xx the user; suffix-and-retry instead.
+    # When the client explicitly chose a username (legacy clients),
+    # we still raise so they get a precise error.
     if sess.execute(
         select(AuthUser).where(AuthUser.username == username)
     ).scalar_one_or_none() is not None:
-        raise UsernameTaken(f"username already taken: {username!r}")
+        # Heuristic: if the username equals the email local-part
+        # (common server-derived case) we attempt suffix retries;
+        # otherwise it's a deliberate user choice — surface error.
+        derived = email.split("@", 1)[0] if "@" in email else ""
+        import re as _re
+        derived = _re.sub(r"[^A-Za-z0-9_]+", "_", derived)[:24]
+        if username == derived:
+            for n in range(2, 50):
+                cand = f"{derived[:24 - len(str(n)) - 1]}_{n}"
+                taken = sess.execute(
+                    select(AuthUser).where(AuthUser.username == cand)
+                ).scalar_one_or_none()
+                if taken is None:
+                    username = cand
+                    break
+            else:
+                raise UsernameTaken(
+                    f"could not derive a unique username from {email!r}"
+                )
+        else:
+            raise UsernameTaken(f"username already taken: {username!r}")
 
     # Resolve registration policy.
     has_admin = _has_active_admin(sess)

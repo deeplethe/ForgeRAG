@@ -64,8 +64,25 @@ def _require_principal(request: Request) -> AuthenticatedPrincipal:
 
 
 class LoginReq(BaseModel):
-    username: str
+    """Login request body.
+
+    Email is now the canonical login identifier. Both fields are
+    optional at the Pydantic layer so legacy clients that still
+    POST ``{"username": "alice", ...}`` keep working through the
+    transition; new clients POST ``{"email": "alice@x.com", ...}``.
+    The handler uses whichever is non-empty (preferring email when
+    both are sent) and looks up the account by email column first,
+    falling back to the legacy username column for bootstrap admins
+    whose email is NULL.
+    """
+
+    email: str | None = None
+    username: str | None = None  # back-compat
     password: str
+
+    @property
+    def identifier(self) -> str:
+        return (self.email or self.username or "").strip()
 
 
 class ChangePasswordReq(BaseModel):
@@ -85,7 +102,9 @@ class TokenPatchReq(BaseModel):
 
 class MeOut(BaseModel):
     user_id: str
-    username: str
+    username: str          # legacy — kept for back-compat with existing clients
+    email: str | None = None
+    display_name: str | None = None
     role: str
     via: str
     must_change_password: bool = False
@@ -121,9 +140,14 @@ class SessionOut(BaseModel):
 
 class RegisterReq(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
-    username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=8, max_length=200)
     display_name: str | None = Field(None, max_length=64)
+    # ``username`` is no longer required from the client. The
+    # legacy column is auto-populated server-side from the email
+    # local-part (deduped if a collision exists). New clients
+    # never send this field; old clients that still POST it have
+    # their value honoured for back-compat.
+    username: str | None = Field(None, min_length=3, max_length=32)
     invitation_token: str | None = None
 
 
@@ -164,13 +188,27 @@ def register(body: RegisterReq, state: AppState = Depends(get_state)):
         register_user,
     )
 
+    # Derive a synthetic username for the legacy ``username`` column
+    # when the client didn't send one. We collide-check inside
+    # ``register_user`` so retries with a counter suffix are
+    # transparent. The ``display_name`` is what the UI surfaces
+    # going forward; ``username`` is kept only for back-compat.
+    derived_username = body.username
+    if not derived_username:
+        local = body.email.split("@", 1)[0].strip() if body.email else ""
+        # Sanitise: replace non-alphanum with underscore so the
+        # legacy username constraint (alphanum + underscore) holds.
+        import re as _re
+        local = _re.sub(r"[^A-Za-z0-9_]+", "_", local)[:24] or "user"
+        derived_username = local
+
     with state.store.transaction() as sess:
         try:
             result = register_user(
                 cfg=state.cfg,
                 sess=sess,
                 email=body.email,
-                username=body.username,
+                username=derived_username,
                 password=body.password,
                 display_name=body.display_name,
                 invitation_token=body.invitation_token,
@@ -220,16 +258,21 @@ def login(
         }
 
     with state.store.transaction() as sess:
-        # Accept either username OR email as the identifier — multi-user
-        # registration creates email-keyed accounts but legacy admins
-        # only have a username. Try both columns; the first match wins.
-        ident = body.username
+        # Email is the canonical identifier going forward. Look up
+        # by email column first (the case for every account created
+        # via /auth/register since multi-user landed); fall back to
+        # the legacy ``username`` column ONLY for the bootstrap
+        # admin (email is NULL there) and any single-user-era rows
+        # that haven't had an email backfilled.
+        ident = body.identifier
+        if not ident:
+            raise HTTPException(400, "missing email")
         user = sess.execute(
-            select(AuthUser).where(AuthUser.username == ident)
+            select(AuthUser).where(AuthUser.email == ident.lower())
         ).scalar_one_or_none()
-        if user is None and "@" in ident:
+        if user is None:
             user = sess.execute(
-                select(AuthUser).where(AuthUser.email == ident.lower())
+                select(AuthUser).where(AuthUser.username == ident)
             ).scalar_one_or_none()
         if user is None:
             raise HTTPException(401, "invalid credentials")
@@ -354,6 +397,17 @@ def me(request: Request, state: AppState = Depends(get_state)):
         return MeOut(
             user_id=principal.user_id,
             username=principal.username,
+            # New canonical identity fields. The frontend's UserMenu /
+            # Settings page now keys off email + display_name (with
+            # ``display_name`` falling back to email-prefix or
+            # username when not set). ``username`` stays in the
+            # response so old clients still parse the body.
+            email=user.email if user else None,
+            display_name=(
+                (user.display_name if user else None)
+                or (user.email.split("@")[0] if user and user.email else None)
+                or principal.username
+            ),
             role=principal.role,
             via=principal.via,
             must_change_password=bool(user.must_change_password if user else False),

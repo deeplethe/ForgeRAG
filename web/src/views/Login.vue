@@ -9,9 +9,10 @@
         <span class="wordmark text-[20px]">OpenCraig</span>
       </div>
 
-      <label class="block text-[11px] text-t3 mb-1">Username</label>
+      <label class="block text-[11px] text-t3 mb-1">Email</label>
       <input
-        v-model="username" ref="userInput" autocomplete="username"
+        v-model="email" ref="userInput" type="email" autocomplete="email"
+        placeholder="you@example.com"
         class="input mb-3"
       />
 
@@ -40,7 +41,12 @@ import { login as apiLogin, getMe } from '@/api/auth'
 const router = useRouter()
 const route = useRoute()
 
-const username = ref('admin')    // single-user default; multi-user ready
+// Email is now the primary login identifier. Empty default —
+// users always type their address. Legacy bootstrap admins whose
+// email column is NULL can still sign in by entering their
+// username in this field; the backend's login route falls back
+// to a username-column lookup when no email match is found.
+const email = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -63,20 +69,17 @@ onMounted(async () => {
     // 401 → user is genuinely logged out, fall through to show form.
   }
   probing.value = false
-  // Focus password if username is prefilled (common single-user case),
-  // else focus username.
-  if (username.value) {
-    document.querySelector('input[type=password]')?.focus()
-  } else {
-    userInput.value?.focus()
-  }
+  // Always focus the email input on mount — there's no
+  // pre-fill anymore (single-user "admin" default went away
+  // when login switched to email).
+  userInput.value?.focus()
 })
 
 async function onSubmit() {
   error.value = ''
   loading.value = true
   try {
-    const r = await apiLogin(username.value, password.value)
+    const r = await apiLogin(email.value.trim(), password.value)
     // Redirect: honour ?redirect=, else go to /chat
     const dest = route.query.redirect || '/chat'
     // Force a hard reload so every cached request picks up new cookie.
@@ -88,7 +91,7 @@ async function onSubmit() {
     void r
   } catch (e) {
     error.value = e.message?.includes('401')
-      ? 'Incorrect username or password.'
+      ? 'Incorrect email or password.'
       : e.message || 'Login failed.'
   } finally {
     loading.value = false

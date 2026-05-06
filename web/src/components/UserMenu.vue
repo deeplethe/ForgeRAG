@@ -28,9 +28,9 @@
         :style="{ background: avatarBg, color: '#fff' }"
       >{{ initial }}</span>
       <span class="flex-1 min-w-0 text-left">
-        <span class="block text-[12px] text-t1 truncate">{{ me.username }}</span>
+        <span class="block text-[12px] text-t1 truncate">{{ displayLabel }}</span>
         <span class="block text-[10px] text-t3 truncate">
-          {{ me.role === 'admin' ? t('user_menu.role_admin') : me.role }}
+          {{ me.role === 'admin' ? t('user_menu.role_admin') : t('user_menu.role_user') }}
         </span>
       </span>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -97,10 +97,28 @@
           </div>
         </div>
 
+        <!-- Subtle separator before action rows. -->
+        <div class="my-1 border-t border-line"></div>
+
+        <!-- ── Settings: label LEFT, chevron RIGHT.
+             Visible to every user (their own profile, password,
+             prefs); admin-only sub-tabs are gated inside the
+             /settings page itself, not at this entry. -->
+        <button
+          type="button"
+          class="w-full flex items-center justify-between gap-3 px-3 py-2 text-[12px] text-t1 hover:bg-bg3 transition-colors"
+          @click="onOpenSettings"
+        >
+          <span>{{ t('user_menu.settings') }}</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-t3">
+            <path d="M9 18l6-6-6-6"/>
+          </svg>
+        </button>
+
         <!-- ── Sign out: label LEFT, icon RIGHT (Geist row pattern) ── -->
         <button
           type="button"
-          class="w-full flex items-center justify-between gap-3 px-3 py-2 mt-0.5 text-[12px] text-t1 hover:bg-bg3 transition-colors"
+          class="w-full flex items-center justify-between gap-3 px-3 py-2 text-[12px] text-t1 hover:bg-bg3 transition-colors"
           @click="onLogout"
         >
           <span>{{ t('user_menu.sign_out') }}</span>
@@ -116,6 +134,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { useTheme } from '@/composables/useTheme'
 import { useDialog } from '@/composables/useDialog'
@@ -128,22 +147,35 @@ const props = defineProps({
 const { t, locale } = useI18n()
 const { isDark, setTheme } = useTheme()
 const { confirm } = useDialog()
+const router = useRouter()
 
 const open = ref(false)
 const rootEl = ref(null)
 const locales = SUPPORTED_LOCALES
 const currentLocale = computed(() => locale.value)
 
-const initial = computed(() => {
-  const u = (props.me?.username || '').trim()
-  return u ? u.charAt(0).toUpperCase() : '?'
+// Identity primary key for label / avatar derivation. Prefer
+// display_name (user-set, friendly), fall back to email
+// local-part, then to legacy username, then "?".
+const identityKey = computed(() => {
+  const m = props.me || {}
+  return (m.display_name
+    || (m.email ? m.email.split('@')[0] : '')
+    || m.username
+    || '').trim()
 })
-// Deterministic per-username hue — keeps the avatar visually stable
-// across locale / theme toggles, and visually distinct between users.
+const displayLabel = computed(() => identityKey.value || '?')
+const initial = computed(() => {
+  const k = identityKey.value
+  return k ? k.charAt(0).toUpperCase() : '?'
+})
+// Deterministic per-identity hue — stable across locale / theme
+// toggles, visually distinct between users. Keyed off the same
+// fallback chain so the avatar colour matches the visible label.
 const avatarBg = computed(() => {
-  const u = props.me?.username || ''
+  const k = identityKey.value
   let h = 0
-  for (let i = 0; i < u.length; i++) h = (h * 31 + u.charCodeAt(i)) >>> 0
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0
   return `hsl(${h % 360}, 55%, 50%)`
 })
 
@@ -152,6 +184,10 @@ function close() { open.value = false }
 
 function onSetLocale(code) { setLocale(code) }
 function onSetTheme(mode) { setTheme(mode) }
+function onOpenSettings() {
+  close()
+  router.push('/settings')
+}
 
 async function onLogout() {
   close()

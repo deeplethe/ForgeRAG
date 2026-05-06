@@ -20,8 +20,13 @@ import { get, post, del, patch, request } from './client'
 
 // ── Password / session flow ─────────────────────────────────────────────
 
-export const login = (username, password) =>
-  post('/api/v1/auth/login', { username, password })
+// Login by email. Backend's LoginReq still accepts ``username``
+// for back-compat with old clients; new code passes ``email``.
+// Legacy bootstrap admins (email column NULL) can sign in by
+// typing their username in the email field — the backend's
+// fallback lookup catches that case.
+export const login = (email, password) =>
+  post('/api/v1/auth/login', { email, password })
 
 export const logout = () =>
   request('/api/v1/auth/logout', { method: 'POST' })
