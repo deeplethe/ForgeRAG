@@ -136,7 +136,12 @@ function goBack() {
 }
 .nav-link:hover { background: var(--color-bg3); color: var(--color-t1); }
 .nav-link.is-active {
-  background: var(--color-bg);
+  /* Use the design-system's selected-state token so the
+     active sub-nav link matches the first-level sidebar's
+     active style (which uses ``bg-bg-selected``). Without
+     this, the sub-nav's active state was just one shade off
+     bg2 and read as much weaker than the main tabs. */
+  background: var(--color-bg-selected);
   color: var(--color-t1);
   font-weight: 500;
 }
