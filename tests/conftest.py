@@ -20,6 +20,37 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _restore_bm25_in_registry():
+    """Re-register ``search_bm25`` in the agent's TOOL_REGISTRY for
+    the duration of each test.
+
+    Production omits the BM25 spec from the registry: the build
+    path produces an empty index on the live corpus and the
+    char-level CJK tokenizer makes Chinese keyword search useless
+    in practice. Removing it from the registry stops the LLM
+    burning iterations on a tool that always returns 0 hits.
+
+    Tests, however, still exercise the dispatcher's BM25 path —
+    scope filters, citation-pool seeding, error handling — because
+    the underlying handler + spec are intentionally retained for
+    future reactivation. This fixture re-registers BM25 so those
+    tests' ``dispatch("search_bm25", ...)`` calls don't bounce off
+    "unknown tool".
+    """
+    try:
+        from api.agent.tools import TOOL_REGISTRY, _BM25_SPEC
+    except Exception:
+        yield
+        return
+    had_bm25 = _BM25_SPEC.name in TOOL_REGISTRY
+    if not had_bm25:
+        TOOL_REGISTRY[_BM25_SPEC.name] = _BM25_SPEC
+    yield
+    if not had_bm25:
+        TOOL_REGISTRY.pop(_BM25_SPEC.name, None)
+
+
 @pytest.fixture(scope="session")
 def sample_pdf(tmp_path_factory) -> Path:
     """

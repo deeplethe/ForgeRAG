@@ -236,8 +236,27 @@ class _StubLLM:
             raise RuntimeError("StubLLM exhausted")
         return self._queue.pop(0)
 
+    def chat_stream(self, messages, *, tools=None, tool_choice="auto", temperature=0.0, max_tokens=4096):
+        # Same record + queue as ``chat`` so the existing tests on
+        # ``llm.calls`` keep working unchanged. Emit text (if any)
+        # as a single ``delta`` chunk, then ``done``.
+        resp = self.chat(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if resp.text:
+            yield ("delta", resp.text)
+        yield ("done", resp)
+
 
 def _bm25_call(call_id="c1", query="research"):
+    # See test_agent_loop.py for rationale — production registry
+    # omits search_bm25; tests/conftest.py's autouse fixture
+    # re-registers it so this helper exercises the BM25 dispatch
+    # path on the underlying handler.
     return ToolCall(id=call_id, name="search_bm25", arguments={"query": query})
 
 
@@ -257,16 +276,23 @@ class TestStreamEvents:
         ctx = build_tool_context(_state(store), _alice(seeded))
         events = list(loop.stream("hi", ctx))
         types = [e["type"] for e in events]
+        # Main turn now streams via ``_stream_main_turn`` (with
+        # DSML head-buffer protection — see loop.py). Direct-answer
+        # text flows through ``answer.delta`` first, then the
+        # final aggregated ``answer`` event for non-streaming
+        # consumers.
         assert types == [
             "agent.turn_start",
+            "answer.delta",
             "agent.turn_end",
             "answer",
             "done",
         ]
-        assert events[1]["decision"] == "direct_answer"
-        assert events[1]["tools_called"] == 0
-        assert events[2]["text"] == "hi there"
-        assert events[3]["stop_reason"] == "done"
+        assert events[1]["text"] == "hi there"
+        assert events[2]["decision"] == "direct_answer"
+        assert events[2]["tools_called"] == 0
+        assert events[3]["text"] == "hi there"
+        assert events[4]["stop_reason"] == "done"
 
     def test_single_tool_event_sequence(self, store, seeded):
         llm = _StubLLM(
@@ -279,12 +305,16 @@ class TestStreamEvents:
         ctx = build_tool_context(_state(store), _alice(seeded))
         events = list(loop.stream("?", ctx))
         types = [e["type"] for e in events]
+        # Tool-decision turn 1 has empty text → no answer.delta.
+        # Direct-answer turn 2 streams "answer" → one answer.delta
+        # then the aggregated answer event.
         assert types == [
             "agent.turn_start",
             "tool.call_start",
             "tool.call_end",
             "agent.turn_end",
             "agent.turn_start",
+            "answer.delta",
             "agent.turn_end",
             "answer",
             "done",
@@ -298,6 +328,237 @@ class TestStreamEvents:
         ce = events[2]
         assert "latency_ms" in ce
         assert "hit_count" in ce["result_summary"]
+
+    def test_streamed_preface_no_duplicate_thought_event(self, store, seeded):
+        """When the LLM returns text + tool_calls and the streaming
+        layer delivers the text as deltas, NO redundant
+        ``agent.thought`` event fires — the frontend already has
+        the text via ``answer.delta`` and promotes it into a thought
+        entry when ``tool.call_start`` lands.
+
+        This pins the de-duplication invariant: streamed text is
+        the single source of truth for the chain UI on clean
+        providers; ``agent.thought`` is reserved for the
+        DSML-fallback case where deltas were suppressed.
+        """
+        llm = _StubLLM(
+            [
+                LLMResponse(
+                    text="Let me search the corpus for that.",
+                    tool_calls=[_bm25_call()],
+                ),
+                LLMResponse(text="answer", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        events = list(loop.stream("?", ctx))
+        types = [e["type"] for e in events]
+        # Preface streams as ``answer.delta`` BEFORE tool.call_start.
+        # No ``agent.thought`` event — the deltas already carried
+        # the text.
+        assert "agent.thought" not in types
+        assert types == [
+            "agent.turn_start",
+            "answer.delta",
+            "tool.call_start",
+            "tool.call_end",
+            "agent.turn_end",
+            "agent.turn_start",
+            "answer.delta",
+            "agent.turn_end",
+            "answer",
+            "done",
+        ]
+        # Delta text matches the LLM's preface — frontend uses this
+        # to populate the chain's thought entry.
+        assert events[1]["text"] == "Let me search the corpus for that."
+
+    def test_dsml_leak_falls_back_and_emits_thought(self, store, seeded):
+        """Simulate a DeepSeek-style DSML leak: the streaming call
+        surfaces tool-call markup in content with ``tool_calls=[]``.
+        Defence path:
+          1. Head buffer sees ``<|DSML`` sentinel within first ~32
+             chars → ``_stream_main_turn`` swallows the rest of the
+             stream, no ``answer.delta`` events for this turn.
+          2. Falls back to ``chat()`` which the (well-behaved)
+             stub returns with text + proper tool_calls.
+          3. Loop emits ``agent.thought`` for the text (since no
+             deltas streamed) and ``tool.call_start`` for the tool.
+        """
+        # Stream call returns DSML in content with no tool_calls.
+        # Fallback chat call returns the same intent properly parsed.
+        leaky_stream_resp = LLMResponse(
+            text='<|DSML|invoke name="search_bm25"><parameter name="query">research</parameter></invoke>',
+            tool_calls=[],
+        )
+        clean_fallback_resp = LLMResponse(
+            text="Looking up research on that.",
+            tool_calls=[_bm25_call()],
+        )
+
+        class _DSMLStubLLM:
+            def __init__(self, stream_resp, chat_resp, final_resp):
+                self._stream_resp = stream_resp
+                self._chat_resp = chat_resp
+                self._final_resp = final_resp
+                self.chat_calls = 0
+                self.stream_calls = 0
+
+            def chat(self, messages, *, tools=None, tool_choice="auto",
+                     temperature=0.0, max_tokens=4096):
+                self.chat_calls += 1
+                # Distinguish: first chat() call is the DSML fallback
+                # (still has tools, tool_choice="auto"). Second is the
+                # direct-answer turn (also "auto" but no DSML this
+                # time — exercised via chat_stream).
+                if self.chat_calls == 1:
+                    return self._chat_resp
+                return self._final_resp
+
+            def chat_stream(self, messages, *, tools=None, tool_choice="auto",
+                            temperature=0.0, max_tokens=4096):
+                self.stream_calls += 1
+                if self.stream_calls == 1:
+                    # Yield DSML content as one delta — simulates
+                    # DeepSeek's leak. The head-buffer should catch
+                    # ``<|DSML`` and switch to suppress mode.
+                    yield ("delta", self._stream_resp.text)
+                    yield ("done", self._stream_resp)
+                else:
+                    # Final direct-answer turn streams cleanly.
+                    if self._final_resp.text:
+                        yield ("delta", self._final_resp.text)
+                    yield ("done", self._final_resp)
+
+        llm = _DSMLStubLLM(
+            stream_resp=leaky_stream_resp,
+            chat_resp=clean_fallback_resp,
+            final_resp=LLMResponse(text="ok", tool_calls=[]),
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        events = list(loop.stream("?", ctx))
+        types = [e["type"] for e in events]
+        # No DSML markup leaked to the user as deltas — it was
+        # caught by the head buffer. The reasoning surfaces via
+        # agent.thought instead.
+        for e in events:
+            if e["type"] == "answer.delta":
+                assert "<|DSML" not in e["text"]
+                assert "<|" not in e["text"]
+        assert "agent.thought" in types
+        thought_evt = next(e for e in events if e["type"] == "agent.thought")
+        assert thought_evt["text"] == "Looking up research on that."
+        # Tool was actually dispatched (proves fallback restored
+        # the tool_calls list).
+        assert any(e["type"] == "tool.call_start" for e in events)
+        # The fallback ``chat()`` call ran.
+        assert llm.chat_calls >= 1
+
+    def test_dsml_leak_on_synthesis_turn_falls_back(self, store, seeded):
+        """Repro for the user-reported bug:
+            "Reasoned for 0s · 8 tools" → forced synthesis →
+            answer body = ``<||DSML||tool_calls> <||DSML||invoke
+            name="search_vector"> …``
+
+        After max_tool_calls hits, the loop runs a synthesis turn
+        (tools=None, tool_choice="none"). DeepSeek-V4-Pro can still
+        emit DSML markup as content. The defence filter must catch
+        the markup, suppress the deltas, and fall back to a
+        non-streaming chat() call to produce a clean answer.
+        """
+        # 8 tool turns exhaust max_tool_calls=8 → synthesis fires.
+        # Synthesis stream emits DSML; fallback chat() returns clean.
+        bm25_responses = [
+            LLMResponse(text="", tool_calls=[_bm25_call(f"c{i}")])
+            for i in range(8)
+        ]
+        leaky_synthesis = LLMResponse(
+            text='<||DSML||tool_calls>\n<||DSML||invoke name="search_vector">'
+                 '<||DSML||parameter name="query">stuff</||DSML||parameter>\n'
+                 '</||DSML||invoke>\n</||DSML||tool_calls>',
+            tool_calls=[],
+        )
+        clean_fallback = LLMResponse(
+            text="Final synthesised answer based on search results.",
+            tool_calls=[],
+        )
+
+        class _BudgetDSMLStub:
+            def __init__(self, responses, synth_stream, synth_fallback):
+                self._queue = list(responses)
+                self._synth_stream = synth_stream
+                self._synth_fallback = synth_fallback
+                self.synth_chat_calls = 0
+
+            def chat(self, messages, *, tools=None, tool_choice="auto",
+                     temperature=0.0, max_tokens=4096):
+                # Synthesis fallback comes through as tool_choice=none.
+                if tool_choice == "none":
+                    self.synth_chat_calls += 1
+                    return self._synth_fallback
+                if not self._queue:
+                    raise RuntimeError("Stub exhausted")
+                return self._queue.pop(0)
+
+            def chat_stream(self, messages, *, tools=None, tool_choice="auto",
+                            temperature=0.0, max_tokens=4096):
+                if tool_choice == "none":
+                    # Synthesis stream — emit DSML as content.
+                    if self._synth_stream.text:
+                        yield ("delta", self._synth_stream.text)
+                    yield ("done", self._synth_stream)
+                    return
+                # Tool-decision turn: pop next response and emit
+                # text-then-done. Stub responses are always text="" +
+                # tool_calls so no deltas land.
+                if not self._queue:
+                    raise RuntimeError("Stub exhausted")
+                r = self._queue.pop(0)
+                if r.text:
+                    yield ("delta", r.text)
+                yield ("done", r)
+
+        llm = _BudgetDSMLStub(bm25_responses, leaky_synthesis, clean_fallback)
+        cfg = AgentConfig(max_tool_calls=8, max_iterations=20)
+        loop = AgentLoop(cfg, llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        events = list(loop.stream("?", ctx))
+
+        # Critical invariant: NO ``<|`` / DSML markup in any
+        # answer.delta or answer event the user would see.
+        for e in events:
+            if e["type"] in ("answer.delta", "answer"):
+                assert "DSML" not in e.get("text", ""), e
+                assert "<|" not in e.get("text", ""), e
+                assert "tool_calls>" not in e.get("text", ""), e
+
+        # The fallback chat() ran (tool_choice=none).
+        assert llm.synth_chat_calls == 1
+
+        # Final answer is the clean fallback text — proves the
+        # filter+fallback recovered a usable response.
+        done = events[-1]
+        assert done["type"] == "done"
+        assert done["answer"] == "Final synthesised answer based on search results."
+
+    def test_no_thought_event_when_preface_empty(self, store, seeded):
+        """Tool turns with empty resp.text produce NO agent.thought
+        event AND no answer.delta — pins the contract the frontend
+        reasoning-chain renderer relies on (no text → don't push a
+        thought entry, don't accumulate empty deltas)."""
+        llm = _StubLLM(
+            [
+                LLMResponse(text="", tool_calls=[_bm25_call()]),
+                LLMResponse(text="answer", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        events = list(loop.stream("?", ctx))
+        types = {e["type"] for e in events}
+        assert "agent.thought" not in types
 
     def test_parallel_tool_calls_complete_in_speed_order(self, store, seeded):
         """Make BM25 fast (~5ms) and vector slow (~120ms). The
@@ -332,15 +593,18 @@ class TestStreamEvents:
         loop = AgentLoop(cfg, llm)
         ctx = build_tool_context(_state(store), _alice(seeded))
         events = list(loop.stream("?", ctx))
-        # Last few events: synthesis turn + answer + done.
-        types_tail = [e["type"] for e in events[-4:]]
+        # Synthesis turn now streams its output as a delta. Last 5
+        # events: turn_start (synthesis_only=True), answer.delta,
+        # turn_end (synthesis), answer (full), done.
+        types_tail = [e["type"] for e in events[-5:]]
         assert types_tail == [
             "agent.turn_start",
+            "answer.delta",
             "agent.turn_end",
             "answer",
             "done",
         ]
-        assert events[-4]["synthesis_only"] is True
+        assert events[-5]["synthesis_only"] is True
         assert events[-3]["decision"] == "synthesis"
         assert events[-1]["stop_reason"] == "max_tool_calls"
 

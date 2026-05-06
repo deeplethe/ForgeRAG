@@ -287,8 +287,38 @@ class _StubLLM:
             raise RuntimeError("StubLLM exhausted")
         return self._queue.pop(0)
 
+    def chat_stream(
+        self,
+        messages,
+        *,
+        tools=None,
+        tool_choice="auto",
+        temperature=0.0,
+        max_tokens=4096,
+    ):
+        # Test harness: pop the same queued response, emit one
+        # ``delta`` chunk for the entire text (plenty for sequence
+        # tests; per-chunk granularity isn't what these tests pin)
+        # then ``done``. Records the call same as ``chat`` so
+        # existing assertions on ``llm.calls`` keep working.
+        resp = self.chat(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if resp.text:
+            yield ("delta", resp.text)
+        yield ("done", resp)
+
 
 def _bm25_call(call_id="c1", query="research") -> ToolCall:
+    # Production registry omits ``search_bm25`` (see tools.py
+    # comment + conftest's ``_restore_bm25_in_registry``); the
+    # autouse conftest fixture re-registers it for the duration of
+    # each test so this helper still exercises the BM25 dispatch
+    # path on the underlying handler.
     return ToolCall(id=call_id, name="search_bm25", arguments={"query": query})
 
 
@@ -623,8 +653,178 @@ class TestLLMError:
             def chat(self, *a, **kw):
                 raise RuntimeError("provider down")
 
+            def chat_stream(self, *a, **kw):
+                raise RuntimeError("provider down")
+
         loop = AgentLoop(AgentConfig(), _Boom())
         ctx = build_tool_context(_state(store), _alice(seeded))
         result = loop.run("?", ctx)
         assert result.stop_reason == "error"
         assert result.answer == ""
+
+
+# ---------------------------------------------------------------------------
+# cite_id ↔ chunk_id resolution
+# ---------------------------------------------------------------------------
+
+
+class TestCitationEnrichment:
+    """Pin the bbox + file_id resolution that revives the deleted
+    ``retrieval/citations.py`` for the agent path. Without this,
+    clicking a citation either opens an empty panel (no
+    highlights) or throws ``InvalidPDFException`` on DOCX-sourced
+    docs (file_id pointed to the .docx blob).
+    """
+
+    def test_highlights_populated_from_block_ids(self, store, seeded):
+        """Run a search → register → final answer flow and assert
+        the returned citation carries highlights with real bbox
+        rectangles drawn from the parsed_blocks row the chunk
+        references via block_ids."""
+        llm = _StubLLM(
+            [
+                LLMResponse(text="", tool_calls=[_bm25_call()]),
+                LLMResponse(text="ok.", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        result = loop.run("?", ctx)
+        assert result.citations, "expected at least one citation"
+        cit = result.citations[0]
+        # Block_ids carried through register → enrich.
+        assert cit["block_ids"] == ["d_research:1:1:1"]
+        # Highlights resolved from the parsed_blocks row's bbox.
+        hl = cit.get("highlights")
+        assert isinstance(hl, list) and len(hl) == 1
+        assert hl[0]["page_no"] == 1
+        assert hl[0]["bbox"] == {"x0": 0.0, "y0": 0.0, "x1": 100.0, "y1": 20.0}
+
+    def test_file_id_prefers_pdf_file_id(self, store, seeded):
+        """Native-PDF doc: enrichment uses ``file_id`` directly and
+        leaves ``source_file_id`` as None (no separate source to
+        download)."""
+        llm = _StubLLM(
+            [
+                LLMResponse(text="", tool_calls=[_bm25_call()]),
+                LLMResponse(text="ok.", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        result = loop.run("?", ctx)
+        cit = result.citations[0]
+        # Seeded doc has file_id=file_research, no pdf_file_id.
+        assert cit["file_id"] == "file_research"
+        assert cit["source_file_id"] is None
+        assert cit["source_format"] == "pdf"
+
+
+class TestCiteIdResolution:
+    """Pin the read_chunk / rerank cite-id confusion fix.
+
+    Models — DeepSeek especially — sometimes pass the user-facing
+    ``c_3`` cite label as ``chunk_id`` to read_chunk. Without the
+    resolver, every read fails with "chunk not found: 'c_3'" and
+    the chain UI fills with red ``error`` chips. With the
+    resolver, the agent's mistake gets silently fixed and the
+    read returns proper content.
+    """
+
+    def test_read_chunk_with_cite_label_resolves_to_real_id(self, store, seeded):
+        # Turn 1: BM25 search, registers d_research:1:c1 in the
+        # citation pool with cite_id=c_1.
+        # Turn 2: LLM (mistakenly) calls read_chunk(chunk_id="c_1")
+        # — the cite label, not the real id. Resolver should map
+        # c_1 → d_research:1:c1 and the read succeeds.
+        # Turn 3: LLM finishes with the answer.
+        llm = _StubLLM(
+            [
+                LLMResponse(text="", tool_calls=[_bm25_call()]),
+                LLMResponse(
+                    text="",
+                    tool_calls=[_read_call(chunk_id="c_1")],
+                ),
+                LLMResponse(text="found.", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(AgentConfig(), llm)
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        result = loop.run("?", ctx)
+        # If resolution worked, the loop made it to the third
+        # turn (the read fed back without error) and returned
+        # the answer. If resolution had failed, turn 3 would
+        # have either errored or asked for another tool.
+        assert result.answer == "found."
+        assert result.stop_reason == "done"
+        # The pool entry registered by the search should still be
+        # there — read_chunk hit the SAME chunk_id, no duplicate.
+        assert len(ctx.citation_pool) == 1
+        entry = list(ctx.citation_pool.values())[0]
+        assert entry["chunk_id"] == "d_research:1:c1"
+        assert entry["cite_id"] == "c_1"
+
+    def test_real_chunk_id_passes_through_unchanged(self, store, seeded):
+        """The resolver only fires for ``c_N``-shaped strings.
+        Real chunk IDs (``d_xxx:1:cN``) pass through verbatim."""
+        from api.agent.dispatch import resolve_chunk_id
+
+        ctx = build_tool_context(_state(store), _alice(seeded))
+        # Pool empty — resolver shouldn't lookup, should just return.
+        assert resolve_chunk_id(ctx, "d_research:1:c1") == "d_research:1:c1"
+        # Even with a pool entry that happens to share a cite_id,
+        # a non-c_N input is not resolved.
+        ctx.citation_pool["d_research:1:c1"] = {
+            "cite_id": "c_1",
+            "chunk_id": "d_research:1:c1",
+        }
+        assert resolve_chunk_id(ctx, "d_research:1:c1") == "d_research:1:c1"
+        # c_1 → real id via pool lookup.
+        assert resolve_chunk_id(ctx, "c_1") == "d_research:1:c1"
+        # Unknown cite label → returns input unchanged so the
+        # downstream "chunk not found" error reaches the agent.
+        assert resolve_chunk_id(ctx, "c_99") == "c_99"
+
+
+# ---------------------------------------------------------------------------
+# Lazy BM25 init in the agent path
+# ---------------------------------------------------------------------------
+
+
+class TestBM25LazyInit:
+    """The content BM25 index is lazy — built on first /search or
+    first agent search_bm25 call. Without an explicit trigger in
+    the tool handler, the agent's first BM25 call after a fresh
+    boot returns "BM25 index not available" and the user sees a
+    red error chip in the chain UI. This test pins the trigger.
+    """
+
+    def test_first_call_invokes_state_ensure_indices(self, store, seeded):
+        # State exposes ``_ensure_indices`` (mirrors the production
+        # AppState method); ``_bm25`` starts as None to simulate a
+        # cold backend.
+        ensure_calls = {"n": 0}
+
+        class _LazyState:
+            def __init__(self, store):
+                self.store = store
+                self.cfg = SimpleNamespace(auth=AuthConfig(enabled=True))
+                self.authz = AuthorizationService(store)
+                self.embedder = _StubEmbedder()
+                self.vector = _StubVector()
+                self._bm25 = None
+
+            def _ensure_indices(self):
+                ensure_calls["n"] += 1
+                self._bm25 = _StubBM25()
+
+        from api.agent.tools import _handle_search_bm25
+
+        state = _LazyState(store)
+        ctx = build_tool_context(state, _alice(seeded))
+        result = _handle_search_bm25({"query": "research"}, ctx)
+        # Lazy init triggered exactly once.
+        assert ensure_calls["n"] == 1
+        # Search succeeded — hits returned, NOT an error envelope.
+        assert "hits" in result
+        assert "error" not in result
