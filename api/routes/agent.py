@@ -166,7 +166,26 @@ def agent_chat(
     # history array (or no history at all).
     conv_id = body.conversation_id
     if conv_id is not None:
-        history = _load_or_create_conversation(state, principal, conv_id, body.message)
+        history, prior_citations = _load_or_create_conversation(
+            state, principal, conv_id, body.message
+        )
+        # Seed the citation pool with citations from earlier
+        # assistant turns. Without this, follow-up answers that
+        # reuse [c_N] markers from prior tool calls (because the
+        # LLM has the answer in context and skips fresh
+        # retrieval) emit raw text — the frontend has no
+        # cite_id → chunk_id mapping for those markers in the
+        # current turn's persisted ``citations_json``.
+        # ``register_chunk`` is idempotent on chunk_id, so any
+        # tool call this turn that re-encounters a seeded chunk
+        # merges into the existing entry (keeping the original
+        # cite_id stable). New chunks discovered THIS turn pick
+        # up cite_ids starting at ``c_{len(pool) + 1}``, so
+        # numbering doesn't collide with the seeded set.
+        for c in prior_citations:
+            cid = c.get("chunk_id")
+            if cid and cid not in ctx.citation_pool:
+                ctx.citation_pool[cid] = dict(c)
         # Persist the user message NOW, before the SSE stream
         # opens. A mid-stream refresh otherwise loses the question
         # entirely (the post-stream persist block doesn't run if
@@ -394,6 +413,15 @@ def _load_or_create_conversation(
     helper returns (so a mid-stream refresh recovers the
     question), and ``_persist_assistant_message`` lands the reply
     after the SSE stream closes.
+
+    Returns a ``(history, prior_citations)`` pair. ``prior_citations``
+    is a deduped list of citation entries collected from every
+    earlier assistant turn — the caller seeds them into
+    ``ctx.citation_pool`` so that when the LLM answers from
+    context (no fresh tool calls) and references ``[c_14]`` from
+    turn 1, the new turn's persisted ``citations_json`` still
+    carries that entry → frontend renders the marker as a
+    clickable chip instead of a raw token.
     """
     owner = _effective_owner(state, principal)
     existing = state.store.get_conversation(conv_id)
@@ -407,11 +435,25 @@ def _load_or_create_conversation(
             if not (row_user is None and owner == "local"):
                 raise HTTPException(404, "conversation not found")
         prior = state.store.get_messages(conv_id, limit=50) or []
-        return [
+        history = [
             {"role": m["role"], "content": m["content"]}
             for m in prior
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
+        # Walk every prior assistant message in chronological
+        # order, dedup by chunk_id (the FIRST occurrence wins so
+        # the LLM-visible cite_id stays stable across turns).
+        prior_citations: list[dict] = []
+        seen_chunks: set[str] = set()
+        for m in prior:
+            if m.get("role") != "assistant":
+                continue
+            for c in (m.get("citations_json") or []):
+                cid = c.get("chunk_id")
+                if cid and cid not in seen_chunks:
+                    seen_chunks.add(cid)
+                    prior_citations.append(c)
+        return history, prior_citations
 
     # Not found → create with caller as owner. ``user_id=None`` is
     # legitimate when auth is disabled (the synthetic ``local``
@@ -423,7 +465,7 @@ def _load_or_create_conversation(
             "user_id": owner,
         }
     )
-    return []
+    return [], []
 
 
 def _accumulate_trace(trace: list[dict], evt: dict) -> None:
