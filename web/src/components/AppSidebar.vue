@@ -515,18 +515,22 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: stretch;
 }
-/* Trigger is a square — width === row height so the click
-   target reads as a real button slot. Rounds only the right
-   edges so its bg respects the row card's outer shape. */
+/* Trigger is a square button with all 4 corners rounded —
+   reads as an independent affordance sitting inside the row
+   slot, not a half-card glued to the right edge. ``margin: 4px
+   2px`` insets it slightly so the corners aren't kissing the
+   row's outer edge / corner curve. Width 28 keeps the button
+   visually square against its 26px effective height (row 34 -
+   margin 4*2). */
 .conv-menu-trigger {
-  width: 34px;
-  height: 100%;
+  width: 28px;
+  margin: 4px 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 0 6px 6px 0;
+  border-radius: 4px;
   color: var(--color-t3);
   opacity: 0;
   cursor: pointer;
@@ -539,21 +543,22 @@ onBeforeUnmount(() => {
 .conv-menu-trigger.is-open {
   opacity: 1;
 }
-/* Trigger's OWN hover / open layer.
-   On a non-active row that's already bg3 from the parent's
-   hover, the trigger goes one step deeper (bg-selected) so
-   the user can see they're targeting the dots specifically.
-   On an active row that's already bg-selected, an rgba-black
-   overlay does the same job without needing a fourth surface
-   token. */
+/* Trigger's OWN hover / open layer — uses the SAME bg3 the
+   row uses for its title-zone hover. The asymmetric
+   ``:has(.conv-menu-trigger:hover)`` rule above suppresses the
+   row's bg when the cursor is on the dots, so visually only
+   the trigger square lights up — same colour as title hover
+   would tint it, just clipped to a different shape. Active
+   row uses bg-selected so the trigger blends with the row's
+   selected surface (no separate overlay needed). */
 .conv-row:not(.is-active) .conv-menu-trigger:hover,
 .conv-row:not(.is-active) .conv-menu-trigger.is-open {
-  background: var(--color-bg-selected);
+  background: var(--color-bg3);
   color: var(--color-t1);
 }
 .conv-row.is-active .conv-menu-trigger:hover,
 .conv-row.is-active .conv-menu-trigger.is-open {
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--color-bg-selected);
   color: var(--color-t1);
 }
 
