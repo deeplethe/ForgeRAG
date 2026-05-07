@@ -52,7 +52,7 @@ import { Search, AlertCircle, FileText, Clock, User, FileType2, ChevronDown } fr
 import { search as searchApi } from '@/api'
 import { avatarUrlFor } from '@/api/admin'
 import UserAvatar from '@/components/UserAvatar.vue'
-import ThinkingPulse from '@/components/ThinkingPulse.vue'
+import Spinner from '@/components/Spinner.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -283,7 +283,7 @@ function fmtRelativeTime(d) {
           class="search-submit"
           :disabled="_loading || !_query.trim()"
         >
-          <ThinkingPulse v-if="_loading" :size="14" />
+          <Spinner v-if="_loading" size="md" />
           <span v-else>{{ t('search.submit') }}</span>
         </button>
       </form>

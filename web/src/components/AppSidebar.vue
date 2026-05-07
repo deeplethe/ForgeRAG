@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-for="c in conversations" :key="c.conversation_id"
-        class="group relative flex items-center pl-3 pr-1 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
+        class="group relative flex items-center pl-3 pr-0 py-2 rounded-md text-[12px] cursor-pointer transition-colors overflow-hidden"
         :class="[
           currentConvId === c.conversation_id && route.path.startsWith('/chat')
             ? 'bg-bg-selected text-t1 is-active'
@@ -423,15 +423,16 @@ onBeforeUnmount(() => {
   margin-top: -8px;
   margin-bottom: -8px;
 }
-/* Trigger fills the wrapper (i.e. the row's full vertical
-   extent). Width 24px gives the dots a comfortable target
-   while staying flush against the right edge of the row card
-   — pairs with the row's tightened ``pr-1`` so there's no
-   gutter between the trigger and the rounded corner. */
+/* Trigger is a square — width matches the row's ~34px height
+   so it reads as a real button slot, not a stretched
+   rectangle. The wrapping ``.conv-menu`` already stretches to
+   the row's full vertical extent (negative margins above);
+   this rule pins width === height so the resulting target is
+   visibly square. The row's ``pr-0`` lets it sit flush
+   against the rounded right corner with no gutter. */
 .conv-menu-trigger {
-  width: 24px;
+  width: 34px;
   height: 100%;
-  margin-left: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
