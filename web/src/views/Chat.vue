@@ -1319,7 +1319,7 @@ function onTraceClick(m) {
                    agent is working, even between events. See
                    ThinkingPulse.vue for the design. -->
               <div class="thinking-indicator">
-                <ThinkingPulse :size="14" />
+                <ThinkingPulse :size="18" />
               </div>
             </div>
           </div>

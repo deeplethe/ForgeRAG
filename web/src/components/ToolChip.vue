@@ -78,7 +78,7 @@ function fmtMs(ms) {
 <template>
   <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
     <button class="chip-head" @click="toggle">
-      <ThinkingPulse v-if="anyRunning" :size="12" class="head-icon" />
+      <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon" />
       <ChevronRight v-else :size="12" :stroke-width="1.75"
         class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-text">{{ headline }}</span>

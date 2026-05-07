@@ -82,12 +82,13 @@ const swatchColor = computed(() => props.color || 'currentColor')
   background: currentColor;
 }
 .pulse-ring {
-  border: 1.25px solid currentColor;
+  border: 1.5px solid currentColor;
   background: transparent;
-  /* The animation scales from 1× (dot size) up to a multiple
-     that fills the bounding box. ``2.4`` instead of 2.5
-     leaves a hair of margin so the outer edge doesn't kiss
-     the bounding box at any frame. */
+  /* Rings expand from 1× (dot size) to ~3.4× — well past the
+     bounding box. ``transform`` doesn't affect layout, so the
+     overshoot just paints over neighbouring whitespace and
+     gives the indicator real visual presence. Earlier 2.4×
+     read as "tiny" especially against a dim t3 colour. */
   animation: pulse-ripple 1.6s linear infinite;
   opacity: 0;
 }
@@ -100,10 +101,10 @@ const swatchColor = computed(() => props.color || 'currentColor')
 @keyframes pulse-ripple {
   0% {
     transform: translate(-50%, -50%) scale(1);
-    opacity: 0.7;
+    opacity: 0.85;
   }
   100% {
-    transform: translate(-50%, -50%) scale(2.4);
+    transform: translate(-50%, -50%) scale(3.4);
     opacity: 0;
   }
 }

@@ -283,7 +283,7 @@ function fmtRelativeTime(d) {
           class="search-submit"
           :disabled="_loading || !_query.trim()"
         >
-          <ThinkingPulse v-if="_loading" :size="12" />
+          <ThinkingPulse v-if="_loading" :size="14" />
           <span v-else>{{ t('search.submit') }}</span>
         </button>
       </form>
