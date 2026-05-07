@@ -173,6 +173,99 @@ def get_tree(
         return build(root, depth)
 
 
+# ---------------------------------------------------------------------------
+# Spaces — per-user view of the global tree
+# ---------------------------------------------------------------------------
+#
+# See ``docs/roadmaps/per-user-spaces.md`` for design notes. In one
+# sentence: every grant the principal holds becomes its own
+# top-level "space"; the user's UI never surfaces the system path
+# parents (``/users/``, ``/eng/``, etc.) that connect grants in
+# the global tree.
+
+
+class SpaceOut(BaseModel):
+    space_id: str
+    name: str
+    abs_root: str    # for back-compat with callers that still need absolute paths
+    role: str        # "rw" / "r"
+    is_personal: bool
+
+
+class SpaceTree(BaseModel):
+    space: SpaceOut
+    tree: FolderTreeNode
+
+
+class SpacesResponse(BaseModel):
+    spaces: list[SpaceTree]
+
+
+@router.get("/spaces", response_model=SpacesResponse)
+def get_spaces(
+    depth: int = Query(2, ge=1, le=6, description="How many levels to expand inside each space"),
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Return the principal's workspace as a flat list of spaces.
+
+    Each space carries its own subtree starting at the grant
+    root. Folder paths inside are still absolute (Phase 1 keeps
+    backend ops on absolute paths); the FRONTEND treats the
+    space as its tree's root and renders sub-paths relative to
+    it. Phase 2 / 3 extend the translation to doc detail,
+    search, citations, and chat scope picker — see roadmap.
+
+    Empty spaces list = the user has no grants (admin needs to
+    share a folder with them, or registration didn't auto-
+    create their personal folder yet).
+    """
+    from ..auth.path_remap import PathRemap
+
+    remap = PathRemap.build(state, principal)
+    if not remap.spaces:
+        return SpacesResponse(spaces=[])
+
+    out: list[SpaceTree] = []
+    with state.store.transaction() as sess:
+        svc = FolderService(sess)
+
+        def build(folder, levels_left: int) -> FolderTreeNode:
+            o = _folder_to_out(svc, folder)
+            children_models = []
+            if levels_left > 0:
+                for child in svc.list_children(folder.folder_id):
+                    if _excluded_from_user_view(child):
+                        continue
+                    children_models.append(build(child, levels_left - 1))
+            return FolderTreeNode(**o.model_dump(), children=children_models)
+
+        for space in remap.spaces:
+            try:
+                root_folder = svc.require_by_path(space.abs_root)
+            except FolderNotFound:
+                # Grant points at a folder that's been deleted —
+                # log and skip rather than 500. Garbage-collect
+                # path is a separate concern (admin user-management).
+                log.warning(
+                    "space %s points at missing folder %s — skipping",
+                    space.space_id, space.abs_root,
+                )
+                continue
+            out.append(SpaceTree(
+                space=SpaceOut(
+                    space_id=space.space_id,
+                    name=space.name,
+                    abs_root=space.abs_root,
+                    role=space.role,
+                    is_personal=space.is_personal,
+                ),
+                tree=build(root_folder, depth),
+            ))
+
+    return SpacesResponse(spaces=out)
+
+
 @router.get("/info", response_model=FolderOut)
 def folder_info(
     path: str = Query(..., description="Folder path, e.g. /legal/2024"),

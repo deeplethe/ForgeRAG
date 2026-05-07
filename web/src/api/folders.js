@@ -16,6 +16,15 @@ export const listFolders = (params = {}) =>
 export const getFolderTree = (path = '/', depth = 2, include_trashed = false) =>
   get('/api/v1/folders/tree', { path, depth, include_trashed })
 
+/** Per-user spaces — returns the principal's grants as a flat
+ *  list of top-level "spaces", each with its own subtree. The
+ *  user's UI should treat each space as its tree root; absolute
+ *  paths inside (in tree.path) are still real (Phase 1 keeps
+ *  backend ops on absolute paths) but are NOT meant for direct
+ *  display. See docs/roadmaps/per-user-spaces.md. */
+export const getFolderSpaces = (depth = 2) =>
+  get('/api/v1/folders/spaces', { depth })
+
 /** Folder info for a specific path. */
 export const getFolderInfo = (path) =>
   get('/api/v1/folders/info', { path })

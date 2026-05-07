@@ -17,6 +17,7 @@ import {
   createFolder,
   deleteFolder,
   getFolderTree,
+  getFolderSpaces,
   listDocuments,
   moveDocument,
   moveFolder,
@@ -103,13 +104,51 @@ export function useWorkspace() {
   // ── Loaders ───────────────────────────────────────────────────────
 
   const treeError = ref(null)
+  // Phase 1 of the per-user Spaces model: the tree root is no
+  // longer the global ``/``. Instead the backend returns the
+  // user's grants as a flat list of "spaces", each with its
+  // own subtree. We synthesise a virtual root whose children
+  // are the space subtrees — this keeps every existing tree
+  // consumer (FolderTree, FolderTreeNode, breadcrumbs)
+  // working unchanged because they read ``root.children`` and
+  // never the literal ``/``.
+  // See docs/roadmaps/per-user-spaces.md.
   async function loadTree(depth = 4) {
     treeLoading.value = true
     treeError.value = null
     try {
-      tree.value = await getFolderTree('/', depth, false)
+      const res = await getFolderSpaces(depth)
+      const spaces = res?.spaces || []
+      tree.value = {
+        // Synthetic root — never displayed itself; only its
+        // children are rendered. ``path: '/'`` keeps anything
+        // that compares against it for "are we at root" semantics
+        // working unchanged.
+        folder_id: '__virtual_root__',
+        path: '/',
+        parent_id: null,
+        name: '/',
+        is_system: true,
+        trashed: false,
+        child_folders: spaces.length,
+        document_count: 0,
+        children: spaces.map((s) => ({
+          // Override the folder's natural ``name`` with the
+          // space display name so collision-disambiguators
+          // ("q4 (admin)") show up in the tree label.
+          ...s.tree,
+          name: s.space.name,
+          // Carry the space metadata through so consumers that
+          // need to know "this top-level node is a space root"
+          // (Phase 2 / 3 — doc detail breadcrumb, scope picker)
+          // can find it without a second fetch.
+          space_id: s.space.space_id,
+          is_personal_space: s.space.is_personal,
+          space_role: s.space.role,
+        })),
+      }
     } catch (e) {
-      console.error('loadTree failed:', e)
+      console.error('loadTree (spaces) failed:', e)
       tree.value = null
       treeError.value = e?.message || String(e)
     } finally {

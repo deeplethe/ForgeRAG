@@ -100,7 +100,7 @@ export {
 
 // Folders + document path
 export {
-  listFolders, getFolderTree, getFolderInfo,
+  listFolders, getFolderTree, getFolderSpaces, getFolderInfo,
   createFolder, renameFolder, moveFolder, deleteFolder,
   moveDocument, bulkMoveDocuments, renameDocument,
 } from './folders'
