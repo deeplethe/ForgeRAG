@@ -113,11 +113,16 @@ export function useWorkspace() {
   // ── Breadcrumbs ───────────────────────────────────────────────────
   // The user only ever sees Space-relative paths — the literal
   // ``/users/<username>/...`` prefix never reaches the UI. The
-  // first crumb is always the synthetic "/" (the spaces list);
-  // the second is the active Space's display label; remaining
-  // crumbs are sub-segments inside that Space. Each crumb still
-  // carries the ABSOLUTE path so click handlers (``navigate``)
-  // keep working unchanged — only ``name`` is translated.
+  // user's PERSONAL Space is treated as their home: its root
+  // renders as ``/`` directly (no space-name crumb), because in
+  // the user's mental model their personal Space IS the root.
+  // Other (admin-shared) Spaces show up as a labelled crumb under
+  // ``/`` — that's the only place the space's display name
+  // surfaces in path UI.
+  //
+  // Each crumb still carries the ABSOLUTE path so click handlers
+  // (``navigate``) keep working unchanged — only ``name`` is
+  // translated.
   const breadcrumbs = computed(() => {
     if (currentPath.value === ROOT_PATH) return [{ name: '/', path: '/' }]
     const resolved = resolveSpace(currentPath.value)
@@ -137,13 +142,22 @@ export function useWorkspace() {
       })
       return crumbs
     }
-    const crumbs = [
-      { name: '/', path: '/' },
-      // Space root: clicking jumps to the Space's abs path; label
-      // is the space's display name (already disambiguated server
-      // side when basenames collide).
-      { name: resolved.space.name, path: resolved.space.path },
-    ]
+
+    const isPersonal = !!resolved.space.is_personal_space
+    // Personal Space: ``/`` crumb's path is the Space root itself,
+    // so clicking ``/`` from a sub-folder takes the user to their
+    // personal home (not the synthetic-root spaces list — that's
+    // not where "home" lives in their head).
+    // Other Space: ``/`` crumb leads to the synthetic root (so the
+    // user can hop back out and see the spaces list / their personal
+    // Space), then the Space label crumb anchors the rest.
+    const crumbs = []
+    if (isPersonal) {
+      crumbs.push({ name: '/', path: resolved.space.path })
+    } else {
+      crumbs.push({ name: '/', path: '/' })
+      crumbs.push({ name: resolved.space.name, path: resolved.space.path })
+    }
     if (resolved.relPath) {
       const parts = resolved.relPath.split('/').filter(Boolean)
       let acc = resolved.space.path
@@ -156,17 +170,19 @@ export function useWorkspace() {
   })
 
   // ── User-facing path string ───────────────────────────────────────
-  // What the address-bar / status-line component shows. Like
-  // ``breadcrumbs`` but as a single slash-joined string. Synthetic
-  // root → ``/``; Space root → ``/<space_name>``; sub-folder →
-  // ``/<space_name>/sub/path``. Absolute ``/users/...`` never
-  // surfaces here.
+  // Single slash-joined form of the breadcrumb. Personal Space
+  // root → ``/``; personal sub-folder → ``/sub/path``; other
+  // Space root → ``/<space>``; other Space sub → ``/<space>/sub``.
+  // Absolute ``/users/...`` never surfaces here.
   const displayPath = computed(() => {
     if (currentPath.value === ROOT_PATH) return '/'
     const resolved = resolveSpace(currentPath.value)
     if (!resolved) return currentPath.value
-    if (!resolved.relPath) return '/' + resolved.space.name
-    return '/' + resolved.space.name + '/' + resolved.relPath
+    const tail = resolved.relPath ? '/' + resolved.relPath : ''
+    if (resolved.space.is_personal_space) {
+      return tail || '/'
+    }
+    return '/' + resolved.space.name + tail
   })
 
   // Find the user's personal Space ("Home"). Returns the synthesised
