@@ -84,6 +84,12 @@ import AgentMessageBody from '@/components/AgentMessageBody.vue'
 
 const convId = inject('convId')
 const loadConvs = inject('loadConvs')
+// URL helper from App.vue — used after send() creates a new
+// conversation. Bumps the URL to ``/chat?c=<id>`` via
+// router.replace so refresh + back/forward stay aligned with the
+// active conversation, without polluting history with a
+// /chat → /chat?c=<id> step on every send.
+const setActiveConvIdNoHistory = inject('setActiveConvIdNoHistory', () => {})
 
 // Path scoping: read `path_filter` from URL (e.g. ?path_filter=/legal).
 // User can clear the chip via the Chat UI.
@@ -552,7 +558,14 @@ async function send(text) {
 
   if (!convId.value) try {
     _skipNextWatch = true  // prevent watch from resetting UI on convId change
-    convId.value = (await createConversation(q.slice(0, 60))).conversation_id
+    const newId = (await createConversation(q.slice(0, 60))).conversation_id
+    convId.value = newId
+    // Sync the URL → ``/chat?c=<id>``. Without this, a refresh
+    // mid-stream loses the conversation entirely (App.vue's
+    // convId boots from route.query.c, which would still be
+    // empty). Uses replace so the address bar mutation doesn't
+    // add a history step the user has to back-button through.
+    setActiveConvIdNoHistory(newId)
     loadConvs()  // refresh sidebar immediately so the new conversation is visible
   } catch { _skipNextWatch = false }
 

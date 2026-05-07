@@ -1,5 +1,5 @@
 <script setup>
-import { ref, provide, onMounted, computed } from 'vue'
+import { ref, provide, onMounted, computed, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { listConversations, deleteConversation } from '@/api'
 import { onUnauthorized } from '@/api/client'
@@ -19,7 +19,16 @@ const convsLoaded = ref(false)
 const convsLoadingMore = ref(false)    // append-load in flight; sidebar shows tail spinner
 const convsHasMore = ref(true)         // false once an empty page comes back
 const deletingConvs = ref(new Set())   // optimistic-delete in-flight set
-const convId = ref(null)
+// Active conversation id is mirrored in the URL as ``?c=<id>`` so
+// page refresh, browser back/forward, and shareable links all
+// recover the conversation. The ref + the route stay in sync via
+// the two watchers below: any setter on either side flows through
+// to the other. Sidebar clicks call ``selectConv`` (push, gives a
+// history entry); ``send()`` in Chat.vue calls
+// ``setActiveConvIdNoHistory`` after creating a new conversation
+// so URL reflects reality without polluting history with a
+// /chat → /chat?c=X step.
+const convId = ref(route.query.c || null)
 const me = ref(null)
 const showForcedPwd = ref(false)
 
@@ -110,8 +119,48 @@ onMounted(() => {
 
 provide('me', me)
 
-function selectConv(id) { convId.value = id }
-function newChat() { convId.value = null }
+// ── URL ↔ convId bidirectional sync ────────────────────────────
+// Why two watchers instead of a computed:
+// Chat.vue still sets ``convId.value = ...`` directly (after
+// createConversation) and we don't want to refactor every
+// callsite to call a helper. Whoever mutates the ref or the URL
+// first wins; the other side syncs. The ``cur === id`` guards
+// stop the watch loops from ping-ponging when both already
+// agree.
+watch(() => route.query.c, (id) => {
+  const next = id || null
+  if (convId.value !== next) convId.value = next
+})
+
+watch(convId, (id) => {
+  // Only sync URL while we're on a /chat path — flipping convId
+  // shouldn't kick the user off /workspace etc. The ``selectConv``
+  // helper handles cross-route nav explicitly.
+  if (!route.path.startsWith('/chat')) return
+  const cur = route.query.c || null
+  if (cur === id) return
+  // ``replace`` instead of ``push``: convId edits triggered by
+  // Chat.vue creating a new conversation don't deserve a history
+  // entry between /chat and /chat?c=X. Sidebar clicks go through
+  // selectConv (below) which uses push for a real history entry.
+  router.replace({ path: '/chat', query: id ? { c: id } : {} })
+})
+
+function selectConv(id) {
+  // Sidebar click → real history entry so back button returns to
+  // the previous conversation.
+  router.push({ path: '/chat', query: id ? { c: id } : {} })
+}
+function newChat() {
+  router.push({ path: '/chat' })
+}
+
+// Public API for non-sidebar callsites (Chat.vue's send() after
+// createConversation) — replace, not push.
+function setActiveConvIdNoHistory(id) {
+  router.replace({ path: '/chat', query: id ? { c: id } : {} })
+}
+
 async function delConv(id) {
   if (deletingConvs.value.has(id)) return        // already in flight, ignore double-click
   // Optimistic: drop the row immediately, also navigate off if we're
@@ -121,7 +170,12 @@ async function delConv(id) {
   const idx = convs.value.findIndex(c => c.conversation_id === id)
   const removed = idx >= 0 ? convs.value[idx] : null
   if (idx >= 0) convs.value = [...convs.value.slice(0, idx), ...convs.value.slice(idx + 1)]
-  if (convId.value === id) convId.value = null
+  if (convId.value === id) {
+    // Drop the deleted conversation from the URL too — the watch
+    // on convId would handle it but explicit push gives a real
+    // history entry the user can back out of.
+    router.push({ path: '/chat' })
+  }
 
   const next = new Set(deletingConvs.value); next.add(id); deletingConvs.value = next
   try {
@@ -140,6 +194,7 @@ async function delConv(id) {
 }
 
 provide('convId', convId)
+provide('setActiveConvIdNoHistory', setActiveConvIdNoHistory)
 provide('convs', convs)
 provide('convsLoading', convsLoading)
 provide('deletingConvs', deletingConvs)
