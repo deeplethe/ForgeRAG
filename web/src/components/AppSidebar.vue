@@ -121,11 +121,6 @@ function onTabClick(tab) {
   }
 }
 
-function onNewChat() {
-  emit('new-chat')
-  if (!route.path.startsWith('/chat')) router.push('/chat')
-}
-
 function onSelectConv(convId) {
   emit('select-conv', convId)
   if (!route.path.startsWith('/chat')) router.push('/chat')
@@ -135,6 +130,23 @@ function onMenuFavorite(c) {
   openMenuId.value = null
   emit('toggle-favorite-conv', c)
 }
+
+// Split into "Starred" + "Recents" sections. Server sort
+// already gives us most-recently-active first; we just bucket
+// by ``is_favorite`` and let each bucket inherit that order.
+// ``Starred`` is hidden entirely when no conversation is
+// favorited; ``Recents`` hides only when the entire list is
+// empty (a load-state concern handled separately by the
+// skeleton block).
+const convSections = computed(() => {
+  const all = props.conversations || []
+  const starred = all.filter((c) => c.is_favorite)
+  const recents = all.filter((c) => !c.is_favorite)
+  return [
+    { key: 'starred', label: t('sidebar.starred'), items: starred },
+    { key: 'recents', label: t('sidebar.recents'), items: recents },
+  ].filter((s) => s.items.length)
+})
 function onMenuRename(c) {
   openMenuId.value = null
   emit('rename-conv', c)
@@ -258,20 +270,18 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- Conversations (always visible) -->
-    <div class="px-3 pt-5 pb-1.5">
-      <div class="text-[11px] text-t3 tracking-wider mb-2 px-1">{{ t('sidebar.recents') }}</div>
-      <button
-        @click="onNewChat"
-        class="w-full text-[12px] text-left px-3 py-2 rounded-md border border-dashed border-line text-t3 hover:bg-bg3 transition-colors"
-      >{{ t('sidebar.new_chat') }}</button>
-    </div>
-    <!-- ``scrollbar-gutter: stable`` reserves the scrollbar
-         width even when the list isn't tall enough to scroll, so
-         the row's right edge (and the dot trigger pinned to it)
+    <!-- ── Conversations: Starred + Recents sections ──────────────
+         New-chat affordance was a separate dashed button before;
+         it now lives on the top "Chat" tab itself (clicking it
+         while already on /chat creates a new conversation), so
+         the sidebar gets back the vertical real estate.
+
+         ``scrollbar-gutter: stable`` reserves the track width
+         even when the list isn't tall enough to scroll, so the
+         row's right edge (and the dot trigger pinned to it)
          doesn't shift sideways the moment a new conversation
          pushes the list into overflow. -->
-    <div class="flex-1 overflow-y-auto px-3 space-y-px conv-list">
+    <div class="flex-1 overflow-y-auto px-3 pt-5 conv-list">
       <!-- Skeleton on first load — same Skeleton primitive + shimmer
            pattern as the workspace folder tree, so visual language is
            consistent across the app. Hidden once we have data;
@@ -283,79 +293,74 @@ onBeforeUnmount(() => {
           block :w="w + '%'" :h="14" class="conv-skel-row"
         />
       </div>
-      <!-- Row is now a passive flex shell — its TWO interactive
-           zones (title + trigger) each own their hover / active
-           bg. The shared bg used to span the whole row, which
-           made hovering the dot light up the title area too;
-           splitting lets us tune each zone independently while
-           the matching corner radii keep them looking like one
-           continuous card when active. -->
-      <div
-        v-for="c in conversations" :key="c.conversation_id"
-        class="group conv-row relative flex items-stretch text-[12px]"
-        :class="{
-          'is-active': currentConvId === c.conversation_id && route.path.startsWith('/chat'),
-          'has-open-menu': openMenuId === c.conversation_id,
-        }"
-      >
-        <!-- Title zone — the click target that selects this
-             conversation. Owns the left rounded corners so its
-             bg respects the card shape without needing
-             overflow:hidden on the parent (which would clip the
-             popover). -->
-        <button
-          type="button"
-          class="conv-title-zone"
-          @click="onSelectConv(c.conversation_id)"
-        >
-          <Star
-            v-if="c.is_favorite"
-            :size="10"
-            :stroke-width="0"
-            class="conv-star-marker shrink-0 mr-1.5"
-            fill="currentColor"
-          />
-          <span class="flex-1 truncate text-left">{{ c.title || t('sidebar.untitled') }}</span>
-        </button>
 
-        <!-- Three-dot menu trigger. Independent hover / active
-             zone — its bg-bg3 lights up only when the cursor is
-             over the dots, not when it's over the title. Stays
-             at bg-bg3 while its popover is open (``.is-open``)
-             so the user sees a clear "this menu is the one
-             that's expanded" affordance. -->
+      <!-- Two sections: Starred + Recents. Each renders only
+           when it has at least one row (see ``convSections``
+           computed). Row markup is identical between sections
+           so we factor the section v-for outside the row v-for
+           — single source of truth for the row template. -->
+      <div
+        v-for="section in convSections"
+        :key="section.key"
+        class="conv-section"
+      >
+        <div class="conv-section-header">{{ section.label }}</div>
         <div
-          v-if="!deletingConvs.has(c.conversation_id)"
-          class="conv-menu relative shrink-0"
+          v-for="c in section.items" :key="c.conversation_id"
+          class="group conv-row relative flex items-stretch text-[12px]"
+          :class="{
+            'is-active': currentConvId === c.conversation_id && route.path.startsWith('/chat'),
+            'has-open-menu': openMenuId === c.conversation_id,
+          }"
         >
           <button
             type="button"
-            class="conv-menu-trigger"
-            :class="{ 'is-open': openMenuId === c.conversation_id }"
-            :aria-label="t('sidebar.conv_menu')"
-            @click.stop="toggleMenu(c.conversation_id, $event)"
+            class="conv-title-zone"
+            @click="onSelectConv(c.conversation_id)"
           >
-            <MoreHorizontal :size="13" :stroke-width="1.75" />
+            <Star
+              v-if="c.is_favorite"
+              :size="10"
+              :stroke-width="0"
+              class="conv-star-marker shrink-0 mr-1.5"
+              fill="currentColor"
+            />
+            <span class="flex-1 truncate text-left">{{ c.title || t('sidebar.untitled') }}</span>
           </button>
 
           <div
-            v-if="openMenuId === c.conversation_id"
-            class="conv-menu-popover"
-            @click.stop
+            v-if="!deletingConvs.has(c.conversation_id)"
+            class="conv-menu relative shrink-0"
           >
-            <button class="conv-menu-row" @click="onMenuFavorite(c)">
-              <Star :size="13" :stroke-width="1.75" :fill="c.is_favorite ? 'currentColor' : 'none'" />
-              <span>{{ c.is_favorite ? t('sidebar.conv_unfavorite') : t('sidebar.conv_favorite') }}</span>
+            <button
+              type="button"
+              class="conv-menu-trigger"
+              :class="{ 'is-open': openMenuId === c.conversation_id }"
+              :aria-label="t('sidebar.conv_menu')"
+              @click.stop="toggleMenu(c.conversation_id, $event)"
+            >
+              <MoreHorizontal :size="13" :stroke-width="1.75" />
             </button>
-            <button class="conv-menu-row" @click="onMenuRename(c)">
-              <Pencil :size="13" :stroke-width="1.75" />
-              <span>{{ t('sidebar.conv_rename') }}</span>
-            </button>
-            <div class="conv-menu-divider"></div>
-            <button class="conv-menu-row is-destructive" @click="onMenuDelete(c)">
-              <Trash2 :size="13" :stroke-width="1.75" />
-              <span>{{ t('sidebar.conv_delete') }}</span>
-            </button>
+
+            <div
+              v-if="openMenuId === c.conversation_id"
+              class="conv-menu-popover"
+              @click.stop
+            >
+              <button class="conv-menu-row" @click="onMenuFavorite(c)">
+                <Star :size="13" :stroke-width="1.75" :fill="c.is_favorite ? 'currentColor' : 'none'" />
+                <span>{{ c.is_favorite ? t('sidebar.conv_unfavorite') : t('sidebar.conv_favorite') }}</span>
+              </button>
+              <button class="conv-menu-row" @click="onMenuRename(c)">
+                <Pencil :size="13" :stroke-width="1.75" />
+                <span>{{ t('sidebar.conv_rename') }}</span>
+              </button>
+              <div class="conv-menu-divider"></div>
+              <button class="conv-menu-row is-destructive" @click="onMenuDelete(c)">
+                <Trash2 :size="13" :stroke-width="1.75" />
+                <span>{{ t('sidebar.conv_delete') }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -412,6 +417,21 @@ onBeforeUnmount(() => {
    to a different x-position depending on conv count. */
 .conv-list {
   scrollbar-gutter: stable;
+}
+
+/* Sections (Starred / Recents) — each gets a small label
+   header and a tight stack of rows below. Spacing between
+   sections is set by ``margin-top`` on every section after
+   the first; first one inherits the scroller's ``pt-5``. */
+.conv-section + .conv-section {
+  margin-top: 18px;
+}
+.conv-section-header {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-t3);
+  margin: 0 0 6px;
+  padding: 0 12px;
 }
 
 
