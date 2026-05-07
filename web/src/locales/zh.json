@@ -21,7 +21,17 @@
     "in_dev": "(开发中)",
     "recents": "最近",
     "new_chat": "+ 新对话",
-    "untitled": "未命名"
+    "untitled": "未命名",
+    "conv_menu": "更多",
+    "conv_favorite": "收藏",
+    "conv_unfavorite": "取消收藏",
+    "conv_rename": "重命名",
+    "conv_rename_prompt": "新标题：",
+    "conv_delete": "删除",
+    "conv_delete_confirm_title": "删除对话？",
+    "conv_delete_confirm_desc": "将永久删除「{name}」及其所有消息，此操作不可撤销。",
+    "conv_delete_confirm_button": "删除",
+    "conv_action_failed": "操作失败：{msg}"
   },
   "settings": {
     "title": "设置",

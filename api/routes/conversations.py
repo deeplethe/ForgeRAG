@@ -44,7 +44,13 @@ class CreateConversationRequest(BaseModel):
 
 
 class UpdateConversationRequest(BaseModel):
-    title: str
+    """Partial-update payload. Both fields optional — clients
+    send just what they want to change. The handler skips
+    unchanged fields rather than overwriting with None / False
+    (PATCH semantics, not PUT)."""
+
+    title: str | None = None
+    is_favorite: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +149,16 @@ def update_conversation(
     row = state.store.get_conversation(conversation_id)
     if not row or not _owns_conversation(row, _effective_owner(state, principal)):
         raise HTTPException(404, "conversation not found")
-    state.store.update_conversation(conversation_id, title=req.title)
+    # PATCH semantics — only forward fields the client actually
+    # set. ``update_conversation`` setattr-only so passing
+    # explicit ``None`` would NULL the column.
+    updates: dict = {}
+    if req.title is not None:
+        updates["title"] = req.title
+    if req.is_favorite is not None:
+        updates["is_favorite"] = req.is_favorite
+    if updates:
+        state.store.update_conversation(conversation_id, **updates)
     return get_conversation(conversation_id, state, principal)
 
 

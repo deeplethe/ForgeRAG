@@ -47,13 +47,16 @@ export const getConversation = (conversationId) =>
   get(`/api/v1/conversations/${conversationId}`)
 
 /**
- * 修改会话标题
+ * Patch a conversation. The backend accepts ``title`` and
+ * ``is_favorite``; both are optional and PATCH semantics apply
+ * (only forwarded fields get written, omitted fields stay
+ * untouched).
  * @param {string} conversationId
- * @param {string} title
+ * @param {{ title?: string, is_favorite?: boolean }} updates
  * @returns {Promise<ConversationOut>}
  */
-export const updateConversation = (conversationId, title) =>
-  patch(`/api/v1/conversations/${conversationId}`, { title })
+export const updateConversation = (conversationId, updates) =>
+  patch(`/api/v1/conversations/${conversationId}`, updates)
 
 /**
  * 删除会话 (级联删除所有消息)

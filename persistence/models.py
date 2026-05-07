@@ -281,6 +281,10 @@ class Conversation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Sidebar star gesture. Toggled by the row's three-dot menu;
+    # the frontend can sort favorites to the top of the list.
+    # Added in 20260515_add_conversation_favorite.
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class Message(Base):

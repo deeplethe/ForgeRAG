@@ -857,6 +857,20 @@ class Store:
     def add_message(self, record: dict) -> None:
         with self._session() as s:
             s.add(Message(**record))
+            # Bump the parent conversation's ``updated_at`` so the
+            # sidebar's "most-recent first" sort reflects last
+            # ACTIVITY, not last metadata-edit. ``onupdate=func.now()``
+            # on the column only fires when the ORM actually updates
+            # the row — adding a child Message doesn't, so we touch
+            # the parent explicitly. SET-via-attribute path keeps the
+            # write inside the same transaction as the message insert.
+            conv_id = record.get("conversation_id")
+            if conv_id:
+                from datetime import datetime as _dt
+
+                conv = s.get(Conversation, conv_id)
+                if conv is not None:
+                    conv.updated_at = _dt.utcnow()
 
     def get_messages(self, conversation_id: str, *, limit: int = 100) -> list[dict]:
         with self._session() as s:
@@ -1244,6 +1258,7 @@ def _conversation_to_dict(row: Conversation) -> dict:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},
+        "is_favorite": bool(getattr(row, "is_favorite", False)),
     }
 
 

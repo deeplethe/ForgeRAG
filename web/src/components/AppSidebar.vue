@@ -9,6 +9,10 @@ import {
   Network,
   BarChart3,
   Loader2,
+  MoreHorizontal,
+  Star,
+  Pencil,
+  Trash2,
 } from 'lucide-vue-next'
 import UserMenu from './UserMenu.vue'
 import Skeleton from './Skeleton.vue'
@@ -44,8 +48,39 @@ const emit = defineEmits([
   'select-conv',
   'new-chat',
   'delete-conv',
+  'rename-conv',
+  'toggle-favorite-conv',
   'load-more-conversations',
 ])
+
+// Per-row context menu state. ``openMenuId`` holds the
+// conversation_id whose dot-menu is currently expanded; null
+// means no menu open. We position the menu absolutely under
+// the trigger button — a single global element is simpler than
+// portaling, and we never have more than one open at a time
+// because the click-outside handler closes the previous one.
+const openMenuId = ref(null)
+function toggleMenu(id, event) {
+  // Stop the row's @click from also firing — we don't want
+  // opening the menu to navigate into the conversation.
+  event?.stopPropagation()
+  openMenuId.value = openMenuId.value === id ? null : id
+}
+// Document-level click-outside. Adds the listener only while
+// a menu is open so we don't pay the global-listener tax in
+// the common case.
+function _onDocClick(e) {
+  // Anchor on the .conv-menu container so clicking inside the
+  // popover (e.g. on a menu item) doesn't immediately close it
+  // before its handler runs.
+  if (!e.target.closest('.conv-menu')) {
+    openMenuId.value = null
+  }
+}
+watch(openMenuId, (v) => {
+  if (v) document.addEventListener('click', _onDocClick)
+  else document.removeEventListener('click', _onDocClick)
+})
 
 // Tabs are i18n-driven; ``label_key`` resolves at render time so a
 // language toggle re-labels them live without re-rendering the array.
@@ -94,6 +129,19 @@ function onNewChat() {
 function onSelectConv(convId) {
   emit('select-conv', convId)
   if (!route.path.startsWith('/chat')) router.push('/chat')
+}
+
+function onMenuFavorite(c) {
+  openMenuId.value = null
+  emit('toggle-favorite-conv', c)
+}
+function onMenuRename(c) {
+  openMenuId.value = null
+  emit('rename-conv', c)
+}
+function onMenuDelete(c) {
+  openMenuId.value = null
+  emit('delete-conv', c.conversation_id)
 }
 
 function isTabActive(tab) {
@@ -232,18 +280,65 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-for="c in conversations" :key="c.conversation_id"
-        class="group flex items-center px-3 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
-        :class="currentConvId === c.conversation_id && route.path.startsWith('/chat')
-          ? 'bg-bg-selected text-t1'
-          : 'text-t2 hover:bg-bg3'"
+        class="group relative flex items-center px-3 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
+        :class="[
+          currentConvId === c.conversation_id && route.path.startsWith('/chat')
+            ? 'bg-bg-selected text-t1 is-active'
+            : 'text-t2 hover:bg-bg3',
+        ]"
         @click="onSelectConv(c.conversation_id)"
       >
+        <!-- Star marker for favorites (shown even when not hovered).
+             Tiny + amber so the eye picks it up without it
+             dominating the title. -->
+        <Star
+          v-if="c.is_favorite"
+          :size="10"
+          :stroke-width="0"
+          class="conv-star-marker shrink-0 mr-1.5"
+          fill="currentColor"
+        />
         <span class="flex-1 truncate">{{ c.title || t('sidebar.untitled') }}</span>
-        <button
+
+        <!-- Three-dot menu trigger. Hidden until row hover (or
+             when its own menu is open) — same pattern as the
+             previous ✕ button, just a more conventional
+             affordance. The wrapping ``conv-menu`` div is the
+             click-outside anchor. -->
+        <div
           v-if="!deletingConvs.has(c.conversation_id)"
-          class="opacity-0 group-hover:opacity-40 hover:!opacity-100 text-[10px] ml-1"
-          @click.stop="emit('delete-conv', c.conversation_id)"
-        >✕</button>
+          class="conv-menu relative shrink-0"
+        >
+          <button
+            type="button"
+            class="conv-menu-trigger"
+            :class="{ 'is-open': openMenuId === c.conversation_id }"
+            :aria-label="t('sidebar.conv_menu')"
+            @click.stop="toggleMenu(c.conversation_id, $event)"
+          >
+            <MoreHorizontal :size="13" :stroke-width="1.75" />
+          </button>
+
+          <div
+            v-if="openMenuId === c.conversation_id"
+            class="conv-menu-popover"
+            @click.stop
+          >
+            <button class="conv-menu-row" @click="onMenuFavorite(c)">
+              <Star :size="13" :stroke-width="1.75" :fill="c.is_favorite ? 'currentColor' : 'none'" />
+              <span>{{ c.is_favorite ? t('sidebar.conv_unfavorite') : t('sidebar.conv_favorite') }}</span>
+            </button>
+            <button class="conv-menu-row" @click="onMenuRename(c)">
+              <Pencil :size="13" :stroke-width="1.75" />
+              <span>{{ t('sidebar.conv_rename') }}</span>
+            </button>
+            <div class="conv-menu-divider"></div>
+            <button class="conv-menu-row is-destructive" @click="onMenuDelete(c)">
+              <Trash2 :size="13" :stroke-width="1.75" />
+              <span>{{ t('sidebar.conv_delete') }}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Tail spinner: visible while an append-page is in flight. -->
@@ -289,5 +384,78 @@ onBeforeUnmount(() => {
 }
 .conv-skel-row {
   border-radius: 4px;
+}
+
+/* ── Per-row context menu ─────────────────────────────────────
+   Trigger: hidden by default, fades in on row hover. Stays
+   visible when its own menu is open (otherwise the popover
+   would close the moment the row's hover state ends).
+   Popover: aligned right of the trigger, same shape /
+   shadow / token usage as the UserMenu popover so all
+   sidebar pop-ups read as one family. */
+.conv-star-marker {
+  color: #f59e0b;
+}
+.conv-menu-trigger {
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-t3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s, background-color 0.12s, color 0.12s;
+}
+.group:hover .conv-menu-trigger,
+.group.is-active .conv-menu-trigger,
+.conv-menu-trigger.is-open {
+  opacity: 1;
+}
+.conv-menu-trigger:hover {
+  background: var(--color-bg3);
+  color: var(--color-t1);
+}
+
+.conv-menu-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  z-index: 30;
+}
+.conv-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--color-t1);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.1s, color 0.1s;
+}
+.conv-menu-row:hover { background: var(--color-bg2); }
+.conv-menu-row.is-destructive { color: var(--color-err-fg, #b91c1c); }
+.conv-menu-row.is-destructive:hover {
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+}
+.conv-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--color-line);
 }
 </style>

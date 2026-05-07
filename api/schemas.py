@@ -391,6 +391,7 @@ class ConversationOut(BaseModel):
     created_at: Any = None
     updated_at: Any = None
     message_count: int | None = None
+    is_favorite: bool = False
 
 
 class MessageOut(BaseModel):

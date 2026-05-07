@@ -1,10 +1,12 @@
 <script setup>
 import { ref, provide, onMounted, computed, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { listConversations, deleteConversation } from '@/api'
+import { listConversations, deleteConversation, updateConversation } from '@/api'
 import { onUnauthorized } from '@/api/client'
 import { getMe } from '@/api/auth'
 import { useCapabilitiesStore } from '@/stores/capabilities'
+import { useDialog } from '@/composables/useDialog'
+import { useI18n } from 'vue-i18n'
 import AppSidebar from '@/components/AppSidebar.vue'
 import ChangePasswordModal from '@/components/ChangePasswordModal.vue'
 import DialogHost from '@/components/DialogHost.vue'
@@ -161,7 +163,70 @@ function setActiveConvIdNoHistory(id) {
   router.replace({ path: '/chat', query: id ? { c: id } : {} })
 }
 
+const { confirm: dialogConfirm, toast } = useDialog()
+const { t: i18nT } = useI18n()
+
+// ── Conversation row actions (sidebar menu) ────────────────────
+//
+// Sidebar emits ``toggle-favorite-conv`` / ``rename-conv`` /
+// ``delete-conv``. Favourite is optimistic + rolled back on
+// error. Rename uses an alert-shape ``confirm`` dialog with an
+// inline input; we keep the prompt logic local rather than
+// adding a new dialog primitive — the existing useDialog already
+// covers what we need with a tiny extension here.
+async function toggleFavoriteConv(c) {
+  // Optimistic flip — list re-orders / re-sorts naturally next
+  // refresh. On failure, revert + surface an error toast.
+  const idx = convs.value.findIndex((x) => x.conversation_id === c.conversation_id)
+  if (idx < 0) return
+  const next = !c.is_favorite
+  convs.value[idx] = { ...c, is_favorite: next }
+  try {
+    await updateConversation(c.conversation_id, { is_favorite: next })
+  } catch (e) {
+    // Revert
+    convs.value[idx] = c
+    toast(i18nT('sidebar.conv_action_failed', { msg: e.message || '' }), { variant: 'error' })
+  }
+}
+
+async function renameConv(c) {
+  // Use a native prompt for now — the project's useDialog
+  // doesn't have an input variant yet, and a quick prompt is
+  // good enough for sidebar rename. Future: replace with a
+  // proper inline-edit-in-row affordance when text editing
+  // gets a more polished pattern.
+  const next = window.prompt(i18nT('sidebar.conv_rename_prompt'), c.title || '')
+  if (next == null) return
+  const trimmed = next.trim()
+  if (!trimmed || trimmed === c.title) return
+  const idx = convs.value.findIndex((x) => x.conversation_id === c.conversation_id)
+  if (idx < 0) return
+  const prev = convs.value[idx]
+  convs.value[idx] = { ...prev, title: trimmed }
+  try {
+    await updateConversation(c.conversation_id, { title: trimmed })
+  } catch (e) {
+    convs.value[idx] = prev
+    toast(i18nT('sidebar.conv_action_failed', { msg: e.message || '' }), { variant: 'error' })
+  }
+}
+
 async function delConv(id) {
+  // Confirm BEFORE the optimistic removal — the row stays in
+  // place until the user actually agrees. Same primitive the
+  // /settings/users delete + workspace destructive actions
+  // already use.
+  const target = convs.value.find((c) => c.conversation_id === id)
+  const ok = await dialogConfirm({
+    title: i18nT('sidebar.conv_delete_confirm_title'),
+    description: i18nT('sidebar.conv_delete_confirm_desc', {
+      name: target?.title || i18nT('sidebar.untitled'),
+    }),
+    confirmText: i18nT('sidebar.conv_delete_confirm_button'),
+    variant: 'destructive',
+  })
+  if (!ok) return
   if (deletingConvs.value.has(id)) return        // already in flight, ignore double-click
   // Optimistic: drop the row immediately, also navigate off if we're
   // viewing it. Snapshot for rollback so a server-side failure
@@ -220,6 +285,8 @@ provide('loadConvs', loadConvs)
       @select-conv="selectConv"
       @new-chat="newChat"
       @delete-conv="delConv"
+      @rename-conv="renameConv"
+      @toggle-favorite-conv="toggleFavoriteConv"
       @load-more-conversations="loadMoreConvs"
     />
     <!-- Content host with cached pages. KeepAlive preserves component

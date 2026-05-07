@@ -21,7 +21,17 @@
     "in_dev": "(In Dev)",
     "recents": "Recents",
     "new_chat": "+ New chat",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "conv_menu": "More",
+    "conv_favorite": "Star",
+    "conv_unfavorite": "Unstar",
+    "conv_rename": "Rename",
+    "conv_rename_prompt": "New title:",
+    "conv_delete": "Delete",
+    "conv_delete_confirm_title": "Delete conversation?",
+    "conv_delete_confirm_desc": "Permanently delete \"{name}\" and all its messages. This cannot be undone.",
+    "conv_delete_confirm_button": "Delete",
+    "conv_action_failed": "Action failed: {msg}"
   },
   "settings": {
     "title": "Settings",
