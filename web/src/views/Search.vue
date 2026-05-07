@@ -47,7 +47,7 @@ const _filterFormat = ref('all')    // 'all' | format string ('pdf', 'md', ...)
 import { computed, onMounted, ref as setupRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Search, FileSearch, AlertCircle, FileText, Clock, User, FileType2, ChevronDown } from 'lucide-vue-next'
+import { Search, AlertCircle, FileText, Clock, User, FileType2, ChevronDown } from 'lucide-vue-next'
 
 import { search as searchApi } from '@/api'
 import { avatarUrlFor } from '@/api/admin'
@@ -253,9 +253,9 @@ function fmtRelativeTime(d) {
 <template>
   <div class="flex flex-col h-full bg-bg overflow-hidden">
     <!-- ── Header / search bar ──────────────────────────────────── -->
-    <header class="shrink-0 px-8 pt-8 pb-4 border-b border-line">
-      <h1 class="text-[22px] font-semibold text-t1 m-0">{{ t('search.title') }}</h1>
-      <p class="mt-1.5 mb-4 text-[13px] text-t3">{{ t('search.subtitle') }}</p>
+    <header class="shrink-0 px-10 pt-8 pb-5">
+      <h2 class="page-title">{{ t('search.title') }}</h2>
+      <p class="page-subtitle">{{ t('search.subtitle') }}</p>
 
       <form class="flex items-center gap-2 max-w-[720px]" @submit.prevent="runSearch">
         <div class="search-input-wrap">
@@ -352,7 +352,7 @@ function fmtRelativeTime(d) {
     </header>
 
     <!-- ── Body ─────────────────────────────────────────────────── -->
-    <main class="flex-1 overflow-y-auto px-8 pt-3 pb-10">
+    <main class="flex-1 overflow-y-auto px-10 pt-2 pb-10">
       <div v-if="_error" class="mt-2 flex items-center gap-2 px-3.5 py-2.5 text-[13px] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
         <AlertCircle :size="16" />
         <span>{{ _error }}</span>
@@ -363,18 +363,18 @@ function fmtRelativeTime(d) {
       </div>
 
       <div v-else-if="!_results" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
-        <FileSearch :size="36" class="text-t3 opacity-40 mb-3" />
+        <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.idle') }}</p>
         <p class="text-[12px] mt-1.5 opacity-70">{{ t('search.empty.hint') }}</p>
       </div>
 
       <div v-else-if="!hasResults" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
-        <FileSearch :size="36" class="text-t3 opacity-40 mb-3" />
+        <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.none', { query: _query }) }}</p>
       </div>
 
       <div v-else-if="!hasFiltered" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
-        <FileSearch :size="36" class="text-t3 opacity-40 mb-3" />
+        <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.filtered') }}</p>
       </div>
 
@@ -441,6 +441,24 @@ function fmtRelativeTime(d) {
 </template>
 
 <style scoped>
+/* ── Page header — same size + spacing as every other settings
+   page (Profile / Users / Sessions / Tokens). The earlier
+   ``text-[22px] font-semibold`` + ``border-b`` made Search
+   feel like a different surface; this drops it back into the
+   shared family. */
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-t1);
+  margin: 0 0 4px;
+}
+.page-subtitle {
+  font-size: 12px;
+  color: var(--color-t3);
+  margin: 0 0 16px;
+}
+
 /* Highlight wash — soft amber, never the focus. */
 .hl :deep(mark) {
   background: rgba(251, 191, 36, 0.25);

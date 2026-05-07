@@ -284,7 +284,7 @@
     },
     "empty": {
       "idle": "Type a query to find passages across all documents.",
-      "hint": "Tip: works across languages — search ‘bees’ or ‘蜜蜂’ and either turns up passages in both.",
+      "hint": "Cross-lingual: type in any supported language — passages in others surface too.",
       "searching": "Searching…",
       "none": "No results for \"{query}\".",
       "filtered": "No files match the current filters."
