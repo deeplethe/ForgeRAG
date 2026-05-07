@@ -4,7 +4,7 @@ Auth configuration.
 ForgeRAG's auth is minimal and self-contained:
 
     auth:
-      enabled: true           # false/absent = no auth (honour 127.0.0.1 binding)
+      enabled: true           # default; set false to disable auth (honour 127.0.0.1 binding)
       mode: db                # "db" = bearer tokens + password sessions stored
                               #         in Postgres (default)
                               # "forwarded" = trust an upstream OAuth proxy's
@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 
 class AuthConfig(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     mode: Literal["db", "forwarded"] = "db"
 
     # --- mode=db ---

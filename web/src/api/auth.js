@@ -28,6 +28,17 @@ import { get, post, del, patch, request } from './client'
 export const login = (email, password) =>
   post('/api/v1/auth/login', { email, password })
 
+// Self-registration. The first call against an empty auth_users table
+// auto-promotes the registrant to admin (regardless of registration_mode).
+// Subsequent calls follow the configured mode (open / approval / invite_only).
+export const register = ({ email, password, displayName = null, invitationToken = null }) =>
+  post('/api/v1/auth/register', {
+    email,
+    password,
+    display_name: displayName,
+    invitation_token: invitationToken,
+  })
+
 export const logout = () =>
   request('/api/v1/auth/logout', { method: 'POST' })
 
