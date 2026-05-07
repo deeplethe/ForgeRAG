@@ -1120,11 +1120,21 @@ onMounted(async () => {
   // begin with "/" and not target the trash subtree (trash has its
   // own UI flow).
   const seedPath = route.query.path
-  const initial = (typeof seedPath === 'string'
+  let initial = (typeof seedPath === 'string'
     && seedPath.startsWith('/')
     && !seedPath.startsWith('/__trash__'))
     ? seedPath
     : '/'
+  // Default landing: when the URL doesn't pin a path AND the user has
+  // a personal Space, drop straight into it. Saves a click for the
+  // common "I just want my own files" workflow and gives the
+  // Space-relative breadcrumb something to render. Multi-Space users
+  // who want the spaces-list view can still get there via the
+  // leftmost ``/`` breadcrumb crumb.
+  if (initial === '/') {
+    const home = ws.personalSpace()
+    if (home?.path) initial = home.path
+  }
   await ws.loadContents(initial)
   // Keep ws.currentPath in sync with the URL — loadContents alone
   // doesn't update it. Use the same navigate() the user-facing

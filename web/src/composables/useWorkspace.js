@@ -86,20 +86,98 @@ export function useWorkspace() {
   }
   const hasClipboard = computed(() => clipboard.op && clipboard.items.length > 0)
 
+  // ── Space resolution ──────────────────────────────────────────────
+  // Locate which Space (if any) an absolute path belongs to. The
+  // user only ever has visibility into their granted Spaces (per
+  // PathRemap on the server), so this lookup also functions as a
+  // visibility check. Used by ``breadcrumbs`` to translate paths
+  // to a space-relative display form.
+  function resolveSpace(absPath) {
+    if (!absPath || absPath === ROOT_PATH) return null
+    const spaces = tree.value?.children || []
+    // Longest-prefix match: handles the (future) case of a Space
+    // nested inside another granted root. Stable order otherwise.
+    const sorted = [...spaces].sort(
+      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
+    )
+    for (const space of sorted) {
+      if (!space.path) continue
+      if (absPath === space.path) return { space, relPath: '' }
+      if (absPath.startsWith(space.path + '/')) {
+        return { space, relPath: absPath.slice(space.path.length + 1) }
+      }
+    }
+    return null
+  }
+
   // ── Breadcrumbs ───────────────────────────────────────────────────
-  // First segment is the literal "/" (the workspace root), not a "Home"
-  // label — matches how paths are stored everywhere else.
+  // The user only ever sees Space-relative paths — the literal
+  // ``/users/<username>/...`` prefix never reaches the UI. The
+  // first crumb is always the synthetic "/" (the spaces list);
+  // the second is the active Space's display label; remaining
+  // crumbs are sub-segments inside that Space. Each crumb still
+  // carries the ABSOLUTE path so click handlers (``navigate``)
+  // keep working unchanged — only ``name`` is translated.
   const breadcrumbs = computed(() => {
     if (currentPath.value === ROOT_PATH) return [{ name: '/', path: '/' }]
-    const parts = currentPath.value.split('/').filter(Boolean)
-    const crumbs = [{ name: '/', path: '/' }]
-    let acc = ''
-    parts.forEach(p => {
-      acc += '/' + p
-      crumbs.push({ name: p, path: acc })
-    })
+    const resolved = resolveSpace(currentPath.value)
+    if (!resolved) {
+      // Outside every grant — happens during the brief window
+      // between mount and ``loadTree`` resolving, or if the URL
+      // has a stale ``?path=`` for a folder the user no longer
+      // has access to. Fall back to the absolute split so the
+      // user at least sees something sensible until the tree
+      // arrives + the resolver re-runs.
+      const parts = currentPath.value.split('/').filter(Boolean)
+      const crumbs = [{ name: '/', path: '/' }]
+      let acc = ''
+      parts.forEach((p) => {
+        acc += '/' + p
+        crumbs.push({ name: p, path: acc })
+      })
+      return crumbs
+    }
+    const crumbs = [
+      { name: '/', path: '/' },
+      // Space root: clicking jumps to the Space's abs path; label
+      // is the space's display name (already disambiguated server
+      // side when basenames collide).
+      { name: resolved.space.name, path: resolved.space.path },
+    ]
+    if (resolved.relPath) {
+      const parts = resolved.relPath.split('/').filter(Boolean)
+      let acc = resolved.space.path
+      parts.forEach((p) => {
+        acc += '/' + p
+        crumbs.push({ name: p, path: acc })
+      })
+    }
     return crumbs
   })
+
+  // ── User-facing path string ───────────────────────────────────────
+  // What the address-bar / status-line component shows. Like
+  // ``breadcrumbs`` but as a single slash-joined string. Synthetic
+  // root → ``/``; Space root → ``/<space_name>``; sub-folder →
+  // ``/<space_name>/sub/path``. Absolute ``/users/...`` never
+  // surfaces here.
+  const displayPath = computed(() => {
+    if (currentPath.value === ROOT_PATH) return '/'
+    const resolved = resolveSpace(currentPath.value)
+    if (!resolved) return currentPath.value
+    if (!resolved.relPath) return '/' + resolved.space.name
+    return '/' + resolved.space.name + '/' + resolved.relPath
+  })
+
+  // Find the user's personal Space ("Home"). Returns the synthesised
+  // tree child node (carries ``space_id`` / ``is_personal_space``
+  // because ``loadTree`` mixed those in). Used by Workspace.vue's
+  // mount to default-land users in their personal Space rather than
+  // the multi-Space landing.
+  function personalSpace() {
+    const spaces = tree.value?.children || []
+    return spaces.find((s) => s.is_personal_space) || null
+  }
 
   // ── Loaders ───────────────────────────────────────────────────────
 
@@ -294,7 +372,8 @@ export function useWorkspace() {
     viewMode, setViewMode,
     selection, isSelected, toggleSelect, selectAll, clearSelection,
     clipboard, setClipboard, clearClipboard, hasClipboard,
-    breadcrumbs,
+    breadcrumbs, displayPath,
+    resolveSpace, personalSpace,
     // actions
     loadTree, loadContents, navigate,
     opCreateFolder, opRenameFolder, opMoveFolder, opDeleteFolder,
