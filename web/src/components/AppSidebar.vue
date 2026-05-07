@@ -494,9 +494,15 @@ onBeforeUnmount(() => {
 }
 /* Hover OR open-menu state on a non-active row → bg3.
    Active row → bg-bg-selected (matches the title zone) so
-   the two halves continue to read as one card. */
+   the two halves continue to read as one card.
+   Asymmetric coupling: hovering the TITLE also lights up
+   the trigger (sibling selector below) — the row reads as
+   one card on title hover. Hovering the TRIGGER deliberately
+   does NOT tint the title (the click target there is the
+   dots, not the row). */
 .conv-row:not(.is-active) .conv-menu-trigger:hover,
-.conv-row:not(.is-active) .conv-menu-trigger.is-open {
+.conv-row:not(.is-active) .conv-menu-trigger.is-open,
+.conv-row:not(.is-active) .conv-title-zone:hover ~ .conv-menu .conv-menu-trigger {
   background: var(--color-bg3);
   color: var(--color-t1);
 }
