@@ -456,6 +456,21 @@ onBeforeUnmount(() => {
   color: var(--color-t1);
 }
 
+/* Asymmetric hover: when the cursor is specifically on the
+   dot trigger, the parent row's hover bg is suppressed back
+   to transparent. Only the dot's own bg layer shows up — the
+   title area stays neutral. (Hovering anywhere else on the row
+   still lights up the whole card; hover-trigger isn't the
+   common path, but it deserves its own targeted feedback.)
+   ``:has()`` is well-supported in modern browsers; the
+   ``:not(.is-active)`` carve-out keeps the active row's
+   selected bg intact regardless. ``has-open-menu`` overrides
+   this — opening the menu pins the row in its hover state. */
+.conv-row:not(.is-active):not(.has-open-menu):has(.conv-menu-trigger:hover) {
+  background: transparent;
+  color: var(--color-t2);
+}
+
 .conv-title-zone {
   flex: 1 1 0;
   min-width: 0;
