@@ -515,16 +515,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: stretch;
 }
-/* Trigger is a square button with all 4 corners rounded —
-   reads as an independent affordance sitting inside the row
-   slot, not a half-card glued to the right edge. ``margin: 4px
-   2px`` insets it slightly so the corners aren't kissing the
-   row's outer edge / corner curve. Width 28 keeps the button
-   visually square against its 26px effective height (row 34 -
-   margin 4*2). */
+/* Trigger is a 34×34 square (matches the row height) flush
+   against the row's right edge — no margin, no padding. All
+   four corners rounded so the hover bg reads as a discrete
+   button shape rather than a card half. */
 .conv-menu-trigger {
-  width: 28px;
-  margin: 4px 2px;
+  width: 34px;
+  height: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
