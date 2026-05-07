@@ -12,10 +12,24 @@
           <div class="dialog-body">
             <h2 v-if="d.title" class="dialog-title">{{ d.title }}</h2>
             <p v-if="d.description" class="dialog-desc">{{ d.description }}</p>
+            <!-- Prompt-only: text input. Auto-focused + selected
+                 on open (see watcher below) so the user can
+                 just start typing. Enter submits, Esc cancels —
+                 same keyboard contract as confirm/alert. -->
+            <input
+              v-if="d.type === 'prompt'"
+              ref="inputEl"
+              v-model="d.inputValue"
+              type="text"
+              class="dialog-input"
+              :placeholder="d.inputPlaceholder"
+              @keydown.enter.prevent="onConfirm"
+              @keydown.esc.prevent="onCancel"
+            />
           </div>
           <div class="dialog-actions">
             <button
-              v-if="d.type === 'confirm'"
+              v-if="d.type === 'confirm' || d.type === 'prompt'"
               class="btn-secondary"
               @click="onCancel"
             >{{ d.cancelText }}</button>
@@ -54,9 +68,25 @@ import ToastItem from './ToastItem.vue'
 const { _dialogState: d, _toastList: toasts, _closeDialog, _dismissToast } = useDialog()
 const dialogEl = ref(null)
 const confirmBtn = ref(null)
+const inputEl = ref(null)
 
-function onConfirm() { _closeDialog(true) }
-function onCancel() { _closeDialog(false) }
+function onConfirm() {
+  // Prompt resolves with the trimmed input value, or null when
+  // empty (treated as "no change" by the caller). Confirm /
+  // alert keep their boolean contract.
+  if (d.type === 'prompt') {
+    const val = (d.inputValue || '').trim()
+    _closeDialog(val || null)
+  } else {
+    _closeDialog(true)
+  }
+}
+function onCancel() {
+  // Prompt resolves null on cancel (so callers can if (val == null) skip).
+  // Confirm resolves false. Same caller-side null/false discrimination
+  // either way.
+  _closeDialog(d.type === 'prompt' ? null : false)
+}
 function dismiss(id) { _dismissToast(id) }
 function onAction(t) {
   // Fire the action then immediately dismiss — the user has answered
@@ -68,7 +98,17 @@ function onAction(t) {
 watch(() => d.open, async (open) => {
   if (open) {
     await nextTick()
-    dialogEl.value?.focus()
+    // For prompts, focus + select the text input so the user
+    // can start typing or replace the existing value with one
+    // keystroke. For confirm/alert, focus the dialog body so
+    // Esc still works (the @keydown handler on the backdrop
+    // doesn't fire if no descendant has focus).
+    if (d.type === 'prompt' && inputEl.value) {
+      inputEl.value.focus()
+      inputEl.value.select?.()
+    } else {
+      dialogEl.value?.focus()
+    }
   }
 })
 function onKey(e) { if (d.open && e.key === 'Escape') onCancel() }
@@ -111,6 +151,28 @@ window.addEventListener('keydown', onKey)
   font-size: 12px;
   line-height: 1.55;
   color: var(--color-t2);
+}
+
+/* Prompt-type dialogs only — text input matches the ``.input``
+   pattern Profile / Search / Tokens already use (32px tall,
+   subtle border, focus ring via the design system's
+   ``--ring-focus`` variable). Keeps the Settings-page input
+   look consistent across modal + inline contexts. */
+.dialog-input {
+  margin-top: 12px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-sm);
+  background: var(--color-bg);
+  color: var(--color-t1);
+  outline: none;
+}
+.dialog-input:focus {
+  border-color: var(--color-line2);
+  box-shadow: var(--ring-focus);
 }
 .dialog-actions {
   display: flex;

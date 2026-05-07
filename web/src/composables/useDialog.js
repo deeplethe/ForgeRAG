@@ -1,5 +1,6 @@
 /**
- * Dialog + Toast system — replaces native confirm() / alert().
+ * Dialog + Toast system — replaces native confirm() / alert() /
+ * prompt().
  *
  * Singleton reactive state shared app-wide. <DialogHost> (mounted once in
  * App.vue) renders both the modal dialog AND toast list. Any component
@@ -7,7 +8,7 @@
  *
  * API:
  *
- *   const { confirm, alert, toast } = useDialog()
+ *   const { confirm, alert, prompt, toast } = useDialog()
  *
  *   // Confirm — returns Promise<boolean>; resolves true on Continue.
  *   if (await confirm({
@@ -20,6 +21,17 @@
  *   // Alert — blocking informational modal, single OK button.
  *   await alert({ title: 'Heads up', description: 'Something happened.' })
  *
+ *   // Prompt — blocking modal with a text input. Resolves to the
+ *   // trimmed string on Save, or null on Cancel / empty.
+ *   const next = await prompt({
+ *     title: 'Rename conversation',
+ *     description: 'Pick a new title.',
+ *     placeholder: 'Title',
+ *     initialValue: current,
+ *     confirmText: 'Save',
+ *   })
+ *   if (next != null) ...
+ *
  *   // Toast — transient non-blocking notification.
  *   toast('Saved.')                                // info
  *   toast('Upload failed', { variant: 'error' })   // red
@@ -30,12 +42,17 @@ import { reactive } from 'vue'
 
 const _dialog = reactive({
   open: false,
-  type: 'confirm',          // 'confirm' | 'alert'
+  type: 'confirm',          // 'confirm' | 'alert' | 'prompt'
   variant: 'default',       // 'default' | 'destructive'
   title: '',
   description: '',
   confirmText: 'Continue',
   cancelText: 'Cancel',
+  // Prompt-only: text input state. ``inputValue`` is two-way
+  // bound by DialogHost when ``type === 'prompt'``. Empty string
+  // is treated as "no change" on submit and resolves to null.
+  inputValue: '',
+  inputPlaceholder: '',
   _resolve: null,
 })
 
@@ -51,11 +68,18 @@ function _openDialog(opts) {
     _dialog.description = opts.description || ''
     _dialog.confirmText = opts.confirmText || (opts.type === 'alert' ? 'OK' : 'Continue')
     _dialog.cancelText = opts.cancelText || 'Cancel'
+    _dialog.inputValue = opts.initialValue || ''
+    _dialog.inputPlaceholder = opts.placeholder || ''
     _dialog._resolve = resolve
   })
 }
 
 function _closeDialog(value) {
+  // For prompt: ``confirm`` resolves with the trimmed value
+  // (or null when blank / unchanged), ``cancel`` resolves null.
+  // ``DialogHost`` passes the right shape via its onConfirm /
+  // onCancel handlers; the dialog state itself doesn't need to
+  // know — it just forwards whatever the host gives.
   _dialog.open = false
   if (_dialog._resolve) {
     _dialog._resolve(value)
@@ -105,6 +129,7 @@ export function useDialog() {
     // Public API
     confirm: (opts) => _openDialog({ ...opts, type: 'confirm' }),
     alert:   (opts) => _openDialog({ ...opts, type: 'alert' }),
+    prompt:  (opts) => _openDialog({ ...opts, type: 'prompt' }),
     toast:   _addToast,
     // For loading toasts (ttl: 0) the caller needs to dismiss when the
     // operation finishes — exposed so callers don't have to reach into

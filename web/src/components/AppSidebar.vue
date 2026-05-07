@@ -318,13 +318,9 @@ onBeforeUnmount(() => {
             class="conv-title-zone"
             @click="onSelectConv(c.conversation_id)"
           >
-            <Star
-              v-if="c.is_favorite"
-              :size="10"
-              :stroke-width="0"
-              class="conv-star-marker shrink-0 mr-1.5"
-              fill="currentColor"
-            />
+            <!-- No per-row star marker — the section header
+                 ("Starred") already conveys the state. A second
+                 indicator on every row was redundant. -->
             <span class="flex-1 truncate text-left">{{ c.title || t('sidebar.untitled') }}</span>
           </button>
 
@@ -504,9 +500,6 @@ onBeforeUnmount(() => {
   text-align: left;
 }
 
-.conv-star-marker {
-  color: #f59e0b;
-}
 /* Trigger wrapper — flex stretches across the row's full
    height (the row's ``align-items: stretch`` default does the
    work; no negative margins needed since the row's padding is

@@ -163,7 +163,7 @@ function setActiveConvIdNoHistory(id) {
   router.replace({ path: '/chat', query: id ? { c: id } : {} })
 }
 
-const { confirm: dialogConfirm, toast } = useDialog()
+const { confirm: dialogConfirm, prompt: dialogPrompt, toast } = useDialog()
 const { t: i18nT } = useI18n()
 
 // ── Conversation row actions (sidebar menu) ────────────────────
@@ -191,21 +191,24 @@ async function toggleFavoriteConv(c) {
 }
 
 async function renameConv(c) {
-  // Use a native prompt for now — the project's useDialog
-  // doesn't have an input variant yet, and a quick prompt is
-  // good enough for sidebar rename. Future: replace with a
-  // proper inline-edit-in-row affordance when text editing
-  // gets a more polished pattern.
-  const next = window.prompt(i18nT('sidebar.conv_rename_prompt'), c.title || '')
-  if (next == null) return
-  const trimmed = next.trim()
-  if (!trimmed || trimmed === c.title) return
+  // Uses the project's shared ``prompt`` modal (matches the
+  // confirm / alert design family — same backdrop, same
+  // typography, same ESC/Enter contract). Resolves to the
+  // trimmed string on Save, or null on Cancel / empty.
+  const next = await dialogPrompt({
+    title: i18nT('sidebar.conv_rename_modal_title'),
+    description: i18nT('sidebar.conv_rename_modal_desc'),
+    placeholder: i18nT('sidebar.untitled'),
+    initialValue: c.title || '',
+    confirmText: i18nT('sidebar.conv_rename_save'),
+  })
+  if (next == null || next === c.title) return
   const idx = convs.value.findIndex((x) => x.conversation_id === c.conversation_id)
   if (idx < 0) return
   const prev = convs.value[idx]
-  convs.value[idx] = { ...prev, title: trimmed }
+  convs.value[idx] = { ...prev, title: next }
   try {
-    await updateConversation(c.conversation_id, { title: trimmed })
+    await updateConversation(c.conversation_id, { title: next })
   } catch (e) {
     convs.value[idx] = prev
     toast(i18nT('sidebar.conv_action_failed', { msg: e.message || '' }), { variant: 'error' })
