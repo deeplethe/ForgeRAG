@@ -266,7 +266,12 @@ onBeforeUnmount(() => {
         class="w-full text-[12px] text-left px-3 py-2 rounded-md border border-dashed border-line text-t3 hover:bg-bg3 transition-colors"
       >{{ t('sidebar.new_chat') }}</button>
     </div>
-    <div class="flex-1 overflow-y-auto px-3 space-y-px">
+    <!-- ``scrollbar-gutter: stable`` reserves the scrollbar
+         width even when the list isn't tall enough to scroll, so
+         the row's right edge (and the dot trigger pinned to it)
+         doesn't shift sideways the moment a new conversation
+         pushes the list into overflow. -->
+    <div class="flex-1 overflow-y-auto px-3 space-y-px conv-list">
       <!-- Skeleton on first load — same Skeleton primitive + shimmer
            pattern as the workspace folder tree, so visual language is
            consistent across the app. Hidden once we have data;
@@ -280,7 +285,7 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-for="c in conversations" :key="c.conversation_id"
-        class="group relative flex items-center px-3 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
+        class="group relative flex items-center pl-3 pr-1 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
         :class="[
           currentConvId === c.conversation_id && route.path.startsWith('/chat')
             ? 'bg-bg-selected text-t1 is-active'
@@ -386,6 +391,15 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 
+/* Reserve the scrollbar's track width whether or not the list
+   is long enough to scroll. Prevents the right edge of every
+   row from jumping inward by ~10px the first time the list
+   overflows, which would otherwise also kick the dot trigger
+   to a different x-position depending on conv count. */
+.conv-list {
+  scrollbar-gutter: stable;
+}
+
 /* ── Per-row context menu ─────────────────────────────────────
    Trigger: hidden by default, fades in on row hover. Stays
    visible when its own menu is open (otherwise the popover
@@ -396,10 +410,28 @@ onBeforeUnmount(() => {
 .conv-star-marker {
   color: #f59e0b;
 }
+/* Wrapper extends beyond the row's vertical padding (negative
+   8px top + bottom) so the inner trigger button can cover the
+   entire row card height — including the py-2 padding band the
+   trigger should also be clickable in. ``align-self: stretch``
+   alone stretches only inside the parent's content box; the
+   negative margins push the wrapper out into the padding. */
+.conv-menu {
+  align-self: stretch;
+  display: flex;
+  align-items: stretch;
+  margin-top: -8px;
+  margin-bottom: -8px;
+}
+/* Trigger fills the wrapper (i.e. the row's full vertical
+   extent). Width 24px gives the dots a comfortable target
+   while staying flush against the right edge of the row card
+   — pairs with the row's tightened ``pr-1`` so there's no
+   gutter between the trigger and the rounded corner. */
 .conv-menu-trigger {
-  width: 22px;
-  height: 22px;
-  margin-left: 4px;
+  width: 24px;
+  height: 100%;
+  margin-left: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
