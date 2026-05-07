@@ -210,6 +210,8 @@
     "ask_followup": "Ask a follow-up...",
     "may_make_mistakes": "OpenCraig may make mistakes. Verify important information.",
     "stop_generation": "Stop generation",
+    "error_title": "Failed to generate a response",
+    "error_generic": "The agent loop ended with an error but the provider didn't return a message.",
     "thinking": "Thinking",
     "trace": "Trace",
     "citation_untitled": "(untitled)",

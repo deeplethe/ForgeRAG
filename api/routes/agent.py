@@ -196,13 +196,23 @@ def agent_chat(
                     tokens_out = int(evt.get("tokens_out") or 0)
                 _accumulate_trace(trace, evt)
                 yield _sse_chunk(evt)
-        except Exception:
+        except Exception as outer_e:
             # Catch-all so the stream always terminates with a
             # ``done`` event. Without this a tool-layer bug would
             # leave the client hanging on a half-open connection.
+            # Include the exception message on the event so the
+            # UI can render a red error bubble instead of a silent
+            # empty assistant message.
             log.exception("agent stream raised")
+            from ..agent.loop import _format_user_error
+
             yield _sse_chunk(
-                {"type": "done", "stop_reason": "error", "answer": ""}
+                {
+                    "type": "done",
+                    "stop_reason": "error",
+                    "answer": "",
+                    "error": _format_user_error(outer_e),
+                }
             )
         # ── Persist the new turn AFTER the stream finishes ──
         # Keeps the SSE round-trip as fast as possible — DB write

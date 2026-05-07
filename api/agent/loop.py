@@ -128,6 +128,34 @@ class AgentResult:
     tokens_out: int = 0
 
 
+def _format_user_error(e: BaseException) -> str:
+    """Render an exception as a one-line, user-actionable string.
+
+    Strips provider-internal noise (full URLs, litellm wrapper
+    paths, double-prefixes like "litellm.AuthenticationError:") so
+    what lands in the chat bubble reads as "AuthenticationError:
+    The api_key client option must be set..." rather than a
+    100-char wall of internal class names.
+
+    The exception type name stays in front of the colon — for
+    auth / rate-limit / timeout errors that's the most useful
+    signal at a glance.
+    """
+    msg = str(e) or e.__class__.__name__
+    # litellm sometimes prefixes "litellm.<ExceptionName>:" or
+    # "<ExceptionName>: <provider>Exception - ..." in the message
+    # body. Trim the duplicated class label.
+    for prefix in (f"{e.__class__.__name__}:", "litellm."):
+        if msg.startswith(prefix):
+            msg = msg[len(prefix):].strip()
+    # Cap length so a multi-paragraph stack-style detail doesn't
+    # dominate the chat. 400 chars covers the actionable line
+    # ("missing OPENAI_API_KEY") with room to spare.
+    if len(msg) > 400:
+        msg = msg[:400] + "…"
+    return f"{e.__class__.__name__}: {msg}"
+
+
 class AgentLoop:
     """Bounded LLM-driven retrieval loop.
 
@@ -170,6 +198,11 @@ class AgentLoop:
         tokens_out = 0
         answer_text = ""
         stop_reason = "done"
+        # Surfaced to the client on the final ``done`` event when
+        # the loop bails out due to LLM / synthesis failure (auth
+        # error, rate-limit, network, etc). Empty string means
+        # "no error to report" so the JSON shape stays stable.
+        error_message = ""
         t0 = time.time()
 
         while iterations < self.cfg.max_iterations:
@@ -238,9 +271,17 @@ class AgentLoop:
                         yield {"type": "answer.delta", "text": payload}
                     elif kind == "done":
                         resp = payload
-            except Exception:
+            except Exception as e:
                 log.exception("LLM chat failed in agent loop")
                 resp = None
+                # Capture the exception so the final ``done`` event
+                # can surface it to the user. Format: "ExceptionType:
+                # message" — the type name is often the most useful
+                # part (e.g. ``AuthenticationError`` flags missing
+                # API key) while the message carries the provider's
+                # detail. _format_user_error trims provider-internal
+                # noise (full URLs / litellm wrapper paths).
+                error_message = _format_user_error(e)
 
             if resp is None or resp.stop_reason == "error":
                 yield {
@@ -251,6 +292,13 @@ class AgentLoop:
                 }
                 stop_reason = "error"
                 answer_text = ""
+                # If the inner stream surfaced a stop_reason="error"
+                # but threw no exception (rare — e.g. provider
+                # streamed an empty response), fall back to a
+                # generic message so the UI still shows something
+                # actionable instead of a silent empty bubble.
+                if not error_message:
+                    error_message = "The model returned no usable response."
                 break
 
             iterations += 1
@@ -395,6 +443,9 @@ class AgentLoop:
             stop_reason = "max_iterations"
 
         # Always emit a single ``done`` event last with the summary.
+        # ``error`` is empty on success; non-empty on
+        # stop_reason="error" so the UI can render a red bubble
+        # instead of a silent empty assistant message.
         yield {
             "type": "done",
             "stop_reason": stop_reason,
@@ -405,6 +456,7 @@ class AgentLoop:
             "total_latency_ms": int((time.time() - t0) * 1000),
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
+            "error": error_message,
         }
 
     def run(

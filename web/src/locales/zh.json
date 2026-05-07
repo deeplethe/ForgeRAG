@@ -210,6 +210,8 @@
     "ask_followup": "继续追问...",
     "may_make_mistakes": "OpenCraig 可能出错，请核实重要信息。",
     "stop_generation": "停止生成",
+    "error_title": "生成回答失败",
+    "error_generic": "Agent 循环结束于错误状态，但 provider 没有返回消息。",
     "thinking": "思考",
     "trace": "Trace",
     "citation_untitled": "（未命名）",

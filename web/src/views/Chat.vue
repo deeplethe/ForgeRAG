@@ -754,6 +754,14 @@ async function send(text) {
     }
     if (fin && myGenId === _streamGenId) {
       const answerContent = fin.answer || streamText.value || ''
+      // Detect error termination: backend sets stop_reason="error"
+      // on LLM auth/rate-limit/network failures and now also fills
+      // ``error`` with a user-readable string. Without this
+      // surfacing the assistant bubble would render empty and
+      // users see "nothing happened" with no way to know why.
+      const hasError = fin.stop_reason === 'error' || !!fin.error
+      const errorMessage = fin.error
+        || (hasError ? t('chat.error_generic') : '')
       // Snapshot the entire trace verbatim. Earlier we filtered
       // out bare phase entries (no text, just a timer) so a
       // trailing "Planning… 1s" wouldn't float above a direct
@@ -772,6 +780,11 @@ async function send(text) {
         thinking: '',  // thinking is disabled in the agent LLM call
         citations: _agentCitationsToOldShape(citationsList, answerContent),
         agentTrace: traceSnapshot,
+        // ``error`` triggers the red bubble renderer below — see
+        // the v-if branch on the assistant message in the
+        // template. Only set when there's actually an error so
+        // successful turns leave it falsy.
+        error: hasError ? errorMessage : null,
         stats: {
           stop_reason: fin.stop_reason,
           iterations: fin.iterations,
@@ -789,9 +802,17 @@ async function send(text) {
   } catch (e) {
     // AbortError from user clicking stop — not an error
     if (e.name !== 'AbortError' && myGenId === _streamGenId) {
-      msgs.value.push({ role: 'assistant', content: `Error: ${e.message}` })
+      // Use the same red-bubble path as backend-surfaced errors
+      // so network / HTTP / parse failures render identically
+      // instead of as a plain prose "Error: ..." message.
+      msgs.value.push({
+        role: 'assistant',
+        content: '',
+        error: e.message || String(e),
+      })
     }
     streamText.value = ''
+    streamTrace.value = []
   }
   finally {
     if (myGenId === _streamGenId) { streaming.value = false; stopTimer() }
@@ -1205,6 +1226,22 @@ function onTraceClick(m) {
                    that used to hover above the body has been
                    absorbed; thoughts now ARE the message text. -->
               <div v-else class="group mb-2">
+                <!-- Error block — backend signaled stop_reason="error"
+                     OR the SSE call threw at the network layer.
+                     Renders BEFORE the body so the chain (if any)
+                     still shows the partial work that got done
+                     before the failure. -->
+                <div v-if="m.error" class="error-bubble">
+                  <svg class="error-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <div class="error-body">
+                    <div class="error-title">{{ t('chat.error_title') }}</div>
+                    <div class="error-detail">{{ m.error }}</div>
+                  </div>
+                </div>
                 <AgentMessageBody
                   :trace="m.agentTrace || []"
                   :content="m.content || ''"
@@ -1464,4 +1501,34 @@ function onTraceClick(m) {
 }
 .slide-trace-enter-from, .slide-trace-leave-to { transform: translateX(-100%); opacity: 0; }
 .slide-pdf-enter-from,   .slide-pdf-leave-to   { transform: translateX(100%);  opacity: 0; }
+
+/* ── Assistant error bubble ───────────────────────────────────
+   Surfaces backend / network failures inline in the chat
+   instead of a silent empty assistant message. Sits ABOVE the
+   AgentMessageBody so any partial trace (tool calls that ran
+   before the error) is still visible — the user can see what
+   the agent did get done plus exactly what failed. */
+.error-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, #ef4444 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  color: var(--color-err-fg, #b91c1c);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.error-icon { flex-shrink: 0; margin-top: 2px; }
+.error-body { min-width: 0; flex: 1; }
+.error-title { font-weight: 600; margin-bottom: 2px; }
+.error-detail {
+  /* Provider error messages can be long URLs / class paths;
+     break anywhere so they don't blow out the bubble width. */
+  word-break: break-word;
+  white-space: pre-wrap;
+  color: var(--color-t2);
+}
 </style>
