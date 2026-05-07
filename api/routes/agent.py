@@ -212,6 +212,17 @@ def agent_chat(
                     tokens_out = int(evt.get("tokens_out") or 0)
                 _accumulate_trace(trace, evt)
                 yield _sse_chunk(evt)
+        except GeneratorExit:
+            # Client closed the SSE connection (refresh, navigate
+            # away, network drop). GeneratorExit is BaseException,
+            # not Exception, so the catch-all below WOULDN'T match
+            # — without this branch the persist code in finally
+            # would still run, but the agent loop above is also
+            # finalised here so we have whatever partial state
+            # accumulated. Re-raise to let Starlette tear down the
+            # generator normally.
+            log.info("agent stream cancelled by client disconnect")
+            raise
         except Exception as outer_e:
             # Catch-all so the stream always terminates with a
             # ``done`` event. Without this a tool-layer bug would
@@ -230,20 +241,29 @@ def agent_chat(
                     "error": _format_user_error(outer_e),
                 }
             )
-        # ── Persist the assistant reply ──
-        # Always run — even after an exception in the stream above
-        # (the except block falls through to here). Empty answer +
-        # trace = failed turn; the row's presence is what tells
-        # the reloaded UI's poll loop to STOP waiting. The user
-        # message was already saved BEFORE the stream opened.
-        if conv_id is not None:
-            try:
-                _persist_assistant_message(
-                    state, conv_id, final_answer, ctx, trace,
-                    tokens_in=tokens_in, tokens_out=tokens_out,
-                )
-            except Exception:
-                log.exception("agent_chat: assistant message persist failed")
+        finally:
+            # ── Persist the assistant reply ──
+            # MUST be in finally, not after the try/except. When
+            # the client disconnects mid-stream Starlette raises
+            # GeneratorExit (BaseException, not Exception) at the
+            # next yield — code outside the try block never runs.
+            # finally is the only path that survives both the
+            # exception cases AND the disconnect case.
+            #
+            # Always persist: empty answer + partial trace = the
+            # turn was interrupted or the LLM errored. The row's
+            # presence is what tells the reloaded UI's poll loop
+            # to STOP waiting. Without a row, refresh after a
+            # disconnect leaves the spinner running until the
+            # 3-minute frontend cap.
+            if conv_id is not None:
+                try:
+                    _persist_assistant_message(
+                        state, conv_id, final_answer, ctx, trace,
+                        tokens_in=tokens_in, tokens_out=tokens_out,
+                    )
+                except Exception:
+                    log.exception("agent_chat: assistant message persist failed")
 
     return StreamingResponse(
         _events(),
