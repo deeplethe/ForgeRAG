@@ -4,7 +4,7 @@ Per-user LLM token usage aggregation.
 The agent loop's final ``done`` event carries ``tokens_in`` /
 ``tokens_out`` for the turn. Those are written onto the ASSISTANT
 message row (``messages.input_tokens`` / ``output_tokens``) by
-``api/routes/agent.py::_persist_turn``. This module is the read
+``api/routes/agent.py::_persist_assistant_message``. This module is the read
 side: SUM over messages → conversations → user_id, with two
 shapes:
 

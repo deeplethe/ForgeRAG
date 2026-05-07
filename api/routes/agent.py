@@ -165,6 +165,22 @@ def agent_chat(
     conv_id = body.conversation_id
     if conv_id is not None:
         history = _load_or_create_conversation(state, principal, conv_id, body.message)
+        # Persist the user message NOW, before the SSE stream
+        # opens. A mid-stream refresh otherwise loses the question
+        # entirely (the post-stream persist block doesn't run if
+        # the client disconnects). With the user row already in
+        # DB, the reloaded Chat.vue sees a trailing user message
+        # and switches into poll-for-assistant mode while the
+        # backend keeps generating. If THIS write fails we fail
+        # the request — there's no point streaming an answer that
+        # can never be linked back to a question.
+        try:
+            _persist_user_message(state, conv_id, body.message)
+        except Exception:
+            log.exception("agent_chat: user message persist failed")
+            raise HTTPException(
+                500, "failed to persist user message — try again"
+            )
     else:
         history = [{"role": h.role, "content": h.content} for h in body.history]
 
@@ -214,17 +230,20 @@ def agent_chat(
                     "error": _format_user_error(outer_e),
                 }
             )
-        # ── Persist the new turn AFTER the stream finishes ──
-        # Keeps the SSE round-trip as fast as possible — DB write
-        # happens after the client has the answer in hand.
+        # ── Persist the assistant reply ──
+        # Always run — even after an exception in the stream above
+        # (the except block falls through to here). Empty answer +
+        # trace = failed turn; the row's presence is what tells
+        # the reloaded UI's poll loop to STOP waiting. The user
+        # message was already saved BEFORE the stream opened.
         if conv_id is not None:
             try:
-                _persist_turn(
-                    state, conv_id, body.message, final_answer, ctx, trace,
+                _persist_assistant_message(
+                    state, conv_id, final_answer, ctx, trace,
                     tokens_in=tokens_in, tokens_out=tokens_out,
                 )
             except Exception:
-                log.exception("agent_chat: conversation persist failed")
+                log.exception("agent_chat: assistant message persist failed")
 
     return StreamingResponse(
         _events(),
@@ -303,9 +322,11 @@ def _load_or_create_conversation(
       ``user_id`` and a title derived from the first user message.
 
     The new user message is NOT appended to the returned history —
-    ``AgentLoop.stream`` adds it itself. Persistence of the new
-    turn (user + assistant) happens AFTER the stream closes via
-    ``_persist_turn``.
+    ``AgentLoop.stream`` adds it itself. Persistence is split:
+    ``_persist_user_message`` runs synchronously right after this
+    helper returns (so a mid-stream refresh recovers the
+    question), and ``_persist_assistant_message`` lands the reply
+    after the SSE stream closes.
     """
     owner = _effective_owner(state, principal)
     existing = state.store.get_conversation(conv_id)
@@ -421,30 +442,21 @@ def _accumulate_trace(trace: list[dict], evt: dict) -> None:
                 break
 
 
-def _persist_turn(
+def _persist_user_message(
     state: AppState,
     conv_id: str,
     user_message: str,
-    assistant_answer: str,
-    ctx,
-    trace: list[dict] | None = None,
-    *,
-    tokens_in: int = 0,
-    tokens_out: int = 0,
 ) -> None:
-    """Write the new user message + final assistant answer to the
-    DB. Citations are serialised onto the assistant row's
-    ``citations_json`` so the conversation viewer can render them
-    later.
+    """Write the user's question to the DB.
 
-    Token counts (``tokens_in`` / ``tokens_out``) come from the
-    agent loop's final ``done`` event and land on the ASSISTANT
-    row only — the user row stays at 0/0. Per-user usage views sum
-    over messages → conversations → user_id.
-
-    Idempotent against partial failure: each ``add_message`` is its
-    own transaction so a crash between the two writes doesn't lose
-    the user message.
+    Called BEFORE the SSE stream opens so a mid-stream refresh
+    always recovers at least the question. The frontend's reload
+    path (``Chat.vue::_loadAndPoll``) sees a trailing user
+    message with no assistant reply and switches into poll mode
+    — the in-flight turn finishes server-side, _persist_assistant_
+    message lands the answer, polling picks it up. Without this
+    early write, mid-stream refresh shows an empty conversation
+    and the user thinks the message vanished.
     """
     state.store.add_message(
         {
@@ -454,8 +466,34 @@ def _persist_turn(
             "content": user_message,
         }
     )
-    if not assistant_answer:
-        return
+
+
+def _persist_assistant_message(
+    state: AppState,
+    conv_id: str,
+    assistant_answer: str,
+    ctx,
+    trace: list[dict] | None = None,
+    *,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+) -> None:
+    """Write the assistant reply (or a placeholder for a failed
+    turn) to the DB.
+
+    Always writes a row, even when ``assistant_answer`` is empty.
+    Empty content marks a failed turn (LLM error / aborted /
+    tool crash) — but the row's PRESENCE is what tells the
+    frontend's poll loop to stop waiting. Without this, a failed
+    stream leaves a dangling user message and the reloaded UI
+    polls fruitlessly until the 3-minute cap. The trace is still
+    persisted so the user can see what tool calls ran before the
+    failure.
+
+    Token counts (``tokens_in`` / ``tokens_out``) come from the
+    agent loop's final ``done`` event. Citations come from the
+    enriched ``ctx.citation_pool`` populated during the stream.
+    """
     # Compact citation snapshot — frontend's "click citation → open
     # PDF" flow needs chunk_id + doc_id + page; full content lives
     # in the chunks table.
@@ -500,7 +538,7 @@ def _persist_turn(
             "message_id": uuid4().hex,
             "conversation_id": conv_id,
             "role": "assistant",
-            "content": assistant_answer,
+            "content": assistant_answer or "",
             "citations_json": cits or None,
             "agent_trace_json": persisted_trace,
             "input_tokens": tokens_in,

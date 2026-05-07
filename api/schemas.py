@@ -401,7 +401,7 @@ class MessageOut(BaseModel):
     trace_id: str | None = None
     citations_json: list | None = None
     # Persisted agent reasoning chain (sequence of phase / thought
-    # / tool entries). Populated by ``_persist_turn`` when an agent
+    # / tool entries). Populated by ``_persist_assistant_message`` when an agent
     # message is written; surfaced here so the frontend's
     # ``AgentMessageBody`` can rebuild the inline tool chips +
     # narration paragraphs after a page refresh. Without this
