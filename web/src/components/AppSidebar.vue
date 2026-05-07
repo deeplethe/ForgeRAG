@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-for="c in conversations" :key="c.conversation_id"
-        class="group relative flex items-center pl-3 pr-0 py-2 rounded-md text-[12px] cursor-pointer transition-colors overflow-hidden"
+        class="group conv-row relative flex items-center pl-3 pr-0 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
         :class="[
           currentConvId === c.conversation_id && route.path.startsWith('/chat')
             ? 'bg-bg-selected text-t1 is-active'
@@ -398,6 +398,20 @@ onBeforeUnmount(() => {
    to a different x-position depending on conv count. */
 .conv-list {
   scrollbar-gutter: stable;
+}
+
+/* When the user is hovering the dot trigger specifically, the
+   row's own ``hover:bg-bg3`` would otherwise also kick in (the
+   trigger is nested inside the row). Override it back to
+   transparent so only the trigger square highlights — feels
+   right since the click target is the trigger, not the whole
+   row. ``:has()`` lets us match the parent based on a child
+   state without JS; well-supported in modern browsers. The
+   ``:not(.is-active)`` keeps the active row's selected
+   background intact (we don't want the active row to look
+   un-selected just because the dots are hovered). */
+.conv-row:hover:has(.conv-menu-trigger:hover):not(.is-active) {
+  background: transparent;
 }
 
 /* ── Per-row context menu ─────────────────────────────────────
