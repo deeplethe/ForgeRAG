@@ -251,7 +251,7 @@ function fmtRelativeTime(d) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full bg-bg overflow-hidden">
+  <div class="flex flex-col h-full bg-bg2 overflow-hidden">
     <!-- ── Header / search bar ────────────────────────────────────
          Title + subtitle were dropped — the sidebar tab and the
          input's own placeholder already say what this page is.
@@ -297,7 +297,7 @@ function fmtRelativeTime(d) {
         <span
           v-for="(tx, i) in translations"
           :key="i"
-          class="px-1.5 py-0.5 bg-bg2 border border-line rounded text-t2"
+          class="px-1.5 py-0.5 bg-bg border border-line rounded text-t2"
         >{{ tx }}</span>
       </div>
 
@@ -553,7 +553,10 @@ function fmtRelativeTime(d) {
   border-bottom: 1px solid var(--color-line);
   transition: background-color 0.12s;
 }
-.row:hover { background: var(--color-bg2); }
+/* Hover bg = bg3, since the page itself now sits on bg2
+   (matching Chat / Workspace canvas) — bg2 hover would be
+   invisible against an identical-color canvas. */
+.row:hover { background: var(--color-bg3); }
 .row:last-child { border-bottom: none; }
 
 .row-title {
@@ -595,7 +598,7 @@ function fmtRelativeTime(d) {
 }
 .format-chip {
   padding: 0 5px;
-  background: var(--color-bg2);
+  background: var(--color-bg3);
   border-radius: 3px;
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -657,11 +660,11 @@ function fmtRelativeTime(d) {
   transition: background-color 0.12s, color 0.12s, border-color 0.12s;
 }
 .pill-btn:hover {
-  background: var(--color-bg2);
+  background: var(--color-bg3);
   color: var(--color-t1);
 }
 .pill-btn-active {
-  background: var(--color-bg-selected, var(--color-bg2));
+  background: var(--color-bg-selected, var(--color-bg3));
   color: var(--color-t1);
   border-color: var(--color-line2, var(--color-line));
   font-weight: 500;
@@ -696,6 +699,6 @@ function fmtRelativeTime(d) {
   cursor: pointer;
   transition: background-color 0.1s;
 }
-.pop-row:hover { background: var(--color-bg2); }
-.pop-row-active { background: var(--color-bg-selected, var(--color-bg2)); font-weight: 500; }
+.pop-row:hover { background: var(--color-bg3); }
+.pop-row-active { background: var(--color-bg-selected, var(--color-bg3)); font-weight: 500; }
 </style>
