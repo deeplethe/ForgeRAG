@@ -416,18 +416,44 @@ onBeforeUnmount(() => {
 
 
 /* ── Per-row context menu ─────────────────────────────────────
-   Row is split into two interactive zones — title (left,
-   rounded on the left edges) and trigger (right square,
-   rounded on the right edges). Each zone owns its hover /
-   active bg, so hovering one doesn't tint the other. When the
-   row is active, BOTH zones share the bg-bg-selected colour
-   so they read as one continuous card. */
+   Parent-child hierarchy: the ROW owns the base hover / active
+   bg that covers the full width; the dot TRIGGER adds its own
+   bg layer on TOP of the row's bg only when it's hovered or
+   its menu is open. So:
+
+     hover anywhere on row     → row bg3
+     hover the dot specifically → row bg3  +  dot bg-selected (deeper)
+     active row                → row bg-selected
+     active row + dot hover    → row bg-selected  +  dot extra dark overlay
+     dot menu open             → dot stays with the deeper bg even
+                                 after the row hover ends, so the
+                                 user sees which menu is expanded.
+
+   Title zone has no bg of its own — it's a transparent click
+   target that lets the row's bg show through. This is the
+   "Claude.ai sidebar" pattern: one card, one base hover, one
+   small darker patch on the affordance the user is targeting.
+*/
 .conv-row {
-  /* Outer card shape — the children's matching corner radii
-     align to this. ``rounded-md`` Tailwind utility removed in
-     favour of explicit token use, since both halves need the
-     same value. */
   border-radius: 6px;
+  color: var(--color-t2);
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+.conv-row:hover {
+  background: var(--color-bg3);
+  color: var(--color-t1);
+}
+.conv-row.is-active {
+  background: var(--color-bg-selected);
+  color: var(--color-t1);
+}
+/* Keep the row visually selected while its menu is open, even
+   after the cursor leaves — otherwise opening the menu and
+   moving the mouse to a popover row would un-tint the parent. */
+.conv-row.has-open-menu:not(.is-active) {
+  background: var(--color-bg3);
+  color: var(--color-t1);
 }
 
 .conv-title-zone {
@@ -438,23 +464,9 @@ onBeforeUnmount(() => {
   padding: 8px 4px 8px 12px;
   background: transparent;
   border: none;
-  color: var(--color-t2);
+  color: inherit;
   cursor: pointer;
   text-align: left;
-  /* Round only the left edges — the trigger button rounds the
-     right edges. Together the row reads as one card without
-     needing overflow:hidden on the parent (which would clip
-     the popover). */
-  border-radius: 6px 0 0 6px;
-  transition: background-color 0.12s, color 0.12s;
-}
-.conv-title-zone:hover {
-  background: var(--color-bg3);
-  color: var(--color-t1);
-}
-.conv-row.is-active .conv-title-zone {
-  background: var(--color-bg-selected);
-  color: var(--color-t1);
 }
 
 .conv-star-marker {
@@ -492,22 +504,21 @@ onBeforeUnmount(() => {
 .conv-menu-trigger.is-open {
   opacity: 1;
 }
-/* Hover OR open-menu state on a non-active row → bg3.
-   Active row → bg-bg-selected (matches the title zone) so
-   the two halves continue to read as one card.
-   Asymmetric coupling: hovering the TITLE also lights up
-   the trigger (sibling selector below) — the row reads as
-   one card on title hover. Hovering the TRIGGER deliberately
-   does NOT tint the title (the click target there is the
-   dots, not the row). */
+/* Trigger's OWN hover / open layer.
+   On a non-active row that's already bg3 from the parent's
+   hover, the trigger goes one step deeper (bg-selected) so
+   the user can see they're targeting the dots specifically.
+   On an active row that's already bg-selected, an rgba-black
+   overlay does the same job without needing a fourth surface
+   token. */
 .conv-row:not(.is-active) .conv-menu-trigger:hover,
-.conv-row:not(.is-active) .conv-menu-trigger.is-open,
-.conv-row:not(.is-active) .conv-title-zone:hover ~ .conv-menu .conv-menu-trigger {
-  background: var(--color-bg3);
+.conv-row:not(.is-active) .conv-menu-trigger.is-open {
+  background: var(--color-bg-selected);
   color: var(--color-t1);
 }
-.conv-row.is-active .conv-menu-trigger {
-  background: var(--color-bg-selected);
+.conv-row.is-active .conv-menu-trigger:hover,
+.conv-row.is-active .conv-menu-trigger.is-open {
+  background: rgba(0, 0, 0, 0.18);
   color: var(--color-t1);
 }
 
