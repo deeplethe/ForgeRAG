@@ -68,6 +68,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+import threading
 from collections.abc import Iterator
 from uuid import uuid4
 
@@ -184,86 +186,131 @@ def agent_chat(
     else:
         history = [{"role": h.role, "content": h.content} for h in body.history]
 
-    def _events() -> Iterator[bytes]:
-        # Capture the final answer so we can persist it after the
-        # stream closes. Generator-local var; SSE downstream still
-        # gets the answer event in real time.
-        final_answer: str = ""
-        # Build the agent reasoning trace from the events we
-        # forward to the client. Persisted onto the assistant
-        # message so a page refresh keeps the chain visible —
-        # without this, reload shows just the answer body and the
-        # "Thought for Xs · N tools" header / row breakdown all
-        # disappear (the trace was previously frontend-only state).
-        trace: list[dict] = []
-        # Per-turn token totals — captured from the loop's final
-        # ``done`` event (see api/agent/loop.py). Persisted onto the
-        # assistant message so per-user usage aggregation can SUM
-        # over messages without re-parsing the trace blob.
-        tokens_in: int = 0
-        tokens_out: int = 0
+    # ── Decoupled agent execution ────────────────────────────────
+    # The agent runs in a background thread and pushes events into
+    # an in-memory queue. The SSE generator is a pure observer:
+    # it drains the queue and yields. This makes the agent's run
+    # lifecycle independent of the SSE connection — which matters
+    # for two reasons:
+    #
+    #   1. Mid-stream refresh / navigate-away no longer aborts the
+    #      run. The thread keeps going to completion and persists
+    #      the assistant message. Reloading the page hits the poll
+    #      path and picks the answer up. Without this, refreshing
+    #      while the agent was still calling the LLM left a
+    #      perpetual "thinking" state.
+    #
+    #   2. Future deep-research mode will run for minutes, well
+    #      beyond a typical SSE keep-alive horizon. A pure-observer
+    #      SSE means the user can close the tab and come back later
+    #      to see results.
+    #
+    # Per-request thread (no pool): agent runs are bursty and
+    # usually quick; the cost of starting a thread per request is
+    # noise compared to the LLM round-trips inside. Thread is
+    # daemon so it doesn't block process shutdown — if the server
+    # exits mid-run, the assistant row stays empty (next user
+    # message triggers a fresh attempt; the orphaned user row is
+    # harmless context).
+
+    # Sentinel pushed by the worker after the final event so the
+    # observer knows to stop reading. Module-level so the queue
+    # value is identity-comparable (vs accidentally matching a
+    # legitimate string event).
+    EOS = object()
+
+    event_q: queue.Queue = queue.Queue()
+    final_answer = [""]
+    trace: list[dict] = []
+    tokens_in_box = [0]
+    tokens_out_box = [0]
+
+    def _worker() -> None:
         try:
             for evt in loop.stream(body.message, ctx, history=history):
                 kind = evt.get("type")
                 if kind == "answer":
-                    final_answer = evt.get("text") or final_answer
+                    final_answer[0] = evt.get("text") or final_answer[0]
                 elif kind == "done":
-                    tokens_in = int(evt.get("tokens_in") or 0)
-                    tokens_out = int(evt.get("tokens_out") or 0)
+                    tokens_in_box[0] = int(evt.get("tokens_in") or 0)
+                    tokens_out_box[0] = int(evt.get("tokens_out") or 0)
                 _accumulate_trace(trace, evt)
-                yield _sse_chunk(evt)
-        except GeneratorExit:
-            # Client closed the SSE connection (refresh, navigate
-            # away, network drop). GeneratorExit is BaseException,
-            # not Exception, so the catch-all below WOULDN'T match
-            # — without this branch the persist code in finally
-            # would still run, but the agent loop above is also
-            # finalised here so we have whatever partial state
-            # accumulated. Re-raise to let Starlette tear down the
-            # generator normally.
-            log.info("agent stream cancelled by client disconnect")
-            raise
+                event_q.put(evt)
         except Exception as outer_e:
-            # Catch-all so the stream always terminates with a
-            # ``done`` event. Without this a tool-layer bug would
-            # leave the client hanging on a half-open connection.
-            # Include the exception message on the event so the
-            # UI can render a red error bubble instead of a silent
-            # empty assistant message.
-            log.exception("agent stream raised")
+            # Surface the failure to the SSE consumer (if still
+            # connected) AND make sure the trace records it for
+            # any post-disconnect refresh. Never let an exception
+            # escape — finally below MUST run to persist.
+            log.exception("agent worker raised")
             from ..agent.loop import _format_user_error
 
-            yield _sse_chunk(
-                {
-                    "type": "done",
-                    "stop_reason": "error",
-                    "answer": "",
-                    "error": _format_user_error(outer_e),
-                }
-            )
+            err_evt = {
+                "type": "done",
+                "stop_reason": "error",
+                "answer": "",
+                "error": _format_user_error(outer_e),
+            }
+            try:
+                _accumulate_trace(trace, err_evt)
+            except Exception:
+                pass
+            try:
+                event_q.put(err_evt)
+            except Exception:
+                pass
         finally:
             # ── Persist the assistant reply ──
-            # MUST be in finally, not after the try/except. When
-            # the client disconnects mid-stream Starlette raises
-            # GeneratorExit (BaseException, not Exception) at the
-            # next yield — code outside the try block never runs.
-            # finally is the only path that survives both the
-            # exception cases AND the disconnect case.
-            #
-            # Always persist: empty answer + partial trace = the
-            # turn was interrupted or the LLM errored. The row's
-            # presence is what tells the reloaded UI's poll loop
-            # to STOP waiting. Without a row, refresh after a
-            # disconnect leaves the spinner running until the
-            # 3-minute frontend cap.
+            # Runs regardless of stream success / failure / SSE
+            # disconnect. The user message was already saved
+            # before the worker started; persisting (even an
+            # empty) assistant row terminates the frontend's poll
+            # loop on reload.
             if conv_id is not None:
                 try:
                     _persist_assistant_message(
-                        state, conv_id, final_answer, ctx, trace,
-                        tokens_in=tokens_in, tokens_out=tokens_out,
+                        state, conv_id,
+                        final_answer[0], ctx, trace,
+                        tokens_in=tokens_in_box[0],
+                        tokens_out=tokens_out_box[0],
                     )
                 except Exception:
                     log.exception("agent_chat: assistant message persist failed")
+            # Tell the SSE observer (if still attached) to wrap up.
+            try:
+                event_q.put(EOS)
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, name="agent-run", daemon=True).start()
+
+    def _events() -> Iterator[bytes]:
+        """SSE observer — reads from the worker's event queue and
+        forwards. Disconnect just ends iteration; the worker keeps
+        running in the background and persists when done."""
+        try:
+            while True:
+                # ``timeout`` keeps the consumer responsive to
+                # disconnect without hot-spinning. 30s is long
+                # enough that a slow LLM call between events
+                # doesn't trip a spurious wakeup.
+                try:
+                    evt = event_q.get(timeout=30.0)
+                except queue.Empty:
+                    # Heartbeat to keep proxies + the browser
+                    # connection alive across long idle gaps. Just
+                    # an SSE comment — clients ignore it.
+                    yield b": keepalive\n\n"
+                    continue
+                if evt is EOS:
+                    return
+                yield _sse_chunk(evt)
+        except GeneratorExit:
+            # Client closed the SSE (refresh / nav). DON'T raise
+            # back into the worker — the worker is in its own
+            # thread and will finish the run + persist on its own.
+            # Just log and exit the generator cleanly.
+            log.info("agent SSE observer disconnected; worker continues")
+            raise
 
     return StreamingResponse(
         _events(),
