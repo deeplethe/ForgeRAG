@@ -283,33 +283,47 @@ onBeforeUnmount(() => {
           block :w="w + '%'" :h="14" class="conv-skel-row"
         />
       </div>
+      <!-- Row is now a passive flex shell — its TWO interactive
+           zones (title + trigger) each own their hover / active
+           bg. The shared bg used to span the whole row, which
+           made hovering the dot light up the title area too;
+           splitting lets us tune each zone independently while
+           the matching corner radii keep them looking like one
+           continuous card when active. -->
       <div
         v-for="c in conversations" :key="c.conversation_id"
-        class="group conv-row relative flex items-center pl-3 pr-0 py-2 rounded-md text-[12px] cursor-pointer transition-colors"
-        :class="[
-          currentConvId === c.conversation_id && route.path.startsWith('/chat')
-            ? 'bg-bg-selected text-t1 is-active'
-            : 'text-t2 hover:bg-bg3',
-        ]"
-        @click="onSelectConv(c.conversation_id)"
+        class="group conv-row relative flex items-stretch text-[12px]"
+        :class="{
+          'is-active': currentConvId === c.conversation_id && route.path.startsWith('/chat'),
+          'has-open-menu': openMenuId === c.conversation_id,
+        }"
       >
-        <!-- Star marker for favorites (shown even when not hovered).
-             Tiny + amber so the eye picks it up without it
-             dominating the title. -->
-        <Star
-          v-if="c.is_favorite"
-          :size="10"
-          :stroke-width="0"
-          class="conv-star-marker shrink-0 mr-1.5"
-          fill="currentColor"
-        />
-        <span class="flex-1 truncate">{{ c.title || t('sidebar.untitled') }}</span>
+        <!-- Title zone — the click target that selects this
+             conversation. Owns the left rounded corners so its
+             bg respects the card shape without needing
+             overflow:hidden on the parent (which would clip the
+             popover). -->
+        <button
+          type="button"
+          class="conv-title-zone"
+          @click="onSelectConv(c.conversation_id)"
+        >
+          <Star
+            v-if="c.is_favorite"
+            :size="10"
+            :stroke-width="0"
+            class="conv-star-marker shrink-0 mr-1.5"
+            fill="currentColor"
+          />
+          <span class="flex-1 truncate text-left">{{ c.title || t('sidebar.untitled') }}</span>
+        </button>
 
-        <!-- Three-dot menu trigger. Hidden until row hover (or
-             when its own menu is open) — same pattern as the
-             previous ✕ button, just a more conventional
-             affordance. The wrapping ``conv-menu`` div is the
-             click-outside anchor. -->
+        <!-- Three-dot menu trigger. Independent hover / active
+             zone — its bg-bg3 lights up only when the cursor is
+             over the dots, not when it's over the title. Stays
+             at bg-bg3 while its popover is open (``.is-open``)
+             so the user sees a clear "this menu is the one
+             that's expanded" affordance. -->
         <div
           v-if="!deletingConvs.has(c.conversation_id)"
           class="conv-menu relative shrink-0"
@@ -400,50 +414,63 @@ onBeforeUnmount(() => {
   scrollbar-gutter: stable;
 }
 
-/* When the user is hovering the dot trigger specifically, the
-   row's own ``hover:bg-bg3`` would otherwise also kick in (the
-   trigger is nested inside the row). Override it back to
-   transparent so only the trigger square highlights — feels
-   right since the click target is the trigger, not the whole
-   row. ``:has()`` lets us match the parent based on a child
-   state without JS; well-supported in modern browsers. The
-   ``:not(.is-active)`` keeps the active row's selected
-   background intact (we don't want the active row to look
-   un-selected just because the dots are hovered). */
-.conv-row:hover:has(.conv-menu-trigger:hover):not(.is-active) {
-  background: transparent;
-}
 
 /* ── Per-row context menu ─────────────────────────────────────
-   Trigger: hidden by default, fades in on row hover. Stays
-   visible when its own menu is open (otherwise the popover
-   would close the moment the row's hover state ends).
-   Popover: aligned right of the trigger, same shape /
-   shadow / token usage as the UserMenu popover so all
-   sidebar pop-ups read as one family. */
+   Row is split into two interactive zones — title (left,
+   rounded on the left edges) and trigger (right square,
+   rounded on the right edges). Each zone owns its hover /
+   active bg, so hovering one doesn't tint the other. When the
+   row is active, BOTH zones share the bg-bg-selected colour
+   so they read as one continuous card. */
+.conv-row {
+  /* Outer card shape — the children's matching corner radii
+     align to this. ``rounded-md`` Tailwind utility removed in
+     favour of explicit token use, since both halves need the
+     same value. */
+  border-radius: 6px;
+}
+
+.conv-title-zone {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 4px 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--color-t2);
+  cursor: pointer;
+  text-align: left;
+  /* Round only the left edges — the trigger button rounds the
+     right edges. Together the row reads as one card without
+     needing overflow:hidden on the parent (which would clip
+     the popover). */
+  border-radius: 6px 0 0 6px;
+  transition: background-color 0.12s, color 0.12s;
+}
+.conv-title-zone:hover {
+  background: var(--color-bg3);
+  color: var(--color-t1);
+}
+.conv-row.is-active .conv-title-zone {
+  background: var(--color-bg-selected);
+  color: var(--color-t1);
+}
+
 .conv-star-marker {
   color: #f59e0b;
 }
-/* Wrapper extends beyond the row's vertical padding (negative
-   8px top + bottom) so the inner trigger button can cover the
-   entire row card height — including the py-2 padding band the
-   trigger should also be clickable in. ``align-self: stretch``
-   alone stretches only inside the parent's content box; the
-   negative margins push the wrapper out into the padding. */
+/* Trigger wrapper — flex stretches across the row's full
+   height (the row's ``align-items: stretch`` default does the
+   work; no negative margins needed since the row's padding is
+   gone now that the title zone owns it). */
 .conv-menu {
-  align-self: stretch;
   display: flex;
   align-items: stretch;
-  margin-top: -8px;
-  margin-bottom: -8px;
 }
-/* Trigger is a square — width matches the row's ~34px height
-   so it reads as a real button slot, not a stretched
-   rectangle. The wrapping ``.conv-menu`` already stretches to
-   the row's full vertical extent (negative margins above);
-   this rule pins width === height so the resulting target is
-   visibly square. The row's ``pr-0`` lets it sit flush
-   against the rounded right corner with no gutter. */
+/* Trigger is a square — width === row height so the click
+   target reads as a real button slot. Rounds only the right
+   edges so its bg respects the row card's outer shape. */
 .conv-menu-trigger {
   width: 34px;
   height: 100%;
@@ -452,19 +479,29 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: 0 6px 6px 0;
   color: var(--color-t3);
   opacity: 0;
   cursor: pointer;
   transition: opacity 0.12s, background-color 0.12s, color 0.12s;
 }
-.group:hover .conv-menu-trigger,
-.group.is-active .conv-menu-trigger,
+/* Visibility: hidden by default, fades in on row hover OR
+   when the row is active OR when its own menu is open. */
+.conv-row:hover .conv-menu-trigger,
+.conv-row.is-active .conv-menu-trigger,
 .conv-menu-trigger.is-open {
   opacity: 1;
 }
-.conv-menu-trigger:hover {
+/* Hover OR open-menu state on a non-active row → bg3.
+   Active row → bg-bg-selected (matches the title zone) so
+   the two halves continue to read as one card. */
+.conv-row:not(.is-active) .conv-menu-trigger:hover,
+.conv-row:not(.is-active) .conv-menu-trigger.is-open {
   background: var(--color-bg3);
+  color: var(--color-t1);
+}
+.conv-row.is-active .conv-menu-trigger {
+  background: var(--color-bg-selected);
   color: var(--color-t1);
 }
 
