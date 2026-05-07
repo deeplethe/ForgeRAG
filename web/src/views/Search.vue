@@ -47,11 +47,12 @@ const _filterFormat = ref('all')    // 'all' | format string ('pdf', 'md', ...)
 import { computed, onMounted, ref as setupRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Search, FileSearch, AlertCircle, Loader2, FileText, Clock, User, FileType2, ChevronDown } from 'lucide-vue-next'
+import { Search, FileSearch, AlertCircle, FileText, Clock, User, FileType2, ChevronDown } from 'lucide-vue-next'
 
 import { search as searchApi } from '@/api'
 import { avatarUrlFor } from '@/api/admin'
 import UserAvatar from '@/components/UserAvatar.vue'
+import ThinkingPulse from '@/components/ThinkingPulse.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -257,13 +258,13 @@ function fmtRelativeTime(d) {
       <p class="mt-1.5 mb-4 text-[13px] text-t3">{{ t('search.subtitle') }}</p>
 
       <form class="flex items-center gap-2 max-w-[720px]" @submit.prevent="runSearch">
-        <div class="relative flex-1 flex items-center px-4 py-2.5 rounded-xl border border-line shadow-sm bg-bg">
-          <Search :size="16" class="text-t3 shrink-0" />
+        <div class="search-input-wrap">
+          <Search :size="14" :stroke-width="1.75" class="text-t3 shrink-0" />
           <input
             ref="inputEl"
             v-model="_query"
             type="text"
-            class="flex-1 bg-transparent border-none outline-none text-sm text-t1 leading-relaxed pl-3 pr-2"
+            class="search-input"
             :placeholder="t('search.placeholder')"
             :disabled="_loading"
             autocomplete="off"
@@ -272,20 +273,17 @@ function fmtRelativeTime(d) {
           <button
             v-if="_query"
             type="button"
-            class="w-5 h-5 flex items-center justify-center text-t3 hover:text-t1 hover:bg-bg3 rounded transition-colors text-base leading-none shrink-0"
+            class="search-clear"
             @click="clearAll"
             :title="t('search.clear')"
           >×</button>
         </div>
         <button
           type="submit"
-          class="shrink-0 min-w-[84px] h-[42px] px-4 text-[13px] font-medium rounded-lg flex items-center justify-center gap-1.5 transition-colors"
-          :class="(_loading || !_query.trim())
-            ? 'bg-bg3 text-t3 cursor-not-allowed'
-            : 'bg-brand text-white hover:opacity-90'"
+          class="search-submit"
           :disabled="_loading || !_query.trim()"
         >
-          <Loader2 v-if="_loading" :size="14" class="animate-spin" />
+          <ThinkingPulse v-if="_loading" :size="12" />
           <span v-else>{{ t('search.submit') }}</span>
         </button>
       </form>
@@ -449,6 +447,89 @@ function fmtRelativeTime(d) {
   color: inherit;
   padding: 0 1px;
   border-radius: 2px;
+}
+
+/* ── Search bar ────────────────────────────────────────────
+   Matches the rest of the app's primary form pattern:
+   ``var(--r-md)`` rounding + thin border, no shadow, the
+   submit button uses the standard t1/bg invert ("Save"-style
+   buttons in Profile / Users / Settings sub-pages). The old
+   ``rounded-xl`` + ``bg-brand`` blue stuck out as a one-off. */
+.search-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-md);
+  background: var(--color-bg);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.search-input-wrap:focus-within {
+  border-color: var(--color-line2);
+  box-shadow: var(--ring-focus);
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--color-t1);
+  line-height: 1.5;
+}
+.search-input::placeholder {
+  color: var(--color-t3);
+}
+.search-clear {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--color-t3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, background-color 0.12s;
+}
+.search-clear:hover {
+  color: var(--color-t1);
+  background: var(--color-bg3);
+}
+
+.search-submit {
+  flex-shrink: 0;
+  min-width: 84px;
+  height: 36px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--color-t1);
+  color: var(--color-bg);
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+.search-submit:hover:not(:disabled) {
+  background: var(--color-t1-hover);
+}
+.search-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Result rows ──────────────────────────────────────────────

@@ -37,41 +37,39 @@
       </svg>
     </button>
 
-    <!-- Popup panel: Geist-style row menu. Each row is `label LEFT,
-         control RIGHT`, no section dividers — vertical padding does
-         the grouping. Selected state on segmented controls uses
-         neutral bg-bg3 elevation, not the brand blue (Vercel blue is
-         reserved for actual CTAs like Send / cite-active). -->
+    <!-- Popup panel — Geist-style row menu.
+         Visual alignment: ``rounded-lg`` matches the trigger card
+         below so they read as one unit when the popup is open
+         (the previous ``rounded-xl`` made the menu look bulkier
+         than the card it sits on). Custom shadow matches the
+         design-system popover used in Settings sub-nav popovers
+         (filter pills, etc.) so this menu doesn't stand out as
+         the only "shadow-lg" elevated thing in the sidebar. -->
     <Transition name="popup">
-      <div
-        v-if="open"
-        class="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-line bg-bg shadow-lg py-1.5 z-30"
-      >
-        <!-- ── Language: label + segmented control ─────────────────── -->
-        <div class="flex items-center justify-between gap-3 px-3 py-1.5">
-          <span class="text-[12px] text-t1">{{ t('user_menu.language') }}</span>
-          <div class="flex items-center gap-0.5 p-0.5 rounded-md border border-line">
+      <div v-if="open" class="user-menu-popover">
+        <!-- ── Language: label + segmented control ─────────── -->
+        <div class="row row-control">
+          <span class="row-label">{{ t('user_menu.language') }}</span>
+          <div class="seg">
             <button
               v-for="loc in locales"
               :key="loc.code"
               type="button"
-              class="px-2 py-0.5 rounded text-[11px] transition-colors"
-              :class="currentLocale === loc.code
-                ? 'bg-bg3 text-t1'
-                : 'text-t3 hover:text-t2'"
+              class="seg-btn"
+              :class="{ 'is-active': currentLocale === loc.code }"
               @click="onSetLocale(loc.code)"
             >{{ loc.label }}</button>
           </div>
         </div>
 
-        <!-- ── Theme: label + segmented control (icons) ────────────── -->
-        <div class="flex items-center justify-between gap-3 px-3 py-1.5">
-          <span class="text-[12px] text-t1">{{ t('user_menu.theme') }}</span>
-          <div class="flex items-center gap-0.5 p-0.5 rounded-md border border-line">
+        <!-- ── Theme: label + segmented control (icons) ────── -->
+        <div class="row row-control">
+          <span class="row-label">{{ t('user_menu.theme') }}</span>
+          <div class="seg">
             <button
               type="button"
-              class="w-7 h-6 rounded flex items-center justify-center transition-colors"
-              :class="!isDark ? 'bg-bg3 text-t1' : 'text-t3 hover:text-t2'"
+              class="seg-btn seg-icon"
+              :class="{ 'is-active': !isDark }"
               :title="t('user_menu.theme_light')"
               @click="onSetTheme('light')"
             >
@@ -82,8 +80,8 @@
             </button>
             <button
               type="button"
-              class="w-7 h-6 rounded flex items-center justify-center transition-colors"
-              :class="isDark ? 'bg-bg3 text-t1' : 'text-t3 hover:text-t2'"
+              class="seg-btn seg-icon"
+              :class="{ 'is-active': isDark }"
               :title="t('user_menu.theme_dark')"
               @click="onSetTheme('dark')"
             >
@@ -94,32 +92,20 @@
           </div>
         </div>
 
-        <!-- Subtle separator before action rows. -->
-        <div class="my-1 border-t border-line"></div>
+        <div class="divider"></div>
 
-        <!-- ── Settings: label LEFT, chevron RIGHT.
-             Visible to every user (their own profile, password,
-             prefs); admin-only sub-tabs are gated inside the
-             /settings page itself, not at this entry. -->
-        <button
-          type="button"
-          class="w-full flex items-center justify-between gap-3 px-3 py-2 text-[12px] text-t1 hover:bg-bg3 transition-colors"
-          @click="onOpenSettings"
-        >
-          <span>{{ t('user_menu.settings') }}</span>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-t3">
+        <!-- ── Settings ── -->
+        <button type="button" class="row row-action" @click="onOpenSettings">
+          <span class="row-label">{{ t('user_menu.settings') }}</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="row-icon">
             <path d="M9 18l6-6-6-6"/>
           </svg>
         </button>
 
-        <!-- ── Sign out: label LEFT, icon RIGHT (Geist row pattern) ── -->
-        <button
-          type="button"
-          class="w-full flex items-center justify-between gap-3 px-3 py-2 text-[12px] text-t1 hover:bg-bg3 transition-colors"
-          @click="onLogout"
-        >
-          <span>{{ t('user_menu.sign_out') }}</span>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-t3">
+        <!-- ── Sign out ── -->
+        <button type="button" class="row row-action" @click="onLogout">
+          <span class="row-label">{{ t('user_menu.sign_out') }}</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="row-icon">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
           </svg>
         </button>
@@ -203,6 +189,93 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 </script>
 
 <style scoped>
+/* ── Popover container ─────────────────────────────────────────
+   Aligned to the trigger card below: same outer width (anchored
+   to the parent's flex-row, which the user-card also fills),
+   ``rounded-lg`` to mirror the card's corner radius. Shadow
+   matches Settings filter popovers so this menu doesn't read
+   as the only "elevated" thing in the sidebar. */
+.user-menu-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 6px;
+  padding: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  z-index: 30;
+}
+
+/* Two row shapes share the same height + padding so the menu
+   stays a clean stack regardless of whether a row is a control
+   strip (label + segmented control) or an action button (label
+   + icon). */
+.row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--color-t1);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: default;
+  transition: background-color 0.1s;
+}
+.row-action { cursor: pointer; }
+.row-action:hover { background: var(--color-bg2); }
+.row-label { color: var(--color-t1); }
+.row-icon { color: var(--color-t3); flex-shrink: 0; }
+
+.divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--color-line);
+}
+
+/* Segmented control: thin border, no inner padding (the buttons
+   own their own padding). Shrinks compared to the prior ``p-0.5
+   border`` block which felt over-engineered for a 2-segment
+   toggle. */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--r-sm);
+}
+.seg-btn {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-t3);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.1s, background-color 0.1s;
+}
+.seg-btn:hover { color: var(--color-t2); }
+.seg-btn.is-active {
+  background: var(--color-bg-selected);
+  color: var(--color-t1);
+}
+.seg-icon {
+  width: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .popup-enter-active, .popup-leave-active { transition: opacity .15s ease, transform .15s ease; }
 .popup-enter-from, .popup-leave-to { opacity: 0; transform: translateY(4px); }
 </style>

@@ -21,7 +21,8 @@
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronRight, Loader2 } from 'lucide-vue-next'
+import { ChevronRight } from 'lucide-vue-next'
+import ThinkingPulse from './ThinkingPulse.vue'
 
 const props = defineProps({
   tools: { type: Array, required: true },
@@ -77,7 +78,7 @@ function fmtMs(ms) {
 <template>
   <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
     <button class="chip-head" @click="toggle">
-      <Loader2 v-if="anyRunning" :size="12" :stroke-width="1.75" class="head-icon spin" />
+      <ThinkingPulse v-if="anyRunning" :size="12" class="head-icon" />
       <ChevronRight v-else :size="12" :stroke-width="1.75"
         class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-text">{{ headline }}</span>
@@ -124,7 +125,6 @@ function fmtMs(ms) {
   transition: transform .15s;
 }
 .head-icon.rotate-90 { transform: rotate(90deg); }
-.head-icon.spin { animation: spin 1.4s linear infinite; }
 .head-text {
   font-feature-settings: "tnum";
   letter-spacing: -0.005em;
@@ -166,5 +166,4 @@ function fmtMs(ms) {
   margin-left: auto;
   white-space: nowrap;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 </style>
