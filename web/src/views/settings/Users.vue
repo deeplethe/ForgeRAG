@@ -52,6 +52,14 @@ const usageByUser = ref({})
 const filter = ref('all') // 'all' | 'active' | 'pending_approval' | 'suspended'
 const query = ref('')
 const openMenuId = ref(null)
+// Viewport-coordinate placement for the per-row "more" menu. The
+// menu is teleported to <body> with position: fixed so the table's
+// ``overflow: hidden`` (needed for rounded-corner clipping) doesn't
+// chop it off when it's wider/taller than the actions cell. Anchored
+// to the trigger's bottom-right by default; flips upward when there
+// isn't room below. Either ``top`` or ``bottom`` is set depending
+// on placement — the unused side stays ``null`` and CSS ignores it.
+const menuPos = ref({ top: null, bottom: null, right: 0, placement: 'down' })
 const busyId = ref(null) // user_id currently mutating — disables that row
 
 const filteredUsers = computed(() => {
@@ -95,15 +103,54 @@ function fmtNum(n) {
 
 // Click-outside closes any open per-row menu. The menu is small
 // (3-4 items), so a global listener is simpler than per-row refs.
+// We accept clicks on either the trigger cell (.row-menu) OR the
+// teleported popover (.menu-popover) — without the second check,
+// any click inside the menu would close it before its handler ran.
 function onDocClick(e) {
-  if (openMenuId.value && !e.target.closest('.row-menu')) {
-    openMenuId.value = null
-  }
+  if (!openMenuId.value) return
+  if (e.target.closest('.row-menu') || e.target.closest('.menu-popover')) return
+  openMenuId.value = null
+}
+// Scroll inside the table or anywhere on the page invalidates the
+// popover's anchor — easier to close it than to follow the trigger.
+function onScrollOrResize() {
+  if (openMenuId.value) openMenuId.value = null
 }
 watch(openMenuId, (v) => {
-  if (v) document.addEventListener('click', onDocClick)
-  else document.removeEventListener('click', onDocClick)
+  if (v) {
+    document.addEventListener('click', onDocClick)
+    // Capture phase so it fires for scroll events on inner containers too.
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+  } else {
+    document.removeEventListener('click', onDocClick)
+    window.removeEventListener('scroll', onScrollOrResize, true)
+    window.removeEventListener('resize', onScrollOrResize)
+  }
 })
+
+function toggleMenu(u, evt) {
+  if (openMenuId.value === u.user_id) {
+    openMenuId.value = null
+    return
+  }
+  // Anchor to the trigger button's viewport rect. We position with
+  // (top, right) so the menu is right-aligned to the icon — the same
+  // visual line as before, just escaped from the table's clipping.
+  const rect = evt.currentTarget.getBoundingClientRect()
+  const MENU_HEIGHT_GUESS = 140  // 3 items + divider + padding; cheap heuristic
+  const spaceBelow = window.innerHeight - rect.bottom
+  const placement = spaceBelow < MENU_HEIGHT_GUESS && rect.top > MENU_HEIGHT_GUESS
+    ? 'up'
+    : 'down'
+  menuPos.value = {
+    top: placement === 'down' ? rect.bottom + 4 : null,
+    bottom: placement === 'up' ? window.innerHeight - rect.top + 4 : null,
+    right: Math.max(8, window.innerWidth - rect.right),
+    placement,
+  }
+  openMenuId.value = u.user_id
+}
 
 function isMe(u) {
   return me.value && u.user_id === me.value.user_id
@@ -358,39 +405,55 @@ function promotable(u) {
             class="icon-btn"
             :disabled="busyId === u.user_id"
             :aria-label="t('settings.users.menu_more')"
-            @click.stop="openMenuId = (openMenuId === u.user_id ? null : u.user_id)"
+            @click.stop="toggleMenu(u, $event)"
           >
             <MoreHorizontal :size="15" :stroke-width="1.75" />
           </button>
 
-          <div v-if="openMenuId === u.user_id" class="menu-popover" @click.stop>
-            <button
-              v-if="u.status === 'active'"
-              class="menu-item"
-              :disabled="isMe(u)"
-              @click="onSuspend(u)"
+          <!-- Popover is teleported to <body> so the table's
+               overflow: hidden (for rounded corners) doesn't clip
+               it. Position is computed from the trigger's bounding
+               rect on every open. -->
+          <Teleport to="body">
+            <div
+              v-if="openMenuId === u.user_id"
+              class="menu-popover"
+              :class="{ 'menu-popover--up': menuPos.placement === 'up' }"
+              :style="{
+                top: menuPos.top != null ? menuPos.top + 'px' : null,
+                bottom: menuPos.bottom != null ? menuPos.bottom + 'px' : null,
+                right: menuPos.right + 'px',
+              }"
+              @click.stop
             >
-              <PauseCircle :size="13" :stroke-width="1.75" />
-              {{ t('settings.users.action_suspend') }}
-            </button>
-            <button
-              class="menu-item"
-              :disabled="!promotable(u)"
-              @click="onToggleAdmin(u)"
-            >
-              <component :is="u.role === 'admin' ? ShieldOff : ShieldCheck" :size="13" :stroke-width="1.75" />
-              {{ u.role === 'admin' ? t('settings.users.action_make_user') : t('settings.users.action_make_admin') }}
-            </button>
-            <div class="menu-divider"></div>
-            <button
-              class="menu-item is-destructive"
-              :disabled="isMe(u)"
-              @click="onDelete(u)"
-            >
-              <Trash2 :size="13" :stroke-width="1.75" />
-              {{ t('settings.users.action_delete') }}
-            </button>
-          </div>
+              <button
+                v-if="u.status === 'active'"
+                class="menu-item"
+                :disabled="isMe(u)"
+                @click="onSuspend(u)"
+              >
+                <PauseCircle :size="13" :stroke-width="1.75" />
+                {{ t('settings.users.action_suspend') }}
+              </button>
+              <button
+                class="menu-item"
+                :disabled="!promotable(u)"
+                @click="onToggleAdmin(u)"
+              >
+                <component :is="u.role === 'admin' ? ShieldOff : ShieldCheck" :size="13" :stroke-width="1.75" />
+                {{ u.role === 'admin' ? t('settings.users.action_make_user') : t('settings.users.action_make_admin') }}
+              </button>
+              <div class="menu-divider"></div>
+              <button
+                class="menu-item is-destructive"
+                :disabled="isMe(u)"
+                @click="onDelete(u)"
+              >
+                <Trash2 :size="13" :stroke-width="1.75" />
+                {{ t('settings.users.action_delete') }}
+              </button>
+            </div>
+          </Teleport>
         </div>
       </div>
     </div>
@@ -619,18 +682,19 @@ function promotable(u) {
 .icon-btn:hover:not(:disabled) { background: var(--color-bg3); color: var(--color-t1); }
 .icon-btn:disabled { opacity: .4; cursor: not-allowed; }
 
-/* Per-row dropdown menu */
+/* Per-row dropdown menu — teleported to <body>, viewport-positioned
+   via inline ``top``/``bottom``/``right`` from ``menuPos``. Lives
+   outside the table so ``.table { overflow: hidden }`` doesn't
+   clip it. */
 .menu-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
+  position: fixed;
   min-width: 180px;
   padding: 4px;
   background: var(--color-bg);
   border: 1px solid var(--color-line);
   border-radius: var(--r-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 50;
 }
 .menu-item {
   display: flex; align-items: center; gap: 8px;
