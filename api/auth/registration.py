@@ -45,7 +45,7 @@ from persistence.invitation_service import (
     InvitationFolderMissing,
     InvitationNotFound,
 )
-from persistence.models import AuthUser
+from persistence.models import AuthUser, Folder
 
 from .primitives import hash_password
 
@@ -136,6 +136,93 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
+# Parent path under which every user's personal space lives. The
+# Spaces UI translates this prefix away (Phase 2) — users never see
+# the literal ``/users/`` segment, just their space root rendered as
+# ``/``. See docs/roadmaps/per-user-spaces.md.
+_USERS_PARENT_PATH = "/users"
+
+
+def ensure_personal_folder(sess, *, user_id: str, username: str) -> Folder:
+    """Idempotently create ``/users/<username>`` with a ``rw`` grant
+    for the given user. Used by registration to give every new
+    account a personal workspace; also safe to call from a backfill
+    helper for accounts that pre-date this guarantee.
+
+    Two folders may need creating:
+
+      * ``/users/`` — the parent. Marked ``is_system=True`` so it
+        never surfaces as a top-level Space (no one has a grant on
+        it; ``PathRemap`` would skip it anyway, but the system flag
+        also keeps it out of any future "list all top-level
+        folders" endpoint).
+      * ``/users/<username>`` — the personal Space. ``shared_with``
+        contains exactly one entry granting ``rw`` to ``user_id``.
+
+    On collision (folder already exists from a prior run, or two
+    workers raced) we just ensure the grant is present and return
+    the existing row.
+    """
+    from sqlalchemy import select as _select
+
+    # 1) Ensure /users/ parent.
+    parent = sess.execute(
+        _select(Folder).where(Folder.path == _USERS_PARENT_PATH)
+    ).scalar_one_or_none()
+    if parent is None:
+        parent = Folder(
+            folder_id=_new_id(),
+            path=_USERS_PARENT_PATH,
+            path_lower=_USERS_PARENT_PATH.lower(),
+            parent_id="__root__",
+            name="users",
+            is_system=True,
+            metadata_json={},
+            shared_with=[],
+        )
+        sess.add(parent)
+        sess.flush()
+
+    # 2) Ensure /users/<username>.
+    personal_path = f"{_USERS_PARENT_PATH}/{username}"
+    personal = sess.execute(
+        _select(Folder).where(Folder.path == personal_path)
+    ).scalar_one_or_none()
+
+    grant = {"user_id": user_id, "role": "rw"}
+    if personal is None:
+        personal = Folder(
+            folder_id=_new_id(),
+            path=personal_path,
+            path_lower=personal_path.lower(),
+            parent_id=parent.folder_id,
+            name=username,
+            is_system=False,
+            metadata_json={},
+            shared_with=[grant],
+        )
+        sess.add(personal)
+        sess.flush()
+        log.info(
+            "auth: created personal folder %s for user_id=%s",
+            personal_path, user_id,
+        )
+    else:
+        # Folder pre-existed (admin pre-created it, or backfill
+        # racing). Ensure the user's grant is present without
+        # clobbering any other grants the folder may already carry.
+        existing = list(personal.shared_with or [])
+        if not any(g.get("user_id") == user_id for g in existing):
+            existing.append(grant)
+            personal.shared_with = existing
+            sess.flush()
+            log.info(
+                "auth: added rw grant for user_id=%s to existing %s",
+                user_id, personal_path,
+            )
+    return personal
+
+
 def _has_active_admin(sess) -> bool:
     """Whether at least one row in ``auth_users`` is an active
     admin. Used by the first-registration auto-promotion check."""
@@ -202,35 +289,13 @@ def register_user(
         select(AuthUser).where(AuthUser.email == email)
     ).scalar_one_or_none() is not None:
         raise EmailTaken(f"email already registered: {email!r}")
-    # Username uniqueness — when the route auto-derived this from
-    # the email local-part (the new email-only register flow), a
-    # collision should NOT 4xx the user; suffix-and-retry instead.
-    # When the client explicitly chose a username (legacy clients),
-    # we still raise so they get a precise error.
+    # Username is explicit + immutable, so a collision is the
+    # caller's problem to fix — surface a precise error rather
+    # than mutating their requested name behind their back.
     if sess.execute(
         select(AuthUser).where(AuthUser.username == username)
     ).scalar_one_or_none() is not None:
-        # Heuristic: if the username equals the email local-part
-        # (common server-derived case) we attempt suffix retries;
-        # otherwise it's a deliberate user choice — surface error.
-        derived = email.split("@", 1)[0] if "@" in email else ""
-        import re as _re
-        derived = _re.sub(r"[^A-Za-z0-9_]+", "_", derived)[:24]
-        if username == derived:
-            for n in range(2, 50):
-                cand = f"{derived[:24 - len(str(n)) - 1]}_{n}"
-                taken = sess.execute(
-                    select(AuthUser).where(AuthUser.username == cand)
-                ).scalar_one_or_none()
-                if taken is None:
-                    username = cand
-                    break
-            else:
-                raise UsernameTaken(
-                    f"could not derive a unique username from {email!r}"
-                )
-        else:
-            raise UsernameTaken(f"username already taken: {username!r}")
+        raise UsernameTaken(f"username already taken: {username!r}")
 
     # Resolve registration policy.
     has_admin = _has_active_admin(sess)
@@ -293,6 +358,14 @@ def register_user(
     )
     sess.add(user)
     sess.flush()  # surface the row before invitation consume reads it
+
+    # Auto-create the user's personal Space (``/users/<username>``)
+    # with an ``rw`` grant. Every account gets a personal home —
+    # users never start out with zero spaces. See per-user-spaces
+    # roadmap. Idempotent: if the folder already exists (admin
+    # pre-created, or backfill ran), we just ensure the grant is
+    # present.
+    ensure_personal_folder(sess, user_id=user_id, username=username)
 
     # Consume the invitation atomically with the new user row.
     redeemed_folder_path: str | None = None

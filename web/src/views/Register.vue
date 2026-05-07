@@ -27,6 +27,18 @@
           @input="onFieldInput"
         />
 
+        <label class="auth-label">
+          Username
+          <span class="auth-hint">— letters / digits / _ / -, can't be changed later</span>
+        </label>
+        <input
+          v-model="username" type="text" autocomplete="username"
+          maxlength="32"
+          placeholder="alice"
+          :class="['input', 'mb-3', { 'input--err': fieldErr === 'username' }]"
+          @input="onUsernameInput"
+        />
+
         <label class="auth-label">Display name <span class="auth-optional">(optional)</span></label>
         <input
           v-model="displayName" type="text" autocomplete="name" maxlength="64"
@@ -76,9 +88,14 @@ const router = useRouter()
 const route = useRoute()
 
 const email = ref('')
+const username = ref('')
 const displayName = ref('')
 const password = ref('')
 const passwordConfirm = ref('')
+
+// Mirrors the server's _USERNAME_RE — refused at submit time too,
+// so we never round-trip a name we know the backend will reject.
+const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/
 // Pre-fill from ?invitation= in case the user landed via an
 // invitation link. Hidden from the form for now (Phase 1 keeps
 // invitations admin-driven only via SQL); reserved for later.
@@ -113,11 +130,23 @@ function onFieldInput() {
   if (fieldErr.value) fieldErr.value = ''
 }
 
+// Username gets a tiny extra typing-time guardrail: silently strip
+// disallowed characters as the user types so they don't compose a
+// long invalid string and only learn about it at submit. Keeps the
+// "can't change later" message honest — what they see is what gets
+// committed.
+function onUsernameInput() {
+  const cleaned = username.value.replace(/[^a-zA-Z0-9_-]/g, '')
+  if (cleaned !== username.value) username.value = cleaned
+  onFieldInput()
+}
+
 async function onSubmit() {
   error.value = ''
   fieldErr.value = ''
 
   const emailVal = email.value.trim()
+  const usernameVal = username.value.trim()
   if (!emailVal) {
     error.value = 'Enter your email address.'
     fieldErr.value = 'email'
@@ -126,6 +155,16 @@ async function onSubmit() {
   if (!emailVal.includes('@') || !emailVal.includes('.')) {
     error.value = "That doesn't look like a valid email."
     fieldErr.value = 'email'
+    return
+  }
+  if (!usernameVal) {
+    error.value = 'Choose a username.'
+    fieldErr.value = 'username'
+    return
+  }
+  if (!USERNAME_RE.test(usernameVal)) {
+    error.value = 'Username must be 3–32 characters using letters, digits, underscores or hyphens.'
+    fieldErr.value = 'username'
     return
   }
   if (!password.value) {
@@ -148,6 +187,7 @@ async function onSubmit() {
   try {
     const r = await apiRegister({
       email: emailVal,
+      username: usernameVal,
       password: password.value,
       displayName: displayName.value.trim() || null,
       invitationToken: invitationToken.value,
@@ -170,11 +210,17 @@ async function onSubmit() {
     if (status === 409 && detail.includes('email')) {
       error.value = 'An account with that email already exists.'
       fieldErr.value = 'email'
+    } else if (status === 409 && detail.includes('username')) {
+      error.value = 'That username is already taken — pick a different one.'
+      fieldErr.value = 'username'
     } else if (status === 409) {
       error.value = 'That account already exists.'
     } else if (status === 400 && detail.includes('email')) {
       error.value = "That doesn't look like a valid email address."
       fieldErr.value = 'email'
+    } else if (status === 400 && detail.includes('username')) {
+      error.value = 'Username must be 3–32 characters using letters, digits, underscores or hyphens.'
+      fieldErr.value = 'username'
     } else if (status === 400 && detail.includes('password')) {
       error.value = 'Password is too weak — try something longer.'
       fieldErr.value = 'password'
@@ -249,6 +295,11 @@ async function onSubmit() {
 .auth-optional {
   color: var(--color-t3);
   opacity: 0.7;
+}
+.auth-hint {
+  color: var(--color-t3);
+  opacity: 0.7;
+  font-weight: 400;
 }
 .input--err {
   border-color: var(--color-err-fg, #d23) !important;

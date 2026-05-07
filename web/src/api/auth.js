@@ -31,9 +31,14 @@ export const login = (email, password) =>
 // Self-registration. The first call against an empty auth_users table
 // auto-promotes the registrant to admin (regardless of registration_mode).
 // Subsequent calls follow the configured mode (open / approval / invite_only).
-export const register = ({ email, password, displayName = null, invitationToken = null }) =>
+//
+// ``username`` is REQUIRED + IMMUTABLE — it becomes the leaf segment
+// of the user's personal Space (``/users/<username>``) so URLs / paths
+// stay stable.
+export const register = ({ email, username, password, displayName = null, invitationToken = null }) =>
   post('/api/v1/auth/register', {
     email,
+    username,
     password,
     display_name: displayName,
     invitation_token: invitationToken,

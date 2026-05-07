@@ -161,12 +161,12 @@ class RegisterReq(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
     password: str = Field(..., min_length=8, max_length=200)
     display_name: str | None = Field(None, max_length=64)
-    # ``username`` is no longer required from the client. The
-    # legacy column is auto-populated server-side from the email
-    # local-part (deduped if a collision exists). New clients
-    # never send this field; old clients that still POST it have
-    # their value honoured for back-compat.
-    username: str | None = Field(None, min_length=3, max_length=32)
+    # Username is required and immutable post-registration. It's the
+    # leaf segment of the user's personal Space (``/users/<username>``)
+    # so URLs / paths stay stable. Server-side derivation from email
+    # (the previous default) was dropped because users couldn't
+    # predict what their personal-folder path would be.
+    username: str = Field(..., min_length=3, max_length=32)
     invitation_token: str | None = None
 
 
@@ -207,27 +207,13 @@ def register(body: RegisterReq, state: AppState = Depends(get_state)):
         register_user,
     )
 
-    # Derive a synthetic username for the legacy ``username`` column
-    # when the client didn't send one. We collide-check inside
-    # ``register_user`` so retries with a counter suffix are
-    # transparent. The ``display_name`` is what the UI surfaces
-    # going forward; ``username`` is kept only for back-compat.
-    derived_username = body.username
-    if not derived_username:
-        local = body.email.split("@", 1)[0].strip() if body.email else ""
-        # Sanitise: replace non-alphanum with underscore so the
-        # legacy username constraint (alphanum + underscore) holds.
-        import re as _re
-        local = _re.sub(r"[^A-Za-z0-9_]+", "_", local)[:24] or "user"
-        derived_username = local
-
     with state.store.transaction() as sess:
         try:
             result = register_user(
                 cfg=state.cfg,
                 sess=sess,
                 email=body.email,
-                username=derived_username,
+                username=body.username,
                 password=body.password,
                 display_name=body.display_name,
                 invitation_token=body.invitation_token,

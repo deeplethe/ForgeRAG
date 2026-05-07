@@ -169,6 +169,19 @@ export function useWorkspace() {
     const gen = ++_loadGen
     contentsLoading.value = true
     try {
+      // Synthetic root: the user's "/" view shows their Spaces, not
+      // the global tree. We deliberately do NOT call getFolderTree('/')
+      // here — that endpoint isn't grant-filtered for non-admins, so
+      // it would leak every top-level folder name regardless of access.
+      // The Spaces list (loaded by ``loadTree``) is the ONLY source of
+      // truth for what's visible at the root.
+      if (path === ROOT_PATH) {
+        const folders = (tree.value?.children || []).filter((c) => !c.is_system)
+        if (gen !== _loadGen) return
+        childFolders.value = folders
+        childDocuments.value = []   // no documents live at the synthetic root
+        return
+      }
       // Child folders via the tree endpoint (depth=1 = direct children)
       const node = await getFolderTree(path, 1, false)
       if (gen !== _loadGen) return    // user navigated away mid-flight
@@ -216,7 +229,11 @@ export function useWorkspace() {
 
   async function opCreateFolder(parentPath, name) {
     await createFolder(parentPath, name)
-    await Promise.all([loadTree(), loadContents()])
+    // ``loadContents('/')`` now reads from ``tree.value.children``,
+    // so the tree must be refreshed BEFORE the contents pass. (For
+    // sub-paths the order doesn't matter.)
+    await loadTree()
+    await loadContents()
   }
 
   async function opRenameFolder(path, newName) {
@@ -227,17 +244,29 @@ export function useWorkspace() {
       parts[parts.length - 1] = newName
       currentPath.value = parts.join('/') || '/'
     }
-    await Promise.all([loadTree(), loadContents()])
+    // ``loadContents('/')`` now reads from ``tree.value.children``,
+    // so the tree must be refreshed BEFORE the contents pass. (For
+    // sub-paths the order doesn't matter.)
+    await loadTree()
+    await loadContents()
   }
 
   async function opMoveFolder(path, toParentPath) {
     await moveFolder(path, toParentPath)
-    await Promise.all([loadTree(), loadContents()])
+    // ``loadContents('/')`` now reads from ``tree.value.children``,
+    // so the tree must be refreshed BEFORE the contents pass. (For
+    // sub-paths the order doesn't matter.)
+    await loadTree()
+    await loadContents()
   }
 
   async function opDeleteFolder(path) {
     await deleteFolder(path)
-    await Promise.all([loadTree(), loadContents()])
+    // ``loadContents('/')`` now reads from ``tree.value.children``,
+    // so the tree must be refreshed BEFORE the contents pass. (For
+    // sub-paths the order doesn't matter.)
+    await loadTree()
+    await loadContents()
   }
 
   async function opMoveDocument(docId, toPath) {
