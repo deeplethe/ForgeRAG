@@ -352,28 +352,33 @@ function fmtRelativeTime(d) {
     </header>
 
     <!-- ── Body ─────────────────────────────────────────────────── -->
-    <main class="flex-1 overflow-y-auto px-10 pt-2 pb-10">
+    <main class="flex-1 flex flex-col overflow-y-auto px-10 pt-2 pb-10">
       <div v-if="_error" class="mt-2 flex items-center gap-2 px-3.5 py-2.5 text-[13px] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
         <AlertCircle :size="16" />
         <span>{{ _error }}</span>
       </div>
 
-      <div v-else-if="_loading && !_results" class="flex items-center justify-center h-[60vh] text-t3 text-[13px]">
+      <!-- ``flex-1`` empty states centre within the full main
+           area instead of a fixed 60vh box. Earlier 60vh meant
+           short viewports squeezed the icon up while wide
+           viewports left it slumped at the top — neither read
+           as "centred". -->
+      <div v-else-if="_loading && !_results" class="flex-1 flex items-center justify-center text-t3 text-[13px]">
         {{ t('search.empty.searching') }}
       </div>
 
-      <div v-else-if="!_results" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
+      <div v-else-if="!_results" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.idle') }}</p>
         <p class="text-[12px] mt-1.5 opacity-70">{{ t('search.empty.hint') }}</p>
       </div>
 
-      <div v-else-if="!hasResults" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
+      <div v-else-if="!hasResults" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.none', { query: _query }) }}</p>
       </div>
 
-      <div v-else-if="!hasFiltered" class="flex flex-col items-center justify-center h-[60vh] text-t3 text-center text-[13px]">
+      <div v-else-if="!hasFiltered" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.filtered') }}</p>
       </div>

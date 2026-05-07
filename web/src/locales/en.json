@@ -263,8 +263,8 @@
   },
   "search": {
     "title": "Search",
-    "subtitle": "Semantic search across your documents — cross-lingual, no LLM answer, just the closest passages.",
-    "placeholder": "Ask in any language — semantic match across all documents…",
+    "subtitle": "Find passages across your documents.",
+    "placeholder": "Search filenames and content…",
     "submit": "Search",
     "clear": "Clear",
     "page": "p.{n}",
@@ -297,8 +297,8 @@
       "years_ago": "{n}y ago"
     },
     "empty": {
-      "idle": "Type a query to find passages across all documents.",
-      "hint": "Cross-lingual: type in any supported language — passages in others surface too.",
+      "idle": "Type a query to start.",
+      "hint": "Filename, folder, and content all match. Cross-lingual works automatically.",
       "searching": "Searching…",
       "none": "No results for \"{query}\".",
       "filtered": "No files match the current filters."
