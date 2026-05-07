@@ -252,11 +252,13 @@ function fmtRelativeTime(d) {
 
 <template>
   <div class="flex flex-col h-full bg-bg overflow-hidden">
-    <!-- ── Header / search bar ──────────────────────────────────── -->
-    <header class="shrink-0 px-10 pt-8 pb-5">
-      <h2 class="page-title">{{ t('search.title') }}</h2>
-      <p class="page-subtitle">{{ t('search.subtitle') }}</p>
-
+    <!-- ── Header / search bar ────────────────────────────────────
+         Title + subtitle were dropped — the sidebar tab and the
+         input's own placeholder already say what this page is.
+         Left-aligned with a generous left gutter (px-12 = 48px)
+         so the bar reads as part of the content column rather
+         than floating in the middle of the page. -->
+    <header class="shrink-0 px-12 pt-10 pb-5">
       <form class="flex items-center gap-2 max-w-[720px]" @submit.prevent="runSearch">
         <div class="search-input-wrap">
           <Search :size="14" :stroke-width="1.75" class="text-t3 shrink-0" />
@@ -288,7 +290,8 @@ function fmtRelativeTime(d) {
         </button>
       </form>
 
-      <!-- Translation chip -->
+      <!-- Translation chip — left-aligned under the bar so the
+           header stack shares one vertical axis. -->
       <div v-if="translations" class="mt-3 flex items-center gap-2 max-w-[720px] flex-wrap text-[11px] text-t3">
         <span>{{ t('search.expanded_label') }}</span>
         <span
@@ -298,8 +301,9 @@ function fmtRelativeTime(d) {
         >{{ tx }}</span>
       </div>
 
-      <!-- Filter pills — only when we have results to filter -->
-      <div v-if="hasResults" class="mt-4 flex items-center gap-2 flex-wrap">
+      <!-- Filter pills — only when we have results to filter.
+           Same 720px / left-aligned slot as the bar above. -->
+      <div v-if="hasResults" class="mt-4 flex items-center gap-2 flex-wrap max-w-[720px]">
         <!-- Time -->
         <div class="filter-pill relative">
           <button class="pill-btn" :class="{ 'pill-btn-active': _filterTime !== 'all' }"
@@ -352,7 +356,7 @@ function fmtRelativeTime(d) {
     </header>
 
     <!-- ── Body ─────────────────────────────────────────────────── -->
-    <main class="flex-1 flex flex-col overflow-y-auto px-10 pt-2 pb-10">
+    <main class="flex-1 flex flex-col overflow-y-auto px-12 pt-2 pb-10">
       <div v-if="_error" class="mt-2 flex items-center gap-2 px-3.5 py-2.5 text-[13px] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
         <AlertCircle :size="16" />
         <span>{{ _error }}</span>
@@ -446,24 +450,6 @@ function fmtRelativeTime(d) {
 </template>
 
 <style scoped>
-/* ── Page header — same size + spacing as every other settings
-   page (Profile / Users / Sessions / Tokens). The earlier
-   ``text-[22px] font-semibold`` + ``border-b`` made Search
-   feel like a different surface; this drops it back into the
-   shared family. */
-.page-title {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-t1);
-  margin: 0 0 4px;
-}
-.page-subtitle {
-  font-size: 12px;
-  color: var(--color-t3);
-  margin: 0 0 16px;
-}
-
 /* Highlight wash — soft amber, never the focus. */
 .hl :deep(mark) {
   background: rgba(251, 191, 36, 0.25);
