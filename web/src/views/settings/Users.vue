@@ -461,11 +461,13 @@ function promotable(u) {
 </template>
 
 <style scoped>
-/* No max-width — let the page fill the entire Settings content
-   area so the toolbar's right-aligned search and the table's
-   right edge land at the same x. The 6-column data table also
-   reads better with the extra width. */
-.users-page { }
+/* Let the page fill the entire Settings content area so the
+   toolbar's right-aligned search and the table's right edge
+   land at the same x. ``width: 100%`` is explicit because the
+   child grid (``.row``)'s ``minmax(_, fr)`` was sizing to
+   intrinsic content rather than parent width without it,
+   leaving the table noticeably shorter than the toolbar. */
+.users-page { width: 100%; }
 
 .page-header { margin-bottom: 20px; }
 .page-title {
