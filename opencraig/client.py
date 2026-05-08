@@ -1,7 +1,7 @@
 """
-Thin Python client for a running ForgeRAG server.
+Thin Python client for a running OpenCraig server.
 
-For embedding ForgeRAG inside your own app, prefer ``opencraig.components``
+For embedding OpenCraig inside your own app, prefer ``opencraig.components``
 (direct, no HTTP). Use this ``Client`` when you have a deployed server
 and want to call it over HTTP.
 

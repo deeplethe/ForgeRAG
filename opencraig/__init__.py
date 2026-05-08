@@ -1,5 +1,5 @@
 """
-ForgeRAG — the SDK-facing namespace.
+OpenCraig — the SDK-facing namespace.
 
 This package is a **thin re-export facade** over the internal modules
 (``retrieval``, ``api``, ``answering``, ``persistence`` etc.). SDK users

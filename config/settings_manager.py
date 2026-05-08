@@ -348,7 +348,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "persistence.relational.backend",
         "persistence_relational",
         "Relational backend",
-        "Database engine. ForgeRAG production requires PostgreSQL.",
+        "Database engine. OpenCraig production requires PostgreSQL.",
         "enum",
         ["postgres"],
     ),
@@ -463,7 +463,7 @@ EDITABLE_SETTINGS: list[tuple[str, str, str, str, str, list | None]] = [
         "persistence_graph",
         "Graph backend",
         (
-            "Knowledge graph storage engine. ForgeRAG production requires "
+            "Knowledge graph storage engine. OpenCraig production requires "
             "Neo4j 5.11+ (multi-worker safety + native vector index + "
             "Cypher for path-scoped KG retrieval). NetworkX is test-only."
         ),

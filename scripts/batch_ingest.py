@@ -73,7 +73,7 @@ DEFAULT_EXTENSIONS = ("pdf", "docx", "pptx", "xlsx", "html", "htm", "png", "jpg"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Batch-ingest files into ForgeRAG.",
+        description="Batch-ingest files into OpenCraig.",
     )
     p.add_argument(
         "directory",

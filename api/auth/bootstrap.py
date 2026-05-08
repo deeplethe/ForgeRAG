@@ -5,7 +5,7 @@ Called once at server startup (from ``lifespan``). If ``auth.enabled=true``
 and the ``auth_users`` table is empty, we create a single admin with:
 
   * username = "admin"
-  * password = ``cfg.auth.initial_password`` (default "forgerag")
+  * password = ``cfg.auth.initial_password`` (default "opencraig" (or empty for first-register-becomes-admin))
   * must_change_password = true
   * one initial API token named "bootstrap" with full admin role
 

@@ -1,5 +1,5 @@
 """
-ForgeRAG evaluation harness — optional, opt-in.
+OpenCraig evaluation harness — optional, opt-in.
 
 The design is deliberately lightweight: a ``Dataset`` holds queries
 (with ground-truth references), a ``RetrievalRun`` holds one run's
@@ -25,7 +25,7 @@ LLM-judge scoring (for faithfulness / answer quality) lives in
 ``opencraig.eval.judge``.
 
 Fixture corpus at ``tests/eval_fixtures/`` ships with the repo so the
-ForgeRAG project itself can sanity-check its own retrieval on every
+OpenCraig project itself can sanity-check its own retrieval on every
 release. Users supply their own datasets for their own domains.
 """
 

@@ -34,7 +34,7 @@ try:
         for frame in _tb.extract_stack():
             if "site-packages" not in frame.filename and frame.filename != __file__:
                 caller = f"{frame.filename}:{frame.lineno} in {frame.name}"
-        logging.getLogger("forgerag.litellm").error(
+        logging.getLogger("opencraig.litellm").error(
             "LiteLLM FAILED | model=%s | api_base=%s | error=%s | caller=%s",
             model,
             api_base,
@@ -164,7 +164,7 @@ def create_app(
             built.shutdown()
 
     app = FastAPI(
-        title="ForgeRAG",
+        title="OpenCraig",
         description="Structure-aware RAG with precise bbox citations.",
         version="0.2.3",
         lifespan=lifespan,

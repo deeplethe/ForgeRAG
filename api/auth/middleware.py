@@ -170,9 +170,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 span.set_attribute("enduser.id", principal.user_id)
                 span.set_attribute("enduser.role", principal.role)
                 if principal.token_name:
-                    span.set_attribute("forgerag.token_name", principal.token_name)
+                    span.set_attribute("opencraig.token_name", principal.token_name)
                 if principal.session_id:
-                    span.set_attribute("forgerag.session_id", principal.session_id)
+                    span.set_attribute("opencraig.session_id", principal.session_id)
         except Exception:
             pass
 

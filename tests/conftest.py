@@ -67,7 +67,7 @@ def sample_pdf(tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("pdf") / "sample.pdf"
     doc = fitz.open()
 
-    header_text = "ForgeRAG Test Document"
+    header_text = "OpenCraig Test Document"
     for i in range(4):
         page = doc.new_page(width=595, height=842)  # A4 portrait
         # Header (repeats on every page, near top)
@@ -80,7 +80,7 @@ def sample_pdf(tmp_path_factory) -> Path:
     p0.insert_text((72, 120), "Introduction", fontsize=22)  # heading
     p0.insert_text(
         (72, 180),
-        "This document is used by the ForgeRAG parser test suite.",
+        "This document is used by the OpenCraig parser test suite.",
         fontsize=11,
     )
 

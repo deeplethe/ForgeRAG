@@ -1,6 +1,6 @@
 # API Reference
 
-ForgeRAG exposes a REST API at `/api/v1/`. Interactive documentation is available at:
+OpenCraig exposes a REST API at `/api/v1/`. Interactive documentation is available at:
 
 - **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
@@ -430,7 +430,7 @@ Key uses dotted notation: `retrieval.vector.top_k`.
 
 > **Note — settings are read-only.** YAML is the single source of truth
 > ([configuration.md](configuration.md)); the `settings` table is a one-way
-> mirror written at server boot. Edit `forgerag.yaml` and restart to change
+> mirror written at server boot. Edit `opencraig.yaml` and restart to change
 > configuration. Per-query retrieval tweaks go through
 > [`QueryOverrides`](#post-apiv1query).
 
@@ -438,7 +438,7 @@ Key uses dotted notation: `retrieval.vector.top_k`.
 
 ## LLM Providers
 
-> The dedicated `/api/v1/llm-providers/*` HTTP surface was removed in v0.2.0 along with the `provider_id` indirection. Models + credentials are now inlined directly under each subsystem in `forgerag.yaml` (see [configuration.md](configuration.md)). To check or change them: edit the yaml and restart, or re-run `python scripts/setup.py` (the wizard live-tests every endpoint before saving).
+> The dedicated `/api/v1/llm-providers/*` HTTP surface was removed in v0.2.0 along with the `provider_id` indirection. Models + credentials are now inlined directly under each subsystem in `opencraig.yaml` (see [configuration.md](configuration.md)). To check or change them: edit the yaml and restart, or re-run `python scripts/setup.py` (the wizard live-tests every endpoint before saving).
 
 ---
 

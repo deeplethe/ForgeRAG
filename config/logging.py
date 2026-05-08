@@ -63,7 +63,7 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
     """
     Configure Python root logger.
 
-    Safe to call multiple times — idempotent (removes previous ForgeRAG
+    Safe to call multiple times — idempotent (removes previous OpenCraig
     handlers before adding new ones).
     """
     if cfg is None:
@@ -135,7 +135,7 @@ def setup_logging(cfg: LoggingConfig | None = None) -> None:
     ):
         logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
 
-    logging.getLogger("forgerag.main").debug(
+    logging.getLogger("opencraig.main").debug(
         "Logging initialised: level=%s dir=%s retention=%dd console=%s",
         cfg.level.upper(),
         log_dir.resolve(),

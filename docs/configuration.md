@@ -1,15 +1,15 @@
 # Configuration Reference
 
-ForgeRAG is configured via a single YAML file. **YAML is the single source of truth** — there is no runtime config editing via UI. Edit the file and restart to apply.
+OpenCraig is configured via a single YAML file. **YAML is the single source of truth** — there is no runtime config editing via UI. Edit the file and restart to apply.
 
 ## Config Resolution Order
 
 1. `--config <path>` CLI argument
 2. `$FORGERAG_CONFIG` environment variable
-3. `./forgerag.yaml` in the working directory
+3. `./opencraig.yaml` in the working directory
 4. Auto-generated skeleton (written on first boot if no yaml exists; needs at minimum your LLM + embedding provider credentials filled in before queries will succeed)
 
-A fully commented example is available at [`examples/forgerag.dev.yaml`](../examples/forgerag.dev.yaml).
+A fully commented example is available at [`examples/opencraig.dev.yaml`](../examples/opencraig.dev.yaml).
 
 ## Per-request overrides (not the same as config editing)
 
@@ -17,11 +17,11 @@ A subset of retrieval knobs can be overridden **per query** via `QueryOverrides`
 
 ## DB as a one-way backup mirror
 
-On startup, ForgeRAG writes the resolved cfg into the `settings` table as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot.
+On startup, OpenCraig writes the resolved cfg into the `settings` table as a read-only snapshot. `GET /api/v1/settings` returns this snapshot for admin tooling. The runtime **never reads back** — components always consult the in-memory cfg loaded from YAML. Any drift between DB and YAML is resolved in YAML's favour on the next boot.
 
 ## Changing configuration — the only way
 
-Edit `forgerag.yaml` (or `myconfig.yaml` via `--config`) and restart the backend. This applies to every setting: infrastructure (persistence/storage/graph backends), LLM providers, retrieval parameters, prompts, everything.
+Edit `opencraig.yaml` (or `myconfig.yaml` via `--config`) and restart the backend. This applies to every setting: infrastructure (persistence/storage/graph backends), LLM providers, retrieval parameters, prompts, everything.
 
 ---
 
@@ -182,7 +182,7 @@ Two backends, both fully supported by the unified SQLAlchemy 2.0 store layer. Pi
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `persistence.relational.sqlite.path` | string | `"./storage/forgerag.db"` | Database file path |
+| `persistence.relational.sqlite.path` | string | `"./storage/opencraig.db"` | Database file path |
 | `persistence.relational.sqlite.timeout` | float | `30.0` | `busy_timeout` in seconds — how long a waiting writer sleeps before giving up with "database is locked". Default tuned for 12-way parallel ingestion |
 | `persistence.relational.sqlite.journal_mode` | string | `"wal"` | `wal` / `delete` / `truncate` / `memory` (WAL strongly recommended) |
 | `persistence.relational.sqlite.synchronous` | string | `"normal"` | `off` / `normal` / `full` |
@@ -546,7 +546,7 @@ Cache paths for BM25 index and embedding cache.
 
 ## Environment Variables
 
-Credentials should **never** be stored in `forgerag.yaml`. Use environment variables instead:
+Credentials should **never** be stored in `opencraig.yaml`. Use environment variables instead:
 
 | Variable | Used by | Description |
 |----------|---------|-------------|
@@ -561,7 +561,7 @@ Credentials should **never** be stored in `forgerag.yaml`. Use environment varia
 | `OSS_ACCESS_KEY_ID` | OSS blob store | Alibaba OSS access key |
 | `OSS_ACCESS_KEY_SECRET` | OSS blob store | Alibaba OSS secret key |
 
-The `api_key_env` / `password_env` pattern throughout the config refers to environment variable names, not literal values. For example, `api_key_env: OPENAI_API_KEY` tells ForgeRAG to read the key from `$OPENAI_API_KEY`.
+The `api_key_env` / `password_env` pattern throughout the config refers to environment variable names, not literal values. For example, `api_key_env: OPENAI_API_KEY` tells OpenCraig to read the key from `$OPENAI_API_KEY`.
 
 ---
 
@@ -572,7 +572,7 @@ Yaml is the single source of truth: model + api_key + api_base are inlined direc
 Set `$OPENAI_API_KEY`, then:
 
 ```yaml
-# forgerag.yaml — minimum viable
+# opencraig.yaml — minimum viable
 embedder:
   backend: litellm
   dimension: 1536

@@ -189,7 +189,7 @@ const rootStartNs = computed(() => root.value?.start_time_unix_nano || 0)
 
 function categorise(span) {
   const n = span.name || ''
-  if (n.startsWith('forgerag.')) return 'forgerag'
+  if (n.startsWith('opencraig.')) return 'forgerag'
   if (span.attributes?.['gen_ai.system'] || /litellm|openai|completion|embedding|rerank/i.test(n)) {
     return 'llm'
   }
@@ -418,7 +418,7 @@ const visibleRowsByPhase = computed(() => {
 
 // ── Phase collapse state — persisted in localStorage ──
 
-const LS_KEY = 'forgerag.trace.collapsedPhases.v1'
+const LS_KEY = 'opencraig.trace.collapsedPhases.v1'
 function readInitialCollapsed() {
   try {
     const raw = localStorage.getItem(LS_KEY)

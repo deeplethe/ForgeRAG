@@ -1,7 +1,7 @@
 """
 Auth configuration.
 
-ForgeRAG's auth is minimal and self-contained:
+OpenCraig's auth is minimal and self-contained:
 
     auth:
       enabled: true           # default; set false to disable auth (honour 127.0.0.1 binding)

@@ -161,7 +161,7 @@ OpenCraig/
 ├── web/                  # Vue 3 frontend
 ├── docker/               # Docker config templates
 ├── main.py               # Entry point
-└── forgerag.yaml         # Local config (git-ignored)
+└── opencraig.yaml         # Local config (git-ignored)
 ```
 
 ---

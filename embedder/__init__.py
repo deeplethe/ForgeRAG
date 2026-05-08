@@ -1,4 +1,4 @@
-"""Embedding generation for ForgeRAG chunks."""
+"""Embedding generation for OpenCraig chunks."""
 
 from .backfill import backfill_embeddings
 from .base import Embedder, make_embedder

@@ -111,7 +111,7 @@ class TestFullPipeline:
 
     def test_normalizer_marks_header(self, pipeline, sample_pdf):
         result = pipeline.parse(sample_pdf, doc_id="doc_test")
-        # The header "ForgeRAG Test Document" repeats on all 4 pages
+        # The header "OpenCraig Test Document" repeats on all 4 pages
         excluded = [b for b in result.blocks if b.excluded]
         assert len(excluded) > 0
         reasons = {b.excluded_reason for b in excluded}

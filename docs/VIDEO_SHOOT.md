@@ -1,6 +1,6 @@
 # Demo video shoot guide
 
-Why a video for ForgeRAG specifically: the core value prop — *"every claim grounded back to a page + bbox"* — is impossible to convey in static screenshots. A 60-second clip showing a citation click jumping the PDF to the highlighted region is worth more than the entire features list.
+Why a video for OpenCraig specifically: the core value prop — *"every claim grounded back to a page + bbox"* — is impossible to convey in static screenshots. A 60-second clip showing a citation click jumping the PDF to the highlighted region is worth more than the entire features list.
 
 This guide is opinionated. Follow it unless you have a strong reason not to.
 
@@ -9,7 +9,7 @@ This guide is opinionated. Follow it unless you have a strong reason not to.
 | Video | Length | Where it goes | Status |
 |---|---|---|---|
 | **`hero_60s.mp4`** | 60s, no narration | README badge band, GitHub repo "Featured" video, Twitter/X | Highest priority |
-| **`walkthrough_3min.mp4`** | 3min, narrated | YouTube, linked from README under "Why ForgeRAG" | Next |
+| **`walkthrough_3min.mp4`** | 3min, narrated | YouTube, linked from README under "Why OpenCraig" | Next |
 | **`kg_30s.gif`** | 30s, looping | README highlights row | Nice-to-have |
 
 Skip narration on the hero — most viewers watch muted on autoplay. Use captions instead.
@@ -44,12 +44,12 @@ Hard-burn the captions in the editor. One short line per beat:
 | Time | Caption |
 |---|---|
 | 0–3s | `Drop a PDF.` |
-| 3–9s | `ForgeRAG parses, builds a tree, embeds, and extracts a knowledge graph.` |
+| 3–9s | `OpenCraig parses, builds a tree, embeds, and extracts a knowledge graph.` |
 | 10–18s | `Ask anything.` |
 | 18–28s | `4 retrieval paths run in parallel: BM25, vector, knowledge graph, tree navigation.` |
 | 28–38s | `Every claim links to its source — page and bounding box.` |
 | 38–48s | `Knowledge graph for cross-document reasoning.` |
-| 50–60s | `ForgeRAG — github.com/deeplethe/ForgeRAG` |
+| 50–60s | `OpenCraig — github.com/deeplethe/OpenCraig` |
 
 ### Editing
 
@@ -72,7 +72,7 @@ For the audience that watched the hero and wants to know if it's real.
 
 | Section | Time | What to show |
 |---|---|---|
-| **Why ForgeRAG** | 0:00–0:30 | Voiceover: the comparison table from the README, narrated over a still. Naive RAG misses, GraphRAG hallucinates, PageIndex doesn't scale. |
+| **Why OpenCraig** | 0:00–0:30 | Voiceover: the comparison table from the README, narrated over a still. Naive RAG misses, GraphRAG hallucinates, PageIndex doesn't scale. |
 | **Setup** | 0:30–0:50 | `git clone` → `python scripts/setup.py` (sped up 10×) → wizard finishing → `python main.py`. Prove "one command, no Docker required". |
 | **Ingest** | 0:50–1:30 | Drop 3 docs of different formats (PDF, DOCX, MD). Show the in-flight chips. While they parse, narrate the pipeline (parse → tree → chunk → embed → KG). |
 | **Query** | 1:30–2:30 | One simple query (BM25 + vector dominate), one structural query (tree-nav lights up), one cross-document query (KG lights up). Click citations each time. |

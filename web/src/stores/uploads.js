@@ -19,7 +19,7 @@
 import { defineStore } from 'pinia'
 import { uploadAndIngest, getDocument } from '@/api'
 
-const LS_KEY = 'forgerag.uploads.history.v1'
+const LS_KEY = 'opencraig.uploads.history.v1'
 const MAX_HISTORY = 200        // trim localStorage so it doesn't grow forever
 const CONCURRENCY = 2          // simultaneous upload slots
 const POLL_INTERVAL_MS = 1500  // status poll cadence

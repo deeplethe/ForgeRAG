@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you through installing ForgeRAG, running it locally, and ingesting your first document.
+This guide walks you through installing OpenCraig, running it locally, and ingesting your first document.
 
 ## Prerequisites
 
@@ -17,8 +17,8 @@ You also need an API key for at least one LLM provider (OpenAI, DeepSeek, Cohere
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/deeplethe/ForgeRAG.git
-cd ForgeRAG
+git clone https://github.com/deeplethe/OpenCraig.git
+cd OpenCraig
 ```
 
 ### 2. Create a virtual environment
@@ -41,10 +41,10 @@ pip install -r requirements.txt
 
 `requirements.txt` ships only **core** dependencies (FastAPI, SQLAlchemy, LiteLLM, PyMuPDF, etc.) — every optional backend (PostgreSQL, Neo4j, ChromaDB, Qdrant, Milvus, Weaviate, S3, OSS, MinerU, FAISS, …) is auto-installed by the setup wizard in step 5 based on the choices you make.
 
-If you skip the wizard and edit `forgerag.yaml` directly, re-sync deps with:
+If you skip the wizard and edit `opencraig.yaml` directly, re-sync deps with:
 
 ```bash
-python scripts/setup.py --sync-deps forgerag.yaml
+python scripts/setup.py --sync-deps opencraig.yaml
 ```
 
 This reads the yaml and pip-installs only the optional packages your config actually uses. No need to memorise the pip names per backend.
@@ -80,7 +80,7 @@ The wizard is bilingual (EN / 中文, switchable from the first menu) and walks 
 
 State is checkpointed after every step, so a crash mid-wizard (Ctrl-C, pip install failure, network blip) re-asks "resume or restart?" on the next run. After completing the wizard, optional pip installs run automatically based on yaml choices.
 
-Put real credentials directly when prompted (saved plaintext into yaml — keep `forgerag.yaml` out of git, it's already gitignored), or leave the API-key prompt blank to use an environment variable. The wizard suggests a sensible env-var name based on the model's provider prefix (e.g. `deepseek/...` → `DEEPSEEK_API_KEY`).
+Put real credentials directly when prompted (saved plaintext into yaml — keep `opencraig.yaml` out of git, it's already gitignored), or leave the API-key prompt blank to use an environment variable. The wizard suggests a sensible env-var name based on the model's provider prefix (e.g. `deepseek/...` → `DEEPSEEK_API_KEY`).
 
 ### 6. Start the server
 
@@ -98,7 +98,7 @@ python main.py [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config PATH` | auto-detect | Path to `forgerag.yaml` |
+| `--config PATH` | auto-detect | Path to `opencraig.yaml` |
 | `--host HOST` | `0.0.0.0` | Bind address (or `$FORGERAG_HOST`) |
 | `--port PORT` | `8000` | Bind port (or `$FORGERAG_PORT`) |
 | `--reload` | off | Hot-reload on code changes (development) |
@@ -111,16 +111,16 @@ python main.py [OPTIONS]
 1. Navigate to the **Workspace** tab in the web UI
 2. Drag and drop a PDF (or DOCX, PPTX, HTML, Markdown, an image — PNG/JPG/WEBP/GIF/BMP/TIFF — or a spreadsheet — XLSX/CSV/TSV) onto the page, or click the **+** icon to select files. Drop into a specific folder by dragging onto its tile
 
-   > Image uploads need `image_enrichment.enabled = true` in `forgerag.yaml` — without a VLM the image is stored but never described, so retrieval can't find it. The wizard configures this if you pick a vision model.
+   > Image uploads need `image_enrichment.enabled = true` in `opencraig.yaml` — without a VLM the image is stored but never described, so retrieval can't find it. The wizard configures this if you pick a vision model.
 
-   > Spreadsheet uploads need `table_enrichment.enabled = true` in `forgerag.yaml` — same shape as image uploads: each sheet becomes one TABLE block whose embedded text is an LLM-generated description. The full data is preserved on the side for the inline viewer; without an LLM there's no description and retrieval can't find the doc.
+   > Spreadsheet uploads need `table_enrichment.enabled = true` in `opencraig.yaml` — same shape as image uploads: each sheet becomes one TABLE block whose embedded text is an LLM-generated description. The full data is preserved on the side for the inline viewer; without an LLM there's no description and retrieval can't find the doc.
 3. The document is queued for ingestion. The card shows an amber chip with the current pipeline stage (parsing → embedding → building graph)
 4. Once the chip clears to **ready**, switch to the **Chat** tab
-5. Ask a question about the document. ForgeRAG returns a streaming answer with `[c_N]` citations — click any citation to jump to the source PDF at the exact bounding box
+5. Ask a question about the document. OpenCraig returns a streaming answer with `[c_N]` citations — click any citation to jump to the source PDF at the exact bounding box
 
 ## What's Next
 
 - [Configuration Reference](configuration.md) — customize backends, models, and retrieval parameters
 - [Architecture Overview](architecture.md) — understand how ingestion, retrieval, and answering work
-- [Deployment Guide](deployment.md) — run ForgeRAG with Docker or in production
-- [API Reference](api-reference.md) — integrate ForgeRAG into your own applications
+- [Deployment Guide](deployment.md) — run OpenCraig with Docker or in production
+- [API Reference](api-reference.md) — integrate OpenCraig into your own applications

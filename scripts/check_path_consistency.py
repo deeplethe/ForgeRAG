@@ -26,7 +26,7 @@ import logging
 import random
 import sys
 
-log = logging.getLogger("forgerag.consistency_check")
+log = logging.getLogger("opencraig.consistency_check")
 
 
 def main() -> int:

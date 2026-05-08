@@ -1,6 +1,6 @@
 # Authentication & Session Management
 
-ForgeRAG ships with a minimal, self-contained auth layer. It is designed for
+OpenCraig ships with a minimal, self-contained auth layer. It is designed for
 **single-operator deployments** (one admin, zero multi-tenancy) but the schema
 is multi-user ready so nothing has to be redesigned if that changes later.
 
@@ -27,8 +27,8 @@ In your yaml config (defaults shown, override as needed):
 auth:
   enabled: true                # default false
   mode: db                     # "db" | "forwarded"
-  initial_password: forgerag   # applied once at auto-bootstrap
-  session_cookie_name: forgerag_session
+  initial_password: ""   # applied once at auto-bootstrap
+  session_cookie_name: opencraig_session
   session_cookie_secure: true  # set false only for http://localhost dev
   password_change_revokes_other_sessions: true
   public_paths:
@@ -44,7 +44,7 @@ see a banner like:
 ================================================================
   FIRST-RUN ADMIN CREATED
   username:   admin
-  password:   forgerag        ← change on first web login
+  password:   <your initial_password>        ← change on first web login
   bootstrap SK: Forge_9VUpg4Tb1GUDwCXo1utymqy7FX5sdeeKr66hp3h7J1Nk
 ================================================================
 ```
@@ -55,14 +55,14 @@ Copy the SK **now**; it cannot be recovered from the DB.
 
 ### `mode: db` (default)
 
-ForgeRAG owns auth. Users / tokens / sessions live in Postgres tables
+OpenCraig owns auth. Users / tokens / sessions live in Postgres tables
 (`auth_users`, `auth_tokens`, `auth_sessions`). Login via
 `POST /api/v1/auth/login` issues an opaque 64-char session id, set as an
 HttpOnly cookie. Bearer tokens authenticate CLI/SDK calls.
 
 ### `mode: forwarded`
 
-Deploy ForgeRAG behind an OAuth / SSO reverse proxy (oauth2-proxy, Authelia,
+Deploy OpenCraig behind an OAuth / SSO reverse proxy (oauth2-proxy, Authelia,
 Cloudflare Access…). The middleware trusts the configured
 `forwarded_user_header` (default `X-Forwarded-User`) and auto-provisions an
 `auth_users` row on first seen username. **Make sure only the proxy can reach
@@ -153,21 +153,21 @@ surface "Incorrect username or password" inline instead of self-redirecting.
 
 ## CLI
 
-The `forgerag` CLI reads `FORGERAG_API_TOKEN` from the environment by default.
+The `forgerag` CLI reads `OPENCRAIG_API_TOKEN` from the environment by default.
 Override with `--token`.
 
 ```bash
 # From the bootstrap banner or a Tokens page reveal:
-export FORGERAG_API_TOKEN='Forge_9VUpg4Tb1GUDwCXo1utymqy7FX5sdeeKr66hp3h7J1Nk'
+export OPENCRAIG_API_TOKEN='Forge_9VUpg4Tb1GUDwCXo1utymqy7FX5sdeeKr66hp3h7J1Nk'
 
-forgerag auth whoami                     # print current principal JSON
-forgerag auth list-tokens                # tab-separated table
-forgerag auth create-token --name laptop # prints raw token once
-forgerag auth revoke-token <token_id>
-forgerag auth logout                     # revoke session only (cookie-based)
+opencraig auth whoami                     # print current principal JSON
+opencraig auth list-tokens                # tab-separated table
+opencraig auth create-token --name laptop # prints raw token once
+opencraig auth revoke-token <token_id>
+opencraig auth logout                     # revoke session only (cookie-based)
 
 # Locked out? Direct DB reset, bypasses HTTP:
-forgerag auth reset-password --username admin
+opencraig auth reset-password --username admin
 ```
 
 `reset-password` clears `must_change_password` so the operator can log in
@@ -181,7 +181,7 @@ normally after the reset. It runs inside the backend process's DB config
 ### Lost the admin password
 
 ```bash
-forgerag auth reset-password --username admin
+opencraig auth reset-password --username admin
 # prompts for new password interactively
 ```
 
@@ -196,7 +196,7 @@ Either the web UI (`Change Password` button on the Tokens page) or:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/auth/change-password \
-  -H "Authorization: Bearer $FORGERAG_API_TOKEN" \
+  -H "Authorization: Bearer $OPENCRAIG_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"old_password":"forgerag","new_password":"something-stronger"}'
 ```
@@ -204,8 +204,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/change-password \
 ### Suspect a leaked SK
 
 ```bash
-forgerag auth list-tokens              # find the token_id by hash_prefix
-forgerag auth revoke-token <token_id>
+opencraig auth list-tokens              # find the token_id by hash_prefix
+opencraig auth revoke-token <token_id>
 ```
 
 Clients using that SK will start getting 401 immediately.
@@ -216,7 +216,7 @@ Web UI → Tokens & Sessions → "Sign out other devices". Or:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/auth/sessions/sign-out-others \
-  -H "Cookie: forgerag_session=$YOUR_COOKIE"
+  -H "Cookie: opencraig_session=$YOUR_COOKIE"
 ```
 
 For extra safety, rotate the password too — this will also revoke other
@@ -269,5 +269,5 @@ schema changes on explicit migrations.
 `ip`, `user_agent`, `revoked_at`.
 
 Revocation is soft — rows stay around for audit. A periodic cleanup of rows
-where `revoked_at < now() - 30d` is fine to add if the tables grow; ForgeRAG
+where `revoked_at < now() - 30d` is fine to add if the tables grow; OpenCraig
 does not run one automatically.

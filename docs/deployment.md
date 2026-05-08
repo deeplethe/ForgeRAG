@@ -1,92 +1,107 @@
 # Deployment Guide
 
-This guide covers deploying ForgeRAG with Docker, production configuration, and common deployment patterns.
+This guide covers deploying OpenCraig with Docker, production configuration, and common deployment patterns.
 
 ## Docker (Recommended)
 
-The fastest way to deploy ForgeRAG in production.
+The fastest way to deploy OpenCraig in production.
 
 ### Quick Start
 
 ```bash
 # 1. Clone
-git clone https://github.com/deeplethe/ForgeRAG.git
-cd ForgeRAG
+git clone https://github.com/deeplethe/OpenCraig.git
+cd OpenCraig
 
-# 2. Run the setup wizard
-python scripts/docker_setup.py
+# 2. Pick passwords (LLM key is collected by the in-app wizard later)
+cp .env.example .env
+$EDITOR .env
 
 # 3. Start
 docker compose up -d
+
+# 4. Open http://localhost:8000 — first-boot wizard guides you through
+#    LLM provider selection (SiliconFlow / OpenAI / Ollama / ...) and
+#    auto-creates the first admin account.
 ```
 
-The setup wizard generates `docker/config.yaml` and `.env`, then optionally starts the stack.
+That's it. No CLI wizard, no yaml editing — the web wizard at
+`/setup` collects whatever's missing and writes the config overlay
+on its own. Operators who prefer declarative config can skip the
+wizard by setting LLM credentials in `.env` upfront; see
+"Manual Configuration" below.
 
 ### What's Included
 
-The default `docker-compose.yml` provides:
+The default `docker-compose.yml` provides three services, all
+default-on:
 
 | Service | Image | Purpose |
 |---------|-------|---------|
-| **forgerag** | Built from `Dockerfile` | ForgeRAG backend + frontend |
-| **postgres** | `pgvector/pgvector:pg16` | PostgreSQL 16 with pgvector extension |
-| **neo4j** (optional) | `neo4j:5` | Knowledge graph store |
+| **opencraig** | Built from `Dockerfile` | OpenCraig backend + frontend (port 8000) |
+| **postgres** | `pgvector/pgvector:pg16` | PostgreSQL 16 with pgvector extension (relational + vector store) |
+| **neo4j** | `neo4j:5.20-community` | Knowledge graph (ports 7474 web UI / 7687 bolt) |
 
-### Setup Wizard
+Required env vars (compose fails fast if unset, no defaults to
+"opencraig/opencraig" weak credentials):
 
-The interactive wizard configures everything:
+* `POSTGRES_PASSWORD`
+* `NEO4J_PASSWORD`
+* At least one of: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+  `DEEPSEEK_API_KEY` (or set via the in-app wizard later)
+
+### First-boot wizard (no yaml editing)
+
+Once the stack is up, point a browser at `http://localhost:8000`.
+The frontend probes `/api/v1/setup/status`; an unconfigured deploy
+bounces to `/setup`, where you pick a model-platform preset:
+
+| Preset | What it configures with one API key |
+|---|---|
+| **SiliconFlow** | DeepSeek-V3 chat + BGE-M3 embeddings + BGE reranker (CN default; cheapest unified-platform option) |
+| **OpenAI** | gpt-4o-mini + text-embedding-3-small |
+| **DeepSeek 官方** | DeepSeek-V3 chat (pair with another provider for embeddings) |
+| **Anthropic** | Claude family chat (pair with another provider for embeddings) |
+| **Ollama** | Fully self-hosted; data never leaves your network |
+| **Custom** | Skip presets; configure each provider in Settings → System after registration |
+
+The wizard tests the key with a 1-token chat completion before
+applying. On apply, the config is written to a yaml overlay
+(`storage/setup-overlay.yaml`) and the container restarts to load
+it.
+
+### Manual configuration (skip the wizard)
+
+If you'd rather pin everything declaratively:
+
+**1. Set LLM credentials in `.env`:**
 
 ```bash
-python scripts/docker_setup.py              # Interactive mode
-python scripts/docker_setup.py --quick      # Accept all defaults (OpenAI, no Neo4j)
-```
-
-**What it asks:**
-
-1. **LLM Provider** — OpenAI, DeepSeek, Ollama, or custom
-2. **API Key** — checks environment first, prompts if missing
-3. **Database Passwords** — auto-generates secure passwords
-4. **Neo4j** — optional knowledge graph container
-5. **Start now?** — optionally runs `docker compose up -d`
-
-**Presets:**
-
-| Provider | Chat Model | Embed Model | Dimension |
-|----------|-----------|-------------|-----------|
-| OpenAI | `openai/gpt-4o-mini` | `openai/text-embedding-3-small` | 1536 |
-| DeepSeek | `deepseek/deepseek-v4-flash` | (use OpenAI / SiliconFlow / Ollama for embeddings — DeepSeek does not host an embedding model) | — |
-| SiliconFlow | `openai/deepseek-ai/DeepSeek-V4-Pro` (api_base = `https://api.siliconflow.cn/v1`) | `openai/BAAI/bge-m3` (same api_base) | 1024 |
-| Ollama | `ollama/qwen2.5` | `ollama/bge-m3` | 1024 |
-
-### Manual Configuration
-
-If you prefer manual setup:
-
-**1. Create `.env`:**
-
-```bash
-OPENAI_API_KEY=sk-your-key-here
-POSTGRES_PASSWORD=your-secure-password
-# NEO4J_PASSWORD=your-neo4j-password  # Only if using Neo4j
+POSTGRES_PASSWORD=...
+NEO4J_PASSWORD=...
+OPENAI_API_KEY=sk-...
 ```
 
 **2. Edit `docker/config.yaml`:**
 
-The default config uses PostgreSQL + pgvector. See [`docker/config.yaml`](../docker/config.yaml) for the template.
+The default config wires Postgres + pgvector + Neo4j and points the
+embedder + answer LLM at OpenAI. Swap models / providers there. See
+[`docker/config.yaml`](../docker/config.yaml) for the template.
 
 **3. Start:**
 
 ```bash
-# Without Neo4j (default)
 docker compose up -d
-
-# With Neo4j
-docker compose --profile neo4j up -d
+docker compose logs -f opencraig          # watch alembic + lifespan boot
 ```
+
+Once the LLM credentials are valid, `/setup/status` returns
+`configured=true` and the wizard step is skipped — the operator
+proceeds directly to `/register`.
 
 ### Docker Compose Services
 
-#### ForgeRAG
+#### OpenCraig
 
 ```yaml
 forgerag:
@@ -188,7 +203,7 @@ docker compose build && docker compose up -d
 ### Security
 
 - [ ] Set strong passwords for PostgreSQL and Neo4j (use `secrets.token_urlsafe(32)`)
-- [ ] Restrict CORS origins to your domain in `forgerag.yaml`
+- [ ] Restrict CORS origins to your domain in `opencraig.yaml`
 - [ ] Use HTTPS (reverse proxy with Nginx/Caddy)
 - [ ] Keep API keys in environment variables, never in config files
 - [ ] Set `files.max_bytes` to limit upload size
@@ -252,7 +267,7 @@ server {
 
 ## Using Ollama (Local LLM)
 
-Run ForgeRAG with a local Ollama instance (no API key needed):
+Run OpenCraig with a local Ollama instance (no API key needed):
 
 **1. Install and start Ollama:**
 
@@ -262,7 +277,7 @@ ollama pull qwen2.5
 ollama pull bge-m3
 ```
 
-**2. Configure ForgeRAG:**
+**2. Configure OpenCraig:**
 
 ```yaml
 embedder:
@@ -279,13 +294,13 @@ answering:
     api_base: http://localhost:11434
 ```
 
-**Docker note:** Use `http://host.docker.internal:11434` as the API base when ForgeRAG runs in Docker and Ollama runs on the host.
+**Docker note:** Use `http://host.docker.internal:11434` as the API base when OpenCraig runs in Docker and Ollama runs on the host.
 
 ---
 
 ## Database Migrations
 
-ForgeRAG uses Alembic for database schema migrations:
+OpenCraig uses Alembic for database schema migrations:
 
 ```bash
 # Check current migration status
@@ -298,7 +313,7 @@ alembic upgrade head
 alembic revision --autogenerate -m "description"
 ```
 
-Migrations are automatically applied on startup for SQLite. For PostgreSQL, run them manually before upgrading ForgeRAG.
+Migrations are automatically applied on startup for SQLite. For PostgreSQL, run them manually before upgrading OpenCraig.
 
 ---
 

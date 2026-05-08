@@ -185,7 +185,7 @@ PROMPT_USER = PROMPT_USER_ENTITY
 class SummarizeConfig:
     """Knobs controlling when + how to compress a description.
 
-    Defaults are tuned for ForgeRAG's typical entity description
+    Defaults are tuned for OpenCraig's typical entity description
     profile (50–100 tokens / fragment): ``trigger_tokens=1200`` lines
     up with the post-merge bloat threshold we observed empirically;
     ``force_on_count=8`` is the count-based escape hatch for "lots of

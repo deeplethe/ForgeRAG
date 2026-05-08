@@ -17,7 +17,7 @@ Typical usage:
     from config import load_config
     from parser.pipeline import ParserPipeline
 
-    cfg = load_config("forgerag.yaml")
+    cfg = load_config("opencraig.yaml")
     pipeline = ParserPipeline.from_config(cfg)
     doc = pipeline.parse("paper.pdf", doc_id="doc_abc", parse_version=1)
 """

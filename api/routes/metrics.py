@@ -12,7 +12,7 @@ work uniformly across SQLite / Postgres / DuckDB / etc. The percentile and
 time-bucket SQL we used to use (``percentile_cont WITHIN GROUP``,
 ``date_bin``, ``COUNT(*) FILTER``) is Postgres-only; rewriting in Python
 costs ~ms per few-thousand rows — fine for the dashboard window sizes
-(24h / 7d / 30d) we expose. If anyone ever runs ForgeRAG at the scale
+(24h / 7d / 30d) we expose. If anyone ever runs OpenCraig at the scale
 where 30-day rollups are too slow in Python, switching back to SQL on
 the Postgres-only fast path is a single dialect check.
 
@@ -157,14 +157,14 @@ def _coerce_dt(v: Any) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 _PATH_SPANS = {
-    "qu": ("forgerag.query_understanding",),
-    "bm25": ("forgerag.bm25_path",),
-    "vector": ("forgerag.vector_path",),
-    "tree": ("forgerag.tree_path",),
-    "kg": ("forgerag.kg_path",),
-    "rrf": ("forgerag.rrf_merge",),
-    "expand": ("forgerag.expansion",),
-    "rerank": ("forgerag.rerank",),
+    "qu": ("opencraig.query_understanding",),
+    "bm25": ("opencraig.bm25_path",),
+    "vector": ("opencraig.vector_path",),
+    "tree": ("opencraig.tree_path",),
+    "kg": ("opencraig.kg_path",),
+    "rrf": ("opencraig.rrf_merge",),
+    "expand": ("opencraig.expansion",),
+    "rerank": ("opencraig.rerank",),
 }
 
 _LLM_MODEL_ATTR_KEYS = ("gen_ai.request.model", "llm.model", "gen_ai.response.model")

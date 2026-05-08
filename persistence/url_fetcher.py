@@ -153,7 +153,7 @@ class UrlFetcher:
                 "set FetcherConfig.allow_private_hosts=True to permit"
             )
 
-        req = Request(url, headers={"User-Agent": "ForgeRAG/1.0"})
+        req = Request(url, headers={"User-Agent": "OpenCraig/1.0"})
         tmp = _tempfile(suffix=_suffix_from_path(parsed.path))
         bytes_written = 0
         try:

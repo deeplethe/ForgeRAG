@@ -16,7 +16,7 @@ The current retrieval pipeline (BM25 + vector + KG + tree-nav, fused via RRF, re
 3. **Multi-user + path-based permissions** (auth foundation) — go from single-admin to email/password registered users sharing one deployment. Each folder has one owner + a `shared_with` list of `(user, role)` pairs. `path_filters: list[str]` becomes the new authz primitive on every search-bearing API; default = user's accessible folders. **Multi-user, not multi-tenant** — one shared global tree, one shared set of indices.
 4. **Agentic search** (orchestration) — multi-step retrieval where an LLM drives follow-up queries based on intermediate results. Replaces "one-shot retrieval" with an agentic loop bounded by a budget. Tools include `search_local`, `web_search`, `fetch_url`, `read_chunk`.
 5. **Deep research with HITL** (composition) — long-horizon research mode. Plan → parallel per-section AgenticSearch → draft → synthesis. Three HITL modes (`auto` / `checkpoint` / `interactive`); `checkpoint` is the default — user reviews each section's findings before research moves on, can refine or skip without restarting from scratch.
-6. **Retrieval MCP** (external interface) — expose the full surface as MCP tools so Claude Desktop / Code / custom agent workflows can use ForgeRAG as their RAG backend. Lands last so the tool list is shipped once with everything (no v2 protocol bumps).
+6. **Retrieval MCP** (external interface) — expose the full surface as MCP tools so Claude Desktop / Code / custom agent workflows can use OpenCraig as their RAG backend. Lands last so the tool list is shipped once with everything (no v2 protocol bumps).
 
 Each layer reuses everything below it. **/search** is standalone. **Web search** plugs into `/search`. **Multi-user** wraps everything in folder-level authz. **Agentic search** drives the pipeline + web iteratively. **Deep research** orchestrates many agentic-search runs with human checkpoints. **MCP** wraps the whole thing.
 
@@ -35,7 +35,7 @@ The current pipeline answers a question in a single shot, only against your uplo
 * **Single-admin lock-in** — only the deploy admin can use the system; no sharing, no team workflows. *Solved by Feature 3.*
 * **Multi-hop questions** — "Compare LangChain and LlamaIndex's chunking strategy" needs at least two targeted searches plus a synthesis pass, and benefits from blending local notes with fresh web content. *Solved by Feature 4.*
 * **Reports / long-horizon work** — "Write me a survey of tariff impacts using my uploaded papers" needs planning, parallel research per topic, and a human-in-the-loop loop because 30-minute jobs that drift early waste the whole budget. *Solved by Feature 5.*
-* **External agent integration** — Claude Desktop / Code can't use ForgeRAG today. *Solved by Feature 6.*
+* **External agent integration** — Claude Desktop / Code can't use OpenCraig today. *Solved by Feature 6.*
 
 Two architectural invariants are landed early so everything downstream inherits them:
 
@@ -882,9 +882,9 @@ Estimated size: ~2500 LOC backend + ~1800 LOC frontend (state-4 viewer is the bu
 
 ### What
 
-An **MCP server** that exposes ForgeRAG's full retrieval surface as tools callable by external agents (Claude Desktop, Claude Code, custom MCP clients).
+An **MCP server** that exposes OpenCraig's full retrieval surface as tools callable by external agents (Claude Desktop, Claude Code, custom MCP clients).
 
-By landing last, the tool list ships with everything in one shot — `/search` (Feature 1), web search (Feature 2), folder-scoped authz (Feature 3), agentic search (Feature 4), and deep research (Feature 5) — so external integrators see ForgeRAG's full differentiation, not a naked RAG endpoint.
+By landing last, the tool list ships with everything in one shot — `/search` (Feature 1), web search (Feature 2), folder-scoped authz (Feature 3), agentic search (Feature 4), and deep research (Feature 5) — so external integrators see OpenCraig's full differentiation, not a naked RAG endpoint.
 
 ### Tools exposed
 
@@ -904,8 +904,8 @@ All tools accept an optional `path_filters` argument that's validated against th
 
 ### Why
 
-* Lets a Claude Desktop user attach their ForgeRAG instance and ask questions over their docs without leaving the chat.
-* Lets Claude Code use ForgeRAG as a code-doc search backend.
+* Lets a Claude Desktop user attach their OpenCraig instance and ask questions over their docs without leaving the chat.
+* Lets Claude Code use OpenCraig as a code-doc search backend.
 * Composes into multi-tool agents (one MCP for code, one for docs, one for the web).
 
 ### Architecture
@@ -917,7 +917,7 @@ All tools accept an optional `path_filters` argument that's validated against th
                 │ stdio | SSE
                 ▼
 ┌───────────────────────────────────┐
-│  forgerag.mcp_server              │
+│  opencraig.mcp_server              │
 │   ┌─────────────────────────┐     │
 │   │  Tool dispatcher        │     │
 │   │  (mcp.ServerSession)    │     │
@@ -935,14 +935,14 @@ All tools accept an optional `path_filters` argument that's validated against th
 
 * **Same process as the FastAPI app** — `AppState` is shared, so the MCP server reuses the in-memory BM25 index, embedder, and graph store. No extra startup cost; no risk of split-brain caches.
 * Two transports:
-  - **stdio**: primary use case. `python -m forgerag.mcp_server` is launched by the agent host; communication via standard streams. Auth via env var `FORGERAG_API_KEY`.
+  - **stdio**: primary use case. `python -m opencraig.mcp_server` is launched by the agent host; communication via standard streams. Auth via env var `OPENCRAIG_API_KEY`.
   - **HTTP/SSE**: secondary, for remote agents. Mounted under `/mcp/sse` on the existing FastAPI app, gated by the same SK-token / API-key auth.
 
 **Auth**: every tool call resolves `api_key → user` and runs all the same authz checks as the REST API. An MCP client cannot see folders the user can't, cannot search outside `path_filters` they're authorized for, etc.
 
 ### Rejected alternatives
 
-* **HTTP-only MCP** — Claude Desktop / Code prefer stdio for local installs. Forcing HTTP means users have to expose ForgeRAG on a port; way worse onboarding.
+* **HTTP-only MCP** — Claude Desktop / Code prefer stdio for local installs. Forcing HTTP means users have to expose OpenCraig on a port; way worse onboarding.
 * **Separate MCP process** — splits the BM25 cache, doubles memory, complicates startup. Same-process is much simpler.
 * **Translate the existing REST API to MCP via auto-generation** — REST shapes (path params, query strings) don't map cleanly to MCP tool schemas. Hand-curated tools are fewer and clearer; users see only the verbs that make sense for an agent, not e.g. `DELETE /api/v1/folders/{id}`.
 * **Ship MCP earlier** (e.g. as Feature 2) — was the original draft. Without agentic / research, the tool surface is just `search` / `query` / `read` — same as any other RAG MCP, no differentiation. Landing last makes the launch tool list compelling.
@@ -955,7 +955,7 @@ All tools accept an optional `path_filters` argument that's validated against th
   - `sse.py` — FastAPI-mountable router for HTTP/SSE.
   - `auth.py` — api_key → user resolution, scope checks.
 * New config section: `mcp.enabled`, `mcp.transport: stdio | sse | both`, `mcp.tools_allowed: list[str]` (default all). Disabled by default.
-* New entrypoint: `python -m forgerag.mcp_server`.
+* New entrypoint: `python -m opencraig.mcp_server`.
 * Auth handler shared with `api/auth/` (Feature 3).
 
 Estimated size: ~700 LOC for the server + tool wrappers + tests.
@@ -1055,7 +1055,7 @@ Total: ~16.5 eng-weeks. Each feature can ship independently with its own branch 
 * **Workspace nesting** (Notion-style "switch workspace" layer above folders). Folders are the only authz unit.
 * **Subfolder carveouts** (a subfolder more restrictive than its parent). Workaround: move content to a separate top-level folder.
 * **Multi-agent frameworks** (autogen, crewai). One LLM in a loop, tooled, is enough for this scale.
-* **Distributed retrieval** across remote ForgeRAG instances. Single-deploy only.
+* **Distributed retrieval** across remote OpenCraig instances. Single-deploy only.
 * **Live ingestion during research** ("watch this folder, update the report"). Periodic re-runs are user-driven.
 * **Speech / video output** of research results. Markdown + PDF only.
 * **Custom DSL for outlines**. Plain JSON outline schema, generated by the LLM, edited by the user in a form UI.
@@ -1070,5 +1070,5 @@ These features open natural extensions worth noting:
 
 * **Cross-doc KG queries** — once agentic search exists, exposing "find paths between entities X and Y in the KG" as an agent tool is straightforward.
 * **Live source tracking** — "watch sources for updates and re-run section 3 when they change" — natural extension once `research_sessions` exist.
-* **Comparative research** — "compare my answer vs ForgeRAG's answer" — exposing this through MCP would let an agent fact-check humans.
+* **Comparative research** — "compare my answer vs OpenCraig's answer" — exposing this through MCP would let an agent fact-check humans.
 * **Cited answer caching** — agentic search results are themselves citable; answers from research mode could be ingested as a new document for follow-up questions.

@@ -1,7 +1,7 @@
 """
 Observability / OpenTelemetry bootstrap.
 
-ForgeRAG emits OTel spans for every retrieval phase, every LLM call, every
+OpenCraig emits OTel spans for every retrieval phase, every LLM call, every
 HTTP route, every SQL query. The user decides where those spans go by
 setting ``observability.exporter`` in yaml — stdout (default, zero setup),
 OTLP HTTP to any backend (Langfuse / Jaeger / Phoenix / Datadog / ...),

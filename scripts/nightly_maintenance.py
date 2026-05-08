@@ -35,7 +35,7 @@ import logging
 import sys
 import time
 
-log = logging.getLogger("forgerag.nightly_maintenance")
+log = logging.getLogger("opencraig.nightly_maintenance")
 
 
 def main() -> int:

@@ -17,7 +17,7 @@
 
 import { computed, ref } from 'vue'
 
-const LS_KEY = 'forgerag.theme.v1'
+const LS_KEY = 'opencraig.theme.v1'
 
 function readInitial() {
   if (typeof localStorage !== 'undefined') {

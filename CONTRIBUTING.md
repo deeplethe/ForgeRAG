@@ -1,6 +1,6 @@
-# Contributing to ForgeRAG
+# Contributing to OpenCraig
 
-Thank you for your interest in contributing to ForgeRAG! We welcome contributions of all kinds — bug fixes, new features, documentation improvements, and more.
+Thank you for your interest in contributing to OpenCraig! We welcome contributions of all kinds — bug fixes, new features, documentation improvements, and more.
 
 ## Getting Started
 
@@ -63,7 +63,7 @@ python main.py --workers 1 --reload
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/deeplethe/ForgeRAG/issues) to report bugs or request features
+- Use [GitHub Issues](https://github.com/deeplethe/OpenCraig/issues) to report bugs or request features
 - Include reproduction steps, expected behavior, and environment details
 
 ## License

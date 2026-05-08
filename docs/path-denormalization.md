@@ -1,6 +1,6 @@
 # Path denormalization & folder rename
 
-This document describes how ForgeRAG keeps folder path information
+This document describes how OpenCraig keeps folder path information
 consistent across its three primary stores — Postgres, Chroma
 (vector), and Neo4j (knowledge graph) — and how it handles the
 edge cases that arise when a folder rename affects many chunks.

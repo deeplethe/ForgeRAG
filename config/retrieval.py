@@ -159,7 +159,7 @@ class KGSummaryConfig(BaseModel):
     enabled: bool = True
 
     # Trigger gates — either condition fires summarisation.
-    # Defaults tuned for ForgeRAG's typical fragment profile
+    # Defaults tuned for OpenCraig's typical fragment profile
     # (~50–100 tokens / fragment): 1200 tokens ≈ 12 average
     # fragments, 8 fragments is the count-based escape hatch for
     # when many small fragments slip under the token gate.

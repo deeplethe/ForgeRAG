@@ -1,5 +1,5 @@
 """
-Alembic environment — resolves the DB URL from ForgeRAG config
+Alembic environment — resolves the DB URL from OpenCraig config
 so migrations work against whichever backend the user has configured.
 """
 
@@ -24,7 +24,7 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    """Resolve DB URL from ForgeRAG config, same as the app does."""
+    """Resolve DB URL from OpenCraig config, same as the app does."""
     try:
         from config.loader import load_config
         from persistence.engine import make_engine

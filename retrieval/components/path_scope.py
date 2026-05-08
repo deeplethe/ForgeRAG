@@ -101,7 +101,7 @@ class PathScopeResolver:
         self.rel = rel
 
     def run(self, filter: dict | None = None) -> PathScope:
-        with _tracer.start_as_current_span("forgerag.path_scope") as span:
+        with _tracer.start_as_current_span("opencraig.path_scope") as span:
             from sqlalchemy import or_, select
 
             from persistence.folder_service import TRASH_PATH
@@ -116,8 +116,8 @@ class PathScopeResolver:
                 raw = f.get("_path_filter", None)
             path_prefixes = _normalise_prefixes(raw)
 
-            span.set_attribute("forgerag.path_filters", path_prefixes)
-            span.set_attribute("forgerag.path_filters_count", len(path_prefixes))
+            span.set_attribute("opencraig.path_filters", path_prefixes)
+            span.set_attribute("opencraig.path_filters_count", len(path_prefixes))
 
             with self.rel.transaction() as sess:
                 allowed_doc_ids: set[str] | None = None
@@ -160,9 +160,9 @@ class PathScopeResolver:
 
             if allowed_doc_ids is not None:
                 allowed_doc_ids -= trashed
-                span.set_attribute("forgerag.allowed_doc_count", len(allowed_doc_ids))
+                span.set_attribute("opencraig.allowed_doc_count", len(allowed_doc_ids))
             if or_pfx:
-                span.set_attribute("forgerag.or_fallback_prefixes", or_pfx)
+                span.set_attribute("opencraig.or_fallback_prefixes", or_pfx)
 
             return PathScope(
                 path_prefixes=path_prefixes,

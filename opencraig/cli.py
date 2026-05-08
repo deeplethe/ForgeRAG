@@ -232,7 +232,7 @@ def _auth_logout(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="opencraig", description="ForgeRAG CLI")
+    p = argparse.ArgumentParser(prog="opencraig", description="OpenCraig CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # serve
@@ -271,7 +271,7 @@ def _build_parser() -> argparse.ArgumentParser:
     h.set_defaults(func=_cmd_health)
 
     # version
-    v = sub.add_parser("version", help="Print ForgeRAG version")
+    v = sub.add_parser("version", help="Print OpenCraig version")
     v.set_defaults(func=_cmd_version)
 
     # auth

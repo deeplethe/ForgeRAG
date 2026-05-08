@@ -49,7 +49,7 @@ class RequestSpanCollector(SpanProcessor):
 
     Usage:
         # Somewhere inside the /query route, AFTER starting a root span:
-        root = tracer.start_as_current_span("forgerag.retrieve")
+        root = tracer.start_as_current_span("opencraig.retrieve")
         with root as span:
             trace_id = span.get_span_context().trace_id
             # ... do work, child spans get collected automatically ...

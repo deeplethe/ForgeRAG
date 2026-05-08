@@ -1,12 +1,13 @@
 """
 ScopeService — the sole entry point for folder-scope checks.
 
-**This is not authZ.** ForgeRAG is single-tenant; there is no multi-user
-access-control plan. What this service expresses is *retrieval / mutation
-scope*: given an operation (read, write, manage) targeted at a folder, is
-that folder currently in-scope for the caller? Right now every check
-returns True — the hooks are here so we can later wire in read-only mode,
-per-folder mute flags, archive-locking, etc. without touching every route.
+**This is not authZ.** Auth lives in ``api/auth/`` (folder grants
+via ``Folder.shared_with``, cascade in ``FolderShareService``,
+admin role bypass in ``AuthorizationService``). What this service
+expresses is *operational scope* on a folder — orthogonal to who
+can access it: read-only mode, per-folder mute flags, archive-
+locking. The hooks are here so we can wire those in later
+without touching every route. Right now every check returns True.
 
 Modes:
 

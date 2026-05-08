@@ -11,7 +11,7 @@ Endpoints, and more. Model selection is just a string:
     "ollama/bge-m3"
     "huggingface/BAAI/bge-large-en-v1.5"
 
-This keeps ForgeRAG provider-agnostic.
+This keeps OpenCraig provider-agnostic.
 """
 
 from __future__ import annotations

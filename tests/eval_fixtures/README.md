@@ -1,7 +1,7 @@
 # Eval Fixtures
 
 Tiny synthetic datasets we use to sanity-check retrieval quality in
-ForgeRAG's own CI / pre-release runs. They are **not** a benchmark —
+OpenCraig's own CI / pre-release runs. They are **not** a benchmark —
 they're tripwires for catching regressions in the retrieval pipeline.
 
 ## Files

@@ -113,7 +113,7 @@ class TreeBuilderConfig(BaseModel):
     # LLM-driven tree + per-section summary in a single page-group pass.
     # Default is on so a properly-configured deployment gets rich trees
     # automatically; degrades gracefully to flat-fallback when ``model``
-    # is unset (no API key required to run ForgeRAG bare-bones).
+    # is unset (no API key required to run OpenCraig bare-bones).
     llm_enabled: bool = True
     # Unified LLM fields (same names as every other module). Empty ``model``
     # is the kill-switch: the page-group strategy logs a warning and falls

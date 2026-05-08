@@ -1,4 +1,4 @@
-"""ForgeRAG persistence layer."""
+"""OpenCraig persistence layer."""
 
 from .files import FileStore
 from .store import Store

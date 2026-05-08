@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-UltraDomain Benchmark for ForgeRAG
+UltraDomain Benchmark for OpenCraig
 ===================================
 
 Standalone script that reproduces the LightRAG evaluation methodology
 (https://github.com/HKUDS/LightRAG/blob/main/docs/Reproduce.md)
-against a running ForgeRAG instance.
+against a running OpenCraig instance.
 
 Dataset : TommyChien/UltraDomain  (HuggingFace)
 Metrics : Comprehensiveness · Diversity · Empowerment  (LLM-as-judge)
@@ -14,9 +14,9 @@ Pipeline
 --------
   1.  Download  — fetch domain JSONL from HuggingFace
   2.  Extract   — deduplicate contexts
-  3.  Ingest    — upload unique contexts as .txt files into ForgeRAG
+  3.  Ingest    — upload unique contexts as .txt files into OpenCraig
   4.  Generate  — create high-level queries via LLM
-  5.  Query     — ask ForgeRAG each question, collect answers
+  5.  Query     — ask OpenCraig each question, collect answers
   6.  Evaluate  — LLM-as-judge pairwise comparison (optional baseline)
 
 Usage
@@ -27,7 +27,7 @@ Usage
   # Skip ingestion (already loaded), just re-run queries
   python scripts/ultradomain_bench.py --domain agriculture --skip-ingest --skip-generate
 
-  # Compare ForgeRAG answers against a baseline JSON file
+  # Compare OpenCraig answers against a baseline JSON file
   python scripts/ultradomain_bench.py --domain agriculture --skip-ingest --skip-generate \\
       --baseline results/baseline_agriculture.json --eval-model gpt-4o-mini
 
@@ -130,7 +130,7 @@ def extract_unique_contexts(jsonl_path: Path, out_path: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Step 1: Ingest into ForgeRAG
+# Step 1: Ingest into OpenCraig
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +148,7 @@ def ingest_contexts(
     client = httpx.Client(base_url=api_base, timeout=60.0)
     doc_ids: list[dict] = []
 
-    log.info("ingesting %d contexts into ForgeRAG ...", len(contexts))
+    log.info("ingesting %d contexts into OpenCraig ...", len(contexts))
     for i, ctx in enumerate(contexts):
         fname = f"ultradomain_ctx_{i:04d}.txt"
         resp = client.post(
@@ -282,7 +282,7 @@ def _extract_questions(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Query ForgeRAG
+# Step 3: Query OpenCraig
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +293,7 @@ def query_forgerag(
     *,
     conversation_id: str | None = None,
 ) -> list[dict]:
-    """Send each query to ForgeRAG, collect answers."""
+    """Send each query to OpenCraig, collect answers."""
     if out_path.exists():
         results = json.loads(out_path.read_text("utf-8"))
         if len(results) == len(queries):
@@ -305,7 +305,7 @@ def query_forgerag(
     client = httpx.Client(base_url=api_base, timeout=120.0)
     results: list[dict] = []
 
-    log.info("querying ForgeRAG with %d questions ...", len(queries))
+    log.info("querying OpenCraig with %d questions ...", len(queries))
     for i, q in enumerate(queries):
         body: dict[str, Any] = {"query": q, "stream": False}
         try:
@@ -407,7 +407,7 @@ def pairwise_eval(
     answers_b: list[dict],
     out_path: Path,
     *,
-    label_a: str = "ForgeRAG",
+    label_a: str = "OpenCraig",
     label_b: str = "Baseline",
     model: str = DEFAULT_EVAL_MODEL,
     api_key: str | None = None,
@@ -527,7 +527,7 @@ def print_summary(output: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="UltraDomain benchmark for ForgeRAG (LightRAG methodology)",
+        description="UltraDomain benchmark for OpenCraig (LightRAG methodology)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -551,7 +551,7 @@ Examples:
     parser.add_argument(
         "--forgerag",
         default="http://localhost:8000",
-        help="ForgeRAG API base URL (default: http://localhost:8000)",
+        help="OpenCraig API base URL (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--output-dir",
@@ -567,7 +567,7 @@ Examples:
     # Skip flags
     parser.add_argument("--skip-ingest", action="store_true", help="Skip ingestion (assume docs already loaded)")
     parser.add_argument("--skip-generate", action="store_true", help="Skip query generation (use cached queries)")
-    parser.add_argument("--skip-query", action="store_true", help="Skip querying ForgeRAG (use cached answers)")
+    parser.add_argument("--skip-query", action="store_true", help="Skip querying OpenCraig (use cached answers)")
 
     # Eval options
     parser.add_argument(
@@ -622,7 +622,7 @@ Examples:
 
     # ── Step 1: Ingest ──
     if not args.skip_ingest:
-        log.info("=== Step 1: Ingest into ForgeRAG ===")
+        log.info("=== Step 1: Ingest into OpenCraig ===")
         doc_ids = ingest_contexts(contexts, args.forgerag)
         (out_dir / "doc_ids.json").write_text(
             json.dumps(doc_ids, indent=2),
@@ -654,10 +654,10 @@ Examples:
         queries = queries[: args.max_queries]
     log.info("  %d queries to evaluate", len(queries))
 
-    # ── Step 3: Query ForgeRAG ──
+    # ── Step 3: Query OpenCraig ──
     answers_path = out_dir / "forgerag_answers.json"
     if not args.skip_query:
-        log.info("=== Step 3: Query ForgeRAG ===")
+        log.info("=== Step 3: Query OpenCraig ===")
         answers = query_forgerag(queries, args.forgerag, answers_path)
     else:
         log.info("=== Step 3: Skipped (--skip-query) ===")
@@ -690,7 +690,7 @@ Examples:
             answers[:n],
             baseline_answers[:n],
             eval_path,
-            label_a="ForgeRAG",
+            label_a="OpenCraig",
             label_b="Baseline",
             model=args.eval_model,
             api_key=args.api_key,

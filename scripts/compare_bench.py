@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ForgeRAG vs LightRAG Benchmark (UltraDomain)
+OpenCraig vs LightRAG Benchmark (UltraDomain)
 =============================================
 
 Runs both systems in parallel on the same queries, then does
@@ -9,7 +9,7 @@ LLM-as-judge pairwise evaluation.
 Pipeline
 --------
   1.  Download UltraDomain JSONL from HuggingFace
-  2.  Ingest into both ForgeRAG and LightRAG (parallel)
+  2.  Ingest into both OpenCraig and LightRAG (parallel)
   3.  Generate high-level queries via LLM (shared)
   4.  Query both systems in parallel, checkpoint every 5 answers
   5.  Pairwise evaluation (LLM-as-judge)
@@ -124,10 +124,10 @@ def extract_unique_contexts(jsonl_path: Path, out_path: Path) -> list[str]:
 
 
 def ingest_forgerag(contexts: list[str], base_url: str, domain: str):
-    """Upload contexts as .txt files to ForgeRAG."""
+    """Upload contexts as .txt files to OpenCraig."""
     import httpx
 
-    log.info("[ForgeRAG] ingesting %d contexts ...", len(contexts))
+    log.info("[OpenCraig] ingesting %d contexts ...", len(contexts))
     client = httpx.Client(base_url=base_url, timeout=120)
 
     for i, ctx in enumerate(contexts):
@@ -137,12 +137,12 @@ def ingest_forgerag(contexts: list[str], base_url: str, domain: str):
             resp = client.post("/api/v1/documents/upload-and-ingest", files=files)
             resp.raise_for_status()
         except Exception as e:
-            log.warning("[ForgeRAG] ingest %d failed: %s", i, e)
+            log.warning("[OpenCraig] ingest %d failed: %s", i, e)
         if (i + 1) % 50 == 0:
-            log.info("[ForgeRAG] ingested %d / %d", i + 1, len(contexts))
+            log.info("[OpenCraig] ingested %d / %d", i + 1, len(contexts))
 
     # Wait for processing — paginate since API caps limit at 200
-    log.info("[ForgeRAG] waiting for ingestion to complete ...")
+    log.info("[OpenCraig] waiting for ingestion to complete ...")
     for _ in range(120):
         time.sleep(5)
         try:
@@ -157,9 +157,9 @@ def ingest_forgerag(contexts: list[str], base_url: str, domain: str):
                     break
                 offset += 200
             if pending == 0:
-                log.info("[ForgeRAG] all documents ready")
+                log.info("[OpenCraig] all documents ready")
                 break
-            log.info("[ForgeRAG] %d docs still processing ...", pending)
+            log.info("[OpenCraig] %d docs still processing ...", pending)
         except Exception:
             pass
     client.close()
@@ -319,7 +319,7 @@ def _query_forgerag_one(query: str, base_url: str, timeout: float = 120) -> dict
             "citations": len(data.get("citations_used", [])),
             "latency_ms": ms,
             "model": data.get("model", ""),
-            "system": "ForgeRAG",
+            "system": "OpenCraig",
         }
     except Exception as e:
         ms = int((time.time() - t0) * 1000)
@@ -328,7 +328,7 @@ def _query_forgerag_one(query: str, base_url: str, timeout: float = 120) -> dict
             "result": "",
             "error": str(e),
             "latency_ms": ms,
-            "system": "ForgeRAG",
+            "system": "OpenCraig",
         }
 
 
@@ -376,7 +376,7 @@ def query_both_parallel(
     *,
     max_workers: int = 4,
 ):
-    """Query ForgeRAG and LightRAG in parallel, with checkpointing."""
+    """Query OpenCraig and LightRAG in parallel, with checkpointing."""
     forge_answers = _load_checkpoint(forge_path)
     light_answers = _load_checkpoint(light_path)
 
@@ -387,9 +387,9 @@ def query_both_parallel(
     light_todo = [(i, q) for i, q in enumerate(queries) if q not in light_done]
 
     if forge_todo:
-        log.info("[ForgeRAG] %d queries remaining (of %d)", len(forge_todo), len(queries))
+        log.info("[OpenCraig] %d queries remaining (of %d)", len(forge_todo), len(queries))
     else:
-        log.info("[ForgeRAG] all %d queries already cached", len(queries))
+        log.info("[OpenCraig] all %d queries already cached", len(queries))
 
     if light_todo:
         log.info("[LightRAG] %d queries remaining (of %d)", len(light_todo), len(queries))
@@ -402,7 +402,7 @@ def query_both_parallel(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
 
-        # Submit ForgeRAG queries
+        # Submit OpenCraig queries
         for idx, q in forge_todo:
             f = pool.submit(_query_forgerag_one, q, forgerag_url)
             futures[f] = ("forge", idx, q)
@@ -440,7 +440,7 @@ def query_both_parallel(
     # Final save
     _save_checkpoint(forge_answers, forge_path)
     _save_checkpoint(light_answers, light_path)
-    log.info("queries done: ForgeRAG=%d LightRAG=%d", len(forge_answers), len(light_answers))
+    log.info("queries done: OpenCraig=%d LightRAG=%d", len(forge_answers), len(light_answers))
     return forge_answers, light_answers
 
 
@@ -499,22 +499,22 @@ def pairwise_eval(
 
     evals: list[dict] = list(existing.values())
     wins = {
-        "Comprehensiveness": {"ForgeRAG": 0, "LightRAG": 0},
-        "Diversity": {"ForgeRAG": 0, "LightRAG": 0},
-        "Empowerment": {"ForgeRAG": 0, "LightRAG": 0},
-        "Overall Winner": {"ForgeRAG": 0, "LightRAG": 0},
+        "Comprehensiveness": {"OpenCraig": 0, "LightRAG": 0},
+        "Diversity": {"OpenCraig": 0, "LightRAG": 0},
+        "Empowerment": {"OpenCraig": 0, "LightRAG": 0},
+        "Overall Winner": {"OpenCraig": 0, "LightRAG": 0},
     }
 
     def _tally_winner(winner: str) -> str | None:
         """Map judge output to system label, neutral to A/B naming."""
         w = winner.upper()
         if "A" in w and "B" not in w:
-            return "ForgeRAG"
+            return "OpenCraig"
         if "B" in w and "A" not in w:
             return "LightRAG"
         # Legacy compat: "1" / "2" from older checkpoint files
         if "1" in w and "2" not in w:
-            return "ForgeRAG"
+            return "OpenCraig"
         if "2" in w and "1" not in w:
             return "LightRAG"
         return None
@@ -590,7 +590,7 @@ def _save_eval_checkpoint(evals, wins, out_path, model, total):
             label: f"{count}/{total} ({count / max(total, 1) * 100:.1f}%)" for label, count in counts.items()
         }
     output = {
-        "label_a": "ForgeRAG",
+        "label_a": "OpenCraig",
         "label_b": "LightRAG",
         "model": model,
         "total_queries": total,
@@ -609,14 +609,14 @@ def print_summary(output: dict):
 
     print(f"\n{'=' * 65}")
     print(f"  UltraDomain Pairwise Evaluation  (evaluated={evaluated}/{total})")
-    print("  ForgeRAG (Answer 1) vs LightRAG (Answer 2)")
+    print("  OpenCraig (Answer 1) vs LightRAG (Answer 2)")
     print(f"  Judge: {output['model']}")
     print(f"{'=' * 65}")
-    print(f"  {'Criterion':<22} {'ForgeRAG':>18} {'LightRAG':>18}")
+    print(f"  {'Criterion':<22} {'OpenCraig':>18} {'LightRAG':>18}")
     print(f"  {'-' * 58}")
     for criterion in ("Comprehensiveness", "Diversity", "Empowerment", "Overall Winner"):
         vals = summary.get(criterion, {})
-        a_val = vals.get("ForgeRAG", "0/0 (0.0%)")
+        a_val = vals.get("OpenCraig", "0/0 (0.0%)")
         b_val = vals.get("LightRAG", "0/0 (0.0%)")
         print(f"  {criterion:<22} {a_val:>18} {b_val:>18}")
     print(f"{'=' * 65}")
@@ -629,7 +629,7 @@ def print_latency_stats(forge_answers: list[dict], light_answers: list[dict]):
 
     if forge_lats and light_lats:
         print("\n  Latency (ms):")
-        print(f"  {'':22} {'ForgeRAG':>18} {'LightRAG':>18}")
+        print(f"  {'':22} {'OpenCraig':>18} {'LightRAG':>18}")
         print(f"  {'-' * 58}")
         f_sorted = sorted(forge_lats)
         l_sorted = sorted(light_lats)
@@ -653,7 +653,7 @@ def print_latency_stats(forge_answers: list[dict], light_answers: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ForgeRAG vs LightRAG benchmark (UltraDomain)",
+        description="OpenCraig vs LightRAG benchmark (UltraDomain)",
     )
     parser.add_argument("--domain", required=True, choices=[*DOMAINS, "all"], help="Domain to benchmark (or 'all')")
     parser.add_argument("--forgerag", default=FORGERAG_URL)
@@ -762,7 +762,7 @@ def main():
         # Stats
         forge_ok = sum(1 for a in forge_answers if a.get("result", "").strip())
         light_ok = sum(1 for a in light_answers if a.get("result", "").strip())
-        log.info("  ForgeRAG: %d/%d answered", forge_ok, len(forge_answers))
+        log.info("  OpenCraig: %d/%d answered", forge_ok, len(forge_answers))
         log.info("  LightRAG: %d/%d answered", light_ok, len(light_answers))
 
         print_latency_stats(forge_answers, light_answers)

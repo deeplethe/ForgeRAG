@@ -1,5 +1,5 @@
 """
-ForgeRAG top-level configuration package.
+OpenCraig top-level configuration package.
 
 Config is intentionally kept outside any single module because it is
 consumed by many layers: parser, retrieval, storage, API, etc.

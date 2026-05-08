@@ -13,8 +13,8 @@ This guide covers setting up a development environment, project conventions, tes
 ### Install
 
 ```bash
-git clone https://github.com/deeplethe/ForgeRAG.git
-cd ForgeRAG
+git clone https://github.com/deeplethe/OpenCraig.git
+cd OpenCraig
 
 # Python
 python -m venv .venv
@@ -170,7 +170,7 @@ Ruff is configured in `ruff.toml` at the project root.
 
 ## Database Migrations
 
-ForgeRAG uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations.
+OpenCraig uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations.
 
 ### Create a Migration
 
@@ -196,7 +196,7 @@ alembic history
 ### Alembic Configuration
 
 - `alembic.ini` — connection settings
-- `alembic/env.py` — reads DB URL from ForgeRAG config (respects `$FORGERAG_CONFIG`)
+- `alembic/env.py` — reads DB URL from OpenCraig config (respects `$FORGERAG_CONFIG`)
 - `alembic/script.py.mako` — migration template
 
 ---
@@ -217,7 +217,7 @@ All three jobs run in parallel.
 
 ## Adding a New Backend
 
-ForgeRAG uses abstract base classes for pluggable backends. To add a new backend:
+OpenCraig uses abstract base classes for pluggable backends. To add a new backend:
 
 ### Vector Store
 
@@ -261,7 +261,7 @@ ForgeRAG uses abstract base classes for pluggable backends. To add a new backend
 
 ### Why Tree-Aware Chunking?
 
-Traditional RAG systems split documents into fixed-size chunks, often breaking mid-sentence or mid-section. ForgeRAG builds a hierarchical tree first, then chunks within tree nodes. This means:
+Traditional RAG systems split documents into fixed-size chunks, often breaking mid-sentence or mid-section. OpenCraig builds a hierarchical tree first, then chunks within tree nodes. This means:
 
 - Chunks respect section boundaries
 - Each chunk carries `section_path` and `ancestor_node_ids` for context

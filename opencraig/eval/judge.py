@@ -1,7 +1,7 @@
 """
 LLM-as-judge scorer — optional, uses the caller's own LLM via LiteLLM.
 
-This is *opt-in*: ForgeRAG's CI doesn't run it (judge calls are expensive
+This is *opt-in*: OpenCraig's CI doesn't run it (judge calls are expensive
 and deterministic scoring is never guaranteed). Use it locally against
 your fixture corpus when comparing pipeline variants.
 

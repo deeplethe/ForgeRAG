@@ -1,5 +1,5 @@
 """
-Interactive setup wizard for ForgeRAG.
+Interactive setup wizard for OpenCraig.
 
 Walks the user through six small steps and writes a opencraig.yaml
 that wires the relational store, vector store, blob storage,
@@ -1633,10 +1633,10 @@ def _step_kg_extraction(answers: dict, defaults: dict) -> None:
         ),
         (
             "  and relations into the knowledge graph. It's the most token-heavy",
-            "  和关系写入知识图谱。这是 ForgeRAG 中最耗 token 的",
+            "  和关系写入知识图谱。这是 OpenCraig 中最耗 token 的",
         ),
         (
-            "  subsystem in ForgeRAG — a 1000-page corpus can hit it 20K+ times.",
+            "  subsystem in OpenCraig — a 1000-page corpus can hit it 20K+ times.",
             "  子系统 — 1000 页语料会触发 2 万+ 次调用。",
         ),
         (
@@ -2257,7 +2257,7 @@ def run_wizard(
             raise Aborted()
         return d
 
-    banner(_t("ForgeRAG setup wizard", "ForgeRAG 安装向导"))
+    banner(_t("OpenCraig setup wizard", "OpenCraig 安装向导"))
 
     answers: dict[str, Any] = {}
     i = 0
@@ -2703,7 +2703,7 @@ def post_setup(config_path: Path) -> None:
 
 
 _HELP_DESCRIPTION = """\
-Interactive setup wizard for ForgeRAG.
+Interactive setup wizard for OpenCraig.
 
 Walks through five small steps and writes a opencraig.yaml that wires
 together the relational store, vector store, blob storage, embedder,

@@ -21,7 +21,7 @@ import { createI18n } from 'vue-i18n'
 import en from '../locales/en.json'
 import zh from '../locales/zh.json'
 
-const LS_KEY = 'forgerag.locale.v1'
+const LS_KEY = 'opencraig.locale.v1'
 export const SUPPORTED_LOCALES = [
   { code: 'en', label: 'English' },
   { code: 'zh', label: '中文' },

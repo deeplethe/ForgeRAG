@@ -285,7 +285,7 @@ if (SPREADSHEET_EXTS.includes(ext)) {
 ```
 
 Workspace.vue toast strings:
-* `spreadsheet_disabled` → "Enable table_enrichment in forgerag.yaml to upload spreadsheets."
+* `spreadsheet_disabled` → "Enable table_enrichment in opencraig.yaml to upload spreadsheets."
 * `spreadsheet_too_large` → "Spreadsheet too large for RAG. Use SQL / Polars / DuckDB for ~5M+ cell datasets."
 
 ---

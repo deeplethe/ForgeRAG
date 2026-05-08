@@ -1,4 +1,4 @@
-# ForgeRAG dev stack — one-command environment for contributors.
+# OpenCraig dev stack — one-command environment for contributors.
 #
 #   docker compose -f docker-compose.dev.yml up -d
 #   docker compose -f docker-compose.dev.yml down
@@ -10,46 +10,46 @@
 # Volumes are named so data persists across restarts. Drop them with:
 #   docker compose -f docker-compose.dev.yml down -v
 #
-# Connection strings for examples/forgerag.dev.yaml:
-#   persistence.relational.postgres.host       = localhost
-#   persistence.relational.postgres.port       = 5433
-#   persistence.relational.postgres.database   = forgerag
-#   persistence.relational.postgres.user       = forgerag
-#   persistence.relational.postgres.password_env = PG_PASSWORD (export PG_PASSWORD=forgerag)
+# Connection strings for your dev opencraig.yaml:
+#   persistence.relational.postgres.host         = localhost
+#   persistence.relational.postgres.port         = 5433
+#   persistence.relational.postgres.database     = opencraig
+#   persistence.relational.postgres.user         = opencraig
+#   persistence.relational.postgres.password_env = PG_PASSWORD (export PG_PASSWORD=opencraig)
 #
-#   graph.backend                               = neo4j
-#   graph.neo4j.uri                             = bolt://localhost:7687
-#   graph.neo4j.user                            = neo4j
-#   graph.neo4j.password_env                    = NEO4J_PASSWORD (export NEO4J_PASSWORD=forgerag123)
+#   graph.backend                                = neo4j
+#   graph.neo4j.uri                              = bolt://localhost:7687
+#   graph.neo4j.user                             = neo4j
+#   graph.neo4j.password_env                     = NEO4J_PASSWORD (export NEO4J_PASSWORD=opencraig123)
 #
-# ForgeRAG production refuses SQLite/NetworkX; these services are the
+# OpenCraig production refuses SQLite/NetworkX; these services are the
 # minimum dependencies to run the app locally.
 
 services:
   postgres:
     image: pgvector/pgvector:pg15
-    container_name: forgerag-postgres
+    container_name: opencraig-dev-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: forgerag
-      POSTGRES_PASSWORD: forgerag
-      POSTGRES_DB: forgerag
+      POSTGRES_USER: opencraig
+      POSTGRES_PASSWORD: opencraig
+      POSTGRES_DB: opencraig
     ports:
       - "5433:5432"        # Host port 5433 so we don't clash with a local pg.
     volumes:
-      - forgerag_pg_data:/var/lib/postgresql/data
+      - opencraig_dev_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U forgerag -d forgerag"]
+      test: ["CMD-SHELL", "pg_isready -U opencraig -d opencraig"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   neo4j:
-    image: neo4j:5.13-community
-    container_name: forgerag-neo4j
+    image: neo4j:5.20-community
+    container_name: opencraig-dev-neo4j
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/forgerag123
+      NEO4J_AUTH: neo4j/opencraig123
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_server_memory_heap_initial__size: "512m"
@@ -58,17 +58,17 @@ services:
       - "7474:7474"        # HTTP browser UI at http://localhost:7474
       - "7687:7687"        # Bolt driver
     volumes:
-      - forgerag_neo4j_data:/data
-      - forgerag_neo4j_logs:/logs
+      - opencraig_dev_neo4j_data:/data
+      - opencraig_dev_neo4j_logs:/logs
     healthcheck:
       test:
         - CMD-SHELL
-        - 'cypher-shell -u neo4j -p forgerag123 "RETURN 1" || exit 1'
+        - 'cypher-shell -u neo4j -p opencraig123 "RETURN 1" || exit 1'
       interval: 10s
       timeout: 5s
       retries: 12
 
 volumes:
-  forgerag_pg_data:
-  forgerag_neo4j_data:
-  forgerag_neo4j_logs:
+  opencraig_dev_pg_data:
+  opencraig_dev_neo4j_data:
+  opencraig_dev_neo4j_logs:

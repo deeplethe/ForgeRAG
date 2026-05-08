@@ -1,1 +1,1 @@
-"""ForgeRAG parser layer."""
+"""OpenCraig parser layer."""
