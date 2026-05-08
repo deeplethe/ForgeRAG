@@ -259,6 +259,13 @@ def create_app(
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)
     app.include_router(llm_proxy_routes.router)
+
+    # MCP server (Hermes-Agent-in-container reaches our domain tools
+    # via this mount). State is resolved at request time from
+    # ``app.state.app``; safe to mount before lifespan completes.
+    from .routes.mcp_server import mount_mcp
+
+    mount_mcp(app)
     from .routes import admin as admin_routes
     from .routes import auth as auth_routes
     from .routes import setup as setup_routes

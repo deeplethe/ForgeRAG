@@ -27,6 +27,12 @@ ijson>=3.5
 # ── Auth (argon2id for password hashing) ─────────────────────────────────────
 argon2-cffi>=23.1
 
+# ── MCP server (Hermes Agent inside the sandbox container reaches our
+#    domain tools — search / KG / library / artifacts — via the MCP
+#    protocol; backend hosts the server at /api/v1/mcp). Pulls in
+#    sse-starlette + httpx-sse + pyjwt as transitive deps.
+mcp>=1.27
+
 # ── Observability (OpenTelemetry) ────────────────────────────────────────────
 # SDK + OTLP HTTP exporter (so users can point at Langfuse / Jaeger / etc.)
 # + auto-instrumentation for FastAPI, SQLAlchemy, and outbound httpx (used by
