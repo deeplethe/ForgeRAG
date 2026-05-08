@@ -112,6 +112,11 @@ export {
   restoreFromTrash, purgeTrashItems, emptyTrash,
 } from './trash'
 
+// First-boot setup wizard (unauthenticated; self-disables once configured)
+export {
+  getSetupStatus, listSetupPresets, testSetupLlm, commitSetup,
+} from './setup'
+
 // Admin (user management) + per-user usage + avatar + audit log
 export {
   listUsers, getUser, approveUser, suspendUser, reactivateUser,

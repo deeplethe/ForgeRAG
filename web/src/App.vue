@@ -105,6 +105,25 @@ async function probeMe() {
   }
 }
 
+// First-boot gate. Probe ``/setup/status`` once on app mount; if
+// the deploy hasn't been configured yet (no LLM credentials), bounce
+// to the wizard. Skip when we're already on /setup so the page
+// itself can do its own status fetch without a redirect loop.
+async function probeSetup() {
+  if (route.path === '/setup') return
+  try {
+    const { getSetupStatus } = await import('@/api/setup')
+    const r = await getSetupStatus()
+    if (!r?.configured) {
+      router.replace('/setup')
+    }
+  } catch {
+    // Endpoint unreachable / older server without the wizard —
+    // fall through silently. The login page will still surface
+    // any real auth error.
+  }
+}
+
 function onPasswordChanged() {
   showForcedPwd.value = false
   if (me.value) me.value.must_change_password = false
@@ -112,7 +131,12 @@ function onPasswordChanged() {
 
 const capabilities = useCapabilitiesStore()
 
-onMounted(() => {
+onMounted(async () => {
+  // Setup gate runs FIRST — if the deploy isn't configured, none of
+  // the auth + capability probes below would succeed anyway, so we
+  // skip them and let the wizard take over.
+  await probeSetup()
+  if (route.path === '/setup') return
   probeMe()
   // Fetch /health features once so the upload UI can pre-flight
   // image / legacy-office gates without a per-upload round-trip.
