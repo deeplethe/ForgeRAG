@@ -96,9 +96,12 @@ const displayName = ref('')
 const password = ref('')
 const passwordConfirm = ref('')
 
-// Mirrors the server's _USERNAME_RE — refused at submit time too,
-// so we never round-trip a name we know the backend will reject.
-const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/
+// Mirrors the server's _USERNAME_RE — lowercase-only so the
+// column's UNIQUE constraint stays case-insensitive in effect
+// (no ``Admin`` vs ``admin`` collisions). Refused at submit
+// time too, so we never round-trip a name we know the backend
+// will reject.
+const USERNAME_RE = /^[a-z0-9_-]{3,32}$/
 // Pre-fill from ?invitation= in case the user landed via an
 // invitation link. Hidden from the form for now (Phase 1 keeps
 // invitations admin-driven only via SQL); reserved for later.
@@ -144,10 +147,19 @@ function onFieldInput() {
 // field — that's the only moment the rule actually matters to
 // the user. Hint clears on the next clean keystroke.
 function onUsernameInput() {
-  const cleaned = username.value.replace(/[^a-zA-Z0-9_-]/g, '')
+  // Two passes: lowercase first so muscle-memory shift hits don't
+  // surface a "rule" hint, then strip anything outside the regex.
+  // Hint only fires when the strip removes a real character —
+  // case folding is silent.
+  const lowered = username.value.toLowerCase()
+  const cleaned = lowered.replace(/[^a-z0-9_-]/g, '')
   if (cleaned !== username.value) {
     username.value = cleaned
-    usernameHint.value = 'Only letters, digits, underscores or hyphens.'
+    if (cleaned !== lowered) {
+      usernameHint.value = 'Only lowercase letters, digits, underscores or hyphens.'
+    } else {
+      usernameHint.value = ''
+    }
   } else {
     usernameHint.value = ''
   }
@@ -176,7 +188,7 @@ async function onSubmit() {
     return
   }
   if (!USERNAME_RE.test(usernameVal)) {
-    error.value = 'Username must be 3–32 characters using letters, digits, underscores or hyphens.'
+    error.value = 'Username must be 3–32 lowercase characters: letters, digits, underscores or hyphens.'
     fieldErr.value = 'username'
     return
   }
@@ -232,7 +244,7 @@ async function onSubmit() {
       error.value = "That doesn't look like a valid email address."
       fieldErr.value = 'email'
     } else if (status === 400 && detail.includes('username')) {
-      error.value = 'Username must be 3–32 characters using letters, digits, underscores or hyphens.'
+      error.value = 'Username must be 3–32 lowercase characters: letters, digits, underscores or hyphens.'
       fieldErr.value = 'username'
     } else if (status === 400 && detail.includes('password')) {
       error.value = 'Password is too weak — try something longer.'

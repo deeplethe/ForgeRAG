@@ -276,8 +276,12 @@ def login(
             select(AuthUser).where(AuthUser.email == ident.lower())
         ).scalar_one_or_none()
         if user is None:
+            # Username column is case-insensitive by convention
+            # (regex enforces lowercase at registration). Lowercase
+            # the typed identifier so muscle-memory typos like
+            # ``Admin`` still find the right row.
             user = sess.execute(
-                select(AuthUser).where(AuthUser.username == ident)
+                select(AuthUser).where(AuthUser.username == ident.lower())
             ).scalar_one_or_none()
         if user is None:
             raise HTTPException(401, "invalid credentials")

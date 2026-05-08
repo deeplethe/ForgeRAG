@@ -57,9 +57,13 @@ log = logging.getLogger(__name__)
 # which compares verbatim. Real address verification belongs to a
 # future SMTP layer (v2).
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-# Username constraints: 3–32 chars, alnum + underscore + hyphen.
-# Stricter than email so URLs that include the username stay clean.
-_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+# Username constraints: 3–32 chars, lowercase alphanumeric +
+# underscore + hyphen. Lowercase-only so the column's UNIQUE
+# constraint doubles as case-insensitive (no possibility of
+# ``Admin`` and ``admin`` coexisting), and so URLs that include
+# the username stay predictable. Frontend should already strip
+# uppercase before submit.
+_USERNAME_RE = re.compile(r"^[a-z0-9_-]{3,32}$")
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +251,7 @@ def _validate_inputs(*, email: str, username: str, password: str) -> None:
         raise InvalidEmail(f"invalid email: {email!r}")
     if not _USERNAME_RE.match(username):
         raise InvalidUsername(
-            "username must be 3–32 chars, letters / digits / underscore / hyphen"
+            "username must be 3–32 lowercase letters / digits / underscore / hyphen"
         )
     if len(password) < 8:
         raise WeakPassword("password must be at least 8 characters")
