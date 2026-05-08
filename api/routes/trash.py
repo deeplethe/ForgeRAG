@@ -82,7 +82,7 @@ def list_trash(
     principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
     user_id, is_admin = _user_scope(state, principal)
-    return TrashService(state).list(user_id=user_id, is_admin=is_admin)
+    return TrashService(state, actor_id=principal.user_id).list(user_id=user_id, is_admin=is_admin)
 
 
 @router.get("/stats")
@@ -93,7 +93,7 @@ def trash_stats(
     """Aggregate counts. Non-admin users see only their own
     accessible-folder slice; admins see the full bin."""
     user_id, is_admin = _user_scope(state, principal)
-    listing = TrashService(state).list(user_id=user_id, is_admin=is_admin)
+    listing = TrashService(state, actor_id=principal.user_id).list(user_id=user_id, is_admin=is_admin)
     items = listing["items"]
     return {
         "items": sum(1 for it in items if it["type"] == "document"),
@@ -108,7 +108,7 @@ def restore_items(
     principal: AuthenticatedPrincipal = Depends(get_principal),
 ):
     user_id, is_admin = _user_scope(state, principal)
-    return TrashService(state).restore(
+    return TrashService(state, actor_id=principal.user_id).restore(
         doc_ids=body.doc_ids,
         folder_paths=body.folder_paths,
         user_id=user_id,
@@ -125,7 +125,7 @@ def purge_items(
     if not body.doc_ids and not body.folder_paths:
         raise HTTPException(400, "specify at least one doc_id or folder_path")
     user_id, is_admin = _user_scope(state, principal)
-    return TrashService(state).purge(
+    return TrashService(state, actor_id=principal.user_id).purge(
         doc_ids=body.doc_ids,
         folder_paths=body.folder_paths,
         user_id=user_id,

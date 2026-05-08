@@ -98,7 +98,10 @@ def _run_startup_probes(state: AppState) -> None:
         from persistence.trash_service import TrashService
 
         retention = int(getattr(getattr(state.cfg, "trash", object()), "retention_days", 30))
-        TrashService(state).auto_purge(retention_days=retention)
+        # Server-side auto-purge runs as the synthetic ``system`` actor
+        # (no human triggered it). Tagged distinct from ``local`` so
+        # admins can filter scheduled cleanups out of audit views.
+        TrashService(state, actor_id="system").auto_purge(retention_days=retention)
     except Exception as e:
         log.warning("trash auto-purge on startup failed: %s", e)
 

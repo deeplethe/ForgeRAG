@@ -304,7 +304,7 @@ def create_folder(
                     403, f"forbidden: write under {body.parent_path!r}"
                 )
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             parent = svc.require_by_path(body.parent_path)
         except FolderNotFound:
@@ -356,7 +356,7 @@ def rename_folder(
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             folder = svc.require_by_path(body.path)
         except FolderNotFound:
@@ -392,7 +392,7 @@ def move_folder(
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             folder = svc.require_by_path(body.path)
             new_parent = svc.require_by_path(body.to_parent_path)
@@ -431,7 +431,7 @@ def delete_folder(
     scope = ScopeService(state.store)
     pending_ops: list[dict] = []
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             folder = svc.require_by_path(path)
         except FolderNotFound:

@@ -426,7 +426,7 @@ def delete_document(
     action = "purge" if hard else "soft_delete"
     row = require_doc_access(state, principal, doc_id, action=action)
 
-    svc = TrashService(state)
+    svc = TrashService(state, actor_id=principal.user_id)
     if hard:
         # Permanent delete: route through TrashService.purge so the
         # vector / KG / relational / file cleanup logic lives in one
@@ -485,7 +485,7 @@ def move_document(
     require_doc_access(state, principal, doc_id, action="soft_delete")
 
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             target = svc.require_by_path(body.to_path)
         except FolderNotFound:
@@ -494,7 +494,7 @@ def move_document(
         require_folder_access(state, principal, target.folder_id, "upload")
         scope.require_folder(target.folder_id, ScopeMode.WRITE)
 
-        from persistence.models import Document
+        from persistence.models import AuditLogRow, Document
 
         doc = sess.get(Document, doc_id)
         if doc is None:
@@ -507,16 +507,9 @@ def move_document(
         doc.folder_id = target.folder_id
         doc.path = new_path
 
-        sess.add_all(
-            [
-                # audit log via sess (committed with the transaction)
-            ]
-        )
-        from persistence.models import AuditLogRow
-
         sess.add(
             AuditLogRow(
-                actor_id="local",
+                actor_id=principal.user_id,
                 action="document.move",
                 target_type="document",
                 target_id=doc_id,
@@ -551,7 +544,7 @@ def bulk_move_documents(
     moved: list[dict] = []
     errors: list[dict] = []
     with state.store.transaction() as sess:
-        svc = FolderService(sess)
+        svc = FolderService(sess, actor_id=principal.user_id)
         try:
             target = svc.require_by_path(body.to_path)
         except FolderNotFound:
@@ -586,7 +579,7 @@ def bulk_move_documents(
             moved.append({"doc_id": doc_id, "path": new_path})
             sess.add(
                 AuditLogRow(
-                    actor_id="local",
+                    actor_id=principal.user_id,
                     action="document.move",
                     target_type="document",
                     target_id=doc_id,
@@ -695,7 +688,7 @@ def rename_document(
 
         sess.add(
             AuditLogRow(
-                actor_id="local",
+                actor_id=principal.user_id,
                 action="document.rename",
                 target_type="document",
                 target_id=doc_id,
