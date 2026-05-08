@@ -169,7 +169,7 @@ def create_app(
     app = FastAPI(
         title="OpenCraig",
         description="Structure-aware RAG with precise bbox citations.",
-        version="0.2.3",
+        version="1.0.0",
         lifespan=lifespan,
     )
 

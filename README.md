@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.3.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-1.0.0-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
   <a href="https://github.com/opencraig/opencraig/stargazers"><img src="https://img.shields.io/github/stars/opencraig/opencraig?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge" alt="Issues"></a>
@@ -21,10 +21,29 @@
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#-who-its-for">Who it's for</a> ·
   <a href="#-how-it-works">How</a> ·
-  <a href="#-benchmark">Benchmark</a> ·
+  <a href="#-editions">Editions</a> ·
   <a href="docs/">Docs</a> ·
   <a href="./README_CN.md">中文</a>
 </p>
+
+---
+
+> ## 📦 v1.0.0 is the final OSS release
+>
+> This is the last open-source version of OpenCraig under AGPLv3. Future
+> development continues as **OpenCraig Enterprise (v3.0+)** — a separate
+> commercial product covering lineage, audit, promote-to-library,
+> auditable team workflows, and managed sandbox execution. See
+> [Editions](#-editions) below for what's where.
+>
+> The OSS edition (this repo) is **feature-complete and free to self-
+> host indefinitely**. Security patches are accepted via GitHub issues
+> for **12 months** post-release (until 2027-05-09); after that, the
+> repo is archived. PRs are not accepted post-tag.
+>
+> Brief: knowledge management + agentic search with structured
+> citations. Multi-user, folder-grant authz, BYOK LLM. Production-
+> grade enough to run a small team's research workflow today.
 
 ---
 
@@ -61,27 +80,45 @@ It's **not** built for: customer-support chatbots, public knowledge bases, marke
 
 ```mermaid
 flowchart LR
-    Q([❓ Question]) --> QU[Query Understanding]
-    QU --> BM25[🔤 BM25]
-    QU --> VEC[📐 Vector]
-    QU --> KG[🕸️ Knowledge Graph<br/>local · global · relation]
-    QU --> TREE[🌳 LLM Tree Nav<br/>verify · expand · sibling-pull]
-    BM25 --> M((RRF<br/>Merge))
-    VEC --> M
-    KG --> M
-    TREE --> M
-    M --> RR[🔁 Rerank]
-    RR --> ANS[💬 Answer<br/>+ pixel-precise citations]
+    Q([❓ Question]) --> AGENT[🤖 Agent Loop<br/>Hermes Agent runtime]
+    AGENT -->|MCP| TOOLS{Tool selection}
+    TOOLS --> VEC[📐 search_vector<br/>semantic recall]
+    TOOLS --> KG[🕸️ graph_explore<br/>entities + relations]
+    TOOLS --> CHUNK[📄 read_chunk<br/>full passage]
+    TOOLS --> TREE[🌳 read_tree<br/>section nav]
+    TOOLS --> WEB[🌐 web_search<br/>off-corpus]
+    TOOLS --> RR[🔁 rerank<br/>cross-encoder]
+    VEC --> AGENT
+    KG --> AGENT
+    CHUNK --> AGENT
+    TREE --> AGENT
+    WEB --> AGENT
+    RR --> AGENT
+    AGENT --> ANS[💬 Answer<br/>+ pixel-precise citations]
     ANS --> A([📝 Page + bbox])
 
     style Q fill:#0e1116,stroke:#3291ff,color:#fff
     style A fill:#0e1116,stroke:#10b981,color:#fff
-    style M fill:#1f1f1f,stroke:#fbbf24,color:#fbbf24
+    style AGENT fill:#1f1f1f,stroke:#fbbf24,color:#fbbf24
 ```
 
-**Two reasoning lanes**, fused. BM25 + vector handles the fast 80% (literal + semantic recall). The KG + tree-nav lanes handle the hard 20% — multi-hop questions like _"Which suppliers of Apple also supply Samsung?"_ — by traversing entity-relation neighborhoods (KG) and verifying section relevance via LLM-driven tree walks (PageIndex-style, but reused over a tree the LLM only builds **once at ingestion**, not per query).
+**Agentic retrieval, not a fixed pipeline.** The agent (Hermes
+Agent runtime, in-process) decides per-question which tools to call
+and in which order. For "what does section 3.2 say" it might just
+read_tree + read_chunk; for "how does X relate to Y across the
+corpus" it leads with graph_explore. Multi-hop questions chain
+several tools across iterations.
 
-A retrieval trace UI shows every path's contribution per query — see what BM25 caught, what the KG added, what the rerank dropped.
+Each tool enforces multi-user authz at the dispatch boundary — the
+search hits the agent sees are already scoped to the user's
+accessible folders. KG visibility is stricter: entities whose source
+docs aren't fully covered by the user's grants are dropped (no
+description redaction fallback because LLM context can't render a
+visibility banner).
+
+A retrieval trace UI shows every tool call live — what the agent
+asked, what came back, how long it took. Click a citation `[c_N]`
+in the answer → opens the source PDF at the exact bbox.
 
 ---
 
@@ -143,9 +180,11 @@ flowchart TB
     end
     subgraph "Backend (FastAPI · Python 3.13)"
         API[REST + SSE]
+        AGENT[Hermes Agent runtime<br/>in-process, MIT]
+        MCP[MCP server<br/>domain tool surface]
+        LLMP[LLM proxy<br/>OpenAI-compatible]
         ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
-        RET[Retrieval Pipeline<br/>BM25 · vector · KG · tree-nav · merge]
-        ANS[Answer Pipeline<br/>generate · cite]
+        TOOLS[Tools<br/>search_vector · graph_explore<br/>read_chunk · read_tree · web_search<br/>rerank · import_from_library]
         AUTH[Auth + Spaces<br/>folder grants · audit log · per-user space]
     end
     subgraph "Pluggable Backends"
@@ -158,14 +197,25 @@ flowchart TB
     end
     UI --> API
     API --> AUTH
-    AUTH --> ING & RET & ANS
-    RET --> ANS
+    AUTH --> AGENT
+    AUTH --> ING
+    AGENT --> MCP
+    AGENT --> LLMP
+    MCP --> TOOLS
+    TOOLS --> AUTH
+    LLMP --> LLM
     ING -.-> REL & VEC & BLOB & KGS
     ING --> PARSE
     ING --> LLM
-    RET --> LLM
-    ANS --> LLM
 ```
+
+The agent runtime is [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+(NousResearch, MIT) running in-process with built-in filesystem
+tools hard-disabled — its tool surface is exclusively what
+OpenCraig exposes via MCP. This was the final architectural choice
+made before the OSS cut: the agent loop itself isn't where the
+differentiation lives, the **tools are** (multi-user authz +
+structured retrieval + KG + bbox citations).
 
 Every component is a config swap — pick your stack at the wizard, change later by editing `docker/config.yaml`.
 
@@ -178,10 +228,10 @@ Every component is a config swap — pick your stack at the wizard, change later
 - **🪪 Folder Members UI** — right-click any folder → invite teammates by email, set view/edit role, see inherited members from parent
 - **📜 Activity log** — every folder / document / share / role mutation surfaces in `/settings/audit` with actor + filter + pagination
 - **🔌 One-key model platforms** — SiliconFlow / OpenAI / DeepSeek / Anthropic / Ollama presets in the first-boot wizard. One API key → chat + embedding + reranker
-- **🛤️ Full retrieval trace** — see which path scored what, what got expanded, what got rerank-dropped
+- **🤖 Agentic retrieval** — Hermes Agent runtime picks tools per question instead of running a fixed pipeline; trace UI shows every tool call live
+- **🔌 MCP tool surface** — domain tools (search / KG / read_chunk / etc.) exposed at `/api/v1/mcp` for any compatible agent runtime
 - **🧱 Tree-aware chunking** — chunk boundaries respect document structure (chapters, sections, tables/figures isolated)
 - **🌐 Knowledge graph w/ embeddings** — entity name embeddings for cross-lingual fuzzy match; relation-description embeddings for relation-semantic search
-- **🔁 RRF fusion** — Reciprocal Rank Fusion merges 4 retrieval paths; sibling/descendant/cross-ref expansion before rerank
 - **🗑️ Recycle bin + Undo** — soft-delete, Windows-style restore (rebuilds missing parent folders), 30-day auto-purge
 - **⚡ SQLite single-process · PG multi-process** — startup checks prevent foot-guns; clamps workers automatically
 - **🌍 Multi-format** — PDF, DOCX, PPTX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) and spreadsheets (XLSX/CSV/TSV) as native one-block-per-page documents
@@ -245,35 +295,72 @@ OpenCraig/
 
 ---
 
-## 🗺️ Roadmap
+## 🗺️ What's in v1.0.0 (and what's not)
 
-### Shipped
+### Shipped in OSS (this repo, frozen)
 
 - [x] **Pixel-precise citations** — `doc_id + page + bbox` on every claim
-- [x] **Tree retrieval** + **KG retrieval** + **RRF fusion**
-- [x] **Multi-user, folder grants, per-user Spaces** (path-as-authz, no multi-tenant)
+- [x] **Structured retrieval tools** — vector / KG / tree-nav / read_chunk / rerank
+- [x] **Agentic retrieval** — Hermes Agent runtime in-process; multi-step tool selection per question
+- [x] **MCP tool surface** — `/api/v1/mcp` exposes domain tools to any MCP client
+- [x] **OpenAI-compatible LLM proxy** — `/api/v1/llm/v1/chat/completions` via litellm router
+- [x] **Web search tool** — Tavily / Brave / Bing with prompt-injection defenses
+- [x] **Multi-user, folder grants, per-user Spaces** — path-as-authz, no multi-tenant
 - [x] **Folder Members UI** — invite teammates, set view/edit role
 - [x] **Audit log** — admin-visible activity feed of every mutation
-- [x] **First-boot setup wizard** — one-key model platform presets (SiliconFlow / OpenAI / etc.)
+- [x] **First-boot setup wizard** — one-key model platform presets
 - [x] **One-shot docker compose** — postgres + neo4j + opencraig with healthchecks
 - [x] **Backup + restore scripts** with cross-version recovery notes
 - [x] **AGPL v3 + commercial dual license**
 
-### Next
+### Reserved for OpenCraig Enterprise (v3.0+, see [Editions](#-editions))
 
-- [ ] **Group / Team abstraction** — invite groups instead of users; on-demand based on first big customer's org chart
-- [ ] **SCIM provisioning** — Okta / Azure AD auto-sync for enterprise tier
-- [ ] **Web search** — Tavily / Brave / Bing through `/search` via `include=["web"]`. Untrusted-content + prompt-injection defense lands here so every later layer inherits it
-- [ ] **Agentic search** — multi-step retrieval driven by LLM tool calls (`search_local` / `web_search` / `fetch_url` / `read_chunk`)
-- [ ] **Deep research with HITL** — Plan → parallel per-section AS → draft → synthesis. Three HITL modes
-- [ ] **Retrieval MCP** — expose `search / query / agentic_search / research_*` as MCP tools
-- [ ] **Comprehensive benchmark suite** vs RAGFlow / GraphRAG / vanilla on more domains
+These were intentionally **not** shipped in OSS — the differentiation
+lives here, and they need a commercial product behind them:
 
-### Foundation work (in parallel)
+- **Lineage backbone** — every artifact tracks its source docs +
+  agent run + actor, end-to-end queryable
+- **Promote-to-Library** — agent outputs ⇄ Library: knowledge
+  compounds across runs
+- **Audit UI** — "what did the agent do with this folder?" reverse
+  query; "this doc influenced which artifacts?"
+- **Sandboxed code execution** — Hermes runs in a per-user
+  container with bash / edit / grep tools enabled; backend
+  orchestrates lifecycle + lineage attribution
+- **Workspace folder model** — folder-as-project (Claude-Code-style)
+  with per-folder agent runtime + cwd scoping
+- **Skills as auditable team workflows** — codified, versioned,
+  team-shared agent procedures with full provenance
+- **SSO / SCIM** — Okta / Azure AD provisioning, group-based authz
+- **Hardened sandbox** — non-root, no-net default, capability drop
+- **Managed hosting + SLA** for teams that don't want to ops it
 
-- [ ] Scale to 1M+ documents — incremental indexing, async KG, sharded vector store
-- [ ] Python SDK (`pip install opencraig-sdk`)
-- [ ] More connectors —飞书 / 企业微信 / 钉钉 / SharePoint / Google Drive ingestion
+### Not coming back to OSS
+
+The post-v1.0 OSS repo accepts security patches only (until
+2027-05-09). No new features, no architectural changes, no PRs
+for new functionality. Forks are encouraged under AGPLv3 if you
+want to build on this baseline.
+
+---
+
+## 🎁 Editions
+
+| | **OpenCraig OSS v1.0.0** (this repo) | **OpenCraig Enterprise v3.0+** |
+|---|---|---|
+| License | AGPLv3 | Commercial, contact for terms |
+| Source | Open, this repo | Closed |
+| Self-host | ✅ Free, indefinitely | ✅ Available |
+| Managed hosting | ❌ | ✅ |
+| Multi-user + folder authz | ✅ | ✅ |
+| Agentic retrieval | ✅ | ✅ + sandboxed code execution |
+| Lineage / audit / promote-to-library | ❌ | ✅ |
+| Skills (team workflows) | ❌ | ✅ |
+| SSO / SCIM | ❌ | ✅ |
+| Support | GitHub issues, security patches 12mo | SLA, dedicated support |
+| Roadmap | Frozen at v1.0.0 | Active development |
+
+Inquiries about Enterprise: [opencraig.dev/enterprise](https://opencraig.dev/enterprise) (or open a GitHub discussion until that page exists).
 
 ---
 
@@ -290,9 +377,15 @@ OpenCraig/
 
 ## 🤝 Contributing
 
-Bug reports, features, and docs improvements all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Stop by [Discord](https://discord.gg/XJadJHvxdQ) for design discussions.
+**v1.0.0 is the final OSS release** — feature PRs are not accepted post-tag. What we still take:
 
-PRs require accepting the [CLA](RELICENSING.md#future-contributions) so the project retains the right to issue commercial licenses derived from the codebase. The core stays AGPLv3 — that doesn't change.
+- **Security reports** via GitHub issues (private vulnerability disclosure preferred — see SECURITY.md). Patches accepted through **2027-05-09**.
+- **Documentation fixes** — typos, broken links, clarification PRs are welcome on existing docs through the maintenance window.
+- **Translations** — community translations of the README / setup wizard prompts.
+
+For everything else (new features, architectural changes, large refactors), please **fork freely under AGPLv3** — that's exactly what the license is for. The Enterprise edition ships separately and isn't accepting external contributions either.
+
+Past contributors who signed the [CLA](RELICENSING.md#future-contributions) are listed in CONTRIBUTORS.md. The core stays AGPLv3.
 
 ## 🔗 Related work
 
