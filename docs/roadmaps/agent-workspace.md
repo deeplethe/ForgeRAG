@@ -826,7 +826,7 @@ every `python_exec` / `bash_exec` call (Phase 2.7).
 | **2** | `python_exec` + `bash_exec` + `install_runtime` + **`import_from_library`** via per-user Docker container + `jupyter_client`; rich-output rendering (figures saved to `scratch/_rich_outputs/`); auto-Artifact scan of `outputs/` after every code run; sandbox image with ~25 CLI tools; per-user `.envs/` for lazy R/Julia/Node | "Find Q3 sales and analyze it" works end-to-end (Library search → import → python_exec → chart) |
 | **3** | `promote_to_library` (push agent-produced artifacts back into Library, indexed); auto-Artifact scan extended with `outputs/` ↔ Library bidirectional mapping | Agent's deliverables become first-class Library content |
 | **4** | Plan-Execute-Reflect orchestrator with structured `plan_json`; per-step context bounding; auto-compaction at 75% threshold; cost ceiling + plan-time cost preview; HITL gate (opt-in) | "Compare these 5 contracts and produce a tracker xlsx" works without context blow-up; runs over budget pause for confirmation |
-| **5** | Web search (default-on) + fetch_url + injection defense; **Skills** (markdown-defined reusable workflows, see below); `run_skill` agent tool | Team can codify "Q3 review" once; everyone re-runs it next quarter with `run_skill("q3-review", {quarter:"Q4"})` |
+| **5** | Web search (default-on) + fetch_url + injection defense; **Skills** (DB-backed reusable workflows, see below) + `search_skills` / `run_skill` agent primitives | Team codifies "Q3 review" once; agent finds it via NL search next quarter and re-runs with one call. Adding skills costs zero tool-catalog tokens |
 | **6** | Artifact lineage UI; project export; cost dashboard; **Skills marketplace UI** (browse / fork / share within workspace); scheduled-task triggers (cron) | Sale-ready polish — team workflow ergonomics |
 
 Phase 0 + Phase 1 are designed to be **3 weeks total**. The rest
@@ -843,93 +843,175 @@ the same flow next quarter via one tool call. Without skills, every
 team member re-prompts from scratch every cycle — losing
 institutional knowledge that lives in chat history nobody re-reads.
 
-This is the same shape Anthropic's Claude Skills, OpenClaw, and
-Letta's "memories" all converge on. We adopt the markdown-+-frontmatter
-convention because it's already the industry direction and it keeps
-skills **operator-readable** (a yaml dict of params + prose
-instructions ≈ a runbook).
+### The architectural insight: skills are NOT tools
 
-### Storage + scope
+Every ToolSpec costs **100–300 tokens** in the OpenAI/Anthropic
+tool format and ships in **every** LLM call's tool catalog. With
+30 skills as separate tools, we'd burn ~5K tokens per call just on
+tool descriptions — Phase 4's plan-mode does 10–20 calls per task,
+that's 100K tokens of pure overhead.
+
+**Skills must NOT be exposed as individual tools.** Instead, the
+agent gets two new primitives that mediate access:
 
 ```
-storage/skills/                          # workspace-level (team-shared)
-  q3-sales-review/
-    SKILL.md                              # frontmatter + body
-    samples/                              # optional reference inputs
-  weekly-report/
-    SKILL.md
-storage/projects/<project_id>/.agent-state/skills/
-  this-project-only/                      # per-project override
-    SKILL.md
+search_skills(query) → top-K matching skill summaries
+run_skill(skill_id, params) → loads body + executes via Phase 4 orchestrator
 ```
 
-**Scope rule:** project-level skills override workspace-level by
-name; user's own projects + workspace are searched in that order.
-Phase 5 ships only the workspace level; project-level skills land
-when a customer asks.
+The skill **body** only enters LLM context once — when `run_skill`
+loads it as a plan. It's never in the tool catalog.
 
-### SKILL.md format
+This mirrors how Anthropic's Claude Skills works in production: a
+skill registry indexed for retrieval, not a tool-per-skill catalog.
+
+### DB-first storage (not filesystem)
+
+Earlier drafts of this doc proposed
+``<workspace>/skills/<name>/SKILL.md`` as the canonical form.
+**That was wrong** for a team-collaboration product:
+
+| Concern | Filesystem | DB |
+|---|---|---|
+| Cross-user / cross-project search | walk + grep | indexed query |
+| `search_skills` semantic match (NL query → skill) | rebuild index per call | reuse existing vector store |
+| Version history + rollback | git, if operator opted in | first-class table |
+| Permission inheritance (workspace + project scope) | filesystem ACLs are messy | reuse `Folder.shared_with` pattern |
+| Audit (who changed what) | git log if it's tracked | `audit_log` table already there |
+| Concurrent edits | flock / lose | DB transaction |
+
+**DB is canonical**. Filesystem export is an opt-in operator
+feature for git backup (``opencraig skills export → ./skills/``)
+— not the source of truth.
+
+### Schema
+
+Phase 5 alembic migration:
+
+```python
+class Skill(Base):
+    __tablename__ = "skills"
+    skill_id: str                  # 32-char hex, primary key
+    name: str                      # unique within (scope, scope_id)
+    scope: 'workspace' | 'project' # workspace = team-shared; project = local
+    project_id: str | None         # FK projects.project_id, only for project scope
+    description: str               # what `search_skills` shows the LLM
+    body: str                      # full markdown the agent walks when run_skill loads
+    params_schema: dict            # JSON-schema for run_skill params
+    version: str                   # semver; bumps create a SkillVersion row
+    owner_user_id: str             # creator
+    shared_with: list[dict]        # same shape as Folder.shared_with — viewers can run, not edit
+    metadata_json: dict            # tags, category, etc.
+    created_at, updated_at
+
+class SkillEmbedding(Base):
+    skill_id: str FK
+    vec: Vector(dim)               # embedding of description + body for semantic search
+
+class SkillVersion(Base):          # rollback / diff
+    skill_version_id: str
+    skill_id: str FK
+    version: str
+    body: str
+    params_schema: dict
+    changed_by: str FK auth_users
+    changed_at: datetime
+    change_note: str | None
+```
+
+### Two new agent primitives
+
+**`search_skills(query, scope?, top_k=5)`** — NL query against
+indexed skills. Returns summaries, NOT bodies:
+
+```jsonc
+[
+  {
+    "skill_id": "sk_abc123",
+    "name": "q3-sales-review",
+    "description": "Generate quarterly sales tracker from Library xlsx files",
+    "params_summary": ["quarter:Q1|Q2|Q3|Q4", "year:int"],
+    "scope": "workspace",
+    "version": "1.2.0"
+  },
+  ...
+]
+```
+
+LLM picks one, calls `run_skill`.
+
+**`run_skill(skill_id, params)`** — loads body, validates params,
+substitutes ``{{var}}`` placeholders, injects the result as a
+**structured plan** into Phase 4's ``agent_runs.plan_json``, kicks
+off the orchestrator. Returns the run_id immediately:
+
+```jsonc
+{ "run_id": "run_xyz", "status": "running", "plan_steps": 5 }
+```
+
+Skill body is now the plan; Plan-Execute-Reflect walks it with the
+same budget caps + HITL gates as ad-hoc plans. Skills compose
+cleanly with Phase 4 — they ARE pre-canned plans.
+
+### SKILL body format (the markdown the orchestrator walks)
+
+Stored in the DB ``body`` column. Frontmatter is parsed into
+``params_schema`` etc. at save time; the body that hits LLM context
+on `run_skill` is just the prose:
 
 ```markdown
----
-name: q3-sales-review
-description: Generate a quarterly sales review tracker from Library docs.
-version: 1.2.0
-author: alice@example.com
-params:
-  quarter:
-    type: string
-    pattern: "^Q[1-4]$"
-    description: The quarter to review (Q1 / Q2 / Q3 / Q4)
-  year:
-    type: integer
-    default: 2026
-tags: [sales, quarterly, finance]
----
-
-You are running the Q3 sales review for {{quarter}} {{year}}.
+You are running the {{quarter}} {{year}} sales review.
 
 Steps:
-1. Search the Library at `/sales/` for documents whose filename
-   contains "{{quarter}}" or "{{quarter}}_{{year}}".
-2. For each doc found, import_from_library into this project's
-   `inputs/` directory.
-3. python_exec: load each xlsx (use `pd.ExcelFile` first to
-   inspect structure since headers may be on row 2-4 with merged
-   cells), concatenate, drop subtotal rows.
-4. python_exec: produce a regional + product-line breakdown,
-   render as a bar chart and a markdown summary into `outputs/`.
-5. promote_to_library on `outputs/{{quarter}}_review.md` so it's
-   searchable next quarter.
+1. Search the Library at `/sales/` for filenames matching
+   "{{quarter}}" or "{{quarter}}_{{year}}".
+2. import_from_library each match into the project's `inputs/`.
+3. python_exec: load every xlsx with `pd.ExcelFile` to inspect
+   sheets (headers often on row 2–4 with merged cells); concatenate;
+   drop subtotal rows; produce a regional + product-line breakdown.
+4. python_exec: render as a bar chart + markdown summary into
+   `outputs/`.
+5. promote_to_library on `outputs/{{quarter}}_review.md` so next
+   quarter's run finds it.
 ```
 
-### `run_skill` agent tool
+### Authz — reuses the folder-grant model
 
-`run_skill(name="q3-sales-review", params={"quarter":"Q4","year":2026})`:
+* **Workspace skills**: anyone with read on the corresponding
+  workspace folder can `search_skills` + `run_skill`. Edit/delete
+  needs admin or skill owner.
+* **Project skills**: project owner edits/deletes; project members
+  (incl. read-only viewers) can search/run — running doesn't write
+  into the project workdir directly; the orchestrator's tool calls
+  go through the same authz checks they would standalone.
+* **Cross-workspace publishing**: a Phase 6 marketplace UI lets
+  admins promote a skill to a public registry within the deployment
+  (or globally, if a future "ClawHub-style" remote registry lands —
+  we'd model it as a separate scope).
 
-1. Resolve scope (project → workspace), 404 if not found
-2. Validate params against the frontmatter schema
-3. Substitute `{{var}}` in the body
-4. Inject the body as a **structured plan** into Phase 4's
-   `plan_json` (plan-mode orchestrator already exists by Phase 5),
-   then drop into Execute mode immediately
-5. The skill body's prose IS the plan; the executor walks it as
-   if the LLM had emitted those steps itself
+### The agent's tool budget after Skills
 
-This composes cleanly with Phase 4 — skills become **pre-canned
-plans**. The Plan-Execute-Reflect loop runs them with the same
-budget caps, HITL gates, cost preview as ad-hoc plans.
+Phase 5+ tool inventory the LLM sees on every call:
 
-### Authz
+| # | Tool | Why it's a primitive |
+|---|---|---|
+| 1 | `python_exec` | Code with persistent kernel state — irreducible |
+| 2 | `bash_exec` | Shell + 25 CLIs — irreducible |
+| 3 | `search_library` (`search_vector`) | Library retrieval — irreducible |
+| 4 | `read_chunk` | Specific passage by id |
+| 5 | `read_tree` | Document outline |
+| 6 | `graph_explore` | KG traversal |
+| 7 | `web_search` | External info |
+| 8 | `import_from_library` | Library → workdir auth-gated bridge |
+| 9 | `install_runtime` | Lazy R/Julia/Node install |
+| 10 | `promote_to_library` | Workdir → Library |
+| 11 | `rerank` | Post-retrieval refinement |
+| 12 | **`search_skills`** | Find a reusable workflow |
+| 13 | **`run_skill`** | Execute one |
 
-* **Workspace skills** — admins write; everyone with a matching
-  workspace folder grant reads + runs.
-* **Project skills** — project owner writes; viewers can run them
-  (read-only-share already permits read; running a project skill
-  doesn't write into the project, so no gate violation).
-* **Cross-workspace** — skills don't cross workspace boundaries
-  unless explicitly published to a "skills marketplace" (Phase 6
-  UI; backend is a folder copy + version pin).
+13 primitives total. Skills add only 2 (~400–600 tokens) but unlock
+**unbounded** team-defined workflows. Adding a new skill costs zero
+tool-catalog tokens — only the body when it's actually run.
 
 ### What we did NOT borrow
 
@@ -943,6 +1025,8 @@ budget caps, HITL gates, cost preview as ad-hoc plans.
   notifications hang off `agent_runs` completion event)
 * **OpenClaw's "tools run on host by default"** — incompatible with
   our multi-user threat model; we always sandbox
+* **OpenClaw's filesystem-only skills** — incompatible with our
+  team-collaboration positioning; DB-first instead
 
 ---
 
