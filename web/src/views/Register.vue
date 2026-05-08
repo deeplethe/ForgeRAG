@@ -27,17 +27,20 @@
           @input="onFieldInput"
         />
 
-        <label class="auth-label">
-          Username
-          <span class="auth-hint">— letters / digits / _ / -, can't be changed later</span>
-        </label>
+        <label class="auth-label">Username</label>
         <input
           v-model="username" type="text" autocomplete="username"
           maxlength="32"
-          placeholder="alice"
-          :class="['input', 'mb-3', { 'input--err': fieldErr === 'username' }]"
+          placeholder="craig"
+          :class="['input', { 'input--err': fieldErr === 'username' }]"
           @input="onUsernameInput"
         />
+        <!-- Surfaces only when the user just tried to type a
+             disallowed character (we silently stripped it). Stays
+             invisible otherwise — no permanent rule clutter for
+             the 99% of inputs that are fine. -->
+        <div v-if="usernameHint" class="auth-hint-line mb-3">{{ usernameHint }}</div>
+        <div v-else class="mb-3"></div>
 
         <label class="auth-label">Display name <span class="auth-optional">(optional)</span></label>
         <input
@@ -104,6 +107,10 @@ const invitationToken = ref(route.query.invitation || null)
 const loading = ref(false)
 const error = ref('')
 const fieldErr = ref('')
+// Inline hint shown ONLY when the user types something we had to
+// strip (disallowed character). Keeps the form quiet by default
+// and educates lazily when the input drifts off the regex.
+const usernameHint = ref('')
 const successMessage = ref('')
 const emailInput = ref(null)
 const probing = ref(true)
@@ -132,12 +139,18 @@ function onFieldInput() {
 
 // Username gets a tiny extra typing-time guardrail: silently strip
 // disallowed characters as the user types so they don't compose a
-// long invalid string and only learn about it at submit. Keeps the
-// "can't change later" message honest — what they see is what gets
-// committed.
+// long invalid string and only learn about it at submit. When we
+// DO strip something, surface a one-liner reminder under the
+// field — that's the only moment the rule actually matters to
+// the user. Hint clears on the next clean keystroke.
 function onUsernameInput() {
   const cleaned = username.value.replace(/[^a-zA-Z0-9_-]/g, '')
-  if (cleaned !== username.value) username.value = cleaned
+  if (cleaned !== username.value) {
+    username.value = cleaned
+    usernameHint.value = 'Only letters, digits, underscores or hyphens.'
+  } else {
+    usernameHint.value = ''
+  }
   onFieldInput()
 }
 
@@ -296,10 +309,14 @@ async function onSubmit() {
   color: var(--color-t3);
   opacity: 0.7;
 }
-.auth-hint {
+/* Inline hint shown below an input — only surfaces on demand
+   (e.g. when we strip a disallowed character). Keeps the form
+   clean by default. */
+.auth-hint-line {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--color-t3);
-  opacity: 0.7;
-  font-weight: 400;
 }
 .input--err {
   border-color: var(--color-err-fg, #d23) !important;
