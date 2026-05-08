@@ -283,7 +283,7 @@ OpenCraig/
 
 ## 🗺️ v1.0.0 里有什么 / 没有什么
 
-### OSS 版已发布（本仓库，冻结）
+### OSS 版已发布（本仓库）
 
 - [x] **像素级引用** —— `doc_id + page + bbox` 贯穿每个论断
 - [x] **结构化检索工具** —— vector / KG / tree-nav / read_chunk / rerank
@@ -342,7 +342,7 @@ OSS 版会持续接收维护与非企业级的改进：bug 修复、parser / 模
 OSS，但其他工作范围（parsers / 后端 / 模型 / 性能 / 易用性 / 安全）
 都仍在 OSS 的活跃开发之内。
 
-Enterprise 咨询：[opencraig.dev/enterprise](https://opencraig.dev/enterprise)（页面上线前请在 GitHub Discussions 留言）。
+Enterprise 咨询：[opencraig.com](https://opencraig.com)。
 
 ---
 

@@ -376,7 +376,7 @@ features in the table above don't migrate back into OSS, but
 everything else (parsers, backends, models, performance,
 ergonomics, security) stays under active OSS work.
 
-Inquiries about Enterprise: [opencraig.dev/enterprise](https://opencraig.dev/enterprise) (or open a GitHub discussion until that page exists).
+Inquiries about Enterprise: [opencraig.com](https://opencraig.com).
 
 ---
 
