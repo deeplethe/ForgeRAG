@@ -66,8 +66,14 @@ class FakeSandboxBackend:
         self._next_id += 1
         return f"cnt_{self._next_id:04d}"
 
-    def start_container(self, *, image, name, mounts, env=None):
-        self.start_calls.append({"image": image, "name": name, "mounts": tuple(mounts), "env": env})
+    def start_container(self, *, image, name, mounts, env=None, published_ports=None):
+        self.start_calls.append({
+            "image": image,
+            "name": name,
+            "mounts": tuple(mounts),
+            "env": env,
+            "published_ports": dict(published_ports or {}),
+        })
         if self.start_should_fail:
             raise RuntimeError("simulated start failure")
         cid = self._new_id()
@@ -76,6 +82,7 @@ class FakeSandboxBackend:
             "image": image,
             "mounts": tuple(mounts),
             "env": dict(env or {}),
+            "published_ports": dict(published_ports or {}),
             "running": True,
         }
         return cid

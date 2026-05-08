@@ -177,6 +177,7 @@ class SandboxBackend(Protocol):
         name: str,
         mounts: Iterable[Mount],
         env: dict[str, str] | None = None,
+        published_ports: dict[int, int] | None = None,
     ) -> str:
         ...
 
@@ -244,6 +245,7 @@ class SandboxManager:
         user_envs_root: Path | str = "storage/user-envs",
         container_name_prefix: str = DEFAULT_CONTAINER_NAME_PREFIX,
         container_idle_seconds: int = DEFAULT_CONTAINER_IDLE_SECONDS,
+        published_ports: dict[int, int] | None = None,
         clock: callable = datetime.utcnow,  # injectable for tests
     ):
         self.backend = backend
@@ -252,6 +254,11 @@ class SandboxManager:
         self.user_envs_root = Path(user_envs_root)
         self.container_name_prefix = container_name_prefix
         self.container_idle_seconds = container_idle_seconds
+        # Port range to publish on every fresh container — kernel
+        # ZMQ ports allocated from here by KernelManager (Phase 2.3).
+        # All bindings are loopback-only at the docker layer; no
+        # exposure to non-localhost callers.
+        self.published_ports = published_ports
         self._clock = clock
 
         # user_id → ContainerHandle. Module-level table; one
@@ -510,6 +517,7 @@ class SandboxManager:
                 name=name,
                 mounts=mounts,
                 env=env or None,
+                published_ports=self.published_ports,
             )
         except Exception as e:
             raise SandboxStartError(
@@ -614,6 +622,7 @@ class DockerBackend:
         name: str,
         mounts: Iterable[Mount],
         env: dict[str, str] | None = None,
+        published_ports: dict[int, int] | None = None,
     ) -> str:
         client = self._docker()
         # Mounts dict shape required by the SDK
@@ -621,6 +630,16 @@ class DockerBackend:
             m.host_path: {"bind": m.container_path, "mode": "rw"}
             for m in mounts
         }
+        # Port-publish dict for the SDK: container_port → host_port.
+        # ALL bindings forced to 127.0.0.1 so the kernel ZMQ ports
+        # are reachable from the host process but never exposed to
+        # the LAN. Without the loopback bind, ``-p 5555:5555`` would
+        # listen on 0.0.0.0 by default — that's a multi-tenant
+        # security hole even on a dev box.
+        port_spec: dict[str, tuple[str, int] | None] = {}
+        if published_ports:
+            for container_port, host_port in published_ports.items():
+                port_spec[f"{container_port}/tcp"] = ("127.0.0.1", host_port)
         # If a previous run left a container with the same name, the
         # SDK raises 409. Adoption sweep should have caught this; if
         # it didn't, the orphan is genuinely orphaned and we'd
@@ -631,9 +650,11 @@ class DockerBackend:
             detach=True,
             volumes=binds,
             environment=env or {},
-            # No public ports — Phase 2.3 kernels talk over IPC
-            # sockets routed through the bind mount, not TCP.
+            # Bridge network so the published ports actually route
+            # via docker's NAT table; the kernel TCP listeners are
+            # the only thing reachable, and only via 127.0.0.1.
             network_mode="bridge",
+            ports=port_spec or None,
             # restart=no means a kernel crash inside doesn't bounce
             # the whole container; SandboxManager owns the lifecycle
             # decision.
