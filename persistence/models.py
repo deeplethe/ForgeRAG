@@ -278,6 +278,19 @@ class Conversation(Base):
         nullable=True,
         index=True,
     )
+    # Optional binding to an agent-workspace project. NULL = plain
+    # Q&A chat (today's default). Set when the chat is opened from
+    # inside a Project (Phase 1) so the agent's tool calls land in
+    # that project's workdir + run history. Added in
+    # 20260516_add_projects_artifacts_runs. ON DELETE SET NULL so
+    # deleting a project leaves the chat history intact (with
+    # project_id reset to NULL, falling back to plain-chat mode).
+    project_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -710,3 +723,275 @@ class ChunkRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (Index("ix_chunks_doc_version", "doc_id", "parse_version"),)
+
+
+# ---------------------------------------------------------------------------
+# Agent Workspace — projects, runs, artifacts, kernel sessions
+# ---------------------------------------------------------------------------
+# Phase 0 (20260516_add_projects_artifacts_runs) introduces the relational
+# shape behind the new agent-driven Workspace surface. The Library (file
+# manager) and the Workspace (agent artifact area) are deliberately distinct
+# data models — Library docs go through the indexed-corpus pipeline, Workspace
+# artifacts live in per-project workdirs and are NOT auto-indexed.
+#
+# A user's Project owns a workdir under ``storage/projects/<project_id>/``.
+# Inside it the agent's per-user Docker container bind-mounts that workdir
+# at ``/workdir/<project_id>/`` (see docs/roadmaps/agent-workspace.md).
+# Artifacts are files inside the workdir that we promote to first-class
+# tracked deliverables (lineage, mime, sha256). Runs + Steps are the audit
+# trail of agent work; ExecutionSession tracks the live ipykernel.
+
+
+class Project(Base):
+    """An agent-workspace project. Owns a workdir on disk; multiple
+    chats can bind to it (``conversations.project_id``); agent_runs,
+    artifacts, and execution_sessions all hang off it."""
+
+    __tablename__ = "projects"
+
+    project_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Path relative to the storage root, e.g. ``projects/<project_id>``.
+    # Resolved at I/O time so deployments that move ``storage/`` don't
+    # need to rewrite every row. The on-disk tree under it follows a
+    # soft convention from ``ProjectService.scaffold_workdir`` —
+    # ``inputs/``, ``outputs/``, ``scratch/``, ``.agent-state/`` — but
+    # the API doesn't enforce it; the agent's prompt does.
+    workdir_path: Mapped[str] = mapped_column(String(1024))
+    owner_user_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="RESTRICT"),
+        index=True,
+    )
+    # Same shape as Folder.shared_with: list[{user_id, role}] where
+    # role ∈ {"r", "rw"}. Owner is implicit — they always have full
+    # access; admin role on auth_users bypasses every per-project
+    # check globally. Day 1 the routes only emit "rw" entries; "r"
+    # is wired in the schema but the UI doesn't yet expose it.
+    shared_with: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    # Soft-delete marker: when non-NULL the project is in trash and
+    # its workdir on disk lives under
+    # ``storage/projects/__trash__/<ts>_<project_id>/``. Shape:
+    # {original_workdir_path, trashed_at (iso), trashed_by (user_id)}.
+    # Hard-purge happens on operator-driven empty-trash or after the
+    # nightly maintenance window's retention age.
+    trashed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    # Bumped by run / artifact writes so the project list can sort
+    # "recently touched" to the top. NULL only between create and
+    # first activity.
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+
+
+class AgentRun(Base):
+    """One end-to-end agent execution lifecycle.
+
+    A user submits a task ("compare these 5 contracts and produce a
+    tracker xlsx"); the planner produces a structured plan; the
+    executor walks it step-by-step; results land back in this row's
+    rolled-up totals + the per-step rows in ``agent_run_steps``.
+
+    The row IS the durable workflow state. ``status`` + ``step_index``
+    + ``last_checkpoint_at`` are enough to resume after a FastAPI
+    worker restart (per the Phase-2 sandbox design — no Temporal /
+    Restate dependency).
+    """
+
+    __tablename__ = "agent_runs"
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Nullable because (a) the chat ↔ project binding lands in 0.5
+    # so early Phase-0 runs may have no conversation, and (b) future
+    # scheduled / cron runs don't originate from a chat at all.
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("conversations.conversation_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The user who started the run. SET NULL on auth_users delete so
+    # historical runs don't disappear when an account is removed.
+    user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # Planner's structured output the executor walks. Free-form JSON
+    # — schema lives in code (see agent/planner.py once it lands),
+    # not in the DB, so iteration on plan shape doesn't need
+    # migrations.
+    plan_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    # pending | running | paused | done | failed | cancelled
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", index=True
+    )
+    step_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_checkpoint_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    total_input_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    total_output_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    total_cost_usd: Mapped[float] = mapped_column(
+        Float, default=0.0, server_default="0"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+
+
+class AgentRunStep(Base):
+    """Granular per-step audit row for an AgentRun.
+
+    One row per planner / executor / critic / sub-agent invocation.
+    Tool calls + their results land in ``tool_call_json`` /
+    ``result_json`` so the per-project run-history UI can render a
+    timeline with full input/output for each step.
+    """
+
+    __tablename__ = "agent_run_steps"
+
+    step_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        index=True,
+    )
+    step_index: Mapped[int] = mapped_column(Integer)
+    # planner | executor | critic | sub-agent | tool
+    role: Mapped[str] = mapped_column(String(32))
+    tool_call_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    wall_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # pending | running | done | failed | skipped
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_run_steps_run_step", "run_id", "step_index"),
+    )
+
+
+class Artifact(Base):
+    """A tracked file inside a project workdir.
+
+    Both agent-produced and user-uploaded files become artifacts
+    (run_id is NULL for the latter). ``lineage_json`` records the
+    sources every claim in the artifact can be traced back to:
+
+        {"sources": [
+            {"type": "chunk", "id": "<chunk_id>"},
+            {"type": "url", "url": "https://...", "sha256": "..."},
+            {"type": "artifact", "artifact_id": "..."}
+        ]}
+
+    Chunk references survive Library re-ingest because chunk_ids are
+    stable; URL references carry a snapshot sha to detect drift.
+    """
+
+    __tablename__ = "artifacts"
+
+    artifact_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # NULL for user-uploaded artifacts; set when an agent run produced
+    # this file. SET NULL on run delete so we don't lose the artifact
+    # row when its parent run is purged.
+    run_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("agent_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    produced_by_step_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("agent_run_steps.step_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Path relative to the project workdir. The host filesystem is
+    # the canonical store (Workspace UI reads it directly); the
+    # container sees the same file at /workdir/<project_id>/<path>
+    # via bind mount.
+    path: Mapped[str] = mapped_column(String(1024))
+    mime: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lineage_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    user_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ExecutionSession(Base):
+    """A live ipykernel inside a user's per-user Docker container.
+
+    Tracks (container_id, kernel_id, last_active_at) so the
+    SandboxManager (Phase 2) can decide when to reap idle kernels
+    and when to cold-start a fresh one for a project. One row per
+    project per active kernel; rows are kept after reaping (status
+    flips to 'reaped') for audit purposes.
+    """
+
+    __tablename__ = "execution_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Docker container id (long form). NULL while the container is
+    # being cold-started; populated once the daemon returns it.
+    container_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Jupyter kernel uuid (from the kernel's connection-info file).
+    kernel_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # starting | ready | busy | dead | reaped
+    status: Mapped[str] = mapped_column(
+        String(16), default="starting", server_default="starting", index=True
+    )
+    last_active_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
