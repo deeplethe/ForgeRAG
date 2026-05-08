@@ -68,14 +68,14 @@
       "load_error": "Couldn't load this project: {msg}"
     },
     "members": {
-      "title": "Members",
-      "subtitle": "Who can see and work in {name}",
+      "title": "Viewers",
+      "subtitle": "Who can view {name}",
       "email_placeholder": "user@example.com",
-      "add": "Add",
-      "adding": "Adding…",
+      "add": "Invite",
+      "adding": "Inviting…",
+      "add_hint": "Viewers see files and run history but cannot edit or run agents. Only the owner can write to a project.",
       "role_owner": "Owner",
-      "role_rw": "Can edit",
-      "role_r": "Can view",
+      "role_r": "Viewer",
       "remove": "Remove",
       "empty": "Just you so far."
     }

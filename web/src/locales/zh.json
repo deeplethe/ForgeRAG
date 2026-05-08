@@ -68,14 +68,14 @@
       "load_error": "项目加载失败：{msg}"
     },
     "members": {
-      "title": "成员",
-      "subtitle": "谁可以查看和参与「{name}」",
+      "title": "查看者",
+      "subtitle": "谁可以查看「{name}」",
       "email_placeholder": "user@example.com",
-      "add": "添加",
-      "adding": "添加中…",
+      "add": "邀请",
+      "adding": "邀请中…",
+      "add_hint": "查看者只能浏览文件和运行记录，不能编辑或启动智能体。只有所有者能写入项目。",
       "role_owner": "所有者",
-      "role_rw": "可编辑",
-      "role_r": "仅查看",
+      "role_r": "查看者",
       "remove": "移除",
       "empty": "目前只有你。"
     }

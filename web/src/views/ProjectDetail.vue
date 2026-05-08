@@ -14,12 +14,11 @@
           {{ t('workspace.detail.no_description') }}
         </p>
       </div>
-      <div v-if="project" class="proj-detail__actions">
-        <button class="btn btn--ghost" @click="openMembers">
-          <Users :size="14" :stroke-width="1.75" />
-          <span>{{ t('workspace.detail.manage_members', { n: memberCount }) }}</span>
-        </button>
-      </div>
+      <!-- Member-management button intentionally omitted: projects are
+           single-writer with no UI-exposed sharing in Phase 0-5. The
+           ProjectMembersDialog component file is kept on disk for the
+           Phase 6+ read-only-share rollout. -->
+      <div v-if="project" class="proj-detail__actions"></div>
     </header>
 
     <main class="proj-detail__body">
@@ -42,24 +41,17 @@
       </div>
     </main>
 
-    <ProjectMembersDialog
-      v-if="project && membersOpen"
-      :project="project"
-      @close="membersOpen = false"
-      @updated="onMembersUpdated"
-    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ArrowLeft, MessageSquare, Users } from 'lucide-vue-next'
+import { AlertCircle, ArrowLeft, MessageSquare } from 'lucide-vue-next'
 
 import { getProject } from '@/api'
 import Skeleton from '@/components/Skeleton.vue'
-import ProjectMembersDialog from '@/components/ProjectMembersDialog.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -68,12 +60,6 @@ const route = useRoute()
 const project = ref(null)
 const loading = ref(true)
 const error = ref('')
-const membersOpen = ref(false)
-
-const memberCount = computed(() =>
-  // owner counts as 1; project.member_count is the shared_with size
-  project.value ? (project.value.member_count + 1) : 0,
-)
 
 async function load() {
   const id = route.params.projectId
@@ -92,17 +78,6 @@ async function load() {
 
 function back() {
   router.push('/workspace')
-}
-
-function openMembers() {
-  membersOpen.value = true
-}
-
-function onMembersUpdated(members) {
-  if (project.value) {
-    // -1 to drop the synthetic owner row from the count we store
-    project.value.member_count = Math.max(0, members.length - 1)
-  }
 }
 
 watch(() => route.params.projectId, load)

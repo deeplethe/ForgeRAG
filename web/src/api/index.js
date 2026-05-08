@@ -109,7 +109,7 @@ export {
 // Projects (agent-workspace surface)
 export {
   listProjects, createProject, getProject, updateProject, deleteProject,
-  listProjectMembers, addProjectMember, updateProjectMemberRole, removeProjectMember,
+  listProjectMembers, addProjectMember, removeProjectMember,
 } from './projects'
 
 // Trash

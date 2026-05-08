@@ -1,14 +1,18 @@
 <!--
-  ProjectMembersDialog — minimal Phase-0 member manager for the
-  agent Workspace surface.
+  ProjectMembersDialog — read-only viewer manager for projects.
 
-  Deliberately thinner than FolderMembersDialog: no user-search
-  autocomplete (just a plain email input), no inheritance logic
-  (projects don't nest), no invitation tokens (Phase 0 only adds
-  existing registered users). Owner / admin gate is enforced by
-  the backend; we surface 403 / 404 errors inline.
+  ⚠️ NOT MOUNTED ANYWHERE in Phase 0–5 by design. The component
+  file is kept on disk for the Phase 6+ read-only-share rollout —
+  see "Project = owner-write + read-only share" in
+  docs/roadmaps/agent-workspace.md. Until then, projects are
+  single-user from the UI's perspective (owner only), even though
+  the backend supports read-only invitations.
 
-  Usage:
+  When Phase 6+ wires this back in, only the email + role='r' add
+  flow is supported; no role select (writers are never an option),
+  no inheritance, no invitation tokens.
+
+  Usage (when re-enabled):
     <ProjectMembersDialog
       :project="project"
       @close="..."
@@ -44,10 +48,6 @@
               :placeholder="t('workspace.members.email_placeholder')"
               @keydown.enter.prevent="onAdd"
             />
-            <select v-model="newRole" class="role-select">
-              <option value="rw">{{ t('workspace.members.role_rw') }}</option>
-              <option value="r">{{ t('workspace.members.role_r') }}</option>
-            </select>
             <button
               class="btn btn--primary"
               :disabled="!newEmail || adding"
@@ -56,6 +56,7 @@
               {{ adding ? t('workspace.members.adding') : t('workspace.members.add') }}
             </button>
           </div>
+          <p class="add-row__hint">{{ t('workspace.members.add_hint') }}</p>
 
           <div v-if="error" class="error-row">
             <AlertCircle :size="14" :stroke-width="1.75" />
@@ -85,19 +86,11 @@
                   {{ m.email || m.username }}
                 </span>
               </div>
-              <span v-if="m.role === 'owner'" class="role-tag role-tag--owner">
-                {{ t('workspace.members.role_owner') }}
+              <span class="role-tag" :class="`role-tag--${m.role}`">
+                {{ m.role === 'owner'
+                    ? t('workspace.members.role_owner')
+                    : t('workspace.members.role_r') }}
               </span>
-              <select
-                v-else
-                :value="m.role"
-                class="role-select role-select--inline"
-                :disabled="updating === m.user_id"
-                @change="onRoleChange(m, $event.target.value)"
-              >
-                <option value="rw">{{ t('workspace.members.role_rw') }}</option>
-                <option value="r">{{ t('workspace.members.role_r') }}</option>
-              </select>
               <button
                 v-if="m.role !== 'owner'"
                 class="remove-btn"
@@ -123,7 +116,6 @@ import {
   addProjectMember,
   listProjectMembers,
   removeProjectMember,
-  updateProjectMemberRole,
 } from '@/api'
 import UserAvatar from '@/components/UserAvatar.vue'
 
@@ -137,9 +129,7 @@ const members = ref([])
 const loading = ref(false)
 const error = ref('')
 const newEmail = ref('')
-const newRole = ref('rw')
 const adding = ref(false)
-const updating = ref('')
 const removing = ref('')
 
 async function load() {
@@ -163,7 +153,6 @@ async function onAdd() {
     members.value = await addProjectMember(
       props.project.project_id,
       newEmail.value.trim(),
-      newRole.value,
     )
     newEmail.value = ''
     emit('updated', members.value)
@@ -171,26 +160,6 @@ async function onAdd() {
     error.value = _msg(e)
   } finally {
     adding.value = false
-  }
-}
-
-async function onRoleChange(member, newRole) {
-  if (newRole === member.role) return
-  updating.value = member.user_id
-  error.value = ''
-  try {
-    members.value = await updateProjectMemberRole(
-      props.project.project_id,
-      member.user_id,
-      newRole,
-    )
-    emit('updated', members.value)
-  } catch (e) {
-    error.value = _msg(e)
-    // Reload to revert any optimistic UI
-    await load()
-  } finally {
-    updating.value = ''
   }
 }
 

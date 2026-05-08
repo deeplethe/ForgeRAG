@@ -171,8 +171,20 @@ def normalize_description(desc: str | None) -> str | None:
 
 
 def _validate_role(role: str) -> str:
-    if role not in ("r", "rw"):
-        raise InvalidProjectRole(f"invalid role {role!r}; expected 'r' or 'rw'")
+    # Projects ship with read-only share only. The "rw" role exists in
+    # the can_access vocabulary historically (and remains there as a
+    # one-line flip if Phase 6+ ever decides otherwise) but the service
+    # currently refuses to mint rw grants — every collaborator is a
+    # viewer, and the project owner is the only writer. Rejecting rw at
+    # the service boundary means no route, no admin tool, no test
+    # fixture can accidentally create one until policy changes.
+    if role != "r":
+        raise InvalidProjectRole(
+            f"invalid role {role!r}; only 'r' (read-only) is supported. "
+            "Project sharing is read-only by design — see the "
+            "'Project = owner-write + read-only share' decision in "
+            "docs/roadmaps/agent-workspace.md."
+        )
     return role
 
 
@@ -279,32 +291,28 @@ class ProjectService:
         """Check whether ``user_id`` may perform ``action`` on
         ``project``.
 
-        Action vocabulary:
-          * ``read`` — owner / any member / admin
-          * ``write`` — owner / rw member / admin
-          * ``share`` — owner / admin (rw members can't reshare; that's
-            a deliberately stricter rule than the Library has, because
-            project access is tighter scoped)
-          * ``delete`` — owner / admin
+        **Authz model is single-writer + read-only share**:
+          * ``read`` — owner / any shared_with member / admin
+          * ``write`` / ``share`` / ``delete`` — owner / admin only
+
+        Members are read-only viewers. There is no ``rw`` role; the
+        write/share/delete checks ignore ``shared_with`` entirely.
+        Rationale (see docs/roadmaps/agent-workspace.md): a project
+        owns the agent's live kernel state + run history + intermediate
+        artifacts; multi-writer would create races + state pollution
+        with no real collaboration upside. Users collaborate by
+        sharing **Library content** and each running their own agent.
         """
         if is_admin:
             return True
         if project.owner_user_id == user_id:
             return True
-        members = project.shared_with or []
-        member = next(
-            (m for m in members if (m or {}).get("user_id") == user_id),
-            None,
-        )
-        if member is None:
+        # Anything other than read is owner/admin-only — short-circuit
+        # before we touch shared_with so the policy is obvious.
+        if action != "read":
             return False
-        role = member.get("role", "r")
-        if action == "read":
-            return role in ("r", "rw")
-        if action == "write":
-            return role == "rw"
-        # share / delete are owner-or-admin only — fall through
-        return False
+        members = project.shared_with or []
+        return any((m or {}).get("user_id") == user_id for m in members)
 
     # ── Create ─────────────────────────────────────────────────────
 

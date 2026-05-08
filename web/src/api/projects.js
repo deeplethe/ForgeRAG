@@ -39,14 +39,11 @@ export const deleteProject = (project_id) =>
 export const listProjectMembers = (project_id) =>
   get(`/api/v1/projects/${project_id}/members`)
 
-/** Add a registered user to the project by email. Owner / admin only.
- *  ``role`` is 'r' or 'rw'. Returns the updated members list. */
-export const addProjectMember = (project_id, email, role) =>
-  post(`/api/v1/projects/${project_id}/members`, { email, role })
-
-/** Change a member's role. Owner / admin only. */
-export const updateProjectMemberRole = (project_id, user_id, role) =>
-  patch(`/api/v1/projects/${project_id}/members/${user_id}`, { role })
+/** Add a read-only viewer to the project by email. Owner / admin only.
+ *  Role is fixed to 'r' — projects don't support write-share. The
+ *  field is left in the request shape for forward-compat with Phase 6+. */
+export const addProjectMember = (project_id, email) =>
+  post(`/api/v1/projects/${project_id}/members`, { email, role: 'r' })
 
 /** Remove a member from the project. Owner cannot be removed
  *  (transfer-ownership is a post-Phase-0 feature). */

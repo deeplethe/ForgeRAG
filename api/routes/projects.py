@@ -65,7 +65,7 @@ class MemberOut(BaseModel):
     username: str
     email: str | None = None
     display_name: str | None = None
-    role: str  # 'owner' | 'r' | 'rw'
+    role: str  # 'owner' | 'r' (read-only viewer; no 'rw' — see service docs)
 
 
 class ProjectOut(BaseModel):
@@ -95,11 +95,10 @@ class UpdateProjectReq(BaseModel):
 
 class AddMemberReq(BaseModel):
     email: str = Field(..., description="Email of an existing registered user")
-    role: str = Field(..., pattern="^(r|rw)$")
-
-
-class UpdateMemberReq(BaseModel):
-    role: str = Field(..., pattern="^(r|rw)$")
+    # Read-only share is the only sharing mode projects support. The
+    # field is kept for forward-compatibility (Phase 6+ might surface
+    # other roles via UI) but the only accepted value is 'r'.
+    role: str = Field(default="r", pattern="^r$")
 
 
 # ---------------------------------------------------------------------------
@@ -481,41 +480,12 @@ def add_member(
         return _enrich_members(sess, proj)
 
 
-@router.patch(
-    "/{project_id}/members/{user_id}",
-    response_model=list[MemberOut],
-)
-def update_member(
-    project_id: str,
-    user_id: str,
-    body: UpdateMemberReq,
-    state: AppState = Depends(get_state),
-    principal: AuthenticatedPrincipal = Depends(get_principal),
-):
-    """Change a member's role. Owner / admin only."""
-    is_admin = _is_admin(state, principal)
-    with state.store.transaction() as sess:
-        svc = ProjectService(
-            sess,
-            projects_root=_projects_root(state),
-            actor_id=principal.user_id,
-        )
-        proj = _resolve_project_or_404(svc, project_id)
-        if not svc.can_access(
-            proj, principal.user_id, "share", is_admin=is_admin
-        ):
-            raise HTTPException(404, "project not found")
-        try:
-            proj = svc.add_or_update_member(
-                project_id, user_id=user_id, role=body.role
-            )
-        except InvalidProjectRole as e:
-            raise HTTPException(422, str(e))
-        except ProjectMemberConflict as e:
-            raise HTTPException(409, str(e))
-        except ProjectMemberNotFound:
-            raise HTTPException(404, "user not found")
-        return _enrich_members(sess, proj)
+# NOTE: there is no PATCH /{project_id}/members/{user_id} for role
+# changes. Read-only is the only role; toggling someone's role to
+# something else is not a supported operation. To "promote" a viewer
+# to a different role you'd have to remove + re-add — and today there
+# is no other role to promote them to. When Phase 6+ adds new roles
+# (or owner transfer) the patch route lands then.
 
 
 @router.delete(

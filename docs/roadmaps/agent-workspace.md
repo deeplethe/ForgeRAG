@@ -101,12 +101,13 @@ read-only-ish store of reference material).
 
 ### 2. Project as the container, not Conversation
 
-**Chosen.** A Project owns: workdir on disk, single-user owner,
+**Chosen.** A Project owns: workdir on disk, single owner-writer,
 artifacts, agent runs, execution sessions. A Chat Conversation
-*belongs to* a Project (via FK). Multiple conversations of the
-**same user** under one project share the same workdir + artifacts;
-projects are not shared between users (see "Project = single-user"
-in the Settled decisions).
+*belongs to* a Project (via FK). Multiple conversations under one
+project share the same workdir + artifacts. Read-only viewers can
+be added (Phase 6+ UI) but only the owner runs agents and writes
+files — see "Project = owner-write + read-only share" in the
+Settled decisions.
 
 **Rejected: artifacts attached directly to Conversation.** Cleaner-
 sounding but breaks the moment a user wants two conversations on
@@ -487,8 +488,10 @@ projects                 ← NEW
    name
    description
    workdir_path          (storage/projects/<id>/)
-   owner_id              (the SOLE access-control field — projects are
-                          single-user; no shared_with, no member rows)
+   owner_id              (sole writer — see "owner-write + read-only
+                          share" decision)
+   shared_with (jsonb)   ← list[{user_id, role:'r'}] — viewers only,
+                          no 'rw'. UI exposed Phase 6+
    created_at
    updated_at
 
@@ -631,7 +634,7 @@ is 12-18 additional weeks depending on team size.
 
 | Decision | Outcome |
 |---|---|
-| **Project = single-user, Library = shared** | Projects are personal workbenches: one owner, no sharing, no member management. Library keeps its existing folder-grant multi-user model. Rationale: a project owns the agent's live kernel state + run history + intermediate artifacts; multi-writer on those would create races + state pollution with no real collaboration upside. Users collaborate by **sharing Library content**, then each runs their own agent in their own project against the same shared knowledge. |
+| **Project = owner-write + read-only share** | A project has one writer (the owner) and zero or more **read-only viewers**. Owner runs agents, edits files, deletes; viewers can browse the workdir + run history without touching anything. No `rw` role exists. Rationale: a project owns the agent's live kernel state + run history + intermediate artifacts, and multi-writer on those would create races + state pollution. But **read-only share is genuinely useful** — consultants showing progress to clients, leads watching team members' agent runs, audit reviewers. Library keeps its existing folder-grant multi-user model (read + write share). UI exposure of project read-only-share is **deferred to Phase 6+** so we don't carry the dialog through Phase 0-5 reviews — the schema, service, routes, and component file all exist today (`shared_with` column, `add_or_update_member` rejecting `rw`, `ProjectMembersDialog.vue` not mounted) so the eventual UI rollout is half a day, not half a week. |
 | **Demo use case** | None — operator drives validation against their own real workflows; we don't ship demo project templates |
 | **Web search default** | **On** at Phase 5 ship-time; operator can disable per-deployment via `agent.web_search.enabled: false`. (Earlier we'd planned default-off for the citation-purity argument; operator's call is that the value of fresher external context outweighs the audit-trail risk, and the lineage panel already distinguishes "sourced from URL X at sha Y" from "sourced from Library chunk Z" so users can see what came from where.) |
 | **Built-in templates** | **None.** No `examples/templates/` directory, no "starter projects" UX. Phase 6 dropped that task entirely. |
@@ -742,16 +745,24 @@ works yet, but the shape is right.
 ### 0.4 — Backend skeleton  (~1 day)
 
 * `api/routes/projects.py`:
-  - `GET    /api/v1/projects`               — list the caller's projects
-  - `POST   /api/v1/projects`               — create
-  - `GET    /api/v1/projects/{id}`          — detail
-  - `PATCH  /api/v1/projects/{id}`          — rename / edit description
-  - `DELETE /api/v1/projects/{id}`          — soft-delete
-* All routes are owner-only (admin bypass for global ops). 404 on
-  no-access — same code as a missing project, to avoid existence
-  confirmation. Projects are single-user; no `/members` endpoints.
+  - `GET    /api/v1/projects`                       — list the caller's projects (owned + viewer)
+  - `POST   /api/v1/projects`                       — create
+  - `GET    /api/v1/projects/{id}`                  — detail
+  - `PATCH  /api/v1/projects/{id}`                  — rename / edit description (owner only)
+  - `DELETE /api/v1/projects/{id}`                  — soft-delete (owner only)
+  - `GET    /api/v1/projects/{id}/members`          — list viewers
+  - `POST   /api/v1/projects/{id}/members`          — invite viewer (role='r' only)
+  - `DELETE /api/v1/projects/{id}/members/{uid}`    — remove viewer
+* Authz: `read` works for owner / admin / any shared_with member;
+  `write` / `share` / `delete` are owner-or-admin only — viewers
+  can browse but never mutate. The route layer rejects
+  `role='rw'` at the pydantic boundary so no codepath can mint a
+  write-share grant. 404 on no-access (existence privacy).
+* No `PATCH /members/{uid}` route — there's no role to change
+  (only 'r' exists). When Phase 6+ adds richer roles or owner
+  transfer, the patch route lands then.
 * Audit log: `project.create / project.rename / project.delete /
-  project.update`.
+  project.update / project.share / project.unshare`.
 
 ### 0.5 — Frontend Workspace skeleton  (~1 day)
 
@@ -763,16 +774,25 @@ works yet, but the shape is right.
 * Project list page: simple grid of cards `(name, description,
   last_active)`; click → project detail page.
 * Project detail page: just shows name, description, "no chats
-  yet" placeholder. No member dialog — projects are single-user.
+  yet" placeholder.
+* `ProjectMembersDialog.vue` exists on disk but is **NOT mounted**
+  anywhere in Phase 0–5. It's a read-only-viewer manager (email
+  invite + remove, no role select) reserved for the Phase 6+ UI
+  rollout — see the "Project = owner-write + read-only share"
+  decision. The backend routes + service exist now so the
+  eventual UI mount is half a day's work.
 
 ### 0.6 — Tests + smoke  (~0.5 day)
 
-* `tests/test_route_projects.py`: CRUD + ownership boundary
-  (alice's project is invisible to bob; bob can't read / edit /
-  delete it).
+* `tests/test_route_projects.py`: CRUD + ownership boundary +
+  read-only-share roundtrip (alice invites bob with role='r',
+  bob sees the project on his list with role 'r', bob can GET
+  detail but PATCH/DELETE/POST-members all 404, role='rw' is
+  rejected at the pydantic boundary).
 * `tests/test_no_phone_home.py`: no new SDKs.
 * Manual smoke: register two users, create a project as A, verify
-  B cannot list / open / mutate it.
+  B cannot list / open / mutate it. (The viewer-share UX itself
+  is a Phase 6+ smoke since the dialog isn't mounted yet.)
 
 ## Phase 0 acceptance checklist
 
@@ -785,6 +805,10 @@ works yet, but the shape is right.
       `storage/projects/<id>/`
 - [ ] Another user cannot list / open / mutate a project they
       don't own (404)
+- [ ] Viewer-share path works end-to-end: owner can `POST /members`
+      with role='r', viewer sees the project with role='r', viewer's
+      writes 404 (UI for this is Phase 6+; route + service must work
+      today)
 - [ ] All existing tests still pass; build succeeds
 - [ ] No Library-related functionality is broken by the rename
 
@@ -974,9 +998,14 @@ These are deliberate cuts to keep the first 3 weeks bounded:
   for Phase 2's `python_exec` and Phase 3's `write_file`.
 * **No agent runs.** `agent_runs` table exists; remains empty
   through Phase 0-3.
-* **No project sharing.** Projects are single-user by design — see
-  the "Project = single-user, Library = shared" decision. Users
-  collaborate via shared Library content, not shared projects.
+* **No project-sharing UI.** Read-only viewer share works at the
+  API level today (used by tests; documented under
+  `POST /api/v1/projects/{id}/members`), but the frontend does
+  NOT expose a button for it through Phase 5. Users collaborate
+  via shared **Library content** + each running their own agent
+  in their own project. The viewer-share UI mounts in Phase 6+
+  when there's a real customer ask for "show me what your agent
+  is doing in your project."
 
 If during demo someone asks "can the agent do X with this file
 yet?", the honest answer for Phase 1 is "not yet — the workspace

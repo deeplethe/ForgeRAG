@@ -43,23 +43,12 @@
           class="project-card"
           @click="open(p)"
         >
-          <div class="project-card__head">
-            <h3>{{ p.name }}</h3>
-            <span class="project-card__role" :data-role="p.role">{{ p.role }}</span>
-          </div>
+          <h3 class="project-card__title">{{ p.name }}</h3>
           <p v-if="p.description" class="project-card__desc">{{ p.description }}</p>
           <p v-else class="project-card__desc project-card__desc--muted">
             {{ t('workspace.project_card.no_description') }}
           </p>
           <footer class="project-card__foot">
-            <span v-if="p.owner_username" class="project-card__owner">
-              <User :size="12" :stroke-width="1.75" />
-              {{ p.owner_username }}
-            </span>
-            <span v-if="p.member_count > 0" class="project-card__members">
-              <Users :size="12" :stroke-width="1.75" />
-              {{ p.member_count + 1 }}
-            </span>
             <span class="project-card__active">
               {{ p.last_active_at
                   ? t('workspace.project_card.last_active', { rel: relTime(p.last_active_at) })
@@ -76,7 +65,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, FolderKanban, Plus, User, Users } from 'lucide-vue-next'
+import { AlertCircle, FolderKanban, Plus } from 'lucide-vue-next'
 
 import { createProject, listProjects } from '@/api'
 import Skeleton from '@/components/Skeleton.vue'
@@ -265,47 +254,13 @@ onMounted(load)
   transform: translateY(-1px);
 }
 
-.project-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.project-card__head h3 {
+.project-card__title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.project-card__role {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  font-size: 10px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: 4px;
-  background: var(--surface-muted, #f3f4f6);
-  color: var(--text-muted, #6b7280);
-}
-
-.project-card__role[data-role='owner'] {
-  background: rgba(217, 119, 6, 0.12);
-  color: #92400e;
-}
-
-.project-card__role[data-role='admin'] {
-  background: rgba(124, 58, 237, 0.12);
-  color: #5b21b6;
-}
-
-.project-card__role[data-role='rw'] {
-  background: rgba(15, 118, 110, 0.12);
-  color: #0f766e;
 }
 
 .project-card__desc {
@@ -332,13 +287,6 @@ onMounted(load)
   padding-top: 8px;
   font-size: 11.5px;
   color: var(--text-muted, #6b7280);
-}
-
-.project-card__owner,
-.project-card__members {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
 }
 
 .project-card__active {

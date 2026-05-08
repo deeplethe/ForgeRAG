@@ -213,46 +213,63 @@ def test_update_project_blocked_for_non_member(alice_client, bob_client):
 # ---------------------------------------------------------------------------
 
 
-def test_share_then_bob_sees_project(alice_client, bob_client, store):
+def test_share_grants_read_only_view(alice_client, bob_client, store):
+    """Read-only share is the only sharing mode projects support.
+
+    Verifies the full owner-write + viewer-read contract:
+      - Alice (owner) invites bob; the request defaults role='r'
+      - Bob lands on his project list with role='r'
+      - Bob can GET detail and members
+      - Bob CANNOT edit, share, or delete
+      - Audit log captures project.create + project.share
+    """
     pid = alice_client.post(
         "/api/v1/projects", json={"name": "Joint review"}
     ).json()["project_id"]
 
-    # Alice adds bob as rw
+    # Alice invites bob — body omits ``role`` to confirm the default
+    # is read-only (the API only accepts 'r').
     r = alice_client.post(
         f"/api/v1/projects/{pid}/members",
-        json={"email": "bob@example.com", "role": "rw"},
+        json={"email": "bob@example.com"},
     )
     assert r.status_code == 201, r.text
-    members = r.json()
-    by_uid = {m["user_id"]: m for m in members}
+    by_uid = {m["user_id"]: m for m in r.json()}
     assert by_uid["u_alice"]["role"] == "owner"
-    assert by_uid["u_bob"]["role"] == "rw"
+    assert by_uid["u_bob"]["role"] == "r"
 
-    # Bob now sees the project on his list
+    # Bob now sees the project on his list with role 'r'
     bob_rows = bob_client.get("/api/v1/projects").json()
     assert {p["project_id"] for p in bob_rows} == {pid}
-    assert bob_rows[0]["role"] == "rw"
+    assert bob_rows[0]["role"] == "r"
 
-    # Bob can fetch detail
+    # Bob can fetch detail (read works)
     r = bob_client.get(f"/api/v1/projects/{pid}")
     assert r.status_code == 200
-    assert r.json()["role"] == "rw"
+    assert r.json()["role"] == "r"
 
-    # Bob can edit (rw allows write)
-    r = bob_client.patch(
-        f"/api/v1/projects/{pid}", json={"description": "Bob updated"}
-    )
+    # Bob can list members (any reader can see who else is in)
+    r = bob_client.get(f"/api/v1/projects/{pid}/members")
     assert r.status_code == 200
 
-    # Bob cannot share (only owner / admin)
+    # Bob CANNOT edit (read-only viewer; owner is the only writer)
+    r = bob_client.patch(
+        f"/api/v1/projects/{pid}", json={"description": "blocked"}
+    )
+    assert r.status_code == 404, "viewer write must 404"
+
+    # Bob CANNOT share (only owner / admin)
     r = bob_client.post(
         f"/api/v1/projects/{pid}/members",
-        json={"email": "carol@example.com", "role": "r"},
+        json={"email": "carol@example.com"},
     )
-    assert r.status_code == 404, "non-owner share attempt must 404"
+    assert r.status_code == 404, "viewer share must 404"
 
-    # Audit log captured the share
+    # Bob CANNOT delete
+    r = bob_client.delete(f"/api/v1/projects/{pid}")
+    assert r.status_code == 404
+
+    # Audit log captured the create + share
     with store.transaction() as sess:
         from persistence.models import AuditLogRow
 
@@ -268,34 +285,33 @@ def test_share_then_bob_sees_project(alice_client, bob_client, store):
     assert "project.share" in actions
 
 
-def test_update_member_role_then_remove(alice_client, bob_client):
+def test_rw_role_rejected_at_route(alice_client):
+    """The route's pydantic schema rejects role='rw' — projects don't
+    support write-share. This guards against a future client that
+    forgets to update its types and sends rw by accident."""
     pid = alice_client.post(
-        "/api/v1/projects", json={"name": "Member churn"}
+        "/api/v1/projects", json={"name": "RW rejected"}
     ).json()["project_id"]
-    alice_client.post(
+    r = alice_client.post(
         f"/api/v1/projects/{pid}/members",
         json={"email": "bob@example.com", "role": "rw"},
     )
+    # Pydantic rejects the pattern mismatch with 422
+    assert r.status_code == 422
 
-    # Demote bob to read-only
-    r = alice_client.patch(
-        f"/api/v1/projects/{pid}/members/u_bob",
-        json={"role": "r"},
+
+def test_remove_viewer_then_lost_access(alice_client, bob_client):
+    pid = alice_client.post(
+        "/api/v1/projects", json={"name": "Viewer churn"}
+    ).json()["project_id"]
+    alice_client.post(
+        f"/api/v1/projects/{pid}/members",
+        json={"email": "bob@example.com"},
     )
-    assert r.status_code == 200, r.text
-    by_uid = {m["user_id"]: m for m in r.json()}
-    assert by_uid["u_bob"]["role"] == "r"
+    # Bob can read while shared
+    assert bob_client.get(f"/api/v1/projects/{pid}").status_code == 200
 
-    # Bob can read
-    r = bob_client.get(f"/api/v1/projects/{pid}")
-    assert r.status_code == 200
-    # but not write
-    r = bob_client.patch(
-        f"/api/v1/projects/{pid}", json={"description": "blocked"}
-    )
-    assert r.status_code == 404
-
-    # Remove bob entirely
+    # Alice removes bob
     r = alice_client.delete(f"/api/v1/projects/{pid}/members/u_bob")
     assert r.status_code == 200
     assert all(m["user_id"] != "u_bob" for m in r.json())
@@ -303,6 +319,8 @@ def test_update_member_role_then_remove(alice_client, bob_client):
     # Bob no longer sees the project
     rows = bob_client.get("/api/v1/projects").json()
     assert rows == []
+    # And direct access 404s
+    assert bob_client.get(f"/api/v1/projects/{pid}").status_code == 404
 
 
 def test_cannot_remove_owner(alice_client):
@@ -319,7 +337,7 @@ def test_add_member_unknown_email_404(alice_client):
     ).json()["project_id"]
     r = alice_client.post(
         f"/api/v1/projects/{pid}/members",
-        json={"email": "ghost@example.com", "role": "rw"},
+        json={"email": "ghost@example.com"},
     )
     assert r.status_code == 404
 
@@ -366,14 +384,14 @@ def test_delete_moves_workdir_to_trash(alice_client, projects_root, store):
     assert {p["project_id"] for p in rows} == {pid}
 
 
-def test_delete_blocked_for_non_owner_member(alice_client, bob_client):
+def test_delete_blocked_for_viewer(alice_client, bob_client):
     pid = alice_client.post(
-        "/api/v1/projects", json={"name": "Co-owned"}
+        "/api/v1/projects", json={"name": "Viewer-shared"}
     ).json()["project_id"]
     alice_client.post(
         f"/api/v1/projects/{pid}/members",
-        json={"email": "bob@example.com", "role": "rw"},
+        json={"email": "bob@example.com"},
     )
-    # Even with rw, bob is not the owner — delete is owner/admin only.
+    # Viewers can read but never delete — owner/admin only.
     r = bob_client.delete(f"/api/v1/projects/{pid}")
     assert r.status_code == 404
