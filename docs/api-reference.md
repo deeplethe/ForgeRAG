@@ -1,96 +1,166 @@
 # API Reference
 
-OpenCraig exposes a REST API at `/api/v1/`. Interactive documentation is available at:
+OpenCraig exposes three categories of HTTP surface:
+
+* **Agent layer** — `/api/v1/agent/hermes-chat` for SSE-streamed
+  agentic chat, `/api/v1/llm/v1/chat/completions` for the
+  OpenAI-compatible LLM proxy any in-container or external client
+  hits.
+* **MCP server** — `/api/v1/mcp` exposes domain tools (search /
+  KG / library / artifacts) over the Model Context Protocol.
+  Any MCP-compatible agent runtime connects here.
+* **REST layer** — `/api/v1/{documents,files,chunks,conversations,
+  graph,settings,...}` for the file/library/admin surfaces the
+  web UI and SDK clients use directly.
+
+Interactive documentation:
 
 - **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-All request/response bodies use JSON. File uploads use `multipart/form-data`.
+All REST request/response bodies use JSON. File uploads use
+`multipart/form-data`. SSE streams use `text/event-stream` with
+`data: <json>\n\n` blocks.
 
 ---
 
-## Query
+## Agent Chat
 
-### Ask a Question
+### Stream a turn
 
 ```
-POST /api/v1/query
+POST /api/v1/agent/hermes-chat
 ```
 
-Ask a question and get an answer with citations.
+Run one chat turn through the in-process Hermes Agent runtime.
+Returns an SSE stream of events as the agent thinks, calls tools
+(via MCP), and produces a final answer with citations.
 
 **Request body:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | string | yes | The question to ask |
-| `conversation_id` | string | no | Continue an existing conversation (multi-turn) |
-| `stream` | bool | no | `true` for Server-Sent Events streaming (default: `false`) |
-| `filter` | object | no | Metadata filter (e.g., `{"doc_id": "..."}`) |
-| `path_filter` | string | no | Limit retrieval to a folder subtree (e.g. `"/legal/2024"`). Trashed docs are always excluded. |
-| `overrides` | object | no | Per-request retrieval tweaks — see below. |
+| `query` | string | yes | The user's message |
+| `conversation_id` | string | no | Continue an existing conversation; prior turns are loaded as history |
+| `model` | string | no | Override the default model from `cfg.answering.generator.model` |
+| `system_prompt_override` | string | no | Per-turn ephemeral system prompt |
 
-**`overrides` (QueryOverrides)** — any field left unset falls through to the yaml default. Non-mutating: these never touch global config.
+**Response:** `text/event-stream` with `data: {type, ...}\n\n`
+blocks. Event vocabulary:
 
-| Field | Type | Effect |
-|-------|------|--------|
-| `query_understanding` | bool | Run / skip the QU LLM (intent + expansion). Skipping saves one LLM call. |
-| `kg_path` | bool | Enable / disable the knowledge-graph retrieval path. |
-| `tree_path` | bool | Enable / disable tree-navigation retrieval. |
-| `tree_llm_nav` | bool | Use LLM vs heuristic tree navigator (`true` requires yaml `tree_path.llm_nav_enabled: true` — the navigator is lazy-built at startup). |
-| `rerank` | bool | Run / skip the reranker stage. |
-| `bm25_top_k` / `vector_top_k` / `tree_top_k` / `kg_top_k` / `rerank_top_k` | int | Override the path-level top-k. |
-| `candidate_limit` | int | Cap on merged candidates passed to rerank. |
-| `descendant_expansion` / `sibling_expansion` / `crossref_expansion` | bool | Toggle tree/cross-ref context expansion after RRF merge. |
-
-**Fusion rule.** Tree + KG are the "primary reasoning" layer. When **both** are off or produced zero hits, retrieval falls back to an RRF of BM25 + vector — so `{"overrides": {"tree_path": false, "kg_path": false}}` yields a lexical/semantic hybrid search with no reasoning-LLM cost.
-
-**Normal response** (`stream: false`):
-
-```json
-{
-  "answer": "The answer text with citations...",
-  "citations": [
-    {
-      "citation_id": "c_1",
-      "chunk_id": "chunk_abc123",
-      "doc_id": "doc_xyz",
-      "page_no": 5,
-      "bbox": {"x0": 72, "y0": 200, "x1": 540, "y1": 280},
-      "snippet": "Relevant text excerpt...",
-      "file_id": "file_001"
-    }
-  ],
-  "conversation_id": "conv_123",
-  "stats": {
-    "retrieval_ms": 450,
-    "generation_ms": 1200,
-    "vector_hits": 15,
-    "tree_hits": 8,
-    "bm25_hits": 12,
-    "merged_chunks": 10
-  }
-}
+```
+{ "type": "agent.turn_start", "turn": 1, "run_id": "..." }
+{ "type": "agent.thought",    "text": "..." }
+{ "type": "tool.call_start",  "id": "...", "tool": "search_vector",
+                              "params": {...} }
+{ "type": "tool.call_end",    "id": "...", "tool": "search_vector",
+                              "latency_ms": 42, "result_summary": {...} }
+{ "type": "answer.delta",     "text": "..." }            // token stream
+{ "type": "agent.turn_end",   "turn": 1, "run_id": "..." }
+{ "type": "done",             "stop_reason": "end_turn",
+                              "total_latency_ms": 1234,
+                              "final_text": "...",
+                              "run_id": "...",
+                              "error": null }
 ```
 
-**Streaming response** (`stream: true`):
+`done` is always the last event — clients close the stream on it.
 
-Returns `text/event-stream` with events:
+**Authz:** standard cookie / bearer auth via the principal
+middleware. Path-filter scoping (folder permissions) resolves
+server-side from the principal — no body field needed.
 
-| Event | Data | Description |
-|-------|------|-------------|
-| `progress` | `{"phase": "query_understanding"}` | Current retrieval phase |
-| `retrieval` | `{"citations": [...], "stats": {...}}` | Retrieval results |
-| `delta` | `{"text": "token"}` | Generated text token |
-| `done` | `{"answer": "...", "citations": [...]}` | Final complete response |
+**Persistence:** when `conversation_id` is provided, the user
+message lands in the `messages` table BEFORE the SSE stream opens
+(so a mid-stream refresh always recovers the question), and the
+final assistant message lands after `done`. An `agent_runs` row
+records the turn for forward-compat lineage queries (Enterprise
+edition only).
 
-**Example (streaming with curl):**
+---
 
-```bash
-curl -N -X POST http://localhost:8000/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the revenue for Q3?", "stream": true}'
+## LLM Proxy
+
+### OpenAI-compatible chat completions
+
 ```
+POST /api/v1/llm/v1/chat/completions
+```
+
+OpenAI-compatible endpoint backed by [litellm](https://github.com/BerriAI/litellm)
+router. Provider keys (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+`GEMINI_API_KEY` / etc.) live in the backend env; clients (the
+in-container Hermes runtime, external SDK callers, anything that
+speaks OpenAI's wire format) only know the proxy URL + a session
+bearer to *our* backend. Useful for:
+
+* In-container agent runtimes pointing at the proxy via
+  `OPENAI_BASE_URL=http://backend:8000/api/v1/llm/v1`
+* Multi-provider routing — caller picks model name (`gpt-4o`,
+  `claude-3-5-sonnet-...`, `gemini-pro`, local OpenAI-compat
+  endpoints), litellm dispatches
+* Centralised usage attribution — every call carries the
+  authenticated `user_id`
+
+**Request body:** standard OpenAI Chat Completions shape — `model`,
+`messages` are required; `temperature`, `tools`, `tool_choice`,
+`max_tokens`, `response_format`, `stream`, etc. all pass through.
+
+**Response:** standard OpenAI Chat Completions response. With
+`stream: true`, returns SSE in OpenAI's format
+(`data: {chunk}\n\n` plus `data: [DONE]\n\n`).
+
+**Errors:**
+* `502` on upstream provider failure (the type name surfaces;
+  raw provider message does not — avoids leaking server-side
+  hints)
+* `503` if litellm isn't installed
+* `422` on schema-invalid body
+
+---
+
+## MCP Server
+
+### Streamable HTTP endpoint
+
+```
+POST /api/v1/mcp
+```
+
+Model Context Protocol server exposing OpenCraig's domain tools
+to any compatible agent runtime. Uses MCP's streamable HTTP
+transport (single endpoint, JSON-RPC 2.0 wire format with optional
+SSE for streaming responses).
+
+**Tools exposed:**
+
+| Name | Purpose |
+|------|---------|
+| `ping` | Diagnostic — confirms reachability + reports authenticated user_id |
+| `search_vector` | Semantic / dense-embedding search over the corpus, scoped to the user's accessible folders |
+| `read_chunk` | Fetch a single chunk's full content by chunk_id |
+| `read_tree` | Navigate a document's section tree |
+| `graph_explore` | Look up an entity / topic in the knowledge graph (with source-doc-coverage postfilter) |
+| `web_search` | Search the public web; results are flagged untrusted (no instruction-following from titles/snippets) |
+| `rerank` | Cross-encoder rerank a candidate chunk set |
+| `import_from_library` | Copy a Library document into a project workdir (project-scoped) |
+
+**Authz:** the principal-bridge ASGI middleware reads
+`request.state.principal` (set by the standard `AuthMiddleware`)
+off the scope and binds it to a per-request `ContextVar`. Each
+tool wrapper builds a fresh `ToolContext` from that — same
+multi-user authz path the SSE chat route uses. Path filters
+resolve to the user's accessible-folder set automatically.
+
+**Connecting from a client:** standard MCP HTTP client config —
+point at `http://<your-host>:8000/api/v1/mcp` with a Bearer token
+in the `Authorization` header. Any tool the user can't access is
+silently filtered before the agent sees the catalogue.
+
+For Hermes Agent (the in-process default), no client config is
+needed — the runtime wrapper at `api/agent/hermes_runtime.py`
+talks to the MCP server in-process via the same registered tool
+table.
 
 ---
 
@@ -471,46 +541,6 @@ GET /api/v1/traces?limit=20&offset=0
 ```
 
 Returns retrieval trace history with timing, phases, and LLM call details.
-
----
-
-## Benchmark
-
-### Start Benchmark
-
-```
-POST /api/v1/benchmark/start
-```
-
-**Request body:**
-
-```json
-{
-  "num_questions": 20
-}
-```
-
-### Get Benchmark Status
-
-```
-GET /api/v1/benchmark/status
-```
-
-Returns current phase, progress, elapsed time, and estimated remaining time.
-
-### Cancel Benchmark
-
-```
-POST /api/v1/benchmark/cancel
-```
-
-### Download Benchmark Report
-
-```
-GET /api/v1/benchmark/report
-```
-
-Returns a JSON report with scores, per-question details, and config snapshot (credentials redacted).
 
 ---
 

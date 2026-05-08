@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.0.0] — 2026-05-09 — Final OSS release
 
+This release reframes OpenCraig as **the permission-aware
+knowledge / context layer for enterprise agent runtimes** —
+the backend any MCP-compatible agent (Hermes, Claude Code, Cursor,
+Cline, custom) plugs into for retrieval that respects your team's
+folder permissions.
+
 This is the final open-source release under AGPLv3. Future
 development continues as **OpenCraig Enterprise (v3.0+)**, a
 separate commercial product. This repo is feature-frozen; security

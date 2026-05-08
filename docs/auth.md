@@ -1,21 +1,46 @@
-# Authentication & Session Management
+# Authentication & Authorization
 
-OpenCraig ships with a minimal, self-contained auth layer. It is designed for
-**single-operator deployments** (one admin, zero multi-tenancy) but the schema
-is multi-user ready so nothing has to be redesigned if that changes later.
+OpenCraig ships a multi-user auth + authz layer where **path is the
+authorization primitive**: folder grants on the corpus tree
+control what each user can read and write, and every retrieval
+call (REST, SSE chat, MCP tool) resolves the principal's
+accessible-folder set BEFORE running the search. There is no
+parallel ACL layer — the path filter IS the authz check.
 
 **TL;DR:**
 
 - Password + session cookie for the web UI.
-- `Authorization: Bearer <sk>` for CLI / SDK / curl — tokens stored in DB.
-- `auth.enabled=false` disables everything (dev on loopback only).
-- First boot with `auth.enabled=true` auto-creates an `admin` user with a
-  **fixed initial password** + a **random bootstrap SK** and prints both to
-  stdout. The web UI forces a password change on first login.
+- `Authorization: Bearer <sk>` for CLI / SDK / external agent runtimes
+  (Claude Code, Cursor, Cline, custom MCP clients) — tokens stored
+  hashed in DB.
+- Folder grants (`shared_with` on each `folders` row, with
+  `role: "r" | "rw"`) are the only authorization data structure.
+  Subfolder grants are a SUPERSET of parent grants (cascaded at
+  write time) so path-prefix filtering at query time stays
+  correct without subtree walks.
+- The `AuthorizationService.resolve_paths(user_id, requested)`
+  helper is the single chokepoint. Every retrieval-bearing
+  endpoint funnels through it; the agent route, MCP wrappers, and
+  REST search all build their `ToolContext` off the resolved
+  set.
+- KG visibility is stricter: an entity / relation whose
+  source-doc set isn't FULLY covered by the user's accessible-doc
+  set is dropped (postfilter, no description redaction). Same
+  rule applies regardless of which surface the agent reaches via.
+- `auth.enabled=false` disables auth entirely — synthesises a
+  local-admin principal for every request. Only use on loopback
+  dev.
+- First boot with `auth.enabled=true` auto-creates an `admin` user
+  with a **fixed initial password** + a **random bootstrap SK**
+  and prints both to stdout. The web UI forces a password change
+  on first login.
 
-Path filtering (`path_filter=/scope`) is a retrieval-scope knob, **not** an
-access-control boundary — see [path-denormalization.md](path-denormalization.md).
-Any authenticated principal can ingest/query anywhere today.
+> **Why path-as-authz, not RBAC?** The corpus IS a tree. Grants
+> on tree nodes flow down naturally. RBAC requires inventing a
+> parallel role hierarchy that doesn't reflect how teams actually
+> organize knowledge. Path-prefix checks are also cheap to apply
+> as a SQL `WHERE doc.path LIKE '/foo/%'` against the indexed
+> `path` column — no extra join, no per-row authz pass.
 
 ---
 

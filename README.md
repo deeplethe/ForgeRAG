@@ -3,10 +3,10 @@
 </p>
 
 <h1 align="center">OpenCraig</h1>
-<h3 align="center">Every claim has a coordinate.</h3>
+<h3 align="center">Permission-Aware Knowledge Context for Enterprise Agents</h3>
 
 <p align="center">
-  Self-hosted document intelligence for the people who can't afford to misquote. Every answer cites the page + bounding box it came from — on your servers, your LLM keys, your data.
+  The knowledge backend your agents plug into. Path-scoped retrieval enforces your team's existing folder permissions on every search, KG walk, and citation — so an agent that calls our MCP tools can only see what its authenticated user can see. Self-hosted, MCP-native, multi-user from day one.
 </p>
 
 <p align="center">
@@ -49,15 +49,22 @@
 
 ## ✨ Why OpenCraig
 
-| You're using | Good for | Where OpenCraig differs |
-|---|---|---|
-| **ChatGPT / Claude with PDF uploads** | Casual one-off Q&A on a few files | Persistent multi-document workspace, multi-user, knowledge graph, runs on your servers |
-| **Notion AI / Mendable** | SaaS-first teams who don't mind cloud | Your corpus stays local; pixel-precise citations; KG retrieval; no SaaS subscription |
-| **Glean** | Big-co enterprise search | Glean is five-figures-USD/year + needs an enterprise admin team; OpenCraig serves a department, a lab, or a single professional |
-| **AnythingLLM** | OSS self-host RAG | The closest peer — OpenCraig goes deeper on KG/tree retrieval, citation precision, and folder-grant multi-user |
-| **Hand-rolled embedding RAG** | "We have a Python team" | Skip 6 months of work: KG extraction, tree retrieval, citation pipeline, multi-user authz, recycle bin, audit log, setup wizard — already shipped |
+OpenCraig is positioned as **the knowledge / context layer for enterprise agent runtimes**, not as a chat product. The differentiation is at the seams between three things existing tools usually have only one of: **multi-user permission topology**, **MCP-native tool surface**, and **structured retrieval with bbox-precise citations**.
 
-> Compared to **GraphRAG (Microsoft)** — OpenCraig productises the multi-hop KG idea (parallel KG retrieval lane fused via RRF) instead of leaving it as a research library. Tree retrieval is influenced by **PageIndex** but reuses a tree built once at ingest, not per query.
+| You're using | What it gives you | What it doesn't |
+|---|---|---|
+| **Claude Code / Cursor / Cline alone** | Mature agent runtime + great built-in tools | Single-user; no team knowledge backend; no permission scoping when reading shared docs |
+| **Hermes Agent / OpenClaw alone** | Self-hostable agent runtime, MIT-licensed | Same as above — runtime without a team-shared knowledge layer |
+| **Notion AI / Glean / Mendable** | Polished search UX, SaaS-managed | Closed source; not MCP; agents can't plug in; corpus on someone else's servers |
+| **AnythingLLM / RAGFlow / GraphRAG** | OSS self-host RAG | Single-user (or shallow multi-user); no permission-scoped retrieval; not exposed as MCP tools that respect per-user authz |
+| **LangChain / LlamaIndex** | Building blocks | A library, not a knowledge backend. You'd need to build everything OpenCraig already shipped (folder authz, KG visibility, ingestion pipeline, MCP server) |
+| **Hand-rolled embedding RAG** | "We have a Python team" | Skip 6 months of plumbing: path-as-authz, KG extraction with visibility-aware filtering, structured chunking, MCP wrappers, multi-user permission UI |
+
+**The OpenCraig category is "permission-aware knowledge context for agents":**
+
+- **Path-as-authz** — folder grants are the only authorization primitive; every retrieval call resolves the principal's accessible-folder set BEFORE running the search (prefilter on vector / BM25 / tree-nav) and AFTER materialising KG entities (postfilter — entities whose source-doc set isn't fully covered by the user's grants are dropped, no description redaction)
+- **MCP-native** — `/api/v1/mcp` exposes search / KG / library tools to any compatible agent runtime (Hermes today, Claude Code / Cursor / Cline tomorrow). Per-connection auth scopes the ToolContext to the right user.
+- **Structured retrieval, not text blob** — chunks know their bbox, tree position, source page; KG entities know their source chunks; citations open the PDF at the exact rectangle.
 
 ---
 

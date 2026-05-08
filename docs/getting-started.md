@@ -2,6 +2,22 @@
 
 This guide walks you through installing OpenCraig, running it locally, and ingesting your first document.
 
+## Two ways to use OpenCraig
+
+Once installed, OpenCraig serves two distinct usage modes — pick
+either or both depending on how your team wants to interact with
+the corpus.
+
+| Mode | What you do | Who hits what |
+|------|-------------|--------------|
+| **Web UI + chat** | Open `http://localhost:8000` in a browser, log in, drop documents in the Workspace, ask questions in the Chat tab | Browser → `/api/v1/agent/hermes-chat` (the in-process Hermes Agent runtime + MCP server) |
+| **External agent + MCP** | Configure your own agent runtime (Claude Code, Cursor, Cline, custom MCP client) to point at OpenCraig as a knowledge backend | Agent → `/api/v1/mcp` for retrieval tools (per-user authz applied automatically); optionally → `/api/v1/llm/v1/chat/completions` for OpenAI-compatible LLM calls routed through your provider keys |
+
+Both modes share the same multi-user permission topology: an agent
+running on behalf of `alice` only ever sees docs in folders alice
+has been granted, regardless of which mode is in use. See
+[`auth.md`](auth.md) for the path-as-authz model.
+
 ## Prerequisites
 
 | Requirement | Version | Notes |

@@ -3,10 +3,10 @@
 </p>
 
 <h1 align="center">OpenCraig</h1>
-<h3 align="center">每一句话，都能指回原文。</h3>
+<h3 align="center">企业级 Agent 的权限感知知识层</h3>
 
 <p align="center">
-  自托管的文档智能引擎，为不能误引的工作场景而建。每个回答都附**页码 + bbox** 出处 —— 跑在你自己的服务器、你自己的 LLM key、你自己的数据上。
+  Agent 接入的知识后端。基于路径的检索收敛在每次搜索、KG 遍历、引用上强制施加你团队既有的文件夹权限——任何调我们 MCP 工具的 agent，只能看到它对应用户能看到的内容。自托管、MCP 原生、天生多用户。
 </p>
 
 <p align="center">
@@ -45,15 +45,22 @@
 
 ## ✨ 为什么
 
-| 你正在用 | 适合什么 | OpenCraig 的不同 |
-|---|---|---|
-| **ChatGPT / Claude 上传 PDF** | 几个文件的临时问答 | 持久多文档工作区、多用户、含知识图谱、跑在你自己服务器上 |
-| **Notion AI / Mendable** | SaaS 优先、不介意上云的小团队 | 语料留在本地；像素级引用；KG 检索；没有 SaaS 订阅 |
-| **Glean** | 大企业内部搜索 | Glean 是五位数美金/年起 + 需要企业 admin 团队；OpenCraig 服务一个部门、一个实验室、或一个独立专业人士 |
-| **AnythingLLM** | OSS 自托管 RAG | 最接近的同类 —— OpenCraig 在 KG/树检索深度、引用精度、文件夹级多用户授权上更深 |
-| **手搓 embedding RAG** | "我们有 Python 团队" | 省掉 6 个月工作：KG 抽取、树检索、引用流水线、多用户 authz、回收站、审计日志、Setup 向导 —— 都已经发布 |
+OpenCraig 的定位是**企业级 Agent runtime 的知识 / 上下文层**，不是聊天产品。差异化在三件事的接缝处——大部分现有工具只占其中一个：**多用户权限拓扑**、**MCP 原生工具面**、**带 bbox 精度引用的结构化检索**。
 
-> 对比 **GraphRAG（微软）** —— OpenCraig 把"多跳 KG 检索"这个思路产品化（独立 KG 检索路 + RRF 融合）而不是留在研究 library。树检索受 **PageIndex** 启发，但树**只在入库时建一次**，不在每次查询时重建。
+| 你正在用 | 它给你什么 | 它没有的 |
+|---|---|---|
+| **Claude Code / Cursor / Cline 单独用** | 成熟的 agent runtime + 优秀的内置工具 | 单用户；没有团队知识后端；读共享文档时不做权限收敛 |
+| **Hermes Agent / OpenClaw 单独用** | 自托管 agent runtime，MIT | 同上——只有 runtime，没有团队知识层 |
+| **Notion AI / Glean / Mendable** | 漂亮的搜索 UX，SaaS 托管 | 闭源；不是 MCP；agent 接不进；语料在别人服务器上 |
+| **AnythingLLM / RAGFlow / GraphRAG** | OSS 自托管 RAG | 单用户（或浅多用户）；没有权限收敛的检索；没有把工具 expose 成尊重每用户授权的 MCP |
+| **LangChain / LlamaIndex** | 积木 | 库不是后端。OpenCraig 已发布的（文件夹授权、KG 可见性、入库流水线、MCP server）你都得自己再造 |
+| **手搓 embedding RAG** | "我们有 Python 团队" | 省掉 6 个月底层工作：path-as-authz、可见性收敛的 KG 抽取、结构化切块、MCP 包装、多用户权限 UI |
+
+**OpenCraig 的品类是"权限感知的 Agent 知识上下文层"：**
+
+- **路径即权限** —— folder grants 是唯一的授权 primitive；每次检索调用都先把 principal 的可访问文件夹集解出（在 vector / BM25 / tree-nav **检索前** prefilter），再把 KG 实体物化（**取实体后** postfilter——source-doc 集合没被该用户授权完全覆盖的实体直接丢弃，不做"描述脱敏"降级）
+- **MCP 原生** —— `/api/v1/mcp` 把搜索 / KG / library 工具暴露给任意兼容的 agent runtime（今天是 Hermes，明天可以是 Claude Code / Cursor / Cline）。每条连接的 auth 把 ToolContext 收敛到对应用户。
+- **结构化检索，不是文本团** —— chunk 知道自己的 bbox、树位置、源页；KG 实体知道自己的源 chunks；引用直接打开 PDF 到精确矩形。
 
 ---
 

@@ -1,14 +1,62 @@
 # Architecture Overview
 
-OpenCraig is built around three core pipelines — **Ingestion**, **Retrieval**, and **Answering** — connected through a unified persistence layer. This document explains how each pipeline works and how they fit together.
+OpenCraig is **the permission-aware knowledge / context layer that
+enterprise agent runtimes plug into**. It's not a chat product —
+it's the backend that gives an agent (Hermes today, Claude Code /
+Cursor / Cline / custom tomorrow) the ability to retrieve from a
+team's shared corpus while respecting that team's existing folder
+permissions on every call.
+
+The system has three layers:
+
+* **Ingestion** — turns uploaded docs into structured chunks, a
+  section tree, and a knowledge graph
+* **Retrieval surface** — exposes those structures through MCP tools
+  (vector / KG / tree-nav / read_chunk / etc.) that any agent
+  runtime can call
+* **Permission topology** — folder grants are the only authorization
+  primitive; every retrieval call enforces them via path-prefix
+  prefiltering on the search side and source-doc-coverage
+  postfiltering on the KG side
+
+This document walks each layer top-down.
 
 ## Design Philosophy
 
-1. **Structure-aware processing** — Documents have hierarchy (chapters, sections, subsections). OpenCraig preserves and leverages this structure throughout the pipeline, from parsing to retrieval.
+1. **Path-as-authz is the foundation, not a feature.** Every
+   retrieval path takes a `path_filters` parameter — derived from
+   the authenticated user's accessible-folder set — and applies it
+   BEFORE running the search (vector / BM25 / tree-nav prefilter)
+   or AFTER materialising results (KG postfilter, where entities
+   whose source-doc set isn't fully covered get dropped). There is
+   no separate "ACL check" layer; the authz IS the query shape.
 
-2. **Dual-reasoning retrieval** — BM25 and vector search provide fast pre-filtering; LLM tree navigation and knowledge graph inference perform deep reasoning on the pre-filtered results. Results are fused via Reciprocal Rank Fusion.
+2. **Agentic retrieval, not a fixed pipeline.** Older designs ran
+   BM25 + vector + KG + tree-nav in parallel and fused via RRF.
+   Today the agent picks tools per question — it might just call
+   `read_tree` + `read_chunk` for "what's in section 3.2",
+   lead with `graph_explore` for "how does X relate to Y across
+   the corpus", chain several tools across iterations for multi-hop
+   work. RRF fusion still exists inside the multi-path search route
+   used by the file-search UI, but it's not the agent's path.
 
-3. **Full customizability** — Every pipeline stage, every retrieval path, every LLM call is independently configurable via YAML. Per-request retrieval overrides (`QueryOverrides` on `/api/v1/query`) let callers toggle paths or bump top-ks without mutating global config — convenient for A/B and SDK clients.
+3. **MCP-native tool surface.** The retrieval surface is exposed at
+   `/api/v1/mcp` as Model Context Protocol tools, not just an
+   internal API. Any compatible agent runtime — Hermes (the OSS
+   default), Claude Code, Cursor, Cline — connects with a session
+   bearer and gets the user-scoped tool catalogue automatically.
+   The principal-bridge ASGI middleware reads the authenticated
+   identity off the scope, sets a ContextVar, and every tool wrapper
+   builds its `ToolContext` from that — same authz path the legacy
+   in-process callers used.
+
+4. **Structure-aware processing.** Documents have hierarchy
+   (chapters, sections, subsections). OpenCraig preserves and
+   leverages this structure throughout the pipeline, from parsing
+   to retrieval.
+
+5. **Full customizability.** Every pipeline stage and LLM call is
+   independently configurable via YAML.
 
 ## System Overview
 
