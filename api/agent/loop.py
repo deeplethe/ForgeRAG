@@ -179,13 +179,23 @@ class AgentLoop:
         ctx: ToolContext,
         *,
         history: list[dict] | None = None,
+        system_prompt: str | None = None,
     ) -> Iterator[dict]:
         """Generator yielding loop events. Final yield has
         ``type: "done"`` and carries the summary.
 
+        ``system_prompt`` overrides the default ``SYSTEM_PROMPT``
+        when supplied; Phase 1.6 uses this to inject a project-
+        context block when the conversation is bound to a project
+        (see ``api/agent/prompts.py::build_system_prompt``). When
+        omitted, the agent gets the unmodified base prompt — the
+        plain-Q&A path stays bit-identical.
+
         See module docstring for the event vocabulary.
         """
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = [
+            {"role": "system", "content": system_prompt or SYSTEM_PROMPT}
+        ]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_message})

@@ -244,9 +244,24 @@ def agent_chat(
     tokens_in_box = [0]
     tokens_out_box = [0]
 
+    # Phase 1.6: when the conversation is bound to a project, augment
+    # the agent's system prompt with project context (name + workdir
+    # file list). Plain unbound chats fall through with system_prompt=
+    # None so the base SYSTEM_PROMPT is used unchanged.
+    system_prompt: str | None = None
+    if conv_id is not None:
+        try:
+            system_prompt = _build_system_prompt_for_conversation(
+                state, principal, conv_id
+            )
+        except Exception:
+            log.exception("agent: project-context system prompt failed")
+
     def _worker() -> None:
         try:
-            for evt in loop.stream(body.message, ctx, history=history):
+            for evt in loop.stream(
+                body.message, ctx, history=history, system_prompt=system_prompt
+            ):
                 kind = evt.get("type")
                 if kind == "answer":
                     final_answer[0] = evt.get("text") or final_answer[0]
@@ -384,6 +399,161 @@ def _agent_config_for(state: AppState) -> AgentConfig:
         cfg.api_key = getattr(gen, "api_key", None)
         cfg.api_base = getattr(gen, "api_base", None)
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# Project-context system prompt (Phase 1.6)
+# ---------------------------------------------------------------------------
+
+
+# How many workdir files to enumerate inline. Past this we summarise
+# ("…plus N more") to keep the prompt token budget reasonable. The
+# top-level workdir typically has <30 entries; the per-doc-flat
+# enumeration is for users who genuinely have hundreds of files.
+_WORKDIR_FILE_LIMIT = 30
+
+
+def _build_system_prompt_for_conversation(
+    state: AppState,
+    principal: AuthenticatedPrincipal,
+    conv_id: str,
+) -> str | None:
+    """Return the augmented system prompt for a conversation, or
+    None when the conversation is unbound / inaccessible.
+
+    Loads:
+      * Conversation row → project_id (None means unbound; return None)
+      * Project row → name + description
+      * Project workdir top-level listing (paths + sizes) — up to
+        ``_WORKDIR_FILE_LIMIT`` entries
+    Constructs the project-context block via prompts.build_system_prompt.
+
+    Failure modes (missing project, unreadable workdir, listing
+    error) all degrade to "no project context" — agent falls back to
+    base SYSTEM_PROMPT cleanly.
+    """
+    from pathlib import Path
+
+    from persistence.project_file_service import ProjectFileService
+    from persistence.project_service import ProjectNotFound, ProjectService
+
+    from ..agent.prompts import build_system_prompt
+
+    conv = state.store.get_conversation(conv_id)
+    if not conv:
+        return None
+    project_id = conv.get("project_id")
+    if not project_id:
+        return None
+
+    is_admin = (
+        not state.cfg.auth.enabled
+        or principal.role == "admin"
+        or principal.via == "auth_disabled"
+    )
+    projects_root = Path(
+        getattr(state.cfg.agent, "projects_root", "./storage/projects")
+    )
+
+    with state.store.transaction() as sess:
+        psvc = ProjectService(
+            sess,
+            projects_root=projects_root,
+            actor_id=principal.user_id,
+        )
+        try:
+            proj = psvc.require(project_id)
+        except ProjectNotFound:
+            return None
+        if not psvc.can_access(
+            proj, principal.user_id, "read", is_admin=is_admin
+        ):
+            return None
+
+        # List the conventional subdirs (inputs / outputs / scratch)
+        # and their immediate contents — enough for the agent to know
+        # what files exist without a full recursive walk.
+        fsvc = ProjectFileService(
+            sess,
+            project=proj,
+            projects_root=projects_root,
+            actor_id=principal.user_id,
+        )
+        listed_files: list[tuple[str, int]] = []  # (rel_path, size_bytes)
+        for subdir in ("inputs", "outputs", "scratch"):
+            try:
+                entries = fsvc.list(subdir)
+            except Exception:
+                continue
+            for e in entries:
+                if e.is_dir:
+                    continue
+                listed_files.append((e.path, e.size_bytes))
+                if len(listed_files) >= _WORKDIR_FILE_LIMIT:
+                    break
+            if len(listed_files) >= _WORKDIR_FILE_LIMIT:
+                break
+
+    block = _format_project_block(
+        name=proj.name,
+        description=proj.description,
+        files=listed_files,
+        truncated=len(listed_files) >= _WORKDIR_FILE_LIMIT,
+    )
+    return build_system_prompt(project_context=block)
+
+
+def _format_project_block(
+    *,
+    name: str,
+    description: str | None,
+    files: list[tuple[str, int]],
+    truncated: bool,
+) -> str:
+    """Render the project context block for the system prompt.
+
+    Format is deliberately plain text — no markdown headers (those
+    can confuse some LLMs into copying them into answers); just
+    short labelled lines that read naturally as instructions. The
+    Phase-2 caveat is explicit so the agent doesn't hallucinate
+    file-IO tools it doesn't have yet.
+    """
+    lines: list[str] = ["PROJECT CONTEXT:"]
+    lines.append(f"You are working in the user's project \"{name}\".")
+    if description:
+        lines.append(f"Project description: {description}")
+    if not files:
+        lines.append("The project workdir is currently empty.")
+    else:
+        lines.append("Project workdir contains:")
+        for path, size in files:
+            lines.append(f"  - {path} ({_fmt_size(size)})")
+        if truncated:
+            lines.append(
+                f"  …plus more files (showing first {_WORKDIR_FILE_LIMIT})."
+            )
+    lines.append("")
+    lines.append(
+        "IMPORTANT — Phase 1: you can already retrieve from the Library "
+        "(search_vector / read_chunk / graph_explore / read_tree as usual). "
+        "You CANNOT yet directly read these project workdir files, run code "
+        "against them, or create new ones — those tools (python_exec, "
+        "read_file, write_file, import_from_library) ship in Phase 2. "
+        "If the user asks you to operate on a workdir file, explain that "
+        "the agent can see the file exists but can't yet open or process "
+        "it; offer to retrieve relevant Library content instead."
+    )
+    return "\n".join(lines)
+
+
+def _fmt_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    return f"{n / (1024 * 1024 * 1024):.1f} GB"
 
 
 # ---------------------------------------------------------------------------

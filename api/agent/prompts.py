@@ -32,6 +32,34 @@ meta-policy: which tool to pick when, and when to skip tools entirely.
 
 from __future__ import annotations
 
+def build_system_prompt(project_context: str | None = None) -> str:
+    """Compose the full system prompt for an agent turn.
+
+    Phase 1.6 augments the base prompt with a per-project context
+    block when the conversation is bound to an agent-workspace
+    project (``Conversation.project_id`` non-null). The block tells
+    the LLM:
+      * which project it's "working on" (name + description)
+      * what files are in the project's workdir (paths + sizes)
+      * what it can/can't yet do with those files (Phase-2 caveat)
+
+    The base prompt is unchanged for plain Q&A chats so the existing
+    Library-retrieval behaviour stays bit-identical.
+
+    Phase 4's plan-mode orchestrator will further augment this with
+    plan summary + step context per executor call (see "Per-step
+    context bounding" in docs/roadmaps/agent-workspace.md).
+    """
+    if not project_context:
+        return SYSTEM_PROMPT
+    # Project block goes BEFORE the corpus-retrieval rules so the
+    # LLM sees its scope ("you're in this project") before the
+    # default-retrieve heuristic. The retrieve heuristic still
+    # applies to Library queries; the project block adds workdir
+    # awareness on top.
+    return project_context.rstrip() + "\n\n---\n\n" + SYSTEM_PROMPT
+
+
 SYSTEM_PROMPT = """You are a document Q&A assistant. The user uploaded a corpus of documents and expects answers grounded in THAT corpus, with citations to specific passages — not generic knowledge from your training data.
 
 DEFAULT: RETRIEVE. For each user message, your starting assumption is to search the corpus. Direct-answer is a narrow exception.
