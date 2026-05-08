@@ -317,12 +317,21 @@ def upgrade() -> None:
     )
 
     # ── conversations.project_id ──────────────────────────────────
+    # SQLite batch-alter rejects anonymous FK constraints — name the
+    # constraint explicitly so ``ALTER TABLE … ADD CONSTRAINT`` (the
+    # batch-mode rebuild that SQLite uses internally) round-trips
+    # cleanly across both Postgres and SQLite. Postgres ignores the
+    # name beyond display purposes; SQLite requires it.
     with op.batch_alter_table("conversations") as batch:
         batch.add_column(
             sa.Column(
                 "project_id",
                 sa.String(32),
-                sa.ForeignKey("projects.project_id", ondelete="SET NULL"),
+                sa.ForeignKey(
+                    "projects.project_id",
+                    ondelete="SET NULL",
+                    name="fk_conversations_project_id",
+                ),
                 nullable=True,
             )
         )
