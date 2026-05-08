@@ -477,6 +477,186 @@ Neither is in Phase 0–6 scope.
 
 ---
 
+## Context & memory strategy
+
+A long agent run is the easiest place to burn money + lose
+correctness. Most of what looks like "we need agent memory" is
+actually a context-management problem with a clean answer once you
+see where state actually lives.
+
+### State lives in four layers, not one
+
+| Layer | Persistence | Capacity | Cost | What's there |
+|---|---|---|---|---|
+| **LLM context** | Per call | 200k tokens (Sonnet) | $$$ — re-read every call | Reasoning chain, the *current* tool calls + results |
+| **`ipykernel` RAM** | Container lifetime | Host RAM | Free | DataFrames, loaded models, open file handles, imported modules |
+| **Project workdir on disk** | Permanent | Disk | Free | Artifacts, intermediate CSVs, plots, downloaded files |
+| **DB (`agent_runs` / `agent_run_steps`)** | Permanent | DB | Free | Plan, completed-step audit, token + cost totals |
+
+The architectural gift from picking **per-project ipykernel +
+bind-mount workdir**: most "state" lives in layers 2–4. The LLM
+context only needs the *current step's* working set. A run that
+loads a 50-MB DataFrame, runs ten transformations on it, and saves
+a chart spends almost no context tokens on the DataFrame itself —
+`df` lives in the kernel; only `df.head()` outputs flow through
+context.
+
+### What actually blows the context budget
+
+Three failure modes — each with a targeted fix:
+
+1. **Multi-step reasoning chain accumulates.** A 30-step plan
+   where every step's tool calls + results stay verbatim in
+   context. → **Plan mode + per-step context bounding** (Phase 4).
+2. **Library retrieval results dumped into context.** Search
+   returns 50 chunks × 500 tokens = 25k tokens, only 3 are
+   actually useful. → Retrieved chunks land as **chunk references**
+   the agent can `read_chunk` on demand, not as inline content.
+3. **Error retry loops.** Each failed `python_exec` repushes the
+   stack trace into context. → **Reflect node** detects "this
+   error has appeared 3× already" and forces a strategy change.
+
+### Phase 2 — do nothing yet
+
+Native 200k context + kernel state covers the Phase 2 demo target
+("analyze this CSV and plot it"). No plan mode, no compaction, no
+per-step bounding. **Don't pre-engineer**; the kernel is already
+doing 80% of the work.
+
+If a Phase 2 user hits the context wall, the kernel pattern says
+the right answer is "tell the agent to dump intermediate state to
+a file, fresh-start the conversation, read the file back" — which
+is the kernel-as-memory behaviour we want anyway.
+
+### Phase 4 — Plan-Execute-Reflect with bounded steps
+
+Three pieces, all landing together:
+
+**(A) Plan mode (structured `plan_json`)**
+
+Two-LLM-call pattern:
+1. **Planner** reads user request + project context + tool catalog,
+   emits structured plan
+2. **Executor** walks the plan step-by-step
+
+`agent_runs.plan_json` shape (already in 0.2 schema):
+
+```jsonc
+{
+  "version": 1,
+  "user_request": "Analyze Q3 sales by region and produce a chart",
+  "context": {
+    "project_id": "...",
+    "library_paths_in_scope": ["/sales/q3/"],
+    "files_already_in_workdir": ["sales_q3.xlsx"]
+  },
+  "steps": [
+    {"index": 0, "kind": "library_search",       "goal": "...", "expected_output": "list of doc_ids"},
+    {"index": 1, "kind": "import_from_library",  "depends_on": [0]},
+    {"index": 2, "kind": "python_exec",          "goal": "load + group by region"},
+    {"index": 3, "kind": "python_exec",          "goal": "plot + save outputs/q3_by_region.png"},
+    {"index": 4, "kind": "summarize",            "goal": "markdown summary"}
+  ],
+  "termination": {
+    "max_steps": 10,
+    "max_cost_usd": 2.00,
+    "max_wall_seconds": 600
+  }
+}
+```
+
+**HITL gate** between Plan and Execute: opt-in via project setting.
+The plan renders in the chat UI as a checklist; user can edit /
+approve / cancel before any tool runs. Mirrors Claude Computer
+Use's "I'm about to do these steps, OK?" pattern.
+
+**Plan revision**: if a step fails irrecoverably, Reflect kicks
+the planner back in with the failure context to produce a revised
+tail of the plan (steps after the failure index).
+
+**(B) Per-step context bounding**
+
+Each Executor LLM call gets:
+* System prompt (~3k)
+* Plan summary (~2k)
+* Completed-step one-liner summaries × N (~5k)
+* This step's `goal` + `expected_output` (~1k)
+* Tool catalog (~3k)
+* Tool calls + results within THIS step only (~5–50k)
+
+Average ~30k tokens per step → comfortably under 200k → cheap +
+fast + accurate (avoids the empirical lost-in-the-middle accuracy
+drop past ~150k).
+
+**(C) Auto-compaction at 75% threshold (within a step)**
+
+Backstop for cases where one step's tool result is huge (a
+`python_exec` printing 100k rows of a DataFrame). When the step's
+running context hits 75% of the model's window:
+1. Trigger summarize-and-drop using the same LLM (or a cheap
+   sidecar like Haiku 4)
+2. Keep system prompt + plan + last 3 turns verbatim
+3. Earlier turns get replaced by a structured summary block
+
+Config: `agent.context_management.compaction_threshold: 0.75` (off
+by default until Phase 4 ships).
+
+Pattern is exactly what Claude Code does at ~155k / 78%; we
+don't need to invent it.
+
+**(D) Cost ceiling — more important than memory**
+
+A buggy plan running unattended at $0.60/call is a real risk.
+Phase 4 enforces:
+* Per-project budget cap (operator config: default $5/run, $50/day)
+* Plan-time cost preview ("this plan estimates 8 LLM calls × ~30k
+  tokens = ~$0.50") shown to the user before Execute
+* Hard pause when run approaches cap; user confirms to continue
+* `agent_runs.total_cost_usd` enforced at step boundary
+
+### Phase 7+ — cross-session agent memory (deferred, possibly never)
+
+"Agent memory" in the popular sense — Letta / MemGPT / Mem0
+"the agent learns user preferences across sessions and surfaces
+them automatically" — is **not on our roadmap**. Reasoning:
+
+1. **The other four layers already are memory.** The Library is
+   semantic memory (operator-curated knowledge); the project
+   workdir is episodic memory (what we did last session); plan
+   templates (Phase 7+ if ever) would be procedural memory. All
+   transparent, inspectable, editable.
+2. **Self-hosted scale doesn't earn it.** ChatGPT's memory layer
+   exists because they have hundreds of millions of users
+   generating preference signal. Our deployments have 5–50.
+3. **It opens a privacy / accountability hole.** "When does the
+   agent decide to write a memory? What if it's wrong? Can the
+   user inspect / edit / delete every memory?" — these are real
+   questions with non-trivial answers, and getting them wrong
+   loses customer trust.
+4. **Cross-project leakage.** A memory like "Alice prefers tables"
+   that bleeds into Alice's work on a different project — or
+   worse, into a project where Alice is a viewer of someone
+   else's workdir — is exactly the kind of subtle authz bug a
+   self-hosted product can't afford.
+
+If a customer eventually asks for it, the integration story is:
+plug Letta or Mem0 in as a tool the agent calls (`recall(query)` /
+`remember(fact)`), keep the storage in our DB so it's
+operator-auditable, gate writes on user confirmation. Not a
+Phase 0–6 task.
+
+### The "memory" taxonomy, mapped to OpenCraig
+
+| Memory kind | Where it lives | Who manages it |
+|---|---|---|
+| **Working memory** (this step) | LLM context | LLM itself |
+| **Episodic memory** (this run) | `agent_run_steps` DB + workdir files | Service layer auto-writes |
+| **Semantic memory** (facts that matter) | Library | User curates |
+| **Procedural memory** (how to do this kind of work) | None today; Phase 7+ might add prompt templates per project type | n/a |
+| **Cross-session preference** | None — and probably never | n/a |
+
+---
+
 ## Data model
 
 ```
@@ -606,7 +786,7 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 | **1** | Workspace UI = file manager over project workdir; manual "import from Library" UI; Chat ↔ Project binding | User can create a Project, pull a Library doc into it, open a chat against it |
 | **2** | `python_exec` + `bash_exec` + `install_runtime` + **`import_from_library`** via per-user Docker container (userns-remap) + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed; per-user `.envs/` volume for lazy R/Julia/Node | "Find Q3 sales and analyze it" works end-to-end (Library search → import → python_exec → chart) |
 | **3** | Local file I/O tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` | Agent freely manipulates project workdir; can push artifacts back to Library |
-| **4** | Plan-Execute-Reflect orchestrator; long-running runs; HITL gates | "Compare these 5 contracts and produce a tracker xlsx" works |
+| **4** | Plan-Execute-Reflect orchestrator with structured `plan_json`; per-step context bounding; auto-compaction at 75% threshold; cost ceiling + plan-time cost preview; HITL gate (opt-in) | "Compare these 5 contracts and produce a tracker xlsx" works without context blow-up; runs over budget pause for confirmation |
 | **5** | Web search (default-on) + fetch_url + injection defense | Agents can pull external sources |
 | **6** | Artifact lineage UI; project export; cost dashboard | Sale-ready polish (no built-in templates — operator drives use cases) |
 
@@ -1020,7 +1200,8 @@ in the next two months."
 |---|---|---|---|
 | Sandbox escape (Phase 2) | Low if Docker right; high if subprocess | Critical | Phase 2 must include external security review before merge |
 | Long-running tasks lose state on worker crash | Medium | High | Phase 4 must persist `agent_runs` state machine to DB; resume on boot |
-| Cost runaway from agentic loops | High | High | Phase 0 already adds `total_cost_usd` column; Phase 4 adds per-project budget cap + plan-time cost preview |
+| Cost runaway from agentic loops | High | High | Phase 0 already adds `total_cost_usd` column; Phase 4 enforces per-project budget cap + plan-time cost preview + hard-pause at threshold + user-confirm to continue. Treated as more important than memory features. |
+| Long-context blow-up on multi-step plans | Medium | High | Phase 4 ships per-step context bounding (planner emits `plan_json`, executor only sees current step's working set + summarized history) + auto-compaction at 75% threshold. Phase 2 relies on native 200k + ipykernel state offloading; if that's not enough we accelerate Phase 4. |
 | Naming churn confuses existing users | Medium | Low | Phase 0 ships the redirect `/workspace → /library`; keep it for 6 months |
 | Docker isn't available in some operator environments | Medium | Medium | Phase 2 ships with Docker-only support; document `code_execution.enabled: false` config flag for operators who need to disable |
 | Library doc imported into a project survives that doc being deleted from Library | Medium | Low | Artifact rows hold a copy of the blob (content-addressed); the import doesn't soft-link. Lineage records the source doc_id but the file in `inputs/` is independent. Documented as a feature: "deleting a Library doc doesn't break in-flight project work." |
