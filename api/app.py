@@ -50,7 +50,6 @@ try:
 except Exception:
     pass
 
-from .routes import agent as agent_routes
 from .routes import chunks as chunk_routes
 from .routes import conversations as conversation_routes
 from .routes import documents as document_routes
@@ -248,7 +247,6 @@ def create_app(
     app.include_router(document_routes.router)
     app.include_router(chunk_routes.router)
     app.include_router(conversation_routes.router)
-    app.include_router(agent_routes.router)
     app.include_router(search_routes.router)
     app.include_router(system_routes.router)
     app.include_router(trace_routes.router)

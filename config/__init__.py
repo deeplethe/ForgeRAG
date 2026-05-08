@@ -15,7 +15,6 @@ Typical usage:
 from .agent import AgentConfig
 from .answering import AnsweringSection, GeneratorConfig
 from .app import AppConfig
-from .benchmark import BenchmarkConfig
 from .embedder import (
     EmbedderConfig,
     LiteLLMEmbedderConfig,
@@ -78,7 +77,6 @@ __all__ = [
     "AppConfig",
     "BM25Config",
     "BackendsConfig",
-    "BenchmarkConfig",
     "BraveConfig",
     "ChromaConfig",
     "ChunkerConfig",
