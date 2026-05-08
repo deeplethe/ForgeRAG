@@ -1,64 +1,118 @@
 # Roadmap: Agent Workspace (Multi-Agent Production System)
 
-**Status:** Phase 2 — pivoted (2026-05-09)
+**Status:** Phase 2 — pivoted to Hermes (2026-05-09); shipping B-MVP first, layering C on top
 **Last updated:** 2026-05-09
 
-> ## ⚠️ Pivot — 2026-05-09: Hermes Agent in container
+> ## ⚠️ Strategic positioning — 2026-05-09: B-then-C
 >
-> Phase 2.3–2.7 originally built our own agent runtime: KernelManager
-> (per-(user, project) ipykernel via jupyter_client + ZMQ),
-> `python_exec` + `bash_exec` tools, IPython-display-data rich-output
-> capture. That work is now **torn out**.
+> After the Hermes pivot we faced a real product question: **what's
+> the moat?** Three viable framings:
 >
-> **New direction:** install
-> [Hermes Agent](https://github.com/NousResearch/hermes-agent) (MIT, Nous
-> Research) inside the per-user sandbox container as the agent runtime.
-> Hermes brings:
+> | Framing | What we sell | Demoable in |
+> |---|---|---|
+> | **A. Team RAG with agent-attached** | Library quality + structured citations; agent is a feature | ~2 weeks |
+> | **B. Self-hostable team Claude Code with knowledge attached** | Multi-user agent that can search team docs + run code | ~3–4 weeks |
+> | **C. Agentic Knowledge OS** | The integration itself: knowledge ↔ agent ↔ artifacts, end-to-end auditable, with promote-back-to-library | ~5–7 weeks |
 >
-> * Mature agent loop (think / call tool / observe, error recovery,
->   token-budget management) — months of upstream engineering we'd
->   otherwise duplicate badly
-> * 40+ built-in tools (Read / Edit / MultiEdit / Glob / Grep / Bash /
->   WebFetch / WebSearch / etc.) — every one is a week of work to
->   build well
-> * First-class MCP support for plugging in our domain tools
-> * Multi-LLM provider support (incl. user-supplied endpoints)
+> **Decision:** ship **B** as the MVP demo (3–4 weeks out), with C as
+> the destination. The strategic narrative we tell is **C**; the
+> first demo we *show* is **B**. Critically: **B is a strict subset
+> of C** — there's no rework if we keep the right hooks in place.
 >
-> **Our remaining job:**
+> ### What B gets you
 >
-> 1. **MCP server** (backend route `/mcp/<conv_id>`) exposing our
->    domain capabilities — `search_chunks`, `search_kg`, `search_bm25`,
->    `get_doc_chunks`, `graph_explore`, `retrieve_for_qa`,
->    `search_artifacts`, `get_artifact`, `import_from_library`. Per-
->    connection auth scopes the ToolContext to the right user.
-> 2. **LLM proxy** (backend route `/llm/v1/*`) — OpenAI-compatible
->    endpoint backed by litellm router; uses our keys, billed centrally.
-> 3. **Container integration** — `pip install hermes-agent==0.13.0` in
->    the sandbox image; backend spawns Hermes per chat turn,
->    parses its stdout (JSONL), translates to our SSE event format
->    for the frontend trace.
+> A working "team Claude Code" demo:
 >
-> **Why this matters:** the agent loop was ~200 lines we wrote; the
-> tools (multi-user retrieval, KG, library, sandbox lifecycle) are
-> thousands of lines and remain ours. We're swapping the smallest /
-> least-differentiated layer for a much better off-the-shelf one and
-> keeping all the IP. Estimated total pivot cost: 4–6 weeks.
+> * alice opens chat in a workspace folder
+> * agent (Hermes-in-container) reads files, runs code, produces
+>   `outputs/summary.xlsx` and `outputs/chart.png`
+> * agent can call our MCP tools to search the team Library and
+>   import relevant docs (path-filter authz still scopes to
+>   alice's accessible folders)
+> * other team members in their own containers see only their
+>   own work + the docs they have folder grants on
 >
-> **Wave structure (post-pivot):**
+> What B does NOT show: lineage cards on artifacts, promote-to-
+> library flow, audit reverse queries. Those are C.
+>
+> ### What C adds (post-MVP)
+>
+> The compounding loop:
+>
+> * every artifact records its source-doc lineage + the agent_run
+>   that produced it (clickable trail in the UI)
+> * "Promote to Library" turns an artifact into a Library doc that
+>   future searches return — knowledge compounds
+> * audit views: "show me everything an agent did with this
+>   folder", "this doc influenced which artifacts"
+> * skills as auditable team workflows (Phase 5+)
+>
+> ### Forward-compat hooks landing during B
+>
+> ~65 lines of code in B Waves keep C cheap to land later:
+>
+> * Wave 2.3: every MCP tool wrapper generates a `call_id` and
+>   has the slot to log `(call_id, conv_id, user_id, tool, params,
+>   result_doc_ids, latency_ms)` — the table writes are stubbed
+>   pending the lineage backbone, but the call sites are correct
+> * Wave 2.4: container env carries `OPENCRAIG_RUN_ID` so any
+>   artifact written inside the sandbox can be tied back to the
+>   originating agent_run
+> * Wave 2.5: every chat turn writes an `agent_run` row even when
+>   no UI surfaces it — the data flows into the schema, awaiting
+>   the audit views that consume it
+>
+> These hooks let the lineage / promotion / audit features ship as
+> pure additions — no migration, no refactor.
+>
+> ### Wave structure
+>
+> **Phase B-MVP (target: 3–4 weeks from 2026-05-09):**
+>
+> | Wave | Content | Status / Time |
+> |---|---|---|
+> | 1 | Tear out KernelManager + python_exec + bash_exec wrappers + their tests | ✅ landed `0f2487a` |
+> | 2.1 | LLM proxy `/api/v1/llm/v1/chat/completions` via litellm | ✅ landed `7a722af` |
+> | 2.2 | MCP server scaffold at `/api/v1/mcp` | ✅ landed `729202a` |
+> | 2.3 | Wire 4–7 domain tools into MCP + ASGI auth middleware + lineage call_id hook | next, ~5 days |
+> | 2.4 | Container image: install Hermes + env injection (`OPENCRAIG_RUN_ID` etc.) | ~3 days |
+> | 2.5 | Backend route POST `/conversations/<id>/agent-turn`: spawn Hermes (in-container for workspace turns; in-process for pure Q&A); stream Hermes events → SSE; agent_run row per turn | ~5 days |
+> | 2.6 | Frontend: trace UI adapted to Hermes event format; artifact preview inline | ~3 days |
+> | 4-lite | Workspace UX: folder tree view, "open chat in folder". Project entity REMAINS in the DB for B; the folder-as-only-truth migration deferred | ~4 days |
+>
+> **Phase C-extensions (after B-MVP demo + feedback):**
 >
 > | Wave | Content | Estimated time |
 > |---|---|---|
-> | 1 (this commit) | Tear out KernelManager + python_exec + bash_exec wrappers + their tests; clean comments / locale / docs | 1–2 days |
-> | 2 | LLM proxy + MCP server + container Hermes install + spawn-and-stream route + frontend trace adapter | 2–3 weeks |
-> | 3 | Cutover: delete `loop.py` / `dispatch.py` / old agent route; switch frontend to new route | 3–5 days |
-> | 4 | Workspace folder model: drop `Project` entity, `cwd_path` on `Conversation`/`AgentRun`/`Artifact`, sandbox rebind | 1 week |
+> | 3 | Cutover: delete `loop.py` / `dispatch.py` / old agent route; switch frontend entirely to Hermes path | 3–5 days |
+> | 3.5 | Lineage backbone: `tool_call_log` and `artifact_lineage` tables actually persisted, queryable | 4 days |
+> | 3.6 | Promote-to-Library: artifact → Library doc with backwards links, ingestion pipeline integration | 5 days |
+> | 4 | Workspace folder model: drop `Project` entity, `cwd_path` everywhere, sandbox rebind | 1 week |
 > | 5 | Container hardening (non-root, no-net default, cap drop) | 3–5 days |
+> | 6 | Audit UI: lineage browser, "this doc influenced which artifacts" reverse query | 3 days |
+> | 7 | Skills as auditable team workflows | 1–2 weeks |
 >
 > The original Phase numbering / content below is **retained for
 > historical context** but no longer accurately describes the
-> implementation path. Treat the wave table above as authoritative for
-> what ships next; the long sections below describe the underlying
-> goals and design intent that survive the pivot.
+> implementation path. Treat the wave tables above as authoritative
+> for what ships next; the long sections below describe the
+> underlying goals and design intent that survive the pivot.
+>
+> ### Demo strategy
+>
+> When showing B-MVP to users / investors:
+>
+> * tell the **C narrative** ("knowledge ↔ agent ↔ artifacts compounds
+>   over time, all auditable")
+> * show the **B capability** ("agent finds your team's docs, runs
+>   code on them, produces files; multi-user authz throughout")
+> * be explicit that lineage UI / promote / audit views ship next
+>   — don't hide it; the C story is more credible if the B parts
+>   demonstrably work
+>
+> Optional production-quality move: pre-record a lineage UI mockup
+> with assets from a hardcoded demo project. Cheaper than building
+> the lineage UI for demo, more honest than fake-data live demos.
 
 ## Product positioning
 
