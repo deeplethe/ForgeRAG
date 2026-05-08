@@ -58,37 +58,12 @@
       </template>
     </Toolbar>
 
-    <!-- Two-pane body -->
+    <!-- Body — single full-width pane. The sidebar tree was retired
+         (was dead weight for single-Space users — one entry — and
+         covered by Toolbar breadcrumb + grid drill-down for the
+         multi-Space case). Move-to-other-folder lives in the
+         right-click menu via FolderPickerDialog. -->
     <div class="workspace__body">
-      <!-- Sidebar tree -->
-      <aside class="workspace__sidebar">
-        <FolderTree
-          :root="ws.tree.value"
-          :current-path="viewingTrash ? '' : ws.currentPath.value"
-          :loading="ws.treeLoading.value"
-          :error="ws.treeError.value"
-          @navigate="navigate"
-          @drop-into="onSidebarDrop"
-          @retry="ws.loadTree()"
-          @context-menu="openContextMenu"
-        />
-        <!-- Root drop zone — surfaces only during an active drag so the
-             sidebar isn't permanently cluttered. Releasing here moves
-             the dragged items to the top level (path "/"). Same A-style
-             highlight as the other drop targets when hovered. -->
-        <div
-          v-if="dragInProgress"
-          class="root-drop-zone"
-          :class="{ 'root-drop-zone--over': isDragOverRoot }"
-          @dragover.prevent="onRootDropZoneOver"
-          @dragleave="onRootDropZoneLeave"
-          @drop.prevent="onRootDropZoneDrop"
-        >
-          <span>Drop here to move to top level</span>
-        </div>
-      </aside>
-
-      <!-- Main content area -->
       <main
         class="workspace__main"
         @contextmenu.prevent="onMainContextMenu"
@@ -187,7 +162,6 @@ import { useDialog } from '@/composables/useDialog'
 import DocDetail from '@/views/DocDetail.vue'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
 import Toolbar from '@/components/workspace/Toolbar.vue'
-import FolderTree from '@/components/workspace/FolderTree.vue'
 import FileGrid from '@/components/workspace/FileGrid.vue'
 import FileList from '@/components/workspace/FileList.vue'
 import ContextMenu from '@/components/workspace/ContextMenu.vue'
@@ -275,10 +249,10 @@ function onOSDrop(e) {
 // Cards/items use @click.stop so their clicks never reach this handler.
 // Anything else (workspace background, file-grid empty space) clears.
 function onWorkspaceClick(e) {
-  // Skip if clicking inside the toolbar / breadcrumb / sidebar — only
-  // clear when clicking in the file-list area or the surrounding shell.
+  // Skip if clicking inside the toolbar / breadcrumb — only clear
+  // when clicking in the file-list area or the surrounding shell.
   const t = e.target
-  if (t.closest('.workspace__top') || t.closest('.workspace__sidebar')) return
+  if (t.closest('.workspace__top')) return
   // Skip if a context menu was just dismissed via this click (handled elsewhere)
   if (ctx.open) return
   if (ws.selection.size > 0) ws.clearSelection()
@@ -404,15 +378,14 @@ function onCrumbNavigate(path) {
 }
 
 // ── Context menu ──────────────────────────────────────────────────
-const ctx = reactive({ open: false, x: 0, y: 0, item: null, source: '' })
-const ctxItems = computed(() => buildContextItems(ctx.item, ctx.source))
+const ctx = reactive({ open: false, x: 0, y: 0, item: null })
+const ctxItems = computed(() => buildContextItems(ctx.item))
 
-function openContextMenu({ x, y, item, source = '' }) {
+function openContextMenu({ x, y, item }) {
   ctx.open = true
   ctx.x = x
   ctx.y = y
   ctx.item = item
-  ctx.source = source     // '' = grid/list, 'tree' = sidebar
 }
 
 function onMainContextMenu(e) {
@@ -420,7 +393,7 @@ function onMainContextMenu(e) {
   openContextMenu({ x: e.clientX, y: e.clientY, item: null })
 }
 
-function buildContextItems(item, source = '') {
+function buildContextItems(item) {
   if (!item) {
     // Background items
     return [
@@ -439,21 +412,6 @@ function buildContextItems(item, source = '') {
     ]
   }
   if (item.type === 'folder') {
-    // Tree-source menu drops Rename (no inline edit slot in the
-    // sidebar) and the Cut/Copy clipboard pair (paste-target ambiguous
-    // when the source isn't the user's current view). Open / Search /
-    // Move / Delete carry the load — same set Windows Explorer surfaces
-    // on a tree row.
-    if (source === 'tree') {
-      return [
-        { label: 'Open',           icon: FolderOpen,           action: 'open' },
-        { label: 'Search inside',  icon: Search,               action: 'scope-chat' },
-        { divider: true },
-        { label: 'Move to…',       icon: ArrowRightFromLine,                       action: 'move' },
-        { divider: true },
-        { label: 'Delete',         icon: Trash2,               shortcut: 'Del',    action: 'delete', danger: true },
-      ]
-    }
     return [
       { label: 'Open',           icon: FolderOpen,           action: 'open' },
       { label: 'Search inside',  icon: Search,               action: 'scope-chat' },
@@ -941,64 +899,11 @@ async function onPaste() {
 }
 
 // ── Drag/drop ─────────────────────────────────────────────────────
+// Drop targets that survive the sidebar removal: folder tiles in
+// the FileGrid / FileList. "Move to root" / "move to a far folder"
+// is via the right-click menu's "Move to…" → FolderPickerDialog.
 
 function onDropOntoFolder({ items, targetPath }) { doDropMove(items, targetPath) }
-function onSidebarDrop({ items, targetPath }) { doDropMove(items, targetPath) }
-
-// Drag-in-progress tracking — drives the visibility of the
-// "Drop here for top-level" zone in the sidebar's empty area. Only
-// surfaces while an actual workspace drag is happening so the
-// sidebar isn't permanently cluttered. We listen on ``window``
-// instead of using a Vue prop so any drag source (tree, grid,
-// list, even a future drag overlay) automatically lights up the
-// zone with no per-source plumbing.
-const dragInProgress = ref(false)
-const isDragOverRoot = ref(false)
-function onWindowDragStart(e) {
-  if (e.dataTransfer?.types?.includes('application/x-forgerag-item')) {
-    dragInProgress.value = true
-  }
-}
-function onWindowDragEnd() {
-  dragInProgress.value = false
-  isDragOverRoot.value = false
-}
-function onRootDropZoneOver(e) {
-  if (e.dataTransfer.types.includes('application/x-forgerag-item')) {
-    e.dataTransfer.dropEffect = 'move'
-    isDragOverRoot.value = true
-  }
-}
-function onRootDropZoneLeave() {
-  isDragOverRoot.value = false
-}
-function onRootDropZoneDrop(e) {
-  isDragOverRoot.value = false
-  dragInProgress.value = false
-  const raw = e.dataTransfer.getData('application/x-forgerag-item')
-  if (!raw) return
-  let parsed
-  try { parsed = JSON.parse(raw) } catch { return }
-  const items = Array.isArray(parsed?.items) ? parsed.items : []
-  if (!items.length) return
-  doDropMove(items, '/')
-}
-// Bubbling phase (no third arg / ``false``) — capture phase runs
-// BEFORE the source element's ``@dragstart`` handler, which is exactly
-// when Vue's ``onDragStart`` calls ``dataTransfer.setData(...)``. With
-// capture, our window listener saw an empty ``types`` and the
-// ``dragInProgress`` flag never flipped, so the root-drop zone stayed
-// hidden. Bubbling sees the MIME and lights up the zone correctly.
-onMounted(() => {
-  window.addEventListener('dragstart', onWindowDragStart)
-  window.addEventListener('dragend', onWindowDragEnd)
-  window.addEventListener('drop', onWindowDragEnd)
-})
-onBeforeUnmount(() => {
-  window.removeEventListener('dragstart', onWindowDragStart)
-  window.removeEventListener('dragend', onWindowDragEnd)
-  window.removeEventListener('drop', onWindowDragEnd)
-})
 
 function _pathParent(p) {
   if (!p || p === '/') return '/'
@@ -1254,35 +1159,6 @@ onActivated(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-.workspace__sidebar {
-  width: 240px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--color-line);
-  overflow-y: auto;
-  background: var(--color-bg2);   /* canvas — matches outer body */
-}
-/* Root-drop zone — appears only during an active drag (parent toggles
-   ``v-if`` based on ``dragInProgress``). Idle look: hairline dashed
-   placeholder so it reads as "this slot is currently inactive". On
-   drag-over: switches to the same A-style fill + solid outline used by
-   tree rows / file cards / list rows, so the visual contract is
-   identical across the whole workspace. */
-.root-drop-zone {
-  margin: 8px 8px 12px;
-  padding: 18px 12px;
-  border: 1px dashed var(--color-line2, var(--color-line));
-  border-radius: 6px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--color-t3);
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.root-drop-zone--over {
-  background: color-mix(in srgb, var(--color-t1) 10%, transparent);
-  border-style: solid;
-  border-color: var(--color-t1);
-  color: var(--color-t1);
 }
 .workspace__main {
   flex: 1;
