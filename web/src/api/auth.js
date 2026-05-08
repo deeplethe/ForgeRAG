@@ -55,6 +55,17 @@ export const changePassword = (oldPassword, newPassword) =>
 
 export const getMe = () => get('/api/v1/auth/me')
 
+// ── Directory ───────────────────────────────────────────────────────────
+//
+// Authenticated user-directory lookup, used by in-app pickers
+// (folder Members add-flow, future @-mentions). Returns up to 10
+// active users matching ``q`` case-insensitively across email,
+// display_name, or username. Empty/short queries return [].
+
+/** @param {string} q  search fragment (any field) */
+export const searchUsers = (q, limit = 10) =>
+  get('/api/v1/auth/users/search', { q, limit })
+
 // ── Tokens ──────────────────────────────────────────────────────────────
 
 export const listTokens = () => get('/api/v1/auth/tokens')

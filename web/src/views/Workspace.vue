@@ -140,6 +140,13 @@
       @select="onMoveTargetPicked"
     />
 
+    <!-- Folder Members dialog — opened from the right-click menu -->
+    <FolderMembersDialog
+      v-model:open="membersDialogOpen"
+      :folder-id="membersDialogFolderId"
+      :folder-label="membersDialogFolderLabel"
+    />
+
     <!-- Hidden file input for uploads -->
     <input
       ref="fileInput"
@@ -168,6 +175,7 @@ import ContextMenu from '@/components/workspace/ContextMenu.vue'
 import MarqueeSelection from '@/components/workspace/MarqueeSelection.vue'
 import TrashView from '@/components/workspace/TrashView.vue'
 import FolderPickerDialog from '@/components/FolderPickerDialog.vue'
+import FolderMembersDialog from '@/components/FolderMembersDialog.vue'
 // Context-menu action icons — trial run of Lucide for Vercel/Geist feel.
 // Lucide's stroke geometry is closer to Geist (thin, geometric, sharp
 // corners) than Heroicons solid. ContextMenu passes ``stroke-width=1.5``
@@ -188,6 +196,7 @@ import {
   Search,
   Trash2,
   Upload,
+  UserPlus,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -416,6 +425,8 @@ function buildContextItems(item) {
       { label: 'Open',           icon: FolderOpen,           action: 'open' },
       { label: 'Search inside',  icon: Search,               action: 'scope-chat' },
       { divider: true },
+      { label: 'Members…',       icon: UserPlus,             action: 'members' },
+      { divider: true },
       { label: 'Cut',            icon: Scissors,             shortcut: 'Ctrl+X', action: 'cut' },
       { label: 'Copy',           icon: Copy,                 shortcut: 'Ctrl+C', action: 'copy' },
       { divider: true },
@@ -477,6 +488,22 @@ async function onContextAction(action) {
   if (action === 'rename') return onRename(item)
   if (action === 'move')   return onMoveDialog(item)
   if (action === 'delete') return onDelete(item)
+  if (action === 'members' && item?.type === 'folder') return onOpenMembers(item)
+}
+
+// ── Members dialog — open via right-click "Members…" ────────────
+const membersDialogOpen = ref(false)
+const membersDialogFolderId = ref(null)
+const membersDialogFolderLabel = ref('')
+function onOpenMembers(folder) {
+  if (!folder?.folder_id) return
+  membersDialogFolderId.value = folder.folder_id
+  // Show the folder's user-facing name (already disambiguated for
+  // top-level Spaces). Fall back to the path's tail if name is
+  // missing for any reason.
+  membersDialogFolderLabel.value =
+    folder.name || (folder.path ? folder.path.split('/').filter(Boolean).pop() : '') || ''
+  membersDialogOpen.value = true
 }
 
 // ── Core actions ──────────────────────────────────────────────────

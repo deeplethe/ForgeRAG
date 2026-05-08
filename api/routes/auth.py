@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from persistence.models import AuthSession, AuthToken, AuthUser
 
@@ -620,6 +620,84 @@ def delete_my_avatar(
                     log.exception("failed to delete avatar %s", f)
             user.avatar_path = None
         return _me_response(principal, user)
+
+
+class UserDirectoryEntry(BaseModel):
+    """Public-ish projection of an AuthUser row, for in-app pickers
+    (folder Members, share-to dialogs, future @-mention). Excludes
+    role / status / last_login / quota — anything an admin cares
+    about isn't anyone else's business."""
+
+    user_id: str
+    username: str
+    email: str | None = None
+    display_name: str | None = None
+    has_avatar: bool = False
+
+
+@router.get("/users/search", response_model=list[UserDirectoryEntry])
+def search_users(
+    request: Request,
+    q: str = "",
+    limit: int = 10,
+    state: AppState = Depends(get_state),
+):
+    """Authenticated user-directory lookup for in-app pickers.
+
+    Single-tenant deployment model: every authenticated user can
+    see every other registered user (it's the company directory).
+    No privacy concerns — the alternative is forcing exact-email
+    typing, which is worse UX without any real safety upside in
+    a per-customer instance.
+
+    Returns up to ``limit`` (clamped to [1, 25]) active users
+    whose email, display_name, or username matches ``q``
+    case-insensitively. Empty / very short queries return an
+    empty list so the UI doesn't render the entire directory on
+    every keystroke before the user has typed anything.
+    """
+    _require_principal(request)
+
+    qstr = (q or "").strip().lower()
+    if len(qstr) < 1:
+        return []
+    n = max(1, min(25, int(limit or 10)))
+
+    pattern = f"%{qstr}%"
+    with state.store.transaction() as sess:
+        # Active users only — pending_approval / suspended / deleted
+        # rows are intentionally hidden from the directory so admins
+        # can pre-stage / quarantine accounts without them showing up
+        # in everyone's autocomplete.
+        rows = sess.execute(
+            select(AuthUser)
+            .where(
+                AuthUser.is_active.is_(True),
+                AuthUser.status == "active",
+                # SQLite is case-insensitive on LIKE for ASCII by
+                # default; for Postgres we'd want ILIKE. SQLAlchemy's
+                # ``func.lower(col).like(...)`` portably handles both
+                # without needing a dialect branch.
+                (
+                    func.lower(AuthUser.email).like(pattern)
+                    | func.lower(AuthUser.display_name).like(pattern)
+                    | func.lower(AuthUser.username).like(pattern)
+                ),
+            )
+            .order_by(AuthUser.username)
+            .limit(n)
+        ).scalars().all()
+
+        return [
+            UserDirectoryEntry(
+                user_id=u.user_id,
+                username=u.username,
+                email=u.email,
+                display_name=u.display_name,
+                has_avatar=bool(u.avatar_path),
+            )
+            for u in rows
+        ]
 
 
 @router.get("/users/{user_id}/avatar")

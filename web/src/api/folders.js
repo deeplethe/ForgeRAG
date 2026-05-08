@@ -64,3 +64,32 @@ export const renameDocument = (doc_id, new_filename) =>
     method: 'PATCH',
     body: { new_filename },
   })
+
+// ── Folder membership ───────────────────────────────────────────────
+//
+// Endpoints are keyed by ``folder_id`` (not path) — paths can change
+// (rename / move) and we want member edits to outlive that. The
+// Workspace's folder rows already carry ``folder_id``; passing the
+// path would just force the backend to resolve it again on every
+// request.
+
+/** List effective members of a folder. Includes inherited entries
+ *  and the implicit owner. Visible to anyone with read access. */
+export const listFolderMembers = (folder_id) =>
+  get(`/api/v1/folders/${folder_id}/members`)
+
+/** Add a member by their email. Owner / admin only.
+ *  ``role`` is 'r' or 'rw'. Returns the updated members list. */
+export const addFolderMember = (folder_id, email, role) =>
+  post(`/api/v1/folders/${folder_id}/members`, { email, role })
+
+/** Change a member's role. Refused with 409 when the entry is
+ *  inherited from an ancestor — caller must edit the ancestor. */
+export const updateFolderMemberRole = (folder_id, user_id, role) =>
+  patch(`/api/v1/folders/${folder_id}/members/${user_id}`, { role })
+
+/** Remove a member from a folder's direct grants. Inherited rows
+ *  are rejected with 409 — the caller has to remove from the
+ *  ancestor or move the folder out from under it. */
+export const removeFolderMember = (folder_id, user_id) =>
+  del(`/api/v1/folders/${folder_id}/members/${user_id}`)

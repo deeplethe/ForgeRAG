@@ -103,6 +103,7 @@ export {
   listFolders, getFolderTree, getFolderSpaces, getFolderInfo,
   createFolder, renameFolder, moveFolder, deleteFolder,
   moveDocument, bulkMoveDocuments, renameDocument,
+  listFolderMembers, addFolderMember, updateFolderMemberRole, removeFolderMember,
 } from './folders'
 
 // Trash
