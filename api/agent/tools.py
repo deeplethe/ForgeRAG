@@ -1307,6 +1307,238 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Tool: import_from_library  (Phase 2.6)
+# ---------------------------------------------------------------------------
+#
+# Thin agent-facing wrapper around the Phase-1 ``ProjectImportService``.
+# Same backend code path as the manual UI button (POST /projects/{id}/
+# import) — same authz (project-write × library-doc-read), same
+# idempotency. Filtered out of ``tools_for(ctx)`` when the chat
+# isn't bound to a project.
+#
+# Why this is its own tool (not folded into python_exec via
+# subprocess): the Library is on the SERVER, not in the agent's
+# container. python_exec running ``urllib.request`` against the
+# Library API would have to thread auth tokens, deal with chunked
+# downloads, retry, etc. — all of which the import service already
+# handles cleanly. A dedicated tool keeps the LLM's view simple:
+# "I want this doc; pull it in" → one call.
+
+
+def _handle_import_from_library(params: dict, ctx: ToolContext) -> dict:
+    doc_id = params.get("doc_id")
+    if not isinstance(doc_id, str) or not doc_id.strip():
+        return DispatchError(
+            error="import_from_library needs a non-empty 'doc_id' string",
+            tool="import_from_library",
+        ).to_result()
+    target_subdir = params.get("target_subdir") or "inputs"
+    if not isinstance(target_subdir, str):
+        target_subdir = "inputs"
+
+    if ctx.project_id is None:
+        return DispatchError(
+            error=(
+                "import_from_library is available only in chats bound to "
+                "a project. Open the chat from a Workspace project to use "
+                "this tool."
+            ),
+            tool="import_from_library",
+        ).to_result()
+
+    user_id = ctx.principal.user_id
+
+    # Defensive owner check — the route's two-gate authz handles this
+    # for the HTTP path; we re-check here so the agent gets a clean
+    # error (not an opaque "import failed") when a viewer tries to
+    # write into a project they only have read on.
+    try:
+        from sqlalchemy import select
+
+        from persistence.models import Project
+    except Exception:
+        return DispatchError(
+            error="import_from_library: persistence layer unavailable",
+            tool="import_from_library",
+        ).to_result()
+
+    with ctx.state.store.transaction() as sess:
+        proj = sess.get(Project, ctx.project_id)
+        if proj is None:
+            return DispatchError(
+                error="project not found",
+                tool="import_from_library",
+            ).to_result()
+        if proj.owner_user_id != user_id:
+            return DispatchError(
+                error=(
+                    "import_from_library is available only to the project's "
+                    "owner. Viewers can read but not import files."
+                ),
+                tool="import_from_library",
+            ).to_result()
+
+    # Run the import via the Phase-1 service. The two-gate authz
+    # (project write × library doc read) is centralised there;
+    # ``require_doc_access`` enforces the library side using the same
+    # path-filter resolution the Library UI uses for "open this doc".
+    try:
+        from pathlib import Path
+
+        from api.deps import require_doc_access
+        from persistence.project_import_service import (
+            ImportError as _ImportError,
+        )
+        from persistence.project_import_service import (
+            ProjectImportService,
+            SourceDocumentHasNoBlob,
+            SourceDocumentNotFound,
+        )
+    except Exception as e:
+        log.exception("import_from_library: backend import failed")
+        return DispatchError(
+            error=f"import_from_library unavailable: {type(e).__name__}",
+            tool="import_from_library",
+        ).to_result()
+
+    # Library doc-access gate. The ToolContext doesn't have a request
+    # object so we can't reuse the route helper's HTTPException raising
+    # — emulate by calling the underlying check + mapping to a
+    # DispatchError. Using the same path the route uses keeps the
+    # gate semantics identical (404-on-no-access, no existence leak).
+    try:
+        require_doc_access(ctx.state, ctx.principal, doc_id, "read")
+    except Exception:
+        return DispatchError(
+            error=(
+                f"library document not found or not accessible: {doc_id}. "
+                "Check the doc_id from search_library results, or ask the "
+                "user if you need access to a different folder."
+            ),
+            tool="import_from_library",
+        ).to_result()
+
+    projects_root = Path(
+        getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
+    )
+    file_store = getattr(ctx.state, "file_store", None)
+    if file_store is None:
+        return DispatchError(
+            error="import_from_library: file store unavailable",
+            tool="import_from_library",
+        ).to_result()
+
+    cfg_agent = ctx.state.cfg.agent
+    with ctx.state.store.transaction() as sess:
+        proj = sess.get(Project, ctx.project_id)
+        if proj is None:
+            return DispatchError(
+                error="project not found",
+                tool="import_from_library",
+            ).to_result()
+        svc = ProjectImportService(
+            sess,
+            file_store=file_store,
+            projects_root=projects_root,
+            max_workdir_bytes=getattr(
+                cfg_agent, "max_project_workdir_bytes", 0
+            ),
+            max_upload_bytes=getattr(
+                cfg_agent, "max_workdir_upload_bytes", 0
+            ),
+            actor_id=user_id,
+        )
+        try:
+            result = svc.import_doc(
+                proj, doc_id, target_subdir=target_subdir
+            )
+        except SourceDocumentNotFound:
+            return DispatchError(
+                error=f"library document not found: {doc_id}",
+                tool="import_from_library",
+            ).to_result()
+        except SourceDocumentHasNoBlob:
+            return DispatchError(
+                error=(
+                    f"library document {doc_id} has no associated file blob "
+                    "(it's a placeholder / URL-only doc) and can't be copied"
+                ),
+                tool="import_from_library",
+            ).to_result()
+        except _ImportError as e:
+            log.exception(
+                "import_from_library: service error doc=%s project=%s",
+                doc_id, ctx.project_id,
+            )
+            return DispatchError(
+                error=f"import failed: {e}",
+                tool="import_from_library",
+            ).to_result()
+
+    return {
+        "artifact_id": result.artifact_id,
+        "target_path": result.target_path,
+        "source_doc_id": result.source_doc_id,
+        "size_bytes": result.size_bytes,
+        "mime": result.mime,
+        "reused": result.reused,
+    }
+
+
+_IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
+    name="import_from_library",
+    description=(
+        "Copy a Library document into this project's `inputs/` "
+        "directory so you can read / process it with python_exec / "
+        "bash_exec.\n\n"
+        "Use this when:\n"
+        "  - search_library found a relevant doc and you need to "
+        "operate on the FILE itself (Excel cells, PDF tables, raw "
+        "JSON / CSV) rather than just the chunks.\n"
+        "  - The user references a document by name and you've "
+        "located its `doc_id` via search_library.\n\n"
+        "DO NOT use for:\n"
+        "  - Just answering from chunks — search_library + read_chunk "
+        "is sufficient when you only need passages.\n"
+        "  - Pulling files OUTSIDE the user's Library access — the "
+        "tool refuses (404) for any doc the user can't read in the "
+        "Library UI.\n\n"
+        "IDEMPOTENT: importing the same doc_id twice into the same "
+        "project returns the existing artifact (you'll see "
+        "`reused: true`). Safe to retry.\n\n"
+        "After import, the file is at "
+        "`{target_subdir}/<filename>` inside the project workdir "
+        "(default subdir: `inputs/`). Use `pd.read_excel('inputs/"
+        "<filename>')` etc. — relative paths work because python_exec "
+        "runs with the project workdir as CWD."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "doc_id": {
+                "type": "string",
+                "description": (
+                    "The Library document id, exactly as returned by "
+                    "search_library / read_chunk results (e.g. "
+                    "'d_abc123'). NOT a chunk_id."
+                ),
+            },
+            "target_subdir": {
+                "type": "string",
+                "description": (
+                    "Project subdir to land the file in. Default 'inputs/'. "
+                    "Reserved subdirs ('.trash' / '.agent-state') are "
+                    "rejected."
+                ),
+            },
+        },
+        "required": ["doc_id"],
+    },
+    handler=_handle_import_from_library,
+)
+
+
 _PYTHON_EXEC_SPEC = ToolSpec(
     name="python_exec",
     description=(
@@ -1392,4 +1624,5 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     # Project-aware tools — filtered out by ``tools_for(ctx)`` when
     # the conversation isn't bound to a project / sandbox isn't enabled.
     _PYTHON_EXEC_SPEC.name: _PYTHON_EXEC_SPEC,
+    _IMPORT_FROM_LIBRARY_SPEC.name: _IMPORT_FROM_LIBRARY_SPEC,
 }

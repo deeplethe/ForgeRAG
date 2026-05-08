@@ -212,21 +212,28 @@ def tools_for(ctx: ToolContext) -> list:
     """Return the subset of TOOL_REGISTRY entries relevant for this
     context.
 
-    Tools that need a project workdir (``python_exec``,
-    ``import_from_library`` once Phase 2.6 ships, etc.) are dropped
-    when the conversation isn't bound to a project OR the operator
-    hasn't enabled the agent sandbox. The LLM then doesn't see them
-    in its tool list and can't try to call them — cleaner UX than
-    surfacing "tool not available" errors mid-loop.
+    Filtering is per-tool, not blanket — different tools have
+    different prerequisites:
+      * ``python_exec`` / ``bash_exec``: need a bound project AND
+        the operator-enabled kernel/sandbox stack
+      * ``import_from_library``: needs a bound project only;
+        copying bytes from the Library blob store doesn't require
+        the sandbox to be up. So a chat in a project chat that
+        precedes Phase 2's docker setup can still trigger imports
+        the agent then operates on later
+
+    Cleaner UX than surfacing "tool not available" errors mid-loop:
+    the LLM never sees tools it can't use.
     """
     from .tools import TOOL_REGISTRY
 
-    project_aware = {"python_exec", "import_from_library", "bash_exec"}
+    needs_project = {"python_exec", "bash_exec", "import_from_library"}
+    needs_kernel = {"python_exec", "bash_exec"}
     out = []
     for name, spec in TOOL_REGISTRY.items():
-        if name in project_aware and (
-            ctx.project_id is None or ctx.kernel_manager is None
-        ):
+        if name in needs_project and ctx.project_id is None:
+            continue
+        if name in needs_kernel and ctx.kernel_manager is None:
             continue
         out.append(spec)
     return out
