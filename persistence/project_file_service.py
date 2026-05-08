@@ -255,11 +255,18 @@ class ProjectFileService:
         """
         if rel is None:
             raise InvalidProjectPath("path is required")
-        # Normalize: strip leading ./ and trailing /
+        # Normalize whitespace + windows separators; trailing
+        # slashes are fine but leading slashes mean "absolute"
+        # which we explicitly refuse. Detect BEFORE we strip them.
         rel = rel.strip().replace("\\", "/")
+        # ./xxx is fine (just collapse it)
         while rel.startswith("./"):
             rel = rel[2:]
-        rel = rel.strip("/")
+        # Anything that LOOKS absolute on either OS or is a Windows
+        # drive letter is rejected up front.
+        if rel.startswith("/") or (len(rel) >= 2 and rel[1] == ":"):
+            raise InvalidProjectPath("path must be relative to project workdir")
+        rel = rel.rstrip("/")
 
         if not rel or rel == ".":
             if allow_root:

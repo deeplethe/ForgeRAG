@@ -59,6 +59,7 @@ from .routes import folders as folder_routes
 from .routes import graph as graph_routes
 from .routes import health as health_routes
 from .routes import metrics as metrics_routes
+from .routes import project_files as project_files_routes
 from .routes import projects as project_routes
 from .routes import search as search_routes
 from .routes import settings as settings_routes
@@ -253,6 +254,7 @@ def create_app(
     app.include_router(graph_routes.router)
     app.include_router(folder_routes.router)
     app.include_router(project_routes.router)
+    app.include_router(project_files_routes.router)
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)
     from .routes import admin as admin_routes
