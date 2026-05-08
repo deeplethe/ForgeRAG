@@ -10,9 +10,12 @@ ForgeRAG's auth is minimal and self-contained:
                               # "forwarded" = trust an upstream OAuth proxy's
                               #         X-Forwarded-User header
       # ── mode=db knobs ──
-      initial_password: opencraig  # applied at auto-bootstrap; first login
-                                   # must change. Change via yaml only affects
-                                   # fresh bootstraps, not existing admins.
+      initial_password: ""         # empty (default) = NO pre-provisioned admin;
+                                   # the first user to /auth/register is auto-
+                                   # promoted to admin. Set this to a string
+                                   # only if you want a pre-baked ``admin`` row
+                                   # at first boot — affects fresh bootstraps
+                                   # only, never existing admins.
       session_cookie_name: opencraig_session
       session_cookie_secure: true  # set false only for http://localhost dev
       password_change_revokes_other_sessions: true
@@ -37,7 +40,14 @@ class AuthConfig(BaseModel):
     mode: Literal["db", "forwarded"] = "db"
 
     # --- mode=db ---
-    initial_password: str = "opencraig"
+    # Empty default = no pre-provisioned admin row at boot. The
+    # FIRST account created via /auth/register is then auto-
+    # promoted to admin (registration.py's first-user override).
+    # Set this to a non-empty string ONLY if you want a baked-in
+    # ``admin`` user with this password — useful for some CI /
+    # docker-compose flows but unnecessary for the typical
+    # self-host where the operator registers themselves first.
+    initial_password: str = ""
     session_cookie_name: str = "opencraig_session"
     session_cookie_secure: bool = True
     password_change_revokes_other_sessions: bool = True

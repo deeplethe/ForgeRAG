@@ -1,0 +1,590 @@
+# ============================================================================
+# OpenCraig — annotated reference configuration
+#
+# Every non-LLM knob is pre-filled with a sensible default. LLM-identifying
+# fields (`model`, `api_base`, `api_key`, `api_key_env`) are intentionally
+# blank — you MUST fill them in before any module that calls a model will
+# function. Suggested env var names appear in comments next to each blank.
+#
+# ── Usage ───────────────────────────────────────────────────────────────────
+#
+#   cp examples/opencraig.yaml ./opencraig.yaml    # the runtime root file
+#   $EDITOR ./opencraig.yaml                       # fill in LLM credentials
+#   export OPENCRAIG_CONFIG=./opencraig.yaml
+#   uvicorn api.app:app --reload
+#
+# Or with an explicit --config:
+#
+#   python main.py --config myconfig.yaml
+#
+# `opencraig.yaml` and `myconfig.yaml` at the repo root are gitignored
+# (they hold credentials). This template lives in `examples/` and IS
+# tracked. The loader doesn't merge files — whichever yaml you point at
+# is the single source of truth for that boot.
+#
+# ── Schema authority ───────────────────────────────────────────────────────
+#
+# Each field's authoritative type and validation rules live in
+# `config/<section>.py` as a Pydantic model. Run `python -m config
+# validate <yaml>` to dry-run-check a file.
+# ============================================================================
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Logging
+# ════════════════════════════════════════════════════════════════════════════
+logging:
+  level: INFO              # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  dir: ./logs              # where rotated log files land (relative to CWD)
+  retention_days: 30       # daily files older than this auto-delete
+  console: true            # also stream to stderr (set false in prod daemons)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Observability — OpenTelemetry spans
+# ════════════════════════════════════════════════════════════════════════════
+# Spans are emitted for every retrieval phase, every LLM call, every HTTP
+# route, every SQL query. Even when exporter=none, the per-request collector
+# still runs so /api/v1/query returns trace JSON for the frontend's
+# "Bigger Picture" view.
+observability:
+  enabled: true
+  service_name: opencraig
+  exporter: stdout         # stdout | otlp | none
+  otlp_endpoint: null      # required when exporter=otlp; e.g. http://localhost:4318/v1/traces
+  otlp_headers: null       # auth headers for SaaS backends (Langfuse, Honeycomb, etc.)
+  sample_ratio: 1.0        # parent-based sampling; lower in prod for volume
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Auth — login + session + bearer tokens
+# ════════════════════════════════════════════════════════════════════════════
+# When enabled, OpenCraig provisions an admin on first boot (initial_password,
+# must change on first login). Tokens + sessions live in Postgres, not yaml.
+# See docs/auth.md for the operator guide.
+auth:
+  enabled: true
+  mode: db                 # db (passwords + tokens in DB) | forwarded (trust upstream proxy)
+
+  # mode=db
+  initial_password: ""               # "" (default) = no pre-provisioned admin;
+                                     # first /auth/register call auto-promotes
+                                     # to admin. Set a string only to bake in
+                                     # an ``admin`` user at boot.
+  session_cookie_name: opencraig_session
+  session_cookie_secure: true        # set false ONLY for http://localhost dev
+  password_change_revokes_other_sessions: true
+
+  # mode=forwarded (auth handled upstream by oauth2-proxy / Authelia / etc.)
+  forwarded_user_header: X-Forwarded-User
+
+  # Path prefixes that bypass auth even when enabled. /api/v1/auth/login
+  # is hardcoded and always public.
+  public_paths:
+    - /api/v1/health
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CORS — only relevant when the frontend is served from a different origin
+# ════════════════════════════════════════════════════════════════════════════
+cors:
+  allow_origins: ["*"]     # restrict in production: ["https://app.example.com"]
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+  allow_credentials: true
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Storage — blob backend for figures, uploaded files, parser artifacts
+# ════════════════════════════════════════════════════════════════════════════
+storage:
+  mode: local              # local | s3 | oss
+
+  local:
+    root: ./storage/blobs
+    public_base_url: null  # e.g. https://cdn.example.com/blobs (null = serve via API /static)
+
+  # s3:
+  #   endpoint: https://s3.amazonaws.com
+  #   bucket: opencraig-blobs
+  #   region: us-east-1
+  #   access_key_env: S3_ACCESS_KEY    # env var holding the access key id
+  #   secret_key_env: S3_SECRET_KEY    # env var holding the secret
+  #   prefix: ""
+  #   public_base_url: null
+
+  # oss:
+  #   endpoint: https://oss-cn-hangzhou.aliyuncs.com
+  #   bucket: opencraig-blobs
+  #   access_key_env: OSS_ACCESS_KEY
+  #   secret_key_env: OSS_SECRET_KEY
+  #   prefix: ""
+  #   public_base_url: null
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Files — upload validation and content-addressing
+# ════════════════════════════════════════════════════════════════════════════
+files:
+  hash_algorithm: sha256                   # sha256 | blake3
+  hash_levels: 2                           # files/aa/bb/<hash>.ext directory sharding
+  chunk_size: 1048576                      # streaming read buffer (bytes); 1 MiB
+  max_bytes: 524288000                     # per-file cap; 500 MiB. 0 = unlimited
+  allowed_mime_prefixes:                   # MIME allowlist (prefix-match)
+    - application/pdf
+    - application/vnd.openxmlformats-officedocument
+    - application/msword
+    - application/vnd.ms-
+    - text/
+    - image/
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Persistence — relational metadata + vector store
+# ════════════════════════════════════════════════════════════════════════════
+# Production requires Postgres. SQLite is test-only (gated behind
+# TESTING_ALLOW_SQLITE=1). Vector store is independent — pgvector co-tenants
+# with postgres; chromadb / qdrant / milvus / weaviate are external services.
+persistence:
+  relational:
+    backend: postgres                      # postgres (prod) | sqlite (test only)
+    schema_auto_init: true                 # run alembic upgrade head on connect
+    postgres:
+      host: localhost
+      port: 5432
+      database: opencraig
+      user: opencraig
+      password: ""                         # leave empty + use password_env in prod
+      password_env: POSTGRES_PASSWORD
+      pool_min: 2
+      pool_max: 10
+      connect_timeout: 10
+    # sqlite:                              # only valid with TESTING_ALLOW_SQLITE=1
+    #   path: ./storage/opencraig.db
+    #   timeout: 10.0
+    #   journal_mode: wal                  # delete | truncate | wal | memory
+    #   synchronous: normal                # off | normal | full
+
+  vector:
+    # CRITICAL: dimension MUST match `embedder.dimension` and your model's
+    # actual output size. AppConfig validator cross-checks chromadb / pgvector.
+    backend: chromadb                      # pgvector | chromadb | qdrant | milvus | weaviate
+
+    chromadb:
+      mode: persistent                     # persistent (local dir) | http (remote chroma server)
+      persist_directory: ./storage/chroma
+      http_host: localhost                 # used only when mode=http
+      http_port: 8001
+      collection_name: opencraig_chunks
+      dimension: 1024                      # MUST match embedder.dimension
+      distance: cosine                     # cosine | l2 | ip
+
+    # pgvector:                            # requires relational.backend=postgres
+    #   dimension: 1024
+    #   index_type: hnsw                   # hnsw | ivfflat | none
+    #   distance: cosine                   # cosine | l2 | ip
+    #   hnsw_m: 16                         # HNSW max neighbours
+    #   hnsw_ef_construction: 64           # HNSW build-time accuracy
+
+    # qdrant:
+    #   url: http://localhost:6333
+    #   api_key: null
+    #   collection_name: opencraig_chunks
+    #   dimension: 1024
+    #   distance: cosine
+    #   prefer_grpc: false
+    #   timeout: 30
+
+    # milvus:
+    #   uri: http://localhost:19530
+    #   token: null
+    #   collection_name: opencraig_chunks
+    #   dimension: 1024
+    #   distance: cosine
+    #   index_type: HNSW                   # HNSW | IVF_FLAT | FLAT
+
+    # weaviate:
+    #   url: http://localhost:8080
+    #   api_key: null
+    #   collection_name: ForgeragChunks
+    #   dimension: 1024
+    #   distance: cosine                   # cosine | l2 | dot
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Graph — Knowledge Graph storage (entities + relations)
+# ════════════════════════════════════════════════════════════════════════════
+# Production requires Neo4j 5.11+. NetworkX is test-only and refused
+# unless TESTING_ALLOW_NETWORKX=1.
+graph:
+  backend: neo4j           # neo4j (prod) | networkx (test only)
+  neo4j:
+    uri: bolt://localhost:7687
+    user: neo4j
+    password: ""
+    password_env: NEO4J_PASSWORD
+    database: neo4j
+  # networkx:
+  #   path: ./storage/kg.json
+
+  # Embedding-based entity dedup at upsert time. When two extracted
+  # entities have similar names + embeddings, they merge into one node.
+  # Off by default to avoid surprise merges.
+  entity_disambiguation:
+    enabled: false
+    similarity_threshold: 0.85             # cosine sim required to merge (0..1)
+    candidate_top_k: 10                    # how many existing entities to compare against
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Cache — on-disk caches for BM25 index and embeddings
+# ════════════════════════════════════════════════════════════════════════════
+cache:
+  bm25_persistence: true
+  bm25_path: ./storage/bm25_index.pkl
+  embedding_cache: true
+  embedding_path: ./storage/embedding_cache.pkl
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Embedder — turns chunks + queries into vectors
+# ════════════════════════════════════════════════════════════════════════════
+# `dimension` MUST match the model's actual output AND
+# `persistence.vector.<backend>.dimension`.
+embedder:
+  backend: litellm                          # litellm | sentence_transformers
+  dimension: 1024                           # MUST match the model's real output
+  batch_size: 32                            # chunks per API call
+  max_retries: 3                            # exponential backoff on transient failures
+  retry_base_delay: 1.0                     # seconds between first retry
+
+  litellm:
+    model: ""                               # ◢ FILL IN — e.g. openai/text-embedding-3-small (1536-d),
+                                            #              voyage/voyage-3 (1024-d),
+                                            #              ollama/bge-m3 (1024-d, local),
+                                            #              openai/BAAI/bge-m3 (1024-d via vLLM/oai-compat server)
+    api_base: null                          # ◢ FILL IN — null = provider default; set for self-hosted
+    api_key: null                           # plaintext — dev only; prefer api_key_env
+    api_key_env: ""                         # ◢ FILL IN — env var name, e.g. EMBED_API_KEY
+    requested_dimensions: null              # OpenAI-only: reduce output dim (must match `dimension` above)
+    timeout: 30.0
+
+  # Switch to local inference. Comment out the `litellm:` block above when using this.
+  # sentence_transformers:
+  #   model_name: BAAI/bge-m3
+  #   device: cuda                          # cpu | cuda | mps
+  #   trust_remote_code: false              # only set true for vetted repos
+  #   normalize: true                       # L2-normalise output (always do this for cosine retrieval)
+  #   cache_folder: null                    # local model cache; null = HuggingFace default
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Parser — PDF → blocks → tree → chunks
+# ════════════════════════════════════════════════════════════════════════════
+parser:
+  ingest_max_workers: 10                    # max concurrent doc-ingestion workers (restart to change)
+
+  # ── Backends ─────────────────────────────────────────────────────────────
+  # PyMuPDF is the always-on fallback. MinerU / VLM / Docling are opt-in
+  # and selected by ProbeConfig thresholds (below). `min_quality` is the
+  # parser-self-reported confidence threshold; below it, OpenCraig cascades
+  # to the next backend.
+  backends:
+    pymupdf:
+      enabled: true
+      min_quality: 0.0                      # always passes (final fallback)
+
+    mineru:
+      enabled: false                        # turn on after `pip install mineru` etc.
+      min_quality: 0.70
+      backend: pipeline                     # MinerU 3.0 backends:
+                                            #   pipeline             — fast, CPU/GPU, stable
+                                            #   hybrid-auto-engine   — best accuracy, local
+                                            #   hybrid-http-client   — hybrid via remote OpenAI-style server
+                                            #   vlm-auto-engine      — VLM backend, local
+                                            #   vlm-http-client      — VLM backend, remote
+                                            # MinerU 2.x legacy (still accepted on 2.x):
+                                            #   vlm-transformers, vlm-sglang-engine, vlm-sglang-client
+      parse_method: auto                    # auto | txt | ocr
+      device: cuda                          # cuda | cpu
+      lang: ch                              # primary OCR language
+      formula_enable: true                  # parse LaTeX formulas
+      table_enable: true                    # parse tables (HTML output)
+      server_url: null                      # required for any *-http-client / *-sglang-client backend
+
+    vlm:
+      enabled: false
+      min_quality: 0.75
+      model: ""                             # ◢ FILL IN if enabled — e.g. Qwen2.5-VL-7B
+      mode: whole_document                  # whole_document (only mode supported)
+      max_pages: 200                        # refuse docs larger than this
+
+    docling:
+      enabled: false
+      min_quality: 0.60
+
+  # ── Probe — picks which backend per document ─────────────────────────────
+  # The probe inspects 1-2 pages of each PDF and classifies it (text-rich
+  # vs scanned, simple vs complex layout, page count). The cascade picks
+  # the cheapest backend that passes its `min_quality` for that bucket.
+  probe:
+    scanned_ratio_threshold: 0.30           # ≥ this fraction of "image-only" pages → scanned
+    text_density_min: 50                    # chars/page below which page is "scanned"
+    table_density_threshold: 0.15           # table area / page area
+    multicolumn_x_cluster_gap: 50.0         # horizontal pt to detect column splits
+    heading_hint_min_strength: 0.20         # min font/size signal to call something a heading
+
+    complex_page_count: 100                 # ≥ this many pages → "complex" bucket
+    complex_scanned_ratio: 0.30             # ≥ this scanned ratio → "complex" bucket
+    medium_page_count: 20                   # ≥ this → "medium" (else "simple")
+
+  # ── Normalize — post-parse cleanup ──────────────────────────────────────
+  normalize:
+    strip_header_footer: true               # detect + drop running headers/footers
+    merge_cross_page_paragraphs: true       # join paragraphs split across page breaks
+    bind_captions: true                     # attach "Figure N: ..." to its figure block
+    resolve_references: true                # inline "see Figure N" / "见表 N" expansions
+
+  # ── Tree builder — hierarchical doc structure ────────────────────────────
+  # Produces a section tree (root → chapters → subsections → leaves).
+  # The LLM-based "page_groups" strategy generates per-node summaries
+  # in the same call. With llm_enabled=false, falls back to flat (one
+  # root, all blocks as direct children) and tree navigation is unavailable.
+  tree_builder:
+    llm_enabled: true
+    model: ""                               # ◢ FILL IN — chat model, e.g. openai/gpt-4o-mini
+    api_base: null                          # ◢ FILL IN
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN — e.g. CHAT_API_KEY
+
+    min_coverage: 0.80                      # min fraction of pages a tree must cover
+    min_nodes: 3                            # below this: tree is too shallow → fallback flag
+    max_reasonable_depth: 6                 # depths beyond this incur a quality penalty
+    target_leaf_pages: 7.0                  # ~ 1 leaf per 5-10 pages is the sweet spot
+
+    page_group_size: 5                      # pages per group before the LLM merges them
+    max_tokens_per_node: 8000               # subdivide leaves above this
+    group_llm_max_chars: 40000              # max chars per LLM batch (split into batches above this)
+    summary_max_workers: 4                  # parallel calls for cheap-summary enrichment
+
+  # ── Chunker — block-aware splits, NOT pure character chunks ──────────────
+  chunker:
+    target_tokens: 600                      # ideal chunk size (approximate)
+    max_tokens: 1000                        # hard cap
+    min_tokens: 100                         # trailing chunks below this merge into the previous
+    tokenizer: char_approx                  # char_approx (no extra dependency)
+
+    # Block isolation — these block types each get their own chunk
+    # regardless of size, so structural integrity is preserved and
+    # embeddings don't pollute mixed-content chunks.
+    isolate_tables: true
+    isolate_figures: true
+    isolate_formulas: false                 # inline formulas usually stay with text
+
+    # Sliding-window overlap (within a single text run). 0 = no overlap.
+    overlap_blocks: 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Retrieval — query → candidate chunks
+# ════════════════════════════════════════════════════════════════════════════
+# Three independent paths feed RRF (Reciprocal Rank Fusion):
+#   1. vector path  — embedding similarity over chunks
+#   2. tree path    — BM25 doc prefilter → optional LLM nav → chunks
+#   3. kg path      — entity extraction → graph traversal → chunks
+# Then merge expands candidates (siblings / cross-refs / descendants) and
+# rerank picks the top-k for the LLM.
+retrieval:
+
+  # ── Query understanding (intent + retrieval routing + expansion) ─────────
+  # One LLM call that classifies the user's intent (chitchat, doc Q&A,
+  # KG-style "who is X"), decides whether to retrieve at all, and emits
+  # search-query variants for broader recall.
+  query_understanding:
+    enabled: false                          # turn on for production-quality routing (extra LLM hop)
+    model: ""                               # ◢ FILL IN if enabled
+    api_base: null
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN if enabled
+    max_expansions: 3                       # number of variants to generate
+    timeout: 10.0
+    system_prompt: null                     # null = built-in default
+    user_prompt_template: null              # null = built-in default; placeholders: {query} {max_expansions}
+
+  # ── Path 1: Vector ───────────────────────────────────────────────────────
+  vector:
+    enabled: true
+    top_k: 30                               # candidates returned by this path before merge
+    default_filter: null                    # static filter, e.g. { content_type: text }
+
+  # ── BM25 — independent path AND tree-path doc prefilter ──────────────────
+  bm25:
+    enabled: true
+    k1: 1.5
+    b: 0.75
+    top_k: 30                               # chunks returned by independent BM25 path
+    doc_prefilter_top_k: 10                 # docs kept after BM25 prefilter for the tree path
+
+  # ── Path 2: Tree (PageIndex-style hierarchical navigation) ───────────────
+  # On each retained doc, an LLM navigator inspects the section tree
+  # (titles + summaries + retrieval-hit annotations) and picks which
+  # nodes' chunks to return. Falls back to BM25-within-the-doc when
+  # llm_nav_enabled=false.
+  tree_path:
+    enabled: true
+    llm_nav_enabled: true
+    top_k: 20                               # max chunks returned across all docs from this path
+    nav:
+      model: ""                             # ◢ FILL IN — chat model
+      api_base: null
+      api_key: null
+      api_key_env: ""                       # ◢ FILL IN — e.g. CHAT_API_KEY
+      temperature: 0.0
+      timeout: 30.0
+      max_nodes: 8                          # LLM returns up to this many node_ids per doc
+      max_docs: 8                           # max documents to navigate
+      max_workers: 5                        # parallel LLM calls across docs
+      target_chunks: 30                     # early-stop once this many chunks accumulated
+      system_prompt: null                   # null = built-in default
+
+  # ── Merge (RRF + expansion) ──────────────────────────────────────────────
+  # All three paths' candidates fuse here via RRF, then expand via
+  # sibling / cross-ref / descendant relationships from the tree+chunks DB.
+  merge:
+    rrf_k: 60                               # standard RRF constant
+    candidate_limit: 60                     # global cap on merged candidates
+    global_budget_multiplier: 2.0           # internal budget = candidate_limit * this
+
+    sibling_expansion_enabled: true         # pull in same-leaf-node sibling chunks
+    sibling_max_node_size: 5                # only expand within nodes of ≤ this many chunks
+    sibling_max_per_hit: 3                  # cap siblings per hit
+    sibling_score_discount: 0.5             # multiplier on sibling RRF score
+
+    crossref_expansion_enabled: true        # follow chunk.cross_ref_chunk_ids
+    crossref_max_per_hit: 5
+    crossref_score_discount: 0.4
+
+    descendant_expansion_enabled: true      # PageIndex-style: when a hit lands on a heading,
+    descendant_max_chunks: 8                # pull content chunks from its child nodes so
+    descendant_score_discount: 0.7          # the LLM gets the section body, not just the title
+    descendant_min_token_threshold: 80      # only expand if the hit chunk is "thin" (heading-like)
+
+  # ── Rerank — final ordering before the generator sees it ─────────────────
+  # `passthrough` keeps RRF order (cheap, hides bugs). `rerank_api`
+  # calls a dedicated reranker (Cohere / Jina / Voyage). `llm_as_reranker`
+  # uses a chat model with a "rank these passages" prompt — slower but
+  # works with any provider you already have.
+  rerank:
+    enabled: false                          # turn on once you trust the LLM budget
+    backend: passthrough                    # passthrough | rerank_api | llm_as_reranker
+    on_failure: strict                      # strict (raise + UI red) | passthrough (silent fallback)
+    model: ""                               # ◢ FILL IN if backend != passthrough — e.g. jina_ai/jina-reranker-v2-base-multilingual
+    api_base: null
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN — e.g. RERANK_API_KEY
+    top_k: 10                               # candidates kept after rerank (becomes the gen context)
+    timeout: 30.0
+    snippet_chars: 500                      # per-candidate snippet budget in the rerank prompt
+    system_prompt: null                     # null = built-in default
+
+  # ── Citations ────────────────────────────────────────────────────────────
+  citations:
+    max_snippet_chars: 200                  # citation snippet length shown in the UI
+    open_url_template: "/viewer/{doc_id}?page={page_no}&hl={citation_id}"
+
+  # ── Knowledge Graph: ingestion-time extraction ───────────────────────────
+  # Off by default — extraction is the expensive part of the KG pipeline.
+  # When enabled, every ingested chunk goes through an LLM that emits
+  # (entity, entity, relation) triples → Neo4j.
+  kg_extraction:
+    enabled: false
+    model: ""                               # ◢ FILL IN if enabled
+    api_base: null
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN if enabled
+    max_workers: 5                          # parallel extraction calls
+    timeout: 120.0
+
+    embed_relations: false                  # embed relation descriptions for semantic search
+    embed_entity_names: false               # embed entity names for disambiguation
+
+    # Description merge: when an entity accumulates many fragmented
+    # descriptions, an LLM consolidates them into one concise blurb.
+    # Triggers above either threshold.
+    merge_description_threshold: 6          # fragment count
+    merge_description_max_chars: 2000       # total chars across fragments
+
+  # ── Knowledge Graph: query-time retrieval path ──────────────────────────
+  # Extracts entities from the user query, walks the graph, returns chunks
+  # that mention those entities. Disabled when kg_extraction never ran.
+  kg_path:
+    enabled: false
+    model: ""                               # ◢ FILL IN if enabled — LLM for query entity extraction
+    api_base: null
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN if enabled
+    top_k: 30                               # max chunks returned from this path
+    max_hops: 1                             # 1-hop is the safe default; 2-hop can explode on hub entities
+    local_weight: 0.5                       # weight on direct neighbour traversal
+    global_weight: 0.2                      # weight on global keyword entity search
+    relation_weight: 0.1                    # weight on relation-description semantic search
+    relation_top_k: 10                      # candidates from relation semantic search
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Answering — turn merged+reranked chunks into a final answer
+# ════════════════════════════════════════════════════════════════════════════
+answering:
+  max_chunks: 8                             # hard cap on chunks passed to the generator
+  include_expanded_chunks: true             # include sibling/crossref expansions in the prompt
+
+  generator:
+    backend: litellm                        # only "litellm" is supported
+    model: ""                               # ◢ FILL IN — e.g. openai/gpt-4o-mini, openai/Qwen/Qwen3-32B,
+                                            #              anthropic/claude-3-5-sonnet
+    api_base: null                          # ◢ FILL IN if self-hosted
+    api_key: null
+    api_key_env: ""                         # ◢ FILL IN — e.g. CHAT_API_KEY
+    temperature: 0.1                        # 0.0 = deterministic, 1.0 = creative
+    timeout: 60.0
+
+    chunk_chars: 1500                       # per-chunk char budget in the context block
+    max_context_chars: 20000                # hard ceiling on total context; chunks drop from the tail
+
+    system_prompt: null                     # null = built-in default (see settings_manager.PROMPT_DEFAULTS)
+    user_prompt_template: null
+
+    refuse_when_unknown: true               # tell the model to say "I don't know" when context is thin
+    refuse_message: "I don't know based on the provided documents."
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Image enrichment — VLM describes figures so they're searchable as text
+# ════════════════════════════════════════════════════════════════════════════
+# Off by default. When enabled, every figure block runs through a vision
+# LLM during ingestion; the description is stored alongside the block and
+# indexed in BM25 + embeddings so all retrieval paths can hit image content.
+image_enrichment:
+  enabled: false
+  model: ""                                 # ◢ FILL IN if enabled — vision-capable, e.g. openai/Qwen2-VL-7B,
+                                            #                                            openai/gpt-4o
+  api_base: null
+  api_key: null
+  api_key_env: ""                           # ◢ FILL IN — e.g. VLM_API_KEY
+  max_workers: 4                            # parallel VLM calls (mind your quota)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Benchmark — LLM-as-judge for offline answer evaluation
+# ════════════════════════════════════════════════════════════════════════════
+# Set `model` to something DIFFERENT from `answering.generator.model` —
+# a model grading its own output is the textbook self-preference bias.
+# Leave `model` empty to skip the dedicated judge; metrics.py falls back
+# to the answer LLM with a self-preference warning in the log.
+benchmark:
+  model: ""                                 # ◢ FILL IN for unbiased scoring — pick a different vendor
+                                            #   than the answer LLM, e.g. anthropic/claude-3-5-sonnet
+  api_base: null
+  api_key: null
+  api_key_env: ""                           # ◢ FILL IN — e.g. JUDGE_API_KEY
+  timeout: 30.0

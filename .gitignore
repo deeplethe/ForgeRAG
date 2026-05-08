@@ -32,8 +32,10 @@ Thumbs.db
 *.db-shm
 
 # Runtime config (contains credentials — use examples/ as template)
-opencraig.yaml
-myconfig.yaml
+# Anchored to the repo root so the tracked examples/opencraig.yaml
+# template isn't shadowed.
+/opencraig.yaml
+/myconfig.yaml
 
 # Wizard checkpoint (in-progress setup state; auto-deleted on success)
 *.yaml.wizard-state.json
