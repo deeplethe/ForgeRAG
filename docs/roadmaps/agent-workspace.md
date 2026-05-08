@@ -266,16 +266,20 @@ fetches is a *feature negative* — many of them will turn it off.
 │        └─ jupyter_client.AsyncKernelManager (per project kernel)         │
 │              ↕ ZeroMQ over TCP (kernel messaging protocol)               │
 │                                                                          │
-│ docker engine (host)                                                     │
+│ docker engine (host) — userns-remap enabled (root→100000+)               │
 │   ├─ container alice-sandbox (per-user)                                  │
 │   │    ├─ ipykernel proj_001 (subprocess; persistent state)              │
 │   │    ├─ ipykernel proj_002 (subprocess; persistent state)              │
-│   │    └─ /workdir/                                                      │
-│   │         ├─ proj_001/  ←── bind-mount → host's storage/projects/      │
-│   │         └─ proj_002/                                                 │
+│   │    ├─ /workdir/                                                      │
+│   │    │    ├─ proj_001/  ←── bind-mount → host storage/projects/        │
+│   │    │    └─ proj_002/                                                 │
+│   │    └─ /workspace/.envs/  ←── bind-mount → host storage/user-envs/    │
+│   │         ├─ r/      (lazy-installed on first install_runtime("r"))    │
+│   │         └─ julia/  (etc.)                                            │
 │   └─ container bob-sandbox (per-user, fully isolated)                    │
 │        ├─ ipykernel proj_007 (subprocess)                                │
-│        └─ /workdir/proj_007/                                             │
+│        ├─ /workdir/proj_007/                                             │
+│        └─ /workspace/.envs/  ←── bob's own user-envs/, not Alice's       │
 │                                                                          │
 │ Host filesystem (canonical store; same data the container sees)          │
 │   storage/projects/                                                      │
@@ -283,6 +287,9 @@ fetches is a *feature negative* — many of them will turn it off.
 │     ├─ proj_001/outputs/                                                 │
 │     ├─ proj_002/...                                                      │
 │     └─ proj_007/...                                                      │
+│   storage/user-envs/                                                     │
+│     ├─ <alice_uid>/r/  (persists across container reaping)               │
+│     └─ <bob_uid>/...                                                     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -303,6 +310,18 @@ sandbox image's `write_file` tool also enforces an application-
 level check that the requested path resolves inside the *current
 conversation's* project workdir (preventing the agent in
 proj_001 from writing into proj_002 of the same user).
+
+**`userns-remap` for safe in-container privilege**: docker daemon
+runs with `"userns-remap": "default"` (one-line `daemon.json`
+change). Inside the container the agent's user is `root` and can
+freely `apt install r-base`, `mamba install`, etc. — needed so
+`install_runtime` works without us brokering a curated package
+allowlist. On the host, that `root` is mapped to an unprivileged
+uid (100000+). Bind-mount writes land owned by the remapped uid,
+not host root, so FastAPI (running as the `opencraig` user) can
+still read/write Workspace files without sudo. Container escapes
+land in unprivileged-user space, not host root — meaningful
+defense-in-depth on top of the docker isolation layer.
 
 **Container lifecycle**:
 * Cold-start happens lazily on first `python_exec` for a user
@@ -352,28 +371,60 @@ on anything we install.
   ("find files modified in last 7 days", "grep across the
   workdir", "tail a log").
 
-### Phase 6+: optional R / Julia kernels
+### Other languages: on-demand install, not image variants
 
-R (Bioconductor users) and Julia (numerical computing) are
-opt-in via operator config:
+R, Julia, Node, Rust, Go, etc. are **not** baked into image
+variants. Instead the agent has a first-class `install_runtime`
+capability that lazily provisions language stacks the first time
+they're needed, into a **per-user persistent volume** mounted at
+`/workspace/.envs/`:
 
-```yaml
-agent:
-  sandbox:
-    image: opencraig/sandbox:py3.13              # default
-    additional_kernels: []                        # opt in: [r, julia, node]
+```
+/workspace/.envs/
+  r/           # IRkernel + base R + tidyverse, installed on first R use
+  julia/       # IJulia + base packages
+  node/        # nvm-managed Node + npm global bin
+  rust/        # rustup toolchain
 ```
 
-We maintain image variants:
-* `:py3.13` (default, ~1.5 GB)
-* `:py3.13-r` (+IRkernel + Bioconductor base, ~3 GB)
-* `:py3.13-julia` (+IJulia + base packages, ~2.5 GB)
-* `:py3.13-full` (everything, ~4 GB)
+**Why this works:**
 
-When operator selects a non-default image, the agent's tool list
-gains `r_exec` and/or `julia_exec` (each on its own kernel
-subprocess inside the same container). Kept opt-in so the 90% of
-deployments that don't need them get a faster, smaller image.
+* Container runs with `userns-remap` so the agent can `apt install`
+  / `mamba install` without polluting host root and without us
+  brokering "which apt packages are allowed". Inside container the
+  user thinks it's root; on host it maps to an unprivileged uid
+  (100000+).
+* `/workspace/.envs/` is a **per-user volume**, separate from the
+  per-project bind-mounts. Survives container reaping. Shared
+  across all of one user's projects — install R once, available
+  in every project for that user.
+* First R session pays a 1–3 min cold install. Every subsequent
+  session, every other project of the same user: zero wait.
+* Disk cost is amortized per *user* who actually needs R, not per
+  *deployment*. The 90% of users who never touch R never pay.
+
+**Agent UX:**
+
+When the agent decides to use R (e.g. user uploaded a Bioconductor
+DESeq2 study), it calls `install_runtime("r")`. The tool either
+returns immediately (already installed) or streams install
+progress to the chat ("Setting up R kernel for first use… ~2
+min"), then registers an `r_exec` tool for the rest of the run.
+Same flow for `julia`, `node`, etc.
+
+**Settled vs custom packages:** `install_runtime` provisions the
+*runtime* (R interpreter + IRkernel + a curated base set —
+tidyverse for R, DataFrames+Plots for Julia). Project-specific
+packages (`install.packages("DESeq2")`, `Pkg.add(...)`) are
+ordinary code the agent runs inside its own kernel and persist in
+the project's R/Julia env folder. We do not try to be a package
+manager.
+
+**Operator override:** an operator who *knows* their userbase is
+biotech-heavy can pre-warm the user volumes by setting
+`agent.runtime_preinstall: [r]` — backend installs R into each
+new user's `.envs/r/` at user creation time, so even the first
+session is zero-wait.
 
 ### Browser automation (Phase 5 web tooling)
 
@@ -499,9 +550,20 @@ storage/
 │   │   ├── .agent-state/            # plan checkpoints, retry counters
 │   │   └── README.md                # auto-generated description (editable)
 │   └── ...
+├── user-envs/                       # NEW — per-user persistent runtime volumes
+│   └── <user_id>/
+│       ├── r/                       # IRkernel + R + tidyverse (lazy-installed)
+│       ├── julia/                   # IJulia + base packages
+│       ├── node/                    # nvm + node + npm globals
+│       └── ...                       (any runtime agent installs on demand)
 └── kernels/                         # NEW — per-execution-session state
     └── <session_id>/                  (mounts back into project workdir)
 ```
+
+`user-envs/<user_id>/` is bind-mounted into that user's container at
+`/workspace/.envs/`. It outlives both individual project workdirs
+and container reaping — the user's R install is still there next
+session, next project.
 
 The `inputs / outputs / scratch` separation is a **soft convention**
 the agent is told to follow in its system prompt; not enforced at
@@ -519,6 +581,8 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 | `read_chunk` | already exists | Pulls a specific chunk by ID |
 | `read_tree` | already exists | Document outline navigation |
 | **`python_exec`** | 2 | Run Python in the project's sandbox |
+| **`bash_exec`** | 2 | Run shell in the project's sandbox |
+| **`install_runtime`** | 2 | Install a non-Python language runtime (R / Julia / Node / Rust / …) into the user's persistent `/workspace/.envs/` volume on first need; registers `<lang>_exec` for the rest of the run |
 | **`list_files`** | 3 | Glob the project workdir |
 | **`read_file`** | 3 | Read a file from the project workdir |
 | **`write_file`** | 3 | Write a file (records an Artifact) |
@@ -535,7 +599,7 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 |---|---|---|
 | **0** | Rename Workspace → Library; new empty Workspace surface; data model; placeholder Project CRUD | "We have two surfaces now" — just architecture |
 | **1** | Workspace UI = file manager over project workdir; Project sharing; Chat ↔ Project binding | User can create a Project, upload files, open a chat against it |
-| **2** | `python_exec` + `bash_exec` via per-user Docker container + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed | "Analyze this CSV and plot it" works |
+| **2** | `python_exec` + `bash_exec` + `install_runtime` via per-user Docker container (userns-remap) + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed; per-user `.envs/` volume for lazy R/Julia/Node | "Analyze this CSV and plot it" works; "rerun this in R" also works (after one-time R install) |
 | **3** | File I/O tools + Library bridge | "Take that contract from Library, extract X" works |
 | **4** | Plan-Execute-Reflect orchestrator; long-running runs; HITL gates | "Compare these 5 contracts and produce a tracker xlsx" works |
 | **5** | Web search + fetch_url + injection defense | Agents can pull external sources |
@@ -555,7 +619,8 @@ is 12-18 additional weeks depending on team size.
 | **Sandbox isolation boundary** | **Per-user Docker container + per-project ipykernel**, not per-project container, not shared pool, not bare subprocess |
 | **Kernel orchestration** | **`jupyter_client` + `docker` SDK** managed by our own `SandboxManager`, NOT JupyterHub. AutoGen's `DockerJupyterCodeExecutor` is the reference implementation we adapt from |
 | **Filesystem model** | **Bind-mount** `storage/projects/<id>/` from host to container `/workdir/<id>/`. Single source of truth on host fs; Workspace UI reads host fs directly (no docker exec round-trip) |
-| **Multi-language** | Python + Bash kernels day 1; ~25 CLI tools pre-installed in sandbox image; R/Julia/Node opt-in via image variants in Phase 6 |
+| **Container privilege model** | **`userns-remap` enabled** at the docker daemon level. Container "root" maps to host uid 100000+. Agent can `apt install` / `mamba install` freely; bind-mount files on host are owned by the unprivileged remapped uid (no host-root pollution); container escape lands in unprivileged-user space, not host root |
+| **Multi-language** | Python + Bash kernels day 1; ~25 CLI tools pre-installed in `:py3.13` sandbox image. **Other languages (R, Julia, Node, Rust, …) are an agent capability**, not image variants: agent calls `install_runtime("r")` on first need, which installs into the user's persistent `/workspace/.envs/r/` volume and registers an `r_exec` tool for the rest of the run. Cold install ~1–3 min once per user; every subsequent project for that user is zero-wait. Operators can pre-warm via `agent.runtime_preinstall` |
 | **Observability** | OpenLLMetry → existing OTel collector + (optional) Langfuse self-host for LLM-specific dashboard. Sandbox monitor + per-project run history are OpenCraig's own UI |
 | **Workflow engine** | None (Postgres `agent_runs` row); revisit Temporal/Restate if durable-wait > 1 min lands as a real customer ask |
 | **Web-search timing** | Phase 5, not earlier |
@@ -566,7 +631,6 @@ is 12-18 additional weeks depending on team size.
 2. **Web search default** — recommended: **off**. Operator opens via config + per-project setting.
 3. **Multi-user day 1** — recommended: **yes**, simplified to owner + `rw` member (reuse Library's `shared_with` 1:1).
 4. **Built-in templates count** — recommended: **3 starter projects** in Phase 6 (contract tracker / data cleanup / multi-doc memo). Not "magic templates"; just `examples/templates/` with sample inputs + recommended prompt.
-5. **Target customer R/Julia coverage** — does the operator's customer base include biotech / Bioconductor users? If yes, R kernel becomes Phase 4 default (not Phase 6 opt-in).
 
 ---
 
