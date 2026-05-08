@@ -1,0 +1,50 @@
+# OpenCraig sandbox image — Python data stack.
+#
+# Pinned conservatively. Each block is one capability the agent's
+# python_exec / library_search workflows lean on; trimming a block
+# means deciding the agent doesn't need that ability.
+#
+# DO NOT add ML training stacks (pytorch / transformers / xgboost).
+# Phase 2's sandbox is for analysis + visualisation, not model
+# training. Heavy numerics belong in install_runtime("ml") in a
+# follow-up; default image stays small enough for fast cold start.
+
+# ── Kernel + messaging ──
+ipykernel==6.30.0          # Python kernel run inside the container
+jupyter_client==8.6.3      # SandboxManager talks to kernels via this
+ipywidgets==8.1.5          # rich-output widgets (Phase 2.5)
+bash_kernel==0.10.0        # backs `bash_exec` agent tool (Phase 2.7)
+
+# ── Numerics + tables ──
+numpy==2.1.3
+pandas==2.3.0
+scipy==1.16.0
+scikit-learn==1.6.1
+pyarrow==18.1.0
+duckdb==1.1.3              # in-process columnar; pairs with the CLI
+
+# ── Plotting ──
+matplotlib==3.10.0         # static charts, the default for "plot this"
+seaborn==0.13.2            # statistical viz on top of matplotlib
+plotly==6.0.0              # interactive HTML; renders inline in nb
+
+# ── Spreadsheets ──
+openpyxl==3.1.5            # xlsx read/write
+xlsxwriter==3.2.0          # xlsx write (formats / charts)
+
+# ── Office docs ──
+python-docx==1.2.0         # .docx
+python-pptx==1.0.2         # .pptx
+
+# ── PDF ──
+pypdf==5.1.0               # pure-python; metadata + page extraction
+pdfplumber==0.11.4         # text + tables; the agent's go-to for "what does this PDF say"
+pymupdf==1.25.1             # fast render + image extraction
+pdf2image==1.17.0          # rasterise to PNG when OCR is needed
+camelot-py[base]==1.0.9    # table extraction (lattice + stream); needs poppler-utils + ghostscript
+
+# ── HTML / scraping (Library bridge stuff) ──
+beautifulsoup4==4.12.3
+lxml==5.3.0
+requests==2.32.3
+httpx==0.28.1
