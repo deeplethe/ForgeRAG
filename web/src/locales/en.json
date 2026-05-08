@@ -65,8 +65,17 @@
       "no_chats_title": "No chats here yet",
       "no_chats_subtitle": "When you bind a chat to this project, the agent's tool calls will land in this project's workdir and the run history will appear here.",
       "phase0_note": "Chat ↔ project binding lands in Phase 1.",
-      "library_import_coming": "Library document picker lands in the next slice.",
       "load_error": "Couldn't load this project: {msg}"
+    },
+    "picker": {
+      "title": "Import from Library",
+      "subtitle": "Pick a document to copy into {name}'s workdir",
+      "search_placeholder": "Search by filename…",
+      "empty": "Type to search the Library, or pick a recent document.",
+      "no_results": "No documents matching \"{q}\"",
+      "imported": "Imported \"{name}\" to {path}",
+      "imported_reused": "\"{name}\" is already in this project ({path}); reusing existing copy.",
+      "footnote": "You can only see documents you have read access to in the Library. The agent will be able to import from here automatically once Phase 2 ships."
     },
     "files": {
       "root": "workdir",

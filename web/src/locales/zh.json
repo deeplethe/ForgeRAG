@@ -65,8 +65,17 @@
       "no_chats_title": "还没有对话",
       "no_chats_subtitle": "当对话与该项目绑定后，智能体的工具调用会写入项目工作目录，运行记录将在此显示。",
       "phase0_note": "对话与项目绑定将在 Phase 1 落地。",
-      "library_import_coming": "资料库选择器将在下一阶段加入。",
       "load_error": "项目加载失败：{msg}"
+    },
+    "picker": {
+      "title": "从资料库导入",
+      "subtitle": "选择一份文档复制到「{name}」的工作目录",
+      "search_placeholder": "按文件名搜索…",
+      "empty": "输入关键词搜索资料库，或从最近的文档中选择。",
+      "no_results": "没有匹配「{q}」的文档",
+      "imported": "已将「{name}」导入到 {path}",
+      "imported_reused": "「{name}」已在该项目中（{path}），复用现有副本。",
+      "footnote": "你只能看到自己在资料库中有读权限的文档。Phase 2 上线后，智能体可自行从此处导入。"
     },
     "files": {
       "root": "工作目录",

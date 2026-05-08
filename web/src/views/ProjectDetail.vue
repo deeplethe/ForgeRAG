@@ -40,7 +40,13 @@
       />
     </main>
 
-    <!-- Phase 1.4 LibraryDocPicker mounts here once 1.4 lands. -->
+    <LibraryDocPicker
+      v-if="project && pickerOpen"
+      :project-id="project.project_id"
+      :project-name="project.name"
+      @close="onPickerClose"
+      @imported="onPickerImported"
+    />
   </div>
 </template>
 
@@ -53,6 +59,7 @@ import { AlertCircle, ArrowLeft } from 'lucide-vue-next'
 import { getProject } from '@/api'
 import Skeleton from '@/components/Skeleton.vue'
 import ProjectFileBrowser from '@/components/workspace/ProjectFileBrowser.vue'
+import LibraryDocPicker from '@/components/workspace/LibraryDocPicker.vue'
 import { useDialog } from '@/composables/useDialog'
 
 const { t } = useI18n()
@@ -64,6 +71,7 @@ const project = ref(null)
 const loading = ref(true)
 const error = ref('')
 const browser = ref(null)
+const pickerOpen = ref(false)
 
 // Owner / admin can write; viewer (role='r') cannot. The route layer
 // is the source of truth (404s viewer writes); this just dims the
@@ -92,13 +100,22 @@ function back() {
   router.push('/workspace')
 }
 
-// Placeholder until 1.4 wires LibraryDocPicker.vue. The browser
-// emits ``import-from-library`` when the user clicks the toolbar
-// button; for now we just toast that the picker is coming.
 function onImportFromLibrary() {
-  dialog.toast(t('workspace.detail.library_import_coming'), {
-    variant: 'info',
-  })
+  pickerOpen.value = true
+}
+
+function onPickerClose() {
+  pickerOpen.value = false
+}
+
+function onPickerImported() {
+  // Tell the file browser to re-list the workdir so the freshly
+  // imported file shows up. ``defineExpose`` from
+  // ProjectFileBrowser.vue exposes the reload method.
+  const ref_ = browser.value
+  if (ref_ && typeof ref_.reload === 'function') {
+    ref_.reload()
+  }
 }
 
 watch(() => route.params.projectId, load)
