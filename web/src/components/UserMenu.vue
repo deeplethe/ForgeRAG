@@ -25,10 +25,8 @@
     >
       <UserAvatar :name="identityKey" :img-url="avatarUrl" :size="28" />
       <span class="flex-1 min-w-0 text-left">
-        <span class="block text-[12px] text-t1 truncate">{{ displayLabel }}</span>
-        <span class="block text-[10px] text-t3 truncate">
-          {{ me.role === 'admin' ? t('user_menu.role_admin') : t('user_menu.role_user') }}
-        </span>
+        <span class="block text-[12px] text-t1 truncate">{{ nicknameLabel }}</span>
+        <span v-if="subLabel" class="block text-[10px] text-t3 truncate">{{ subLabel }}</span>
       </span>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
         class="text-t3 shrink-0 transition-transform"
@@ -139,9 +137,9 @@ const rootEl = ref(null)
 const locales = SUPPORTED_LOCALES
 const currentLocale = computed(() => locale.value)
 
-// Identity primary key for label / avatar derivation. Prefer
-// display_name (user-set, friendly), fall back to email
-// local-part, then to legacy username, then "?".
+// Identity primary key for avatar derivation (initials colour
+// hash etc.). Prefers the user-set display_name, falls back to
+// email local-part, then legacy username.
 const identityKey = computed(() => {
   const m = props.me || {}
   return (m.display_name
@@ -149,7 +147,22 @@ const identityKey = computed(() => {
     || m.username
     || '').trim()
 })
-const displayLabel = computed(() => identityKey.value || '?')
+
+// Card line 1: the nickname the user picked at registration. We
+// fall through to ``username`` when ``display_name`` is empty
+// (it's an optional field) so the row never reads "?".
+const nicknameLabel = computed(() => {
+  const m = props.me || {}
+  return (m.display_name || m.username || '?').trim()
+})
+
+// Card line 2: the email — that's the canonical login identifier
+// and what users will type on the login form. Hidden entirely
+// when the account has no email (legacy bootstrap-admin rows
+// only — those don't exist with the no-default-admin flow but
+// keeping the guard means the card stays clean if one ever
+// shows up).
+const subLabel = computed(() => (props.me?.email || '').trim())
 
 // Avatar image URL — null when has_avatar=false so the
 // component falls straight back to initials without a 404.
