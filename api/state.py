@@ -11,6 +11,21 @@ wiring logic.
 
 from __future__ import annotations
 
+# ── Privacy: turn off bundled-dependency telemetry early ─────────────
+# OpenCraig is self-hosted; data should not leave the operator's
+# network unless explicitly configured (LLM API calls). Several of
+# our dependencies ship with anonymised telemetry on by default; we
+# opt out here, before any of them get imported. ``setdefault`` means
+# an operator who genuinely WANTS to enable a vendor's telemetry can
+# still do so via the environment.
+import os as _os
+_os.environ.setdefault("LITELLM_TELEMETRY", "False")              # litellm gateway
+_os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")            # ChromaDB
+_os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")        # ChromaDB legacy
+_os.environ.setdefault("DO_NOT_TRACK", "1")                        # universal opt-out
+_os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")            # HuggingFace
+_os.environ.setdefault("DISABLE_TELEMETRY", "1")                   # generic catch-all
+
 import contextlib
 import logging
 import threading
