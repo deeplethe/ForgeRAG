@@ -139,7 +139,10 @@ function shortUA(ua) {
 </template>
 
 <style scoped>
-.sessions-page { max-width: 900px; }
+/* Fills the Settings content area for visual parity with the
+   sibling sub-pages (Tokens / Users) — all three data-table
+   surfaces span the same width now. */
+.sessions-page { width: 100%; }
 .page-header {
   display: flex;
   align-items: flex-start;

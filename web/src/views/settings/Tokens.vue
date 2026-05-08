@@ -199,7 +199,10 @@ function isExpired(token) {
 </template>
 
 <style scoped>
-.tokens-page { max-width: 1000px; }
+/* Fills the Settings content area for visual parity with the
+   sibling sub-pages (Sessions / Users) — all three data-table
+   surfaces span the same width now. */
+.tokens-page { width: 100%; }
 
 .page-header {
   display: flex;
