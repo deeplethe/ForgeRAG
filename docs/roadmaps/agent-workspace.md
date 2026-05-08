@@ -113,27 +113,94 @@ the same project ("ask the agent to clean the data" then later
 threads). Project is the persistent unit; conversations come and
 go.
 
-### 3. One sandbox container per Project execution session
+### 3. Per-user Docker container + per-project Jupyter kernel
 
-**Chosen.** Each Project gets a dedicated Docker container running
-a long-lived Python kernel. Variables, imports, opened files
-persist across `python_exec` calls within the same conversation
-turn AND across turns. Container is reaped after 10 min of
-inactivity; resurrected on next call (state lost — checkpoint via
-explicit file writes).
+**Chosen.** Each *user* gets one Docker container; inside the
+container we spawn one **Python kernel per project** (subprocess
+under `ipykernel`). Variables, imports, opened files persist
+within a kernel across `python_exec` calls. Container is reaped
+after 30 min of full inactivity; kernels reaped after 10 min of
+their own inactivity. Reasoning:
 
-**Rejected: one container per `python_exec` call.** Cold-start
-overhead (~2-3s per call) wrecks the agent flow when an agent
-runs 10-20 code blocks per task.
+* For our scale (5–50 users, 1–5 active projects per user, mostly
+  single-project-at-a-time work), **per-project containers were
+  ~5x resource overhead with no security benefit** — the actual
+  isolation boundary that matters is between *users*, not between
+  projects of the same user.
+* Project state isolation comes from the **kernel subprocess**
+  (each `ipykernel` is a fresh Python process; no shared globals).
+* Filesystem isolation: the container only bind-mounts the user's
+  own project workdirs (per `Folder.shared_with` grants). Bob's
+  container literally has no path to Alice's projects — kernel-
+  level filesystem boundary, harder than application-level path
+  filtering.
 
-**Rejected: shared kernel pool across projects.** Memory pressure
-+ cross-tenant data leak risk. Project isolation is the security
-boundary; sharing kernels would punch through it.
+**Rejected: per-Project container.** Original design. Walked back
+once we computed: 50 users × 5 projects ≈ 250 idle containers
+vs ~50 with per-user. Per-user gives us project-switch in ~200 ms
+(spawn a kernel subprocess) vs ~3-5s (cold-start a container).
+
+**Rejected: per-call container.** Cold-start overhead (~2-3s per
+call) wrecks the agent flow; agent runs 10-20 code blocks per
+task and we'd spend more time spawning containers than running
+code.
+
+**Rejected: shared kernel pool across users.** Cross-user data
+leak; obvious no.
 
 **Rejected: bare-process subprocess sandboxing (firejail /
 bubblewrap).** Linux-only; doesn't run on macOS / Windows dev
-boxes; weaker than container-based isolation against
-sophisticated escape attempts.
+boxes; weaker than container-based isolation.
+
+### 3b. `jupyter_client` + Docker SDK, NOT JupyterHub
+
+**Chosen.** We manage the per-user containers ourselves via the
+`docker` Python SDK. Inside each container, an `ipykernel`
+subprocess hosts the project's Python state. We drive the
+kernel from FastAPI via `jupyter_client.AsyncKernelManager` —
+the standard Jupyter messaging library that ships connection
+tracking, streaming `iopub` messages, rich `display_data`
+(plots, dataframes), kernel-level interrupt + heartbeat. The
+ZeroMQ-over-TCP transport works cross-container transparently
+once we hand `jupyter_client` the kernel's connection-info file.
+
+This is the path **every public LLM-code-execution system
+takes** — ChatGPT Code Interpreter, E2B, AutoGen
+`DockerJupyterCodeExecutor`, HuggingFace Jupyter Agent,
+`vndee/llm-sandbox`, `dida.do`'s reference implementation. None
+use JupyterHub.
+
+**Rejected: JupyterHub + DockerSpawner.** Was the initial
+recommendation; survey of public production deployments shows
+JupyterHub is built for *humans clicking notebook UIs at scale*
+(Berkeley DataHub: 1,500 students; CERN SWAN: 200 sessions/day;
+NASA Pangeo, 2i2c, Bloomberg — all human-driven). Its
+authentication, proxy, and spawner machinery exists to give
+many simultaneous humans their own JupyterLab tab. None of that
+matters when the "user" of the kernel is our orchestrator agent
+on behalf of one human at a time. Adopting JupyterHub for
+LLM-agent kernel management is **a path nobody has publicly
+validated** for our use case, while adding an extra service +
+JWT auth bridge to the deploy. The kernel-orchestration layer
+JupyterHub provides is ~500 lines of `docker` SDK + `jupyter_client`
+glue that we control directly.
+
+**Rejected: bare `subprocess.run("python", "-c", code)`.** Each
+call is a fresh process — variables don't persist across the
+agent's multi-step work. Streaming output and matplotlib /
+DataFrame rich rendering also don't survive subprocess.
+
+**Rejected: e2b-dev open-source infra.** Better security ceiling
+(Firecracker microVMs) but operationally heavy for self-host
+deploys; revisit if we ever offer a public free tier.
+
+**Reference implementation we adapt from**: AutoGen 0.4+'s
+`autogen-ext.code_executors.docker_jupyter` (~600 lines, MIT)
+is essentially this exact pattern. Phase 2 starts by porting
+its core into `api/agent/sandbox/` and stripping the AutoGen-
+specific abstractions we don't need (we keep our own agent
+loop, our own audit logging, our own folder-grant filesystem
+mount).
 
 ### 4. Plan-Execute-Reflect orchestration, not LangGraph
 
@@ -182,6 +249,177 @@ core flow is stable.
 it.** True but the demos are mostly cherry-picked. For our target
 customers (regulated industries), defaulting to external web
 fetches is a *feature negative* — many of them will turn it off.
+
+---
+
+## Deployment topology
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Browser                                                                  │
+│   ↕ SSE                                                                  │
+│ FastAPI (opencraig)                                                      │
+│   ├─ chat / agent loop                                                   │
+│   ├─ projects / files / library routes                                   │
+│   └─ SandboxManager (~500 lines of our code)                             │
+│        ├─ docker SDK: ensure_container_for_user(user_id)                 │
+│        └─ jupyter_client.AsyncKernelManager (per project kernel)         │
+│              ↕ ZeroMQ over TCP (kernel messaging protocol)               │
+│                                                                          │
+│ docker engine (host)                                                     │
+│   ├─ container alice-sandbox (per-user)                                  │
+│   │    ├─ ipykernel proj_001 (subprocess; persistent state)              │
+│   │    ├─ ipykernel proj_002 (subprocess; persistent state)              │
+│   │    └─ /workdir/                                                      │
+│   │         ├─ proj_001/  ←── bind-mount → host's storage/projects/      │
+│   │         └─ proj_002/                                                 │
+│   └─ container bob-sandbox (per-user, fully isolated)                    │
+│        ├─ ipykernel proj_007 (subprocess)                                │
+│        └─ /workdir/proj_007/                                             │
+│                                                                          │
+│ Host filesystem (canonical store; same data the container sees)          │
+│   storage/projects/                                                      │
+│     ├─ proj_001/inputs/data.csv                                          │
+│     ├─ proj_001/outputs/                                                 │
+│     ├─ proj_002/...                                                      │
+│     └─ proj_007/...                                                      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Bind mount is the single source of truth**: the host filesystem
+under `storage/projects/<id>/` IS what the container sees at
+`/workdir/<id>/`. Same inodes, two paths. Workspace UI reads
+files via FastAPI hitting the host filesystem directly (fast, no
+docker exec round-trip, works even when container is reaped).
+Agent writes via `python_exec` go into the kernel; the kernel
+writes to the bind-mounted path; UI refresh shows the new file
+immediately.
+
+**Per-user mount scope**: Alice's container only mounts the
+project subdirectories Alice has grants on. Bob's container has
+no path that resolves to Alice's project workdir — the kernel
+literally can't read it, by OS-level filesystem boundary. The
+sandbox image's `write_file` tool also enforces an application-
+level check that the requested path resolves inside the *current
+conversation's* project workdir (preventing the agent in
+proj_001 from writing into proj_002 of the same user).
+
+**Container lifecycle**:
+* Cold-start happens lazily on first `python_exec` for a user
+  who has no live container.
+* Idle reap: container exits after 30 min with no kernel activity.
+* Kernel reap: ipykernel subprocess exits after 10 min of no
+  execute messages. Cheap to respawn.
+* Crash recovery: dead-kernel detection via Jupyter's heartbeat
+  channel; we surface "kernel died" to the agent loop, which can
+  decide to retry or fail the run. Container OOM kills the
+  container; FastAPI re-spawns next request.
+
+---
+
+## Multi-language strategy
+
+The agent's primary code lane is Python because: (a) every data
+tool we care about (pandas / pdfplumber / openpyxl / pymupdf /
+matplotlib) ships first-class for Python, (b) every public LLM-
+agent reference uses Python kernels, (c) our customers' data work
+is overwhelmingly in Python or Python-callable. But Python
+shouldn't be a *limit*: the container has a full Linux user
+space, and the agent's `python_exec` can call `subprocess.run`
+on anything we install.
+
+### Phase 2 sandbox image: Python + bash + ~25 CLI tools
+
+`opencraig/sandbox:py3.13` — base size target ~1.5 GB:
+
+* **Python data stack**: `numpy pandas scipy scikit-learn matplotlib
+  seaborn plotly duckdb pyarrow openpyxl xlsxwriter python-docx
+  python-pptx pypdf pdfplumber pymupdf camelot-py pdf2image
+  beautifulsoup4 lxml requests httpx jupyter ipykernel ipywidgets`
+* **OS-level CLIs callable via `subprocess.run`**:
+  - Office / docs: `libreoffice`, `pandoc`, `texlive-xetex`
+  - PDF: `poppler-utils` (pdftotext/pdftoppm/pdfinfo), `qpdf`,
+    `pdftk-java`
+  - Image: `imagemagick`, `libvips`
+  - Audio/video: `ffmpeg`
+  - OCR: `tesseract-ocr` (with `chi_sim` for Chinese)
+  - Data: `xsv`, `jq`, `dasel`, `sqlite3`, `duckdb`
+  - Search/file: `ripgrep`, `fd-find`
+  - Network/version: `git`, `curl`, `wget`
+* **Two kernels**: Python (`ipykernel`) and Bash (`bash_kernel`).
+  The agent gets `python_exec` AND `bash_exec` as separate tools
+  — bash is a first-class lane for shell-flavoured workflows
+  ("find files modified in last 7 days", "grep across the
+  workdir", "tail a log").
+
+### Phase 6+: optional R / Julia kernels
+
+R (Bioconductor users) and Julia (numerical computing) are
+opt-in via operator config:
+
+```yaml
+agent:
+  sandbox:
+    image: opencraig/sandbox:py3.13              # default
+    additional_kernels: []                        # opt in: [r, julia, node]
+```
+
+We maintain image variants:
+* `:py3.13` (default, ~1.5 GB)
+* `:py3.13-r` (+IRkernel + Bioconductor base, ~3 GB)
+* `:py3.13-julia` (+IJulia + base packages, ~2.5 GB)
+* `:py3.13-full` (everything, ~4 GB)
+
+When operator selects a non-default image, the agent's tool list
+gains `r_exec` and/or `julia_exec` (each on its own kernel
+subprocess inside the same container). Kept opt-in so the 90% of
+deployments that don't need them get a faster, smaller image.
+
+### Browser automation (Phase 5 web tooling)
+
+`playwright` ships with `:py3.13` from Phase 5 onward —
+headless Chromium, ~300 MB additional. Used by the `fetch_url`
+tool when JS rendering is needed (most monitoring agency pages,
+modern SaaS docs). Default disabled; `agent.web_search.enabled`
+gate also gates browser launches.
+
+---
+
+## Observability stack
+
+OpenCraig already emits OpenTelemetry spans for every request +
+LLM call. Two additions for the agent era:
+
+| Layer | Tool | Why |
+|---|---|---|
+| **LLM-call instrumentation** | `traceloop/openllmetry` (Apache-2.0) | Drop-in OTel instrumentation for `litellm` — every LLM call automatically becomes a span with `model / tokens_in / tokens_out / cost / latency / prompt_hash` attributes. No new wire protocol; rides our existing OTel collector. |
+| **LLM-specific dashboard** | `langfuse/langfuse` self-host (MIT) | Accepts OTLP ingest natively; surfaces traces grouped by `agent_run_id`, token spend per user/project, prompt diffs across versions, eval queues. Replaces having to build all of this ourselves. |
+| **Sandbox / kernel state** | JupyterHub-style admin panel — but built ourselves | One page in `/settings/agent-monitor` (admin only): active containers, kernels, CPU/RAM per user, active runs with current step + cost. Force-kill controls. Reads docker SDK + our `agent_runs` table. |
+| **Per-project run history** | OpenCraig's own `agent_runs` + `agent_run_steps` tables | User-facing view: history of agent runs in a project, click for plan + step timeline + per-step tokens/cost/wall-time. Failure resumes from step N. "Export trace JSON" for bug reports. |
+
+`langfuse` is operator-optional via a docker-compose profile:
+operators who don't want a second observability surface can run
+without it; the data still flows into the OTel collector and our
+own DB.
+
+---
+
+## Workflow / state-machine engine
+
+**Decision: defer Temporal/Restate; Postgres state row is
+sufficient for v1.**
+
+A row in `agent_runs` with `(plan, step_index, status,
+last_checkpoint_at)` is enough to support:
+* Run survives FastAPI worker restart (resume from step_index)
+* Multi-minute runs that outlive an HTTP request
+* Cancel / pause / approval gates (status flag transitions)
+
+Adopt Temporal/Restate when (a) an agent run needs durable
+wait > 1 minute across a process restart with a strict
+correctness contract, OR (b) we're fanning out to many parallel
+tool invocations across worker pools and need replay-on-crash.
+Neither is in Phase 0–6 scope.
 
 ---
 
@@ -297,7 +535,7 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 |---|---|---|
 | **0** | Rename Workspace → Library; new empty Workspace surface; data model; placeholder Project CRUD | "We have two surfaces now" — just architecture |
 | **1** | Workspace UI = file manager over project workdir; Project sharing; Chat ↔ Project binding | User can create a Project, upload files, open a chat against it |
-| **2** | Sandboxed `python_exec` tool; Docker-based kernel pool; rich-output rendering | "Analyze this CSV and plot it" works |
+| **2** | `python_exec` + `bash_exec` via per-user Docker container + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed | "Analyze this CSV and plot it" works |
 | **3** | File I/O tools + Library bridge | "Take that contract from Library, extract X" works |
 | **4** | Plan-Execute-Reflect orchestrator; long-running runs; HITL gates | "Compare these 5 contracts and produce a tracker xlsx" works |
 | **5** | Web search + fetch_url + injection defense | Agents can pull external sources |
@@ -308,13 +546,27 @@ is 12-18 additional weeks depending on team size.
 
 ---
 
-## Open decisions (asked of operator before starting)
+## Decisions
 
-1. **Sandbox** — Docker per-project (chosen above) confirmed?
-2. **First demo use case** — needed to focus Phase 2-4 work
-3. **Web search default** — on or off out of the box?
-4. **Multi-user from day 1, or single-user MVP first?**
-5. **Built-in templates** — which 3-5 to ship?
+### Settled (this round)
+
+| Decision | Outcome |
+|---|---|
+| **Sandbox isolation boundary** | **Per-user Docker container + per-project ipykernel**, not per-project container, not shared pool, not bare subprocess |
+| **Kernel orchestration** | **`jupyter_client` + `docker` SDK** managed by our own `SandboxManager`, NOT JupyterHub. AutoGen's `DockerJupyterCodeExecutor` is the reference implementation we adapt from |
+| **Filesystem model** | **Bind-mount** `storage/projects/<id>/` from host to container `/workdir/<id>/`. Single source of truth on host fs; Workspace UI reads host fs directly (no docker exec round-trip) |
+| **Multi-language** | Python + Bash kernels day 1; ~25 CLI tools pre-installed in sandbox image; R/Julia/Node opt-in via image variants in Phase 6 |
+| **Observability** | OpenLLMetry → existing OTel collector + (optional) Langfuse self-host for LLM-specific dashboard. Sandbox monitor + per-project run history are OpenCraig's own UI |
+| **Workflow engine** | None (Postgres `agent_runs` row); revisit Temporal/Restate if durable-wait > 1 min lands as a real customer ask |
+| **Web-search timing** | Phase 5, not earlier |
+
+### Pending operator confirmation
+
+1. **First demo use case** — recommended: "5 contracts → SLA / penalty / termination tracker xlsx" (legal segment). Drives Phase 2-4 north star.
+2. **Web search default** — recommended: **off**. Operator opens via config + per-project setting.
+3. **Multi-user day 1** — recommended: **yes**, simplified to owner + `rw` member (reuse Library's `shared_with` 1:1).
+4. **Built-in templates count** — recommended: **3 starter projects** in Phase 6 (contract tracker / data cleanup / multi-doc memo). Not "magic templates"; just `examples/templates/` with sample inputs + recommended prompt.
+5. **Target customer R/Julia coverage** — does the operator's customer base include biotech / Bioconductor users? If yes, R kernel becomes Phase 4 default (not Phase 6 opt-in).
 
 ---
 
