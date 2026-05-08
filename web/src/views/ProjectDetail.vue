@@ -31,35 +31,47 @@
         <p>{{ t('workspace.detail.load_error', { msg: error }) }}</p>
       </div>
 
-      <div v-else-if="project" class="proj-detail__placeholder">
-        <MessageSquare :size="36" :stroke-width="1.25" />
-        <h2>{{ t('workspace.detail.no_chats_title') }}</h2>
-        <p>{{ t('workspace.detail.no_chats_subtitle') }}</p>
-        <p class="proj-detail__hint">
-          {{ t('workspace.detail.phase0_note') }}
-        </p>
-      </div>
+      <ProjectFileBrowser
+        v-else-if="project"
+        ref="browser"
+        :project-id="project.project_id"
+        :read-only="!canWrite"
+        @import-from-library="onImportFromLibrary"
+      />
     </main>
 
+    <!-- Phase 1.4 LibraryDocPicker mounts here once 1.4 lands. -->
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ArrowLeft, MessageSquare } from 'lucide-vue-next'
+import { AlertCircle, ArrowLeft } from 'lucide-vue-next'
 
 import { getProject } from '@/api'
 import Skeleton from '@/components/Skeleton.vue'
+import ProjectFileBrowser from '@/components/workspace/ProjectFileBrowser.vue'
+import { useDialog } from '@/composables/useDialog'
 
 const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
+const dialog = useDialog()
 
 const project = ref(null)
 const loading = ref(true)
 const error = ref('')
+const browser = ref(null)
+
+// Owner / admin can write; viewer (role='r') cannot. The route layer
+// is the source of truth (404s viewer writes); this just dims the
+// browser's mutating buttons so the UI matches.
+const canWrite = computed(() => {
+  const role = project.value?.role
+  return role === 'owner' || role === 'admin'
+})
 
 async function load() {
   const id = route.params.projectId
@@ -78,6 +90,15 @@ async function load() {
 
 function back() {
   router.push('/workspace')
+}
+
+// Placeholder until 1.4 wires LibraryDocPicker.vue. The browser
+// emits ``import-from-library`` when the user clicks the toolbar
+// button; for now we just toast that the picker is coming.
+function onImportFromLibrary() {
+  dialog.toast(t('workspace.detail.library_import_coming'), {
+    variant: 'info',
+  })
 }
 
 watch(() => route.params.projectId, load)
@@ -145,7 +166,9 @@ onMounted(load)
 
 .proj-detail__body {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .proj-detail__placeholder {

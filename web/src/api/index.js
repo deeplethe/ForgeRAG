@@ -110,6 +110,13 @@ export {
 export {
   listProjects, createProject, getProject, updateProject, deleteProject,
   listProjectMembers, addProjectMember, removeProjectMember,
+  // workdir file ops
+  listProjectFiles, uploadProjectFile, projectFileDownloadUrl,
+  moveProjectFile, deleteProjectFile, mkdirProjectFile,
+  // workdir trash
+  listProjectTrash, restoreProjectTrash, purgeProjectTrash, emptyProjectTrash,
+  // library import
+  importDocFromLibrary,
 } from './projects'
 
 // Trash
