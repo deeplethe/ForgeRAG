@@ -360,12 +360,16 @@ def register_user(
     sess.flush()  # surface the row before invitation consume reads it
 
     # Auto-create the user's personal Space (``/users/<username>``)
-    # with an ``rw`` grant. Every account gets a personal home —
-    # users never start out with zero spaces. See per-user-spaces
-    # roadmap. Idempotent: if the folder already exists (admin
-    # pre-created, or backfill ran), we just ensure the grant is
-    # present.
-    ensure_personal_folder(sess, user_id=user_id, username=username)
+    # with an ``rw`` grant. Regular users always get a personal
+    # home so they never start with zero spaces. Admins skip:
+    # their workspace IS the global tree (PathRemap admin bypass),
+    # a personal folder under ``/users/<admin>`` would just be
+    # one more orphan tile in their UI. Idempotent for the
+    # regular-user case: if the folder already exists (pre-created
+    # by an operator, or a backfill ran), we just ensure the
+    # grant is present.
+    if role != "admin":
+        ensure_personal_folder(sess, user_id=user_id, username=username)
 
     # Consume the invitation atomically with the new user row.
     redeemed_folder_path: str | None = None

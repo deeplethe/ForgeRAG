@@ -213,12 +213,12 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
 
         # Admin role bypass: admins manage the workspace, so they
         # see every non-system top-level folder as a Space — same
-        # behaviour as auth-disabled, plus the personal Space
-        # tagged so the UI can land them there by default.
+        # shape as auth-disabled. NO personal Space concept for
+        # admins: their workspace IS the global tree, a "home"
+        # under /users/<admin> would just be one more thing to
+        # navigate around. ``/users/`` stays a system folder
+        # excluded from the admin's view.
         if user is not None and user.role == "admin":
-            personal_path = (
-                f"/users/{user.username}" if user.username else None
-            )
             rows = sess.execute(
                 select(_F.folder_id, _F.path).where(
                     _F.parent_id == "__root__",
@@ -233,22 +233,6 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
                     role="rw",
                     is_personal=False,
                 )
-            # Personal Space lives under /users/ (system folder, so
-            # excluded above) — yield it separately if it exists.
-            if personal_path:
-                row = sess.execute(
-                    select(_F.folder_id, _F.path).where(
-                        _F.path == personal_path,
-                        _F.trashed_metadata.is_(None),
-                    )
-                ).one_or_none()
-                if row is not None:
-                    yield GrantRoot(
-                        folder_id=row[0],
-                        abs_path=row[1],
-                        role="rw",
-                        is_personal=True,
-                    )
             return
 
         # Regular user: walk every folder, find ones where the
