@@ -537,7 +537,16 @@ function promotable(u) {
 .search-input:focus { border-color: var(--color-line2); box-shadow: var(--ring-focus); }
 
 /* ── Table ──────────────────────────────────────────────────── */
+/* ``display: block`` is explicit to override Tailwind's bare
+   ``.table`` utility (display: table), which otherwise wins
+   because the scoped ruleset doesn't redeclare ``display`` and
+   table-display elements size to their content rather than
+   stretching to fill the parent. That mismatch was leaving the
+   table noticeably shorter than the toolbar's right-aligned
+   search input on wide viewports. */
 .table {
+  display: block;
+  width: 100%;
   border: 1px solid var(--color-line);
   border-radius: var(--r-md);
   background: var(--color-bg);
