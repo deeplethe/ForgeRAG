@@ -101,10 +101,12 @@ read-only-ish store of reference material).
 
 ### 2. Project as the container, not Conversation
 
-**Chosen.** A Project owns: workdir on disk, member grants,
+**Chosen.** A Project owns: workdir on disk, single-user owner,
 artifacts, agent runs, execution sessions. A Chat Conversation
-*belongs to* a Project (via FK). Multiple conversations under one
-project share the same workdir + artifacts.
+*belongs to* a Project (via FK). Multiple conversations of the
+**same user** under one project share the same workdir + artifacts;
+projects are not shared between users (see "Project = single-user"
+in the Settled decisions).
 
 **Rejected: artifacts attached directly to Conversation.** Cleaner-
 sounding but breaks the moment a user wants two conversations on
@@ -485,10 +487,10 @@ projects                 ← NEW
    name
    description
    workdir_path          (storage/projects/<id>/)
-   owner_id
+   owner_id              (the SOLE access-control field — projects are
+                          single-user; no shared_with, no member rows)
    created_at
    updated_at
-   shared_with (jsonb)   ← reuses Folder.shared_with shape
 
    │ project_id
    ├──────────────────────┬───────────────────────┬───────────────────┐
@@ -583,10 +585,10 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 | **`python_exec`** | 2 | Run Python in the project's sandbox |
 | **`bash_exec`** | 2 | Run shell in the project's sandbox |
 | **`install_runtime`** | 2 | Install a non-Python language runtime (R / Julia / Node / Rust / …) into the user's persistent `/workspace/.envs/` volume on first need; registers `<lang>_exec` for the rest of the run |
+| **`import_from_library`** | **2** | Copy a Library doc the user has read access to into the project workdir's `inputs/` (records an Artifact with `lineage.source = chunk/doc reference`). **Promoted from Phase 3** — agent must be able to pull files into its workdir at the same moment it gains code execution, otherwise Q&A turns "find me X and analyze it" into a hand-paste step the user shouldn't have to do |
 | **`list_files`** | 3 | Glob the project workdir |
 | **`read_file`** | 3 | Read a file from the project workdir |
 | **`write_file`** | 3 | Write a file (records an Artifact) |
-| **`import_from_library`** | 3 | Copy / link a Library doc into the project workdir |
 | **`promote_to_library`** | 3 | Push an artifact back into the Library (becomes indexed) |
 | `web_search` | 5 | External web search via Tavily/Brave/SearXNG |
 | `fetch_url` | 5 | Download + parse a URL into markdown |
@@ -597,13 +599,13 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 
 | Phase | What ships | Demo capability |
 |---|---|---|
-| **0** | Rename Workspace → Library; new empty Workspace surface; data model; placeholder Project CRUD | "We have two surfaces now" — just architecture |
-| **1** | Workspace UI = file manager over project workdir; Project sharing; Chat ↔ Project binding | User can create a Project, upload files, open a chat against it |
-| **2** | `python_exec` + `bash_exec` + `install_runtime` via per-user Docker container (userns-remap) + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed; per-user `.envs/` volume for lazy R/Julia/Node | "Analyze this CSV and plot it" works; "rerun this in R" also works (after one-time R install) |
-| **3** | File I/O tools + Library bridge | "Take that contract from Library, extract X" works |
+| **0** | Rename Workspace → Library; new empty Workspace surface; data model; placeholder Project CRUD (single-user) | "We have two surfaces now" — just architecture |
+| **1** | Workspace UI = file manager over project workdir; manual "import from Library" UI; Chat ↔ Project binding | User can create a Project, pull a Library doc into it, open a chat against it |
+| **2** | `python_exec` + `bash_exec` + `install_runtime` + **`import_from_library`** via per-user Docker container (userns-remap) + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed; per-user `.envs/` volume for lazy R/Julia/Node | "Find Q3 sales and analyze it" works end-to-end (Library search → import → python_exec → chart) |
+| **3** | Local file I/O tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` | Agent freely manipulates project workdir; can push artifacts back to Library |
 | **4** | Plan-Execute-Reflect orchestrator; long-running runs; HITL gates | "Compare these 5 contracts and produce a tracker xlsx" works |
-| **5** | Web search + fetch_url + injection defense | Agents can pull external sources |
-| **6** | Artifact lineage UI; project export; templates; cost dashboard | Sale-ready polish |
+| **5** | Web search (default-on) + fetch_url + injection defense | Agents can pull external sources |
+| **6** | Artifact lineage UI; project export; cost dashboard | Sale-ready polish (no built-in templates — operator drives use cases) |
 
 Phase 0 + Phase 1 are designed to be **3 weeks total**. The rest
 is 12-18 additional weeks depending on team size.
@@ -625,12 +627,41 @@ is 12-18 additional weeks depending on team size.
 | **Workflow engine** | None (Postgres `agent_runs` row); revisit Temporal/Restate if durable-wait > 1 min lands as a real customer ask |
 | **Web-search timing** | Phase 5, not earlier |
 
-### Pending operator confirmation
+### Settled (operator decisions, May 2026)
 
-1. **First demo use case** — recommended: "5 contracts → SLA / penalty / termination tracker xlsx" (legal segment). Drives Phase 2-4 north star.
-2. **Web search default** — recommended: **off**. Operator opens via config + per-project setting.
-3. **Multi-user day 1** — recommended: **yes**, simplified to owner + `rw` member (reuse Library's `shared_with` 1:1).
-4. **Built-in templates count** — recommended: **3 starter projects** in Phase 6 (contract tracker / data cleanup / multi-doc memo). Not "magic templates"; just `examples/templates/` with sample inputs + recommended prompt.
+| Decision | Outcome |
+|---|---|
+| **Project = single-user, Library = shared** | Projects are personal workbenches: one owner, no sharing, no member management. Library keeps its existing folder-grant multi-user model. Rationale: a project owns the agent's live kernel state + run history + intermediate artifacts; multi-writer on those would create races + state pollution with no real collaboration upside. Users collaborate by **sharing Library content**, then each runs their own agent in their own project against the same shared knowledge. |
+| **Demo use case** | None — operator drives validation against their own real workflows; we don't ship demo project templates |
+| **Web search default** | **On** at Phase 5 ship-time; operator can disable per-deployment via `agent.web_search.enabled: false`. (Earlier we'd planned default-off for the citation-purity argument; operator's call is that the value of fresher external context outweighs the audit-trail risk, and the lineage panel already distinguishes "sourced from URL X at sha Y" from "sourced from Library chunk Z" so users can see what came from where.) |
+| **Built-in templates** | **None.** No `examples/templates/` directory, no "starter projects" UX. Phase 6 dropped that task entirely. |
+| **R / Julia in base image** | **No.** Stay with the on-demand `install_runtime` capability; no `agent.runtime_preinstall` config either. Customer base isn't biotech-skewed enough to justify pre-warming. |
+
+### Library → Workspace bridge: PRIORITY UPGRADE
+
+**Decision (May 2026)**: the bridge between the indexed Library and
+the per-project workdir is the **headline feature**, not a Phase 3
+nice-to-have. The agent UX the operator described:
+
+> "Analyze the Q3 sales situation"
+>
+> → agent searches Library (with the user's `path_filters`)
+> → finds `q3_sales.xlsx` (a doc the user has read access to)
+> → pulls it into the current project's `inputs/` workdir
+> → runs `python_exec` against the local file
+> → drops a chart into `outputs/`
+
+This requires `import_from_library` to ship **with** `python_exec`,
+not after it. Moved from **Phase 3 → Phase 2**. Phase 1 also gains
+a manual UI affordance ("import from Library" button in the project
+workdir view) for the same flow without going through chat.
+
+**Authz boundary (no change to existing system)**: Library
+retrieval has always run through the user's `path_filters`; the
+agent calling `search_library` / `read_chunk` / `import_from_library`
+inherits that filter from the request principal. A user cannot
+import a file they wouldn't see in the Library UI — same gate,
+new caller.
 
 ---
 
@@ -711,19 +742,16 @@ works yet, but the shape is right.
 ### 0.4 — Backend skeleton  (~1 day)
 
 * `api/routes/projects.py`:
-  - `GET    /api/v1/projects`               — list (filtered by grants)
+  - `GET    /api/v1/projects`               — list the caller's projects
   - `POST   /api/v1/projects`               — create
   - `GET    /api/v1/projects/{id}`          — detail
   - `PATCH  /api/v1/projects/{id}`          — rename / edit description
   - `DELETE /api/v1/projects/{id}`          — soft-delete
-  - `GET    /api/v1/projects/{id}/members`  — list members
-  - `POST   /api/v1/projects/{id}/members`  — invite (reuses email lookup)
-  - `PATCH  /api/v1/projects/{id}/members/{user_id}` — change role
-  - `DELETE /api/v1/projects/{id}/members/{user_id}` — remove
-* All routes admin-and-owner gated through a `_require_project_access`
-  helper, mirroring `_require_share_permission` in folders.py.
+* All routes are owner-only (admin bypass for global ops). 404 on
+  no-access — same code as a missing project, to avoid existence
+  confirmation. Projects are single-user; no `/members` endpoints.
 * Audit log: `project.create / project.rename / project.delete /
-  project.share / project.unshare / project.update_role`.
+  project.update`.
 
 ### 0.5 — Frontend Workspace skeleton  (~1 day)
 
@@ -733,18 +761,18 @@ works yet, but the shape is right.
 * New API client `web/src/api/projects.js` — list / create / etc.
 * Sidebar link "Workspace" → `/workspace` (the new route).
 * Project list page: simple grid of cards `(name, description,
-  last_active, owner_avatar)`; click → project detail page.
+  last_active)`; click → project detail page.
 * Project detail page: just shows name, description, "no chats
-  yet" placeholder. Member management dialog reuses
-  `FolderMembersDialog.vue` adapted for projects (or a
-  near-identical clone — refactoring later).
+  yet" placeholder. No member dialog — projects are single-user.
 
 ### 0.6 — Tests + smoke  (~0.5 day)
 
-* `tests/test_project_routes.py`: CRUD + share happy path.
+* `tests/test_route_projects.py`: CRUD + ownership boundary
+  (alice's project is invisible to bob; bob can't read / edit /
+  delete it).
 * `tests/test_no_phone_home.py`: no new SDKs.
-* Manual smoke: register two users, create a project as A, share
-  to B, verify B sees it.
+* Manual smoke: register two users, create a project as A, verify
+  B cannot list / open / mutate it.
 
 ## Phase 0 acceptance checklist
 
@@ -755,22 +783,24 @@ works yet, but the shape is right.
 - [ ] Create-project button works; project appears in the list
 - [ ] Project's workdir actually exists on disk under
       `storage/projects/<id>/`
-- [ ] Sharing a project with another user grants them list/read
-      access; revoking removes it
+- [ ] Another user cannot list / open / mutate a project they
+      don't own (404)
 - [ ] All existing tests still pass; build succeeds
 - [ ] No Library-related functionality is broken by the rename
 
 ---
 
-# Phase 1 — Workspace as a project file manager + chat binding
+# Phase 1 — Workspace as a project file manager + Library import + chat binding
 
 **Goal:** Phase 0 has the architecture; Phase 1 makes the
-Workspace **useful** as a project-scoped file manager (without any
-agent capability yet). The user can manually upload files to a
-project, organize them, and open a chat scoped to a project — at
-which point retrieval still pulls from the Library, but the chat
-is *associated with* the project so future agent work has somewhere
-to land.
+Workspace **useful** as a project-scoped file manager **with a
+manual Library → Workspace import flow** (no agent capability
+yet). The user can:
+* Upload files directly into a project workdir (drag-drop / picker)
+* **Pick a doc from the Library and copy it into the project's `inputs/`** — the operator-visible UI version of `import_from_library` that ships in Phase 2 as an agent tool
+* Open a chat scoped to a project — retrieval still hits the
+  Library, but the chat carries `project_id` so subsequent phases'
+  agent work has somewhere to land
 
 **Estimate:** 2 calendar weeks.
 
@@ -836,14 +866,40 @@ Frontend:
   retrieval surface is still the Library only. This avoids
   scope creep while we ship the file-manager piece cleanly.
 
-### 1.4 — Project member management UI polish  (~2 days)
+### 1.4 — Library → Workspace import (manual UI)  (~2 days)
 
-* Refactor `FolderMembersDialog.vue` → `MembersDialog.vue` with a
-  `kind: 'folder' | 'project'` prop, since both share 95% of the
-  flow. Drives both Library and Workspace member edits.
-* Workspace home page: show "Shared with you" projects in a
-  separate section from "Your projects" so the ownership/scope
-  is obvious at a glance.
+This is the operator-visible counterpart to the `import_from_library`
+agent tool that ships in Phase 2. Phase 1 lets a user do it by hand
+so the storage layout + Artifact lineage are exercised end-to-end
+before the agent ever calls it.
+
+Backend:
+
+* `POST /api/v1/projects/{id}/import` body
+  `{doc_id, target_subdir?: "inputs"}` — copies the source blob
+  from the Library's content-addressed store into the project
+  workdir, creates an `Artifact` row with
+  `lineage_json = {sources: [{type: "doc", doc_id}]}`.
+* Authz: caller must (a) be the project owner AND (b) have read
+  access to the Library doc. Doc-access check reuses
+  `require_doc_access` from `api/deps.py` (pre-existing helper),
+  so the rule is identical to the Library UI's "can I open this
+  doc" gate. There's no path for an importer to bypass — owner
+  is the only person who can write into a project workdir, and
+  the doc-access check is the same one already enforced
+  everywhere else.
+* Idempotent: importing the same doc_id twice into the same
+  project re-points to the existing artifact rather than
+  duplicating the file.
+
+Frontend:
+
+* "Import from Library" button on the project detail page →
+  opens a `LibraryDocPicker.vue` modal: tree view of folders the
+  user has read on, search box, multi-select.
+* Imported docs land in `inputs/` by default with a small
+  "imported from /path/in/library" subscript visible in the
+  workdir file list.
 
 ### 1.5 — Audit log integration  (~0.5 day)
 
@@ -858,9 +914,12 @@ Frontend:
   delete, including `..` path-traversal rejection.
 * `tests/test_project_quota.py`: oversize upload rejected, partial
   uploads cleaned up.
-* End-to-end smoke: alice creates project, uploads a CSV, shares
-  to bob, bob downloads the CSV, bob opens chat-in-project,
-  conversation row carries `project_id`.
+* End-to-end smoke: alice creates project, uploads a CSV directly,
+  also uses "Import from Library" to pull in `q3_sales.xlsx` (a doc
+  she has read on in the Library), opens a chat scoped to the
+  project, conversation row carries `project_id`. Bob (a different
+  user with NO grant on alice's Library folder) cannot import that
+  same doc into HIS own project — the doc-access check refuses.
 
 ### 1.7 — Docs  (~0.5 day)
 
@@ -878,13 +937,16 @@ Frontend:
 - [ ] User can create a project, upload files, organize them in
       sub-folders, rename, move, delete (with restore from
       project-local trash)
-- [ ] Sharing a project propagates file access to the invited user
+- [ ] "Import from Library" button copies a doc into the project
+      workdir's `inputs/`, recording an Artifact with lineage
+      pointing back to the original doc
+- [ ] User who lacks read access to a Library doc cannot import it
+      (404 — same gate as Library UI)
 - [ ] Chat opened from a project is bound to it; conversation row
       has `project_id` set
-- [ ] Workspace home shows "Your projects" + "Shared with you"
-      sections distinctly
-- [ ] All Library functionality (search, KG, ingestion, members)
-      works exactly as before — Workspace doesn't bleed into it
+- [ ] All Library functionality (search, KG, ingestion, member
+      sharing) works exactly as before — Workspace doesn't bleed
+      into it
 - [ ] Quota enforced; oversize upload returns 413 with clear
       error
 - [ ] Path traversal attacks (`/api/v1/projects/X/files?path=../../etc/passwd`)
@@ -902,17 +964,19 @@ These are deliberate cuts to keep the first 3 weeks bounded:
 * **No agent code execution.** `python_exec` and the Docker
   sandbox are Phase 2. Users in Phase 1 can put files in a
   project but the agent can't touch them yet.
-* **No Library bridge.** Files in projects are uploaded by the
-  user manually; importing a Library doc into a project workdir
-  is Phase 3.
-* **No artifact concept.** The `artifacts` table exists from 0.2
-  but no rows get written until Phase 2's `python_exec` produces
-  files (and Phase 3's `write_file` formalises Artifact creation).
+* **No agent-driven Library bridge.** Phase 1 ships the *manual*
+  "Import from Library" UI; the agent's `import_from_library`
+  tool that does the same thing automatically lands in Phase 2
+  alongside `python_exec`.
+* **No artifact concept for agent outputs.** The `artifacts` table
+  exists from 0.2 and Phase 1's manual Library import writes rows
+  into it (lineage = doc reference). Agent-produced artifacts wait
+  for Phase 2's `python_exec` and Phase 3's `write_file`.
 * **No agent runs.** `agent_runs` table exists; remains empty
   through Phase 0-3.
-* **No project-level RBAC subtleties** (e.g. "this user can see
-  files but not run agents"). One role per project member: `r`
-  or `rw`, same as Library. Phase 7+ refines if customers ask.
+* **No project sharing.** Projects are single-user by design — see
+  the "Project = single-user, Library = shared" decision. Users
+  collaborate via shared Library content, not shared projects.
 
 If during demo someone asks "can the agent do X with this file
 yet?", the honest answer for Phase 1 is "not yet — the workspace
@@ -930,7 +994,7 @@ in the next two months."
 | Cost runaway from agentic loops | High | High | Phase 0 already adds `total_cost_usd` column; Phase 4 adds per-project budget cap + plan-time cost preview |
 | Naming churn confuses existing users | Medium | Low | Phase 0 ships the redirect `/workspace → /library`; keep it for 6 months |
 | Docker isn't available in some operator environments | Medium | Medium | Phase 2 ships with Docker-only support; document `code_execution.enabled: false` config flag for operators who need to disable |
-| Multi-user permission edge cases on shared projects | Medium | Medium | Phase 1 reuses Library's tested grant model 1:1; new edge cases emerge in Phase 4 with sub-agents (deferred) |
+| Library doc imported into a project survives that doc being deleted from Library | Medium | Low | Artifact rows hold a copy of the blob (content-addressed); the import doesn't soft-link. Lineage records the source doc_id but the file in `inputs/` is independent. Documented as a feature: "deleting a Library doc doesn't break in-flight project work." |
 
 ---
 
