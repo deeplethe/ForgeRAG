@@ -1,11 +1,39 @@
 # Roadmap: Agent Workspace (Multi-Agent Production System)
 
-**Status:** Design — Phase 0 not yet started
-**Last updated:** 2026-05-08
+**Status:** Phase 2 in progress
+**Last updated:** 2026-05-09
 
-This is the largest feature on OpenCraig's roadmap. It moves the
-product from "find the answer in your docs and cite the page" to
-"have an agent do the actual work — read files, run code, write
+## Product positioning
+
+OpenCraig is a **team knowledge management + AI work platform**:
+
+* **Team knowledge management** — multiple users share a Library
+  (folder-grant authz), each user holds folder-level reads/writes,
+  the corpus is curated collectively. Phase 0–1 already shipped
+  this baseline.
+* **AI work platform** — agents that do the actual work (analyse
+  data, transform files, generate reports) inside per-user
+  sandboxes, with every step audited and every output traceable
+  to its inputs. Phase 2–4 builds this layer.
+
+This positioning shapes a few non-obvious priorities:
+
+1. **Authz boundary is per-Library-folder, not per-tenant.** Two
+   teammates with read-grants on the same `/research/` folder see
+   the same content; their AGENT runs are private (per-user
+   container) but the knowledge they pull from is shared.
+2. **Project-level work is single-writer with read-only viewers.**
+   `Project = owner-write + read-only share`; consultants can
+   show clients progress without exposing edit rights. The owner
+   runs agents; viewers watch. (Decision settled May 2026.)
+3. **Reusable workflows are a real need.** A team building "Q3
+   review" once and re-running it next quarter shouldn't have to
+   re-prompt from scratch. **Skills** (Phase 5+, see below) is
+   the abstraction that solves this.
+
+This roadmap is the largest feature on the product side. It moves
+us from "find the answer in your docs and cite the page" to "have
+an agent do the actual work — read files, run code, write
 artifacts — on your hardware, with every step audited and every
 output traceable to its inputs."
 
@@ -760,19 +788,30 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 
 ## Tools the agent gets (full inventory after all phases)
 
+Decision (May 2026, after evaluating "minimum primitives vs.
+specialised tools" against OpenClaw / Claude Code / AutoGen): we
+keep the tool surface **small** — `python_exec` + `bash_exec` plus
+specific-purpose tools where shell isn't the right primitive
+(library bridge, runtime install, web search, skills). File ops
+(`list_files` / `read_file` / `write_file`) were originally
+scheduled for Phase 3 and deliberately **dropped** — fully
+redundant with `python_exec("os.listdir(...)")` /
+`bash_exec("ls -la")` / `python_exec("Path('...').write_text(...)")`.
+Artifact tracking (the only reason `write_file` would have earned
+its keep) instead happens via **auto-scan of `outputs/`** after
+every `python_exec` / `bash_exec` call (Phase 2.7).
+
 | Tool | Phase | What it does |
 |---|---|---|
 | `search_library` | already exists | Retrieves chunks from the Library (existing RAG) |
 | `read_chunk` | already exists | Pulls a specific chunk by ID |
 | `read_tree` | already exists | Document outline navigation |
-| **`python_exec`** | 2 | Run Python in the project's sandbox |
-| **`bash_exec`** | 2 | Run shell in the project's sandbox |
+| **`python_exec`** | 2 | Run Python in the project's per-project ipykernel. **Persistent state** across calls — `df = pd.read_excel(...)` once, then `df.head()` / `df.groupby(...)` / `df.plot()` in subsequent calls hit the same in-memory df. The workhorse for any analytical / multi-step work |
+| **`bash_exec`** | 2 | Run shell in the same container. **No persistent state** — each call is fresh. Use for shelling out to the 25 pre-installed CLIs (`pdftotext` / `xsv` / `jq` / `pandoc` / `ffmpeg` / `tesseract` / `rg` / `find` / etc.) where Python's `subprocess.run([...])` boilerplate is wasteful |
+| **`import_from_library`** | 2 | Copy a Library doc the user has read access to into the project workdir's `inputs/` (records an Artifact with `lineage.source = chunk/doc reference`). Same backend service as the Phase 1 manual UI button |
 | **`install_runtime`** | 2 | Install a non-Python language runtime (R / Julia / Node / Rust / …) into the user's persistent `/workspace/.envs/` volume on first need; registers `<lang>_exec` for the rest of the run |
-| **`import_from_library`** | **2** | Copy a Library doc the user has read access to into the project workdir's `inputs/` (records an Artifact with `lineage.source = chunk/doc reference`). **Promoted from Phase 3** — agent must be able to pull files into its workdir at the same moment it gains code execution, otherwise Q&A turns "find me X and analyze it" into a hand-paste step the user shouldn't have to do |
-| **`list_files`** | 3 | Glob the project workdir |
-| **`read_file`** | 3 | Read a file from the project workdir |
-| **`write_file`** | 3 | Write a file (records an Artifact) |
 | **`promote_to_library`** | 3 | Push an artifact back into the Library (becomes indexed) |
+| **`run_skill`** | 5+ | Load a markdown-defined reusable workflow (`<workspace>/skills/<name>/SKILL.md`) and run it with parameters. The team's "Q3 review" / "data cleanup" / "weekly report" patterns get codified as skills, shared across projects + users (see Skills section below) |
 | `web_search` | 5 | External web search via Tavily/Brave/SearXNG |
 | `fetch_url` | 5 | Download + parse a URL into markdown |
 
@@ -784,14 +823,126 @@ intuitively sees `outputs/` as "what to keep" and `scratch/` as
 |---|---|---|
 | **0** | Rename Workspace → Library; new empty Workspace surface; data model; placeholder Project CRUD (single-user) | "We have two surfaces now" — just architecture |
 | **1** | Workspace UI = file manager over project workdir; manual "import from Library" UI; Chat ↔ Project binding | User can create a Project, pull a Library doc into it, open a chat against it |
-| **2** | `python_exec` + `bash_exec` + `install_runtime` + **`import_from_library`** via per-user Docker container (userns-remap) + `jupyter_client`; rich-output rendering; sandbox image with ~25 CLI tools pre-installed; per-user `.envs/` volume for lazy R/Julia/Node | "Find Q3 sales and analyze it" works end-to-end (Library search → import → python_exec → chart) |
-| **3** | Local file I/O tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` | Agent freely manipulates project workdir; can push artifacts back to Library |
+| **2** | `python_exec` + `bash_exec` + `install_runtime` + **`import_from_library`** via per-user Docker container + `jupyter_client`; rich-output rendering (figures saved to `scratch/_rich_outputs/`); auto-Artifact scan of `outputs/` after every code run; sandbox image with ~25 CLI tools; per-user `.envs/` for lazy R/Julia/Node | "Find Q3 sales and analyze it" works end-to-end (Library search → import → python_exec → chart) |
+| **3** | `promote_to_library` (push agent-produced artifacts back into Library, indexed); auto-Artifact scan extended with `outputs/` ↔ Library bidirectional mapping | Agent's deliverables become first-class Library content |
 | **4** | Plan-Execute-Reflect orchestrator with structured `plan_json`; per-step context bounding; auto-compaction at 75% threshold; cost ceiling + plan-time cost preview; HITL gate (opt-in) | "Compare these 5 contracts and produce a tracker xlsx" works without context blow-up; runs over budget pause for confirmation |
-| **5** | Web search (default-on) + fetch_url + injection defense | Agents can pull external sources |
-| **6** | Artifact lineage UI; project export; cost dashboard | Sale-ready polish (no built-in templates — operator drives use cases) |
+| **5** | Web search (default-on) + fetch_url + injection defense; **Skills** (markdown-defined reusable workflows, see below); `run_skill` agent tool | Team can codify "Q3 review" once; everyone re-runs it next quarter with `run_skill("q3-review", {quarter:"Q4"})` |
+| **6** | Artifact lineage UI; project export; cost dashboard; **Skills marketplace UI** (browse / fork / share within workspace); scheduled-task triggers (cron) | Sale-ready polish — team workflow ergonomics |
 
 Phase 0 + Phase 1 are designed to be **3 weeks total**. The rest
 is 12-18 additional weeks depending on team size.
+
+---
+
+## Skills — reusable agent workflows for teams
+
+**Why this exists:** the team-knowledge-management positioning
+demands that work patterns are **reusable across people and time**.
+Alice writes the steps to do "Q3 sales review" once; bob re-runs
+the same flow next quarter via one tool call. Without skills, every
+team member re-prompts from scratch every cycle — losing
+institutional knowledge that lives in chat history nobody re-reads.
+
+This is the same shape Anthropic's Claude Skills, OpenClaw, and
+Letta's "memories" all converge on. We adopt the markdown-+-frontmatter
+convention because it's already the industry direction and it keeps
+skills **operator-readable** (a yaml dict of params + prose
+instructions ≈ a runbook).
+
+### Storage + scope
+
+```
+storage/skills/                          # workspace-level (team-shared)
+  q3-sales-review/
+    SKILL.md                              # frontmatter + body
+    samples/                              # optional reference inputs
+  weekly-report/
+    SKILL.md
+storage/projects/<project_id>/.agent-state/skills/
+  this-project-only/                      # per-project override
+    SKILL.md
+```
+
+**Scope rule:** project-level skills override workspace-level by
+name; user's own projects + workspace are searched in that order.
+Phase 5 ships only the workspace level; project-level skills land
+when a customer asks.
+
+### SKILL.md format
+
+```markdown
+---
+name: q3-sales-review
+description: Generate a quarterly sales review tracker from Library docs.
+version: 1.2.0
+author: alice@example.com
+params:
+  quarter:
+    type: string
+    pattern: "^Q[1-4]$"
+    description: The quarter to review (Q1 / Q2 / Q3 / Q4)
+  year:
+    type: integer
+    default: 2026
+tags: [sales, quarterly, finance]
+---
+
+You are running the Q3 sales review for {{quarter}} {{year}}.
+
+Steps:
+1. Search the Library at `/sales/` for documents whose filename
+   contains "{{quarter}}" or "{{quarter}}_{{year}}".
+2. For each doc found, import_from_library into this project's
+   `inputs/` directory.
+3. python_exec: load each xlsx (use `pd.ExcelFile` first to
+   inspect structure since headers may be on row 2-4 with merged
+   cells), concatenate, drop subtotal rows.
+4. python_exec: produce a regional + product-line breakdown,
+   render as a bar chart and a markdown summary into `outputs/`.
+5. promote_to_library on `outputs/{{quarter}}_review.md` so it's
+   searchable next quarter.
+```
+
+### `run_skill` agent tool
+
+`run_skill(name="q3-sales-review", params={"quarter":"Q4","year":2026})`:
+
+1. Resolve scope (project → workspace), 404 if not found
+2. Validate params against the frontmatter schema
+3. Substitute `{{var}}` in the body
+4. Inject the body as a **structured plan** into Phase 4's
+   `plan_json` (plan-mode orchestrator already exists by Phase 5),
+   then drop into Execute mode immediately
+5. The skill body's prose IS the plan; the executor walks it as
+   if the LLM had emitted those steps itself
+
+This composes cleanly with Phase 4 — skills become **pre-canned
+plans**. The Plan-Execute-Reflect loop runs them with the same
+budget caps, HITL gates, cost preview as ad-hoc plans.
+
+### Authz
+
+* **Workspace skills** — admins write; everyone with a matching
+  workspace folder grant reads + runs.
+* **Project skills** — project owner writes; viewers can run them
+  (read-only-share already permits read; running a project skill
+  doesn't write into the project, so no gate violation).
+* **Cross-workspace** — skills don't cross workspace boundaries
+  unless explicitly published to a "skills marketplace" (Phase 6
+  UI; backend is a folder copy + version pin).
+
+### What we did NOT borrow
+
+* **OpenClaw `nodes`** (companion device interfaces with voice +
+  canvas) — not in our product surface
+* **Live Canvas / A2UI rendering** — different UX from chat trace;
+  Phase 6+ candidate if a customer asks (browse history's
+  "agent-driven dashboard" use cases first)
+* **Multi-channel routing** (Slack / WhatsApp / Discord) — Phase 6
+  integration if asked; no architecture change needed (push
+  notifications hang off `agent_runs` completion event)
+* **OpenClaw's "tools run on host by default"** — incompatible with
+  our multi-user threat model; we always sandbox
 
 ---
 
