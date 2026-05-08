@@ -10,15 +10,21 @@ const router = createRouter({
     { path: '/setup', component: () => import('@/views/Setup.vue'), meta: { public: true } },
     { path: '/chat', component: () => import('@/views/Chat.vue') },
     { path: '/search', component: () => import('@/views/Search.vue') },
-    { path: '/workspace', component: () => import('@/views/Workspace.vue') },
+    // Library = the indexed knowledge base (formerly "Workspace"). The
+    // file manager UI lives at /library going forward; /workspace is
+    // reserved for the new agent-driven artifact surface (Phase 0.5
+    // adds it as a separate empty view; until then a redirect keeps
+    // legacy bookmarks working).
+    { path: '/library', component: () => import('@/views/Library.vue') },
+    { path: '/workspace', redirect: (to) => ({ path: '/library', query: to.query }) },
     {
-      // Legacy redirect: old /repository?doc=X links land on /workspace?doc=X.
-      // Workspace embeds DocDetail.vue for the focused-doc view; the
+      // Legacy redirect: old /repository?doc=X links land on /library?doc=X.
+      // Library embeds DocDetail.vue for the focused-doc view; the
       // original Repository.vue component has been removed.
       path: '/repository',
-      redirect: (to) => ({ path: '/workspace', query: to.query }),
+      redirect: (to) => ({ path: '/library', query: to.query }),
     },
-    { path: '/ingestion', redirect: '/workspace' },
+    { path: '/ingestion', redirect: '/library' },
     { path: '/knowledge-graph', component: () => import('@/views/KnowledgeGraph.vue') },
     { path: '/metrics', component: () => import('@/views/Metrics.vue') },
     // Legacy redirect: /tokens (the old "Tokens & Sessions" page) is

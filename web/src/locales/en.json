@@ -14,7 +14,7 @@
     "tabs": {
       "chat": "Chat",
       "search": "Search",
-      "workspace": "Workspace",
+      "library": "Library",
       "knowledge_graph": "Knowledge Graph",
       "metrics": "Metrics"
     },

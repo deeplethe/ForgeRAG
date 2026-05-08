@@ -1,14 +1,18 @@
 /**
- * Workspace — single source of truth for the file-manager UI.
+ * Library — single source of truth for the file-manager UI.
  *
- * One instance per Workspace.vue page. Child components (FolderTree,
+ * One instance per Library.vue page. Child components (FolderTree,
  * FileGrid/List, MillerColumn, ContextMenu, ...) receive this via
  * props / provide-inject so they can share selection + current path
  * state without each owning their own.
  *
- * State is preserved across navigations because Workspace.vue is wrapped
+ * State is preserved across navigations because Library.vue is wrapped
  * in <KeepAlive> in App.vue — the component isn't unmounted when the user
  * navigates away.
+ *
+ * Renamed from useWorkspace → useLibrary in the agent-workspace Phase 0
+ * split: the file manager is now "Library" (indexed knowledge base);
+ * "Workspace" is the new agent-driven artifact surface (separate view).
  */
 
 import { computed, reactive, ref } from 'vue'
@@ -27,7 +31,7 @@ import {
 
 const ROOT_PATH = '/'
 
-export function useWorkspace() {
+export function useLibrary() {
   // ── Current folder path we're browsing ────────────────────────────
   const currentPath = ref(ROOT_PATH)
 

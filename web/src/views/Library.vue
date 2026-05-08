@@ -162,7 +162,7 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
-import { useWorkspace } from '@/composables/useWorkspace'
+import { useLibrary } from '@/composables/useLibrary'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useUploadsStore } from '@/stores/uploads'
 import { useDialog } from '@/composables/useDialog'
@@ -201,7 +201,7 @@ import {
 
 const router = useRouter()
 const route = useRoute()
-const ws = useWorkspace()
+const ws = useLibrary()
 const { confirm, toast, dismissToast } = useDialog()
 
 // ── OS drag-and-drop file upload ─────────────────────────────────
@@ -519,7 +519,7 @@ async function navigate(path) {
   // wipes child arrays + flips loading on synchronously, so the file
   // grid swaps to the loading skeleton in the same tick. The actual
   // fetch resolves later; if the user clicks again before it returns,
-  // the generation guard inside useWorkspace drops the stale response
+  // the generation guard inside useLibrary drops the stale response
   // (see ``_loadGen`` there).
   const desired = path === '/' ? undefined : path
   if (route.query.path !== desired) {
@@ -987,7 +987,7 @@ function onOpenDocument(doc) {
   // folder they came from. Without this, opening a doc wiped the path
   // query and back navigation always landed at the root.
   router.push({
-    path: '/workspace',
+    path: '/library',
     query: { ...route.query, doc: doc.doc_id },
   })
 }
@@ -1110,8 +1110,8 @@ watch(
   },
 )
 
-// KeepAlive re-activation: returning to /workspace from another tab
-// (sidebar nav fires a router-link to bare ``/workspace``, no query).
+// KeepAlive re-activation: returning to /library from another tab
+// (sidebar nav fires a router-link to bare ``/library``, no query).
 // Without this, the path-watcher above would see ``query.path =
 // undefined`` and reset state to root — losing the user's place. Push
 // the cached state BACK INTO the URL instead, so the watcher sees a

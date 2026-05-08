@@ -105,7 +105,7 @@ function clearAll() {
 function openFile(f) {
   const q = { doc: f.doc_id }
   if (f.best_chunk?.chunk_id) q.chunk = f.best_chunk.chunk_id
-  router.push({ path: '/workspace', query: q })
+  router.push({ path: '/library', query: q })
 }
 
 const allFiles = computed(() => _results.value?.files || [])

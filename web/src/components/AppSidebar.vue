@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   MessageSquare,
   Search,
-  FolderOpen,
+  BookOpen,
   Network,
   BarChart3,
   Loader2,
@@ -91,7 +91,7 @@ watch(openMenuId, (v) => {
 const tabs = computed(() => [
   { path: '/chat', label_key: 'sidebar.tabs.chat', isChat: true, icon: MessageSquare },
   { path: '/search', label_key: 'sidebar.tabs.search', icon: Search },
-  { path: '/workspace', label_key: 'sidebar.tabs.workspace', icon: FolderOpen },
+  { path: '/library', label_key: 'sidebar.tabs.library', icon: BookOpen },
   { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph', icon: Network },
   { path: '/metrics', label_key: 'sidebar.tabs.metrics', icon: BarChart3 },
   // /simulation + /benchmark + /tokens used to live here. /tokens

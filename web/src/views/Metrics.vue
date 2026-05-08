@@ -287,7 +287,7 @@ function openTrace(tid) {
   navigator.clipboard?.writeText(tid)
 }
 function openDoc(docId) {
-  router.push({ path: '/workspace', query: { doc: docId } })
+  router.push({ path: '/library', query: { doc: docId } })
 }
 
 function fmtMs(ms) {
