@@ -8,6 +8,7 @@
     "search": "Search",
     "edit": "Edit",
     "loading": "Loading...",
+    "retry": "Retry",
     "github": "GitHub"
   },
   "sidebar": {
@@ -15,6 +16,7 @@
       "chat": "Chat",
       "search": "Search",
       "library": "Library",
+      "workspace": "Workspace",
       "knowledge_graph": "Knowledge Graph",
       "metrics": "Metrics"
     },
@@ -36,6 +38,47 @@
     "conv_delete_confirm_desc": "Permanently delete \"{name}\" and all its messages. This cannot be undone.",
     "conv_delete_confirm_button": "Delete",
     "conv_action_failed": "Action failed: {msg}"
+  },
+  "workspace": {
+    "title": "Workspace",
+    "subtitle": "Agent projects — workdirs, artifacts, and run history.",
+    "create_button": "New project",
+    "load_error": "Couldn't load projects: {msg}",
+    "empty_title": "No projects yet",
+    "empty_subtitle": "Create a project to give an agent a place to read inputs, drop outputs, and keep run state. Files here aren't auto-indexed into the Library.",
+    "create_dialog": {
+      "title": "Create project",
+      "description": "Pick a name. You can edit it (and add a description) later.",
+      "placeholder": "e.g. Q3 contract review",
+      "confirm": "Create"
+    },
+    "create_error_title": "Couldn't create project",
+    "project_card": {
+      "no_description": "No description.",
+      "last_active": "Active {rel}",
+      "never_active": "Created — no activity yet"
+    },
+    "detail": {
+      "back": "Back to Workspace",
+      "no_description": "No description yet.",
+      "manage_members": "Members ({n})",
+      "no_chats_title": "No chats here yet",
+      "no_chats_subtitle": "When you bind a chat to this project, the agent's tool calls will land in this project's workdir and the run history will appear here.",
+      "phase0_note": "Chat ↔ project binding lands in Phase 1.",
+      "load_error": "Couldn't load this project: {msg}"
+    },
+    "members": {
+      "title": "Members",
+      "subtitle": "Who can see and work in {name}",
+      "email_placeholder": "user@example.com",
+      "add": "Add",
+      "adding": "Adding…",
+      "role_owner": "Owner",
+      "role_rw": "Can edit",
+      "role_r": "Can view",
+      "remove": "Remove",
+      "empty": "Just you so far."
+    }
   },
   "settings": {
     "title": "Settings",

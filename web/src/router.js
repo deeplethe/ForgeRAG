@@ -10,13 +10,12 @@ const router = createRouter({
     { path: '/setup', component: () => import('@/views/Setup.vue'), meta: { public: true } },
     { path: '/chat', component: () => import('@/views/Chat.vue') },
     { path: '/search', component: () => import('@/views/Search.vue') },
-    // Library = the indexed knowledge base (formerly "Workspace"). The
-    // file manager UI lives at /library going forward; /workspace is
-    // reserved for the new agent-driven artifact surface (Phase 0.5
-    // adds it as a separate empty view; until then a redirect keeps
-    // legacy bookmarks working).
+    // Library = the indexed knowledge base (formerly "Workspace"); the
+    // file manager UI lives at /library. /workspace is now the agent-
+    // driven artifact surface — distinct route, distinct view.
     { path: '/library', component: () => import('@/views/Library.vue') },
-    { path: '/workspace', redirect: (to) => ({ path: '/library', query: to.query }) },
+    { path: '/workspace', component: () => import('@/views/Workspace.vue') },
+    { path: '/workspace/:projectId', component: () => import('@/views/ProjectDetail.vue') },
     {
       // Legacy redirect: old /repository?doc=X links land on /library?doc=X.
       // Library embeds DocDetail.vue for the focused-doc view; the

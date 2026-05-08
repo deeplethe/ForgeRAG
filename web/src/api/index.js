@@ -106,6 +106,12 @@ export {
   listFolderMembers, addFolderMember, updateFolderMemberRole, removeFolderMember,
 } from './folders'
 
+// Projects (agent-workspace surface)
+export {
+  listProjects, createProject, getProject, updateProject, deleteProject,
+  listProjectMembers, addProjectMember, updateProjectMemberRole, removeProjectMember,
+} from './projects'
+
 // Trash
 export {
   listTrash, getTrashStats,

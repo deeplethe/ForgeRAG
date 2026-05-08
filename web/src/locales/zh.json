@@ -8,6 +8,7 @@
     "search": "搜索",
     "edit": "编辑",
     "loading": "加载中...",
+    "retry": "重试",
     "github": "GitHub"
   },
   "sidebar": {
@@ -15,6 +16,7 @@
       "chat": "对话",
       "search": "搜索",
       "library": "资料库",
+      "workspace": "工作区",
       "knowledge_graph": "知识图谱",
       "metrics": "指标"
     },
@@ -36,6 +38,47 @@
     "conv_delete_confirm_desc": "将永久删除「{name}」及其所有消息，此操作不可撤销。",
     "conv_delete_confirm_button": "删除",
     "conv_action_failed": "操作失败：{msg}"
+  },
+  "workspace": {
+    "title": "工作区",
+    "subtitle": "智能体项目 —— 工作目录、产物与运行记录。",
+    "create_button": "新建项目",
+    "load_error": "加载失败：{msg}",
+    "empty_title": "还没有项目",
+    "empty_subtitle": "创建一个项目，让智能体在其中读取输入、产出文件并保留运行状态。这里的文件不会自动进入资料库索引。",
+    "create_dialog": {
+      "title": "新建项目",
+      "description": "先起个名字，之后可以再改名或补描述。",
+      "placeholder": "例如：Q3 合同复核",
+      "confirm": "创建"
+    },
+    "create_error_title": "项目创建失败",
+    "project_card": {
+      "no_description": "暂无描述。",
+      "last_active": "{rel}活跃",
+      "never_active": "刚创建 · 暂无活动"
+    },
+    "detail": {
+      "back": "返回工作区",
+      "no_description": "暂无描述。",
+      "manage_members": "成员（{n}）",
+      "no_chats_title": "还没有对话",
+      "no_chats_subtitle": "当对话与该项目绑定后，智能体的工具调用会写入项目工作目录，运行记录将在此显示。",
+      "phase0_note": "对话与项目绑定将在 Phase 1 落地。",
+      "load_error": "项目加载失败：{msg}"
+    },
+    "members": {
+      "title": "成员",
+      "subtitle": "谁可以查看和参与「{name}」",
+      "email_placeholder": "user@example.com",
+      "add": "添加",
+      "adding": "添加中…",
+      "role_owner": "所有者",
+      "role_rw": "可编辑",
+      "role_r": "仅查看",
+      "remove": "移除",
+      "empty": "目前只有你。"
+    }
   },
   "settings": {
     "title": "设置",
