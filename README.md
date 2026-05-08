@@ -28,22 +28,24 @@
 
 ---
 
-> ## 📦 v1.0.0 is the final OSS release
+> ## 📦 v1.0.0 — first stable release
 >
-> This is the last open-source version of OpenCraig under AGPLv3. Future
-> development continues as **OpenCraig Enterprise (v3.0+)** — a separate
-> commercial product covering lineage, audit, promote-to-library,
-> auditable team workflows, and managed sandbox execution. See
-> [Editions](#-editions) below for what's where.
+> OpenCraig is the **permission-aware knowledge / context layer for
+> enterprise agent runtimes**. v1.0.0 is the first major stable
+> release of the OSS edition; the repo continues to be developed and
+> maintained going forward.
 >
-> The OSS edition (this repo) is **feature-complete and free to self-
-> host indefinitely**. Security patches are accepted via GitHub issues
-> for **12 months** post-release (until 2027-05-09); after that, the
-> repo is archived. PRs are not accepted post-tag.
+> A separate commercial product, **OpenCraig Enterprise (v3.0+)**,
+> ships features specifically for enterprise deployments —
+> lineage, audit, promote-to-library, auditable team workflows,
+> managed sandbox execution, SSO / SCIM. See
+> [Editions](#-editions) below for what's where; both editions
+> are alive and developed in parallel.
 >
-> Brief: knowledge management + agentic search with structured
-> citations. Multi-user, folder-grant authz, BYOK LLM. Production-
-> grade enough to run a small team's research workflow today.
+> Brief: multi-user knowledge management + agentic search with
+> structured citations + MCP-native retrieval surface. Folder-grant
+> authz, BYOK LLM, fully self-hosted. Production-grade enough to
+> run a team's research workflow today.
 
 ---
 
@@ -342,18 +344,20 @@ lives here, and they need a commercial product behind them:
 - **Hardened sandbox** — non-root, no-net default, capability drop
 - **Managed hosting + SLA** for teams that don't want to ops it
 
-### Not coming back to OSS
+### What OSS keeps getting
 
-The post-v1.0 OSS repo accepts security patches only (until
-2027-05-09). No new features, no architectural changes, no PRs
-for new functionality. Forks are encouraged under AGPLv3 if you
-want to build on this baseline.
+The OSS edition continues to receive maintenance + non-Enterprise
+improvements: bug fixes, parser / model / vector-store backend
+updates, security patches, performance work, ergonomics, docs.
+The line we hold is the Enterprise feature list above —
+those don't migrate back into OSS, but everything else stays
+fair game.
 
 ---
 
 ## 🎁 Editions
 
-| | **OpenCraig OSS v1.0.0** (this repo) | **OpenCraig Enterprise v3.0+** |
+| | **OpenCraig OSS** (this repo) | **OpenCraig Enterprise** |
 |---|---|---|
 | License | AGPLv3 | Commercial, contact for terms |
 | Source | Open, this repo | Closed |
@@ -364,8 +368,13 @@ want to build on this baseline.
 | Lineage / audit / promote-to-library | ❌ | ✅ |
 | Skills (team workflows) | ❌ | ✅ |
 | SSO / SCIM | ❌ | ✅ |
-| Support | GitHub issues, security patches 12mo | SLA, dedicated support |
-| Roadmap | Frozen at v1.0.0 | Active development |
+| Support | GitHub issues, community | SLA, dedicated support |
+| Development | Active OSS development | Active commercial development |
+
+Both editions are alive and developed in parallel. The Enterprise
+features in the table above don't migrate back into OSS, but
+everything else (parsers, backends, models, performance,
+ergonomics, security) stays under active OSS work.
 
 Inquiries about Enterprise: [opencraig.dev/enterprise](https://opencraig.dev/enterprise) (or open a GitHub discussion until that page exists).
 
@@ -384,15 +393,11 @@ Inquiries about Enterprise: [opencraig.dev/enterprise](https://opencraig.dev/ent
 
 ## 🤝 Contributing
 
-**v1.0.0 is the final OSS release** — feature PRs are not accepted post-tag. What we still take:
+Bug reports, features, docs improvements, translations all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Stop by [Discord](https://discord.gg/XJadJHvxdQ) for design discussions.
 
-- **Security reports** via GitHub issues (private vulnerability disclosure preferred — see SECURITY.md). Patches accepted through **2027-05-09**.
-- **Documentation fixes** — typos, broken links, clarification PRs are welcome on existing docs through the maintenance window.
-- **Translations** — community translations of the README / setup wizard prompts.
+PRs require accepting the [CLA](RELICENSING.md#future-contributions) so the project retains the right to issue commercial licenses derived from the codebase. The OSS core stays AGPLv3 — that doesn't change.
 
-For everything else (new features, architectural changes, large refactors), please **fork freely under AGPLv3** — that's exactly what the license is for. The Enterprise edition ships separately and isn't accepting external contributions either.
-
-Past contributors who signed the [CLA](RELICENSING.md#future-contributions) are listed in CONTRIBUTORS.md. The core stays AGPLv3.
+Note that Enterprise-edition features (lineage, audit, promote-to-library, sandbox code execution, skills, SSO/SCIM) live in a separate codebase and don't accept external contributions.
 
 ## 🔗 Related work
 

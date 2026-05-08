@@ -6,19 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [1.0.0] — 2026-05-09 — Final OSS release
+## [1.0.0] — 2026-05-09 — First stable release
 
 This release reframes OpenCraig as **the permission-aware
 knowledge / context layer for enterprise agent runtimes** —
 the backend any MCP-compatible agent (Hermes, Claude Code, Cursor,
 Cline, custom) plugs into for retrieval that respects your team's
-folder permissions.
+folder permissions. v1.0.0 is the first major stable release; the
+OSS edition continues to be developed and maintained going forward.
 
-This is the final open-source release under AGPLv3. Future
-development continues as **OpenCraig Enterprise (v3.0+)**, a
-separate commercial product. This repo is feature-frozen; security
-patches accepted through 2027-05-09.
-
+A separate commercial product, **OpenCraig Enterprise (v3.0+)**,
+ships features specifically for enterprise deployments — lineage,
+audit, promote-to-library, sandboxed code execution, skills,
+SSO / SCIM. Both editions are alive and developed in parallel.
 See the [README](README.md#-editions) for the OSS-vs-Enterprise
 boundary.
 
@@ -128,7 +128,7 @@ If you have an existing v0.3.x deployment:
 
 ## Pre-1.0.0
 
-Released under the v0.1.x – v0.3.x line during the OSS dev
+Released under the v0.1.x – v0.3.x line during the pre-stable
 period (2025–early 2026). See git history for per-commit detail.
-The 1.0.0 release is the **first stable OSS milestone** and the
-last; all prior tags should be considered development snapshots.
+The 1.0.0 release is the **first stable OSS milestone**; all
+prior tags should be considered development snapshots.
