@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.3-brightgreen?style=for-the-badge" alt="Version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>
   <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-join-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
@@ -250,4 +250,15 @@ Bug reports, features, and docs improvements all welcome. See [CONTRIBUTING.md](
 
 ## License
 
-[MIT](LICENSE)
+OpenCraig is released under the [GNU Affero General Public License v3.0](LICENSE)
+(AGPLv3) for community use and self-hosted deployment.
+
+**Commercial licensing** is available for organizations that need to deploy
+OpenCraig without AGPLv3 obligations — for example, embedding into a
+proprietary product, or running a closed-source managed service. Contact
+[deeplethe@gmail.com] for terms.
+
+> Versions tagged before the AGPL switch were released under the MIT License;
+> that grant remains valid for those earlier versions. The original MIT text
+> is preserved at [`LICENSE.MIT-historical`](LICENSE.MIT-historical) for
+> reference. See [`RELICENSING.md`](RELICENSING.md) for details.

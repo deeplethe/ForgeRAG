@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.3-brightgreen?style=for-the-badge" alt="Version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>
   <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-加入-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
@@ -238,4 +238,13 @@ ForgeRAG/
 
 ## License
 
-[MIT](LICENSE)
+OpenCraig 采用 [GNU Affero 通用公共许可证 v3.0](LICENSE)（AGPLv3）发布，
+适用于社区使用和自部署。
+
+**商业许可**：如果你的组织需要在不受 AGPLv3 约束下使用 OpenCraig
+（例如嵌入到闭源产品中，或运行闭源的托管服务），可联系
+[deeplethe@gmail.com] 取得商业许可。
+
+> AGPL 切换之前发布的版本仍按 MIT License 授权，那些版本对应的授权
+> 永久有效。原始 MIT 文本保留在 [`LICENSE.MIT-historical`](LICENSE.MIT-historical)。
+> 详情见 [`RELICENSING.md`](RELICENSING.md)。
