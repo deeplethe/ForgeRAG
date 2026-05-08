@@ -59,6 +59,7 @@ class FakeSandboxBackend:
         self.start_should_fail = False
         self.start_calls: list[dict] = []
         self.exec_calls: list[tuple[str, list[str]]] = []
+        self.exec_kwargs: list[dict] = []
         self.stop_calls: list[str] = []
         self.preexisting: list[tuple[str, str]] = []  # adopted on list_owned
 
@@ -87,8 +88,19 @@ class FakeSandboxBackend:
         }
         return cid
 
-    def exec(self, container_id, cmd, *, timeout=None, workdir=None):
+    def exec(self, container_id, cmd, *, timeout=None, workdir=None, detach=False):
+        # Record the FULL exec call so tests can assert workdir/detach
+        # were passed correctly. Old tests that compare just
+        # (container_id, cmd) keep working — we keep that 2-tuple
+        # shape and stash extras on a parallel list.
         self.exec_calls.append((container_id, list(cmd)))
+        self.exec_kwargs.append({
+            "container_id": container_id,
+            "cmd": list(cmd),
+            "workdir": workdir,
+            "detach": detach,
+            "timeout": timeout,
+        })
         if container_id not in self.containers or not self.containers[container_id]["running"]:
             return ExecResult(exit_code=126, stdout=b"", stderr=b"container not running")
         return ExecResult(exit_code=0, stdout=b"OK\n", stderr=b"")

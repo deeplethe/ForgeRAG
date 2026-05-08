@@ -300,6 +300,33 @@ def test_get_or_start_reuses_handle_for_same_pair(
     assert len(launch_calls) == 1
 
 
+def test_kernel_launched_with_project_workdir_and_detached(
+    make_kernel_manager, project_workdirs, backend
+):
+    """Phase 2: agent code uses relative paths (``inputs/x.xlsx``,
+    ``open("outputs/y.md")``) — so the kernel MUST be launched with
+    CWD = the project's workdir, not the container's /workdir root.
+
+    Also asserts ``detach=True`` — without it the manager's exec
+    would block forever waiting for ipykernel to exit (which it
+    never does, by design)."""
+    fake = FakeKernelClient()
+    mgr = make_kernel_manager(client_factory=lambda _: fake)
+    mgr.get_or_start("u_alice", "p_a")
+
+    # Find the ipykernel_launcher exec record
+    launches = [
+        kw for kw in backend.exec_kwargs
+        if kw["cmd"][:3] == ["python", "-m", "ipykernel_launcher"]
+    ]
+    assert len(launches) == 1, f"expected 1 ipykernel launch, got {launches}"
+    launch = launches[0]
+    assert launch["workdir"] == "/workdir/p_a", (
+        f"kernel CWD must be the project workdir; got {launch['workdir']!r}"
+    )
+    assert launch["detach"] is True, "ipykernel must launch detached"
+
+
 def test_get_or_start_different_projects_different_kernels(
     make_kernel_manager, project_workdirs, backend
 ):

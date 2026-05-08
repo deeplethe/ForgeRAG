@@ -522,13 +522,20 @@ class KernelManager:
         )
 
         # Launch the kernel inside the container as a background
-        # process. The ``--no-secure`` we'd usually disable doesn't
-        # exist here — ipykernel honours the connection-file's
-        # ``key`` for HMAC signing automatically.
+        # process. ``detach=True`` is critical — ipykernel runs
+        # forever, so a synchronous exec would block the manager
+        # indefinitely. ``workdir=/workdir/<project_id>`` so the
+        # kernel's CWD is the project workdir, making relative
+        # paths in user code (``pd.read_excel("inputs/q3.xlsx")``,
+        # ``open("outputs/report.md", "w")``) resolve naturally
+        # without the LLM having to thread the project_id through
+        # every call site.
+        kernel_workdir = f"{CONTAINER_WORKDIR_BASE}/{project_id}"
         log.info(
             "kernel: launching user=%s project=%s kernel_id=%s "
-            "container=%s ports=%s",
-            user_id, project_id, kernel_id, container.container_id, ports,
+            "container=%s ports=%s workdir=%s",
+            user_id, project_id, kernel_id, container.container_id,
+            ports, kernel_workdir,
         )
         try:
             self.sandbox.backend.exec(
@@ -537,19 +544,14 @@ class KernelManager:
                     "python", "-m", "ipykernel_launcher",
                     "-f", conn_path_container,
                 ],
-                # Detached: ipykernel's process must keep running
-                # after this exec call returns. The DockerBackend's
-                # ``exec`` is blocking; we use a different exec mode
-                # for kernel launches via _exec_detached below.
-                # Actually: the BlockingKernelClient handshake will
-                # confirm the kernel is alive, so we don't need to
-                # detach explicitly — we issue exec_run with detach
-                # via a separate helper.
+                workdir=kernel_workdir,
+                detach=True,
                 timeout=None,
             )
         except TypeError:
-            # Older fake backends in tests may not accept timeout=None;
-            # let them fall through.
+            # Older fake backends in tests may not accept the new
+            # detach= / workdir= kwargs; fall through and let the
+            # kernel client's wait_for_ready confirm liveness.
             pass
 
         client = self._make_kernel_client(conn_path_host)

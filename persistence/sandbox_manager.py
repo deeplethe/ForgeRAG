@@ -188,6 +188,7 @@ class SandboxBackend(Protocol):
         *,
         timeout: float | None = None,
         workdir: str | None = None,
+        detach: bool = False,
     ) -> ExecResult:
         ...
 
@@ -674,9 +675,26 @@ class DockerBackend:
         *,
         timeout: float | None = None,
         workdir: str | None = None,
+        detach: bool = False,
     ) -> ExecResult:
         client = self._docker()
         container = client.containers.get(container_id)
+        # ``detach=True`` is what KernelManager uses to launch
+        # ipykernel — that's a long-running process; if we waited
+        # synchronously the call would block forever. Detached:
+        # ``exec_run`` returns immediately and the kernel keeps
+        # running in the background. We get no exit code back; the
+        # caller (KernelManager) confirms the kernel is alive via
+        # the jupyter_client heartbeat instead.
+        if detach:
+            container.exec_run(
+                cmd,
+                workdir=workdir,
+                detach=True,
+                tty=False,
+                stdin=False,
+            )
+            return ExecResult(exit_code=0, stdout=b"", stderr=b"")
         # docker SDK's exec_run returns (exit_code, output) where
         # output is a single bytes blob with stderr merged in unless
         # we ask for them separately. Demux is what we want for
