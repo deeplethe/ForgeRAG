@@ -461,7 +461,11 @@ function promotable(u) {
 </template>
 
 <style scoped>
-.users-page { max-width: 1000px; }
+/* No max-width — let the page fill the entire Settings content
+   area so the toolbar's right-aligned search and the table's
+   right edge land at the same x. The 6-column data table also
+   reads better with the extra width. */
+.users-page { }
 
 .page-header { margin-bottom: 20px; }
 .page-title {
