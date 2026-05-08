@@ -1,7 +1,8 @@
 <p align="center">
-  <img src="web/public/text_logo_padding.png" alt="OpenCraig" height="64">
+  <img src="web/public/craig.png" alt="OpenCraig" width="96">
 </p>
 
+<h1 align="center">OpenCraig</h1>
 <h3 align="center">每一句话，都能指回原文。</h3>
 
 <p align="center">
