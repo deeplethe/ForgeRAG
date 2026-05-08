@@ -256,7 +256,7 @@ OpenCraig is released under the [GNU Affero General Public License v3.0](LICENSE
 **Commercial licensing** is available for organizations that need to deploy
 OpenCraig without AGPLv3 obligations — for example, embedding into a
 proprietary product, or running a closed-source managed service. Contact
-[deeplethe@gmail.com] for terms.
+[info@deeplethe.com](mailto:info@deeplethe.com) for terms.
 
 > Versions tagged before the AGPL switch were released under the MIT License;
 > that grant remains valid for those earlier versions. The original MIT text

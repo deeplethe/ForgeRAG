@@ -74,7 +74,7 @@ licenses derived from the codebase.
 
 ## Commercial licensing inquiries
 
-Email: deeplethe@gmail.com
+Email: info@deeplethe.com
 
 Please include a brief description of your intended deployment model
 (internal use, embedded product, hosted service, etc.) so we can route

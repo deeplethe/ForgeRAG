@@ -243,7 +243,7 @@ OpenCraig 采用 [GNU Affero 通用公共许可证 v3.0](LICENSE)（AGPLv3）发
 
 **商业许可**：如果你的组织需要在不受 AGPLv3 约束下使用 OpenCraig
 （例如嵌入到闭源产品中，或运行闭源的托管服务），可联系
-[deeplethe@gmail.com] 取得商业许可。
+[info@deeplethe.com](mailto:info@deeplethe.com) 取得商业许可。
 
 > AGPL 切换之前发布的版本仍按 MIT License 授权，那些版本对应的授权
 > 永久有效。原始 MIT 文本保留在 [`LICENSE.MIT-historical`](LICENSE.MIT-historical)。
