@@ -44,6 +44,7 @@ const links = computed(() => {
     { path: '/settings/sessions', label: t('settings.nav.sessions') },
     { path: '/settings/tokens', label: t('settings.nav.tokens'), adminOnly: true },
     { path: '/settings/users', label: t('settings.nav.users'), adminOnly: true },
+    { path: '/settings/audit', label: t('settings.nav.audit'), adminOnly: true },
   ]
   return all.filter((l) => !l.adminOnly || isAdmin.value)
 })

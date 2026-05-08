@@ -48,7 +48,8 @@
       "profile": "Profile",
       "sessions": "Sessions",
       "tokens": "API Tokens",
-      "users": "Users"
+      "users": "Users",
+      "audit": "Activity"
     },
     "profile": {
       "title": "Profile",

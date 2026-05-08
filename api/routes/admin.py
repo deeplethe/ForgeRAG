@@ -429,3 +429,141 @@ def delete_user(
 
         sess.delete(user)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
+#
+# Append-only trail of folder + document mutations + share changes
+# + admin user-management actions. Every write through FolderService,
+# TrashService, FolderShareService, and the admin user-mutation
+# routes lands here with the actor's principal.user_id stamped in.
+#
+# This endpoint is the read side: a paginated, filterable feed for
+# the admin "Activity" page. Non-admin users have no business
+# reading other people's actions, so this is gated behind
+# ``_require_admin`` like everything else in this router.
+
+
+class AuditEntryOut(BaseModel):
+    audit_id: int
+    actor_id: str
+    # Resolved actor info — present for real user actions, NULL for
+    # the synthetic ``local`` / ``system`` actors. Lets the frontend
+    # render "Alice (alice@example.com)" instead of an opaque
+    # 16-char user_id.
+    actor_username: str | None = None
+    actor_display_name: str | None = None
+    actor_email: str | None = None
+    action: str           # "folder.create" / "document.move" / ...
+    target_type: str | None = None
+    target_id: str | None = None
+    details: dict | None = None
+    created_at: datetime
+
+
+class AuditPageOut(BaseModel):
+    items: list[AuditEntryOut]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/audit", response_model=AuditPageOut)
+def list_audit(
+    request: Request,
+    state: AppState = Depends(get_state),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    actor_id: str | None = Query(None, description="Filter by exact actor user_id"),
+    action: str | None = Query(None, description="Filter by exact action (e.g. 'folder.create')"),
+    action_prefix: str | None = Query(None, description="Filter by action prefix (e.g. 'folder.' / 'document.')"),
+    target_type: str | None = Query(None),
+    since: datetime | None = Query(None, description="Inclusive lower bound on created_at (ISO 8601)"),
+    until: datetime | None = Query(None, description="Exclusive upper bound on created_at (ISO 8601)"),
+):
+    """Paginated audit log for admins.
+
+    The default sort is ``created_at DESC`` so the newest entries
+    surface first — that's what's useful in an investigation
+    ("what just happened?"). Filters compose with AND semantics.
+
+    Actor-name enrichment is best-effort: a single ``IN`` query
+    against ``auth_users`` after the page is fetched. Synthetic
+    actor ids (``local`` / ``system``) won't match any user row —
+    those entries come back with NULL actor_username and the
+    frontend renders the literal id as-is.
+    """
+    _require_admin(request, state)
+
+    from sqlalchemy import func as _func
+
+    from persistence.models import AuditLogRow
+
+    with state.store.transaction() as sess:
+        q = select(AuditLogRow)
+        if actor_id:
+            q = q.where(AuditLogRow.actor_id == actor_id)
+        if action:
+            q = q.where(AuditLogRow.action == action)
+        if action_prefix:
+            q = q.where(AuditLogRow.action.like(f"{action_prefix}%"))
+        if target_type:
+            q = q.where(AuditLogRow.target_type == target_type)
+        if since is not None:
+            q = q.where(AuditLogRow.created_at >= since)
+        if until is not None:
+            q = q.where(AuditLogRow.created_at < until)
+
+        # Total count using the same WHERE clauses, before LIMIT/OFFSET.
+        # Cheap on this table for the kind of date-bounded ranges the
+        # UI sends; if it becomes a hotspot we'd add an estimate-only
+        # path or a covering index. For now the audit log is bounded
+        # by org size and simple count is fine.
+        count_q = select(_func.count()).select_from(q.subquery())
+        total = int(sess.execute(count_q).scalar() or 0)
+
+        rows = list(
+            sess.execute(
+                q.order_by(AuditLogRow.created_at.desc(), AuditLogRow.audit_id.desc())
+                .limit(limit)
+                .offset(offset)
+            ).scalars()
+        )
+
+        # Resolve actor names in one shot. Skip the synthetic ids so
+        # we don't waste a WHERE clause on rows that'll never match.
+        actor_ids = {
+            r.actor_id for r in rows
+            if r.actor_id and r.actor_id not in ("local", "system")
+        }
+        users_by_id: dict[str, AuthUser] = {}
+        if actor_ids:
+            users = sess.execute(
+                select(AuthUser).where(AuthUser.user_id.in_(actor_ids))
+            ).scalars()
+            users_by_id = {u.user_id: u for u in users}
+
+        items = []
+        for r in rows:
+            u = users_by_id.get(r.actor_id)
+            items.append(AuditEntryOut(
+                audit_id=r.audit_id,
+                actor_id=r.actor_id,
+                actor_username=u.username if u else None,
+                actor_display_name=u.display_name if u else None,
+                actor_email=u.email if u else None,
+                action=r.action,
+                target_type=r.target_type,
+                target_id=r.target_id,
+                details=r.details,
+                created_at=r.created_at,
+            ))
+
+    return AuditPageOut(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )

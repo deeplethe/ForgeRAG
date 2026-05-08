@@ -50,6 +50,11 @@ const router = createRouter({
           component: () => import('@/views/settings/Users.vue'),
           meta: { requiresAdmin: true },
         },
+        {
+          path: 'audit',
+          component: () => import('@/views/settings/Audit.vue'),
+          meta: { requiresAdmin: true },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/chat' },

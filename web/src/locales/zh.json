@@ -48,7 +48,8 @@
       "profile": "个人资料",
       "sessions": "登录会话",
       "tokens": "API Tokens",
-      "users": "用户管理"
+      "users": "用户管理",
+      "audit": "操作记录"
     },
     "profile": {
       "title": "个人资料",

@@ -42,6 +42,21 @@ export const deleteUser = (userId) =>
 export const listUserUsage = () =>
   get('/api/v1/admin/users/usage')
 
+// ── Audit log (admin scope) ─────────────────────────────────────────────
+//
+// Paginated read of the audit_log table. Filters compose with AND.
+// ``params`` shape:
+//   {
+//     limit, offset,                  // pagination
+//     actor_id,                       // exact match
+//     action, action_prefix,          // exact / prefix
+//     target_type,
+//     since, until,                   // ISO timestamps
+//   }
+// Returns { items, total, limit, offset }.
+export const listAuditLog = (params = {}) =>
+  get('/api/v1/admin/audit', params)
+
 export const getUserUsage = (userId) =>
   get(`/api/v1/admin/users/${userId}/usage`)
 
