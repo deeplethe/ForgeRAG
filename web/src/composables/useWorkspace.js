@@ -195,6 +195,20 @@ export function useWorkspace() {
     return spaces.find((s) => s.is_personal_space) || null
   }
 
+  // The Space the user should default-land in. Personal first; if
+  // there's no personal Space (admins who lost their /users/<name>
+  // somehow, or bootstrap admins pre-backfill) but they have exactly
+  // ONE Space, drop them into that one too. Anything else (no spaces,
+  // or multiple non-personal spaces) returns null and the caller
+  // should leave the user at the synthetic root.
+  function defaultLandingSpace() {
+    const personal = personalSpace()
+    if (personal) return personal
+    const spaces = (tree.value?.children || []).filter((c) => !c.is_system)
+    if (spaces.length === 1) return spaces[0]
+    return null
+  }
+
   // ── Loaders ───────────────────────────────────────────────────────
 
   const treeError = ref(null)
@@ -389,7 +403,7 @@ export function useWorkspace() {
     selection, isSelected, toggleSelect, selectAll, clearSelection,
     clipboard, setClipboard, clearClipboard, hasClipboard,
     breadcrumbs, displayPath,
-    resolveSpace, personalSpace,
+    resolveSpace, personalSpace, defaultLandingSpace,
     // actions
     loadTree, loadContents, navigate,
     opCreateFolder, opRenameFolder, opMoveFolder, opDeleteFolder,

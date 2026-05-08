@@ -1126,13 +1126,13 @@ onMounted(async () => {
     ? seedPath
     : '/'
   // Default landing: when the URL doesn't pin a path AND the user has
-  // a personal Space, drop straight into it. Saves a click for the
-  // common "I just want my own files" workflow and gives the
-  // Space-relative breadcrumb something to render. Multi-Space users
-  // who want the spaces-list view can still get there via the
-  // leftmost ``/`` breadcrumb crumb.
+  // a sensible default Space (their personal Space, or their only
+  // Space), drop straight into it. Saves a click for the common
+  // "I just want my own files" workflow and gives the Space-relative
+  // breadcrumb something to render. Multi-Space users who want the
+  // spaces-list view can still get there via the leftmost ``/`` crumb.
   if (initial === '/') {
-    const home = ws.personalSpace()
+    const home = ws.defaultLandingSpace()
     if (home?.path) initial = home.path
   }
   await ws.loadContents(initial)
@@ -1145,6 +1145,27 @@ onMounted(async () => {
   }
   await refreshTrashCount()
 })
+
+// One-shot auto-enter: if the user lands at the synthetic root with
+// no ``?path=`` pinning them there, but a sensible landing Space
+// appears later (KeepAlive remount, or tree loaded later than the
+// initial mount await), drop them into it ONCE. After this fires,
+// the user is free to navigate back to ``/`` deliberately and we
+// won't keep re-snapping them away.
+const _autoEnterFired = ref(false)
+watch(
+  () => ws.tree.value?.children?.length,
+  () => {
+    if (_autoEnterFired.value) return
+    if (ws.currentPath.value !== '/') { _autoEnterFired.value = true; return }
+    if (route.query.path) { _autoEnterFired.value = true; return }
+    const home = ws.defaultLandingSpace()
+    if (!home?.path) return
+    _autoEnterFired.value = true
+    navigate(home.path)
+  },
+  { immediate: true },
+)
 
 // React to external URL changes (back / forward / direct link tweak).
 // Only respond when path actually differs from current view.
