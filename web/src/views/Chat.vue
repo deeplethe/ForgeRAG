@@ -642,11 +642,18 @@ async function send(text) {
         scroll()
       } else if (t === 'tool.call_end') {
         const summary = evt.result_summary || {}
+        const richOutputs = Array.isArray(summary.rich_outputs)
+          ? summary.rich_outputs : []
         const sumText = summary.hit_count != null ? `${summary.hit_count} hits`
           : summary.entity_count != null ? `${summary.entity_count} entities`
           : summary.chunk_count != null ? `${summary.chunk_count} chunks`
           : summary.error ? 'error'
-          : ''
+          // python_exec → "ran" or "ran (N figures)" depending on rich outputs
+          : (summary.execution_count != null || summary.timed_out)
+            ? (richOutputs.length
+                ? `ran (${richOutputs.length} figure${richOutputs.length === 1 ? '' : 's'})`
+                : 'ran')
+            : ''
         const entry = streamTrace.value.find(
           (e) => e.kind === 'tool' && e.call_id === evt.id,
         )
@@ -655,6 +662,11 @@ async function send(text) {
           entry.t1 = (entry.t0 || Date.now()) + (evt.latency_ms || 0)
           entry.elapsedMs = evt.latency_ms || 0
           if (sumText) entry.summary = sumText
+          // Phase 2.5: rich outputs (matplotlib PNGs / DataFrame
+          // HTML / plotly JSON / SVG) saved to the project workdir
+          // by the backend; we just hold the path refs and let
+          // <AgentMessageBody> render them inline.
+          if (richOutputs.length) entry.rich_outputs = richOutputs
         }
       } else if (t === 'answer.delta') {
         // All deltas accumulate in streamText (rendered below the

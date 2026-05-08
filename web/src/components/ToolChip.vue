@@ -23,6 +23,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronRight } from 'lucide-vue-next'
 import ThinkingPulse from './ThinkingPulse.vue'
+import ToolRichOutputs from './ToolRichOutputs.vue'
 
 const props = defineProps({
   tools: { type: Array, required: true },
@@ -40,6 +41,7 @@ const TOOL_LABELS = {
   graph_explore: 'chat.tool.graph_explore',
   web_search: 'chat.tool.web_search',
   rerank: 'chat.tool.rerank',
+  python_exec: 'chat.tool.python_exec',
 }
 function toolLabel(name) {
   const k = TOOL_LABELS[name]
@@ -63,6 +65,21 @@ const headline = computed(() => {
 
 const anyRunning = computed(() => props.tools.some((t) => t.status === 'running'))
 
+// Phase 2.5: rich outputs (matplotlib PNGs / DataFrame HTML / plotly
+// JSON) saved to ``scratch/_rich_outputs/`` by the backend, attached
+// to each tool entry as ``rich_outputs: [{kind, mime, path,
+// size_bytes, project_id}]``. Flatten across all tool calls in
+// THIS chip group; preserve order so figures render in the order
+// they were produced.
+const allRichOutputs = computed(() => {
+  const out = []
+  for (const tc of props.tools) {
+    const list = Array.isArray(tc.rich_outputs) ? tc.rich_outputs : []
+    for (const r of list) out.push(r)
+  }
+  return out
+})
+
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
 
@@ -83,6 +100,13 @@ function fmtMs(ms) {
         class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-text">{{ headline }}</span>
     </button>
+    <!-- Rich outputs (figures / HTML tables) ALWAYS show even when
+         the chip is collapsed — they're content, not trace details.
+         Indented to align with the chip's icon column. -->
+    <ToolRichOutputs
+      v-if="allRichOutputs.length"
+      :outputs="allRichOutputs"
+    />
     <ol v-if="expanded" class="detail-list">
       <li v-for="(tc, i) in tools" :key="tc.call_id || i" class="detail-row">
         <span class="detail-name">{{ toolLabel(tc.name) }}</span>

@@ -414,7 +414,7 @@ class AgentLoop:
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(results[tc.id]),
+                        "content": json.dumps(_strip_internal_keys(results[tc.id])),
                     }
                 )
 
@@ -861,25 +861,58 @@ def _summarise_result(result: dict) -> dict:
     duplicated to avoid pulling private symbols across modules);
     full tool result is what the LLM sees, this summary is for the
     UI / telemetry only.
+
+    Phase 2.5: ``_rich_outputs`` (from python_exec) is copied to a
+    public ``rich_outputs`` field so the frontend trace can render
+    figures inline without the LLM seeing the file paths. The
+    underscore-prefixed key is stripped from the LLM-facing tool
+    result by ``_strip_internal_keys`` before serialization.
+    """
+    summary: dict = {}
+    if not isinstance(result, dict):
+        return summary
+    if "error" in result:
+        summary["error"] = result["error"]
+    elif "hits" in result and isinstance(result["hits"], list):
+        summary["hit_count"] = len(result["hits"])
+    elif "entities" in result and isinstance(result["entities"], list):
+        summary["entity_count"] = len(result["entities"])
+        summary["relation_count"] = len(result.get("relations") or [])
+    elif "chunks" in result and isinstance(result["chunks"], list):
+        summary["chunk_count"] = len(result["chunks"])
+    elif "chunk_id" in result:
+        summary["chunk_id"] = result["chunk_id"]
+    elif "node_id" in result:
+        summary["node_id"] = result["node_id"]
+    # python_exec adds a few stdout/stderr-shaped fields that are
+    # useful in the trace too. The LLM-facing dict has the same
+    # data; copying just count + flag keeps the SSE event small.
+    if "execution_count" in result:
+        summary["execution_count"] = result.get("execution_count")
+    if result.get("timed_out"):
+        summary["timed_out"] = True
+    rich = result.get("_rich_outputs") or []
+    if rich:
+        summary["rich_outputs"] = rich
+    return summary
+
+
+def _strip_internal_keys(result: dict) -> dict:
+    """Drop underscore-prefixed keys from a tool result before
+    serialising to the LLM.
+
+    Convention: handlers may set ``_*`` fields on their result dict
+    to carry data for the SSE trace (rendering, telemetry) WITHOUT
+    feeding it back into the LLM context. Keeps the model's view
+    text-shaped + cheap; keeps the UI's view rich.
+
+    Currently only ``_rich_outputs`` (python_exec) uses this; the
+    helper is generic so future tools can adopt the convention
+    without re-touching the loop.
     """
     if not isinstance(result, dict):
-        return {}
-    if "error" in result:
-        return {"error": result["error"]}
-    if "hits" in result and isinstance(result["hits"], list):
-        return {"hit_count": len(result["hits"])}
-    if "entities" in result and isinstance(result["entities"], list):
-        return {
-            "entity_count": len(result["entities"]),
-            "relation_count": len(result.get("relations") or []),
-        }
-    if "chunks" in result and isinstance(result["chunks"], list):
-        return {"chunk_count": len(result["chunks"])}
-    if "chunk_id" in result:
-        return {"chunk_id": result["chunk_id"]}
-    if "node_id" in result:
-        return {"node_id": result["node_id"]}
-    return {}
+        return result
+    return {k: v for k, v in result.items() if not k.startswith("_")}
 
 
 import re as _re

@@ -1242,10 +1242,30 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
             tool="python_exec",
         ).to_result()
 
+    # Persist rich outputs to the project workdir so the chat trace
+    # can render them via the existing file-download API and
+    # survives a refresh / reconnect (Phase 2.5).
+    rich_refs: list = []
+    try:
+        from pathlib import Path
+
+        from persistence.rich_output_persister import persist_rich_outputs
+
+        projects_root = Path(
+            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
+        )
+        rich_refs = persist_rich_outputs(
+            result.rich_outputs, projects_root / project_id
+        )
+    except Exception:
+        # Never let rich-output persistence kill the call — the LLM
+        # still needs stdout/stderr. Log + continue.
+        log.exception("python_exec: rich-output persist failed")
+
     # Compose the LLM-facing summary. The frontend gets richer data
-    # via the trace SSE (Phase 2.5 rendering); this is what the LLM
-    # sees in its tool_result block. Keep it text-shaped so the LLM
-    # can quote pieces back to the user.
+    # via the trace SSE (the ``_rich_outputs`` channel below); this
+    # is what the LLM sees in its tool_result block. Keep it
+    # text-shaped so the LLM can quote pieces back to the user.
     out: dict[str, Any] = {
         "stdout": _truncate_for_llm(result.stdout),
         "stderr": _truncate_for_llm(result.stderr),
@@ -1256,7 +1276,7 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
         # the user sees; the LLM treats this as a hint that "I made
         # something visual; tell the user about it" rather than
         # trying to inline-quote binary data.
-        "rich_outputs_count": len(result.rich_outputs),
+        "rich_outputs_count": len(rich_refs),
     }
     if result.error is not None:
         # Compress the traceback to last few frames so a NameError
@@ -1268,6 +1288,22 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
             "evalue": result.error.get("evalue", ""),
             "traceback_short": "\n".join(tb[-6:]) if tb else "",
         }
+    # Internal-only channel for the trace UI — leading underscore is
+    # the "strip before LLM serialization" convention. The agent
+    # loop's ``_strip_internal_keys`` removes it from the
+    # ``tool_result`` content sent back to the model;
+    # ``_summarise_result`` copies it to the SSE event the frontend
+    # uses to render figures inline.
+    if rich_refs:
+        # ``project_id`` baked into each ref so the frontend can build
+        # ``/api/v1/projects/<pid>/files/download?path=<rel>`` without
+        # prop-drilling the project id through the trace component
+        # tree. Self-contained refs keep ToolChip / ToolRichOutputs
+        # composable.
+        out["_rich_outputs"] = [
+            {**r.to_summary_dict(), "project_id": project_id}
+            for r in rich_refs
+        ]
     return out
 
 

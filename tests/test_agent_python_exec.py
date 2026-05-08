@@ -16,7 +16,9 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -113,12 +115,23 @@ def _ctx(
     project_id: str | None = "p_a",
     kernel_manager: Any = None,
     owned_projects: list[FakeStore._ProjectRow] | None = None,
+    projects_root: Path | None = None,
 ) -> ToolContext:
     if owned_projects is None:
         owned_projects = [FakeStore._ProjectRow(project_id, user_id)] if project_id else []
+    # cfg.agent.projects_root is read by the rich-output persister
+    # (Phase 2.5). Tests that don't care just get a tmp-ish default;
+    # tests that DO care pass an explicit Path so they can verify
+    # files landed.
+    if projects_root is None:
+        import tempfile
+        projects_root = Path(tempfile.mkdtemp(prefix="pyexec-test-"))
     state = SimpleNamespace(
         store=FakeStore(owned_projects),
         kernel_manager=kernel_manager,
+        cfg=SimpleNamespace(
+            agent=SimpleNamespace(projects_root=str(projects_root)),
+        ),
     )
     principal = SimpleNamespace(
         user_id=user_id,
@@ -337,10 +350,128 @@ def test_dispatch_surfaces_rich_outputs_count():
     km = FakeKernelManager(result=FakeExecutionResult(
         stdout="",
         rich_outputs=[
-            {"kind": "display_data", "data": {"image/png": "..."}},
+            {"kind": "display_data", "data": {"image/png": _PNG_B64}},
             {"kind": "execute_result", "data": {"text/html": "<table>..."}},
         ],
     ))
     ctx = _ctx(kernel_manager=km)
     result = dispatch("python_exec", {"code": "df.head()"}, ctx)
     assert result["rich_outputs_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5: rich outputs persisted to workdir + LLM-stripped
+# ---------------------------------------------------------------------------
+
+
+_PNG_B64 = base64.b64encode(
+    bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000005000100"
+        "0d0a2db40000000049454e44ae426082"
+    )
+).decode("ascii")
+
+
+def test_rich_outputs_persisted_to_workdir(tmp_path):
+    """Phase 2.5: outputs land at scratch/_rich_outputs/<file> in the
+    project workdir, NOT inline in the LLM result."""
+    km = FakeKernelManager(result=FakeExecutionResult(
+        stdout="ok\n",
+        rich_outputs=[
+            {"kind": "display_data", "data": {"image/png": _PNG_B64}},
+        ],
+    ))
+    ctx = _ctx(kernel_manager=km, project_id="p_a", projects_root=tmp_path)
+    result = dispatch("python_exec", {"code": "plt.show()"}, ctx)
+
+    # File on disk
+    workdir = tmp_path / "p_a"
+    rich_dir = workdir / "scratch" / "_rich_outputs"
+    assert rich_dir.exists()
+    pngs = list(rich_dir.glob("*.png"))
+    assert len(pngs) == 1
+    # Decoded properly (not stored as base64 string)
+    assert pngs[0].read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    # Result has the internal-channel field for the trace
+    assert "_rich_outputs" in result
+    refs = result["_rich_outputs"]
+    assert len(refs) == 1
+    assert refs[0]["mime"] == "image/png"
+    assert refs[0]["path"].startswith("scratch/_rich_outputs/")
+    assert refs[0]["path"].endswith(".png")
+    assert refs[0]["project_id"] == "p_a"
+    # Plus the public count for the LLM
+    assert result["rich_outputs_count"] == 1
+
+
+def test_rich_outputs_stripped_from_llm_view():
+    """The internal ``_rich_outputs`` channel must NOT reach the
+    LLM (file paths would tempt it to reference them; we want clean
+    text-shaped tool results)."""
+    from api.agent.loop import _strip_internal_keys
+
+    result = {
+        "stdout": "ok",
+        "rich_outputs_count": 2,
+        "_rich_outputs": [
+            {"kind": "display_data", "mime": "image/png",
+             "path": "scratch/_rich_outputs/abc-01.png",
+             "size_bytes": 100, "project_id": "p_a"},
+        ],
+        "_internal_telemetry": "anything",
+    }
+    cleaned = _strip_internal_keys(result)
+    assert "_rich_outputs" not in cleaned
+    assert "_internal_telemetry" not in cleaned
+    # Public fields preserved
+    assert cleaned["stdout"] == "ok"
+    assert cleaned["rich_outputs_count"] == 2
+
+
+def test_rich_outputs_in_summary_for_trace_event():
+    """The SSE event's ``result_summary`` exposes rich_outputs (sans
+    underscore) so the frontend trace renders them."""
+    from api.agent.loop import _summarise_result
+
+    result = {
+        "stdout": "x",
+        "execution_count": 5,
+        "rich_outputs_count": 1,
+        "_rich_outputs": [
+            {"kind": "display_data", "mime": "image/png",
+             "path": "scratch/_rich_outputs/abc-01.png",
+             "size_bytes": 100, "project_id": "p_a"},
+        ],
+    }
+    summary = _summarise_result(result)
+    assert summary.get("rich_outputs") == result["_rich_outputs"]
+    assert summary.get("execution_count") == 5
+
+
+def test_persist_failure_doesnt_break_python_exec(tmp_path, monkeypatch):
+    """If the persister explodes (disk full / permission denied / ...),
+    python_exec still returns useful stdout/stderr. The agent must
+    not get an opaque "tool failed" because we couldn't save a chart."""
+    from persistence import rich_output_persister
+
+    def boom(*a, **kw):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(
+        rich_output_persister, "persist_rich_outputs", boom,
+    )
+    km = FakeKernelManager(result=FakeExecutionResult(
+        stdout="data: 42\n",
+        rich_outputs=[
+            {"kind": "display_data", "data": {"image/png": _PNG_B64}},
+        ],
+    ))
+    ctx = _ctx(kernel_manager=km, projects_root=tmp_path)
+    result = dispatch("python_exec", {"code": "x"}, ctx)
+    # No crash; LLM still sees stdout. rich_outputs_count is 0
+    # because nothing got persisted.
+    assert result["stdout"] == "data: 42\n"
+    assert result.get("rich_outputs_count") == 0
+    assert "_rich_outputs" not in result

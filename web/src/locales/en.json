@@ -343,7 +343,8 @@
       "read_tree": "Reading document outline",
       "graph_explore": "Concept network",
       "web_search": "Web search",
-      "rerank": "Refining results"
+      "rerank": "Refining results",
+      "python_exec": "Running Python"
     },
     "thinking_phase": {
       "planning": "Understanding the question",
@@ -365,7 +366,8 @@
       "read_tree": "browsed {n} outline(s)",
       "graph_explore": "explored graph {n} time(s)",
       "web_search": "searched web {n} time(s)",
-      "rerank": "reranked {n} time(s)"
+      "rerank": "reranked {n} time(s)",
+      "python_exec": "ran {n} cell(s)"
     }
   },
   "search": {

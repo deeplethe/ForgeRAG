@@ -719,11 +719,18 @@ def _accumulate_trace(trace: list[dict], evt: dict) -> None:
     elif kind == "tool.call_end":
         cid = evt.get("id")
         summary = evt.get("result_summary") or {}
+        rich_outputs = summary.get("rich_outputs") or []
         sum_text = (
             f"{summary.get('hit_count')} hits" if summary.get("hit_count") is not None
             else f"{summary.get('entity_count')} entities" if summary.get("entity_count") is not None
             else f"{summary.get('chunk_count')} chunks" if summary.get("chunk_count") is not None
             else "error" if summary.get("error")
+            # python_exec: surface stdout-bearing call as "ran" + figure count
+            else (
+                f"ran ({len(rich_outputs)} figure{'s' if len(rich_outputs) != 1 else ''})"
+                if rich_outputs
+                else "ran"
+            ) if summary.get("execution_count") is not None or summary.get("timed_out")
             else ""
         )
         for e in trace:
@@ -731,6 +738,12 @@ def _accumulate_trace(trace: list[dict], evt: dict) -> None:
                 e["status"] = "done"
                 e["summary"] = sum_text
                 e["elapsedMs"] = evt.get("latency_ms") or 0
+                # Phase 2.5: rich outputs (figures / HTML / etc.)
+                # carried through so a refreshed Chat.vue rebuilds
+                # the same view with inline images. Server-side
+                # trace parity with the live SSE handler.
+                if rich_outputs:
+                    e["rich_outputs"] = rich_outputs
                 break
     elif kind == "agent.turn_end":
         # Mark any remaining running phase done.
