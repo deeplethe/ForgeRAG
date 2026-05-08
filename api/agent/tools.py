@@ -40,6 +40,7 @@ agent runs 3 searches in parallel and gets back 60 hits.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 from dataclasses import dataclass
@@ -1220,6 +1221,22 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
             tool="python_exec",
         ).to_result()
 
+    # Phase 2.7: snapshot outputs/ BEFORE execute so we can diff
+    # afterwards and create Artifact rows for any new / modified
+    # files. ``scratch/`` and ``inputs/`` are NOT tracked.
+    _outputs_snapshot = None
+    try:
+        from pathlib import Path
+
+        from persistence.artifact_auto_tracker import snapshot_outputs
+
+        _projects_root_pre = Path(
+            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
+        )
+        _outputs_snapshot = snapshot_outputs(_projects_root_pre / project_id)
+    except Exception:
+        log.exception("python_exec: pre-execute snapshot failed")
+
     try:
         result = ctx.kernel_manager.execute(
             user_id,
@@ -1246,21 +1263,46 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
     # can render them via the existing file-download API and
     # survives a refresh / reconnect (Phase 2.5).
     rich_refs: list = []
+    artifact_ids: list[str] = []
     try:
         from pathlib import Path
 
+        from persistence.artifact_auto_tracker import (
+            diff_outputs,
+            hash_code,
+            persist_auto_artifacts,
+        )
         from persistence.rich_output_persister import persist_rich_outputs
 
         projects_root = Path(
             getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
         )
+        project_workdir = projects_root / project_id
         rich_refs = persist_rich_outputs(
-            result.rich_outputs, projects_root / project_id
+            result.rich_outputs, project_workdir
         )
+        # Phase 2.7: scan for new/modified files in outputs/ and
+        # auto-create Artifact rows. ``snapshot_before`` was taken
+        # by ``_snapshot_outputs_for_call`` in the caller's wrapper
+        # — passed via the closure-bound name below.
+        if _outputs_snapshot is not None:
+            changes = diff_outputs(project_workdir, _outputs_snapshot)
+            if changes:
+                with ctx.state.store.transaction() as sess:
+                    arts = persist_auto_artifacts(
+                        sess,
+                        project_id=project_id,
+                        user_id=user_id,
+                        changes=changes,
+                        code_hash=hash_code(code),
+                        tool="python_exec",
+                        actor_id=user_id,
+                    )
+                    artifact_ids = [a.artifact_id for a in arts]
     except Exception:
-        # Never let rich-output persistence kill the call — the LLM
-        # still needs stdout/stderr. Log + continue.
-        log.exception("python_exec: rich-output persist failed")
+        # Never let rich-output / auto-artifact persistence kill the
+        # call — the LLM still needs stdout/stderr. Log + continue.
+        log.exception("python_exec: post-execute persist failed")
 
     # Compose the LLM-facing summary. The frontend gets richer data
     # via the trace SSE (the ``_rich_outputs`` channel below); this
@@ -1277,6 +1319,12 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
         # something visual; tell the user about it" rather than
         # trying to inline-quote binary data.
         "rich_outputs_count": len(rich_refs),
+        # Phase 2.7: count of new/modified files in outputs/ that
+        # were auto-Artifact-tracked. The LLM sees this as a hint
+        # ("I produced N deliverables"); paths are NOT included
+        # (LLM doesn't need to enumerate them — workdir is the
+        # source of truth).
+        "artifacts_created": len(artifact_ids),
     }
     if result.error is not None:
         # Compress the traceback to last few frames so a NameError
@@ -1594,6 +1642,253 @@ _PYTHON_EXEC_SPEC = ToolSpec(
 )
 
 
+# ---------------------------------------------------------------------------
+# Tool: bash_exec  (Phase 2.7)
+# ---------------------------------------------------------------------------
+#
+# One-shot shell command in the user's per-user sandbox container.
+# Direct ``docker exec`` (NOT a persistent bash kernel) — bash_exec
+# semantics are stateless across calls; agent chains multi-step work
+# with ``cmd1 && cmd2`` or pipelines. Uses the same sandbox container
+# as python_exec; agent shares /workdir/<project_id>/ as the CWD.
+#
+# When the LLM should pick bash over python:
+#   - calling one of the 25 pre-installed CLIs (pdftotext / xsv / jq /
+#     pandoc / ffmpeg / tesseract / rg / find / git / etc.)
+#   - simple file ops (mv / cp / rm / mkdir / chmod)
+#   - shell pipelines (`xsv stats x.csv | jq '.numeric'`)
+#   - one-shot inspection (``head`` / ``wc`` / ``file`` / ``ls -la``)
+#
+# When python_exec is the right call:
+#   - any computation that uses pandas / numpy / matplotlib state
+#   - anything that needs to PERSIST a value across calls
+#   - data transformations more complex than a one-liner
+#
+# Auto-Artifact tracking applies to bash_exec too — files written
+# into outputs/ via ``cmd > outputs/x.csv`` etc. surface as
+# Artifact rows the same way python_exec writes do.
+
+_BASH_EXEC_DEFAULT_TIMEOUT = 30.0
+_BASH_EXEC_MAX_TIMEOUT = 120.0
+
+
+def _handle_bash_exec(params: dict, ctx: ToolContext) -> dict:
+    cmd = params.get("command") or ""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return DispatchError(
+            error="bash_exec needs a non-empty 'command' string",
+            tool="bash_exec",
+        ).to_result()
+    timeout = params.get("timeout", _BASH_EXEC_DEFAULT_TIMEOUT)
+    try:
+        timeout = float(timeout)
+    except Exception:
+        timeout = _BASH_EXEC_DEFAULT_TIMEOUT
+    timeout = min(max(timeout, 1.0), _BASH_EXEC_MAX_TIMEOUT)
+
+    if ctx.project_id is None:
+        return DispatchError(
+            error=(
+                "bash_exec is available only in chats bound to a project. "
+                "Open the chat from a Workspace project to use this tool."
+            ),
+            tool="bash_exec",
+        ).to_result()
+    if ctx.kernel_manager is None:
+        return DispatchError(
+            error=(
+                "bash_exec is not available — the operator hasn't enabled "
+                "the agent sandbox. Ask the admin to set up Docker + the "
+                "OpenCraig sandbox image."
+            ),
+            tool="bash_exec",
+        ).to_result()
+
+    user_id = ctx.principal.user_id
+    project_id = ctx.project_id
+
+    # Owner check — viewers can read but not run code (same rule as
+    # python_exec). The route's two-gate authz handles this on the
+    # HTTP path; we re-check at the tool boundary so the LLM gets a
+    # clean refusal.
+    owned = _list_owned_project_ids(ctx.state, user_id)
+    if project_id not in owned:
+        return DispatchError(
+            error=(
+                "bash_exec is available only to the project's owner. "
+                "Viewers can read but not run code."
+            ),
+            tool="bash_exec",
+        ).to_result()
+
+    # Reuse SandboxManager's container — bash_exec doesn't need a
+    # fresh kernel, just a fresh shell ``docker exec``. Going via
+    # ``ctx.kernel_manager.sandbox`` keeps the container-lifecycle
+    # decisions in one place.
+    sandbox = getattr(ctx.kernel_manager, "sandbox", None)
+    if sandbox is None:
+        return DispatchError(
+            error="bash_exec: sandbox not configured",
+            tool="bash_exec",
+        ).to_result()
+
+    try:
+        container = sandbox.ensure_container_for_user(
+            user_id, owned_project_ids=tuple(owned)
+        )
+    except Exception as e:
+        log.exception(
+            "bash_exec: container ensure failed user=%s project=%s",
+            user_id, project_id,
+        )
+        return DispatchError(
+            error=(
+                f"bash_exec failed to start the sandbox: {type(e).__name__}. "
+                "If this persists the docker daemon may be down — try a "
+                "different approach or ask the user to retry."
+            ),
+            tool="bash_exec",
+        ).to_result()
+
+    # Phase 2.7: snapshot outputs/ BEFORE the call for auto-Artifact
+    # tracking after.
+    _outputs_snapshot = None
+    try:
+        from pathlib import Path
+
+        from persistence.artifact_auto_tracker import snapshot_outputs
+
+        projects_root = Path(
+            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
+        )
+        project_workdir = projects_root / project_id
+        _outputs_snapshot = snapshot_outputs(project_workdir)
+    except Exception:
+        log.exception("bash_exec: pre-execute snapshot failed")
+
+    # Run as ``bash -c "<cmd>"`` so the LLM can use shell syntax:
+    # pipes, redirects, ``&&``, here-docs (within the single-line
+    # constraint), etc. ``workdir=/workdir/<pid>`` so relative paths
+    # resolve to the project's dir.
+    workdir = f"/workdir/{project_id}"
+    t0 = time.time()
+    try:
+        ec = sandbox.backend.exec(
+            container.container_id,
+            ["bash", "-lc", cmd],
+            workdir=workdir,
+            timeout=timeout,
+            detach=False,
+        )
+    except Exception as e:
+        log.exception(
+            "bash_exec: backend.exec raised user=%s project=%s",
+            user_id, project_id,
+        )
+        return DispatchError(
+            error=f"bash_exec failed: {type(e).__name__}",
+            tool="bash_exec",
+        ).to_result()
+    wall_ms = int((time.time() - t0) * 1000)
+    sandbox.touch(user_id)
+
+    stdout = (ec.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (ec.stderr or b"").decode("utf-8", errors="replace")
+
+    # Auto-Artifact scan AFTER the call.
+    artifact_ids: list[str] = []
+    try:
+        from pathlib import Path as _Path
+
+        from persistence.artifact_auto_tracker import (
+            diff_outputs,
+            hash_code,
+            persist_auto_artifacts,
+        )
+
+        if _outputs_snapshot is not None:
+            projects_root = _Path(
+                getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
+            )
+            changes = diff_outputs(projects_root / project_id, _outputs_snapshot)
+            if changes:
+                with ctx.state.store.transaction() as sess:
+                    arts = persist_auto_artifacts(
+                        sess,
+                        project_id=project_id,
+                        user_id=user_id,
+                        changes=changes,
+                        code_hash=hash_code(cmd),
+                        tool="bash_exec",
+                        actor_id=user_id,
+                    )
+                    artifact_ids = [a.artifact_id for a in arts]
+    except Exception:
+        log.exception("bash_exec: auto-artifact persist failed")
+
+    return {
+        "stdout": _truncate_for_llm(stdout),
+        "stderr": _truncate_for_llm(stderr),
+        "exit_code": ec.exit_code,
+        "wall_ms": wall_ms,
+        "artifacts_created": len(artifact_ids),
+    }
+
+
+_BASH_EXEC_SPEC = ToolSpec(
+    name="bash_exec",
+    description=(
+        "Run one shell command in the project's sandbox container. "
+        "STATELESS across calls — variables don't persist, each call "
+        "is a fresh shell. Chain multi-step work with `&&` / `;` / "
+        "pipelines.\n\n"
+        "CWD is the project workdir, so paths like `inputs/x.csv` and "
+        "`outputs/y.png` resolve naturally. Files written into "
+        "`outputs/` are AUTO-TRACKED as Artifact rows (no need to "
+        "explicitly save).\n\n"
+        "AVAILABLE CLIs include: pdftotext / qpdf / pandoc / "
+        "libreoffice (for office formats) / ffmpeg / tesseract (OCR, "
+        "incl. Chinese) / xsv / jq / dasel / sqlite3 / duckdb / "
+        "ripgrep / fd / git / curl / wget. Pipe them: "
+        "`xsv stats data.csv | jq '.numeric'`.\n\n"
+        "When to pick bash_exec OVER python_exec:\n"
+        "  - Calling one of the CLIs above\n"
+        "  - Simple file ops (mv / cp / mkdir / chmod)\n"
+        "  - One-shot inspection (head / wc / file / ls -la)\n"
+        "  - Shell pipelines\n\n"
+        "When python_exec is right:\n"
+        "  - Any pandas / numpy / matplotlib computation\n"
+        "  - Anything that needs to PERSIST a value across calls\n"
+        "  - Multi-line transformations\n\n"
+        "TIMEOUT default 30s, max 120s. Output truncated at 5000 "
+        "chars for your view; user sees the full thing in the trace."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Shell command to run. Wrapped in `bash -lc`, so "
+                    "syntax like pipes, redirects, `&&`, env-var "
+                    "expansion all work as in a normal shell."
+                ),
+            },
+            "timeout": {
+                "type": "number",
+                "description": (
+                    f"Per-call timeout in seconds. Default "
+                    f"{_BASH_EXEC_DEFAULT_TIMEOUT}, max "
+                    f"{_BASH_EXEC_MAX_TIMEOUT}."
+                ),
+            },
+        },
+        "required": ["command"],
+    },
+    handler=_handle_bash_exec,
+)
+
+
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     # ``search_bm25`` (``_BM25_SPEC``) intentionally OMITTED from
     # the agent's tool registry pending two fixes:
@@ -1624,5 +1919,6 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     # Project-aware tools — filtered out by ``tools_for(ctx)`` when
     # the conversation isn't bound to a project / sandbox isn't enabled.
     _PYTHON_EXEC_SPEC.name: _PYTHON_EXEC_SPEC,
+    _BASH_EXEC_SPEC.name: _BASH_EXEC_SPEC,
     _IMPORT_FROM_LIBRARY_SPEC.name: _IMPORT_FROM_LIBRARY_SPEC,
 }
