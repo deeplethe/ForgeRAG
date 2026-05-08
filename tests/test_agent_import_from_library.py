@@ -6,9 +6,9 @@ Covers:
   required param ``doc_id``
 - ``tools_for(ctx)`` filtering:
     * unbound chat → import_from_library NOT offered
-    * bound chat WITHOUT kernel_manager → STILL offered (different
-      from python_exec — copying bytes doesn't need the sandbox)
-    * bound chat WITH kernel_manager → offered
+    * bound chat → offered (no sandbox dependency — copying bytes
+      from the Library blob store doesn't require the in-container
+      agent runtime to be up)
 - Dispatch happy path: ProjectImportService.import_doc called with
   the right (project, doc_id, target_subdir); result dict carries
   artifact_id / target_path / size_bytes / mime / reused
@@ -148,7 +148,6 @@ def _ctx(
     project_id: str | None = "p_a",
     project_owner: str | None = None,
     has_file_store: bool = True,
-    kernel_manager: Any = None,
     monkeypatch=None,
 ) -> ToolContext:
     """Build a ToolContext + monkey-patch the import service when needed.
@@ -164,7 +163,6 @@ def _ctx(
     )
     state = SimpleNamespace(
         store=_FakeStore(projects),
-        kernel_manager=kernel_manager,
         file_store=_FakeFileStore() if has_file_store else None,
         cfg=SimpleNamespace(
             agent=SimpleNamespace(
@@ -189,7 +187,6 @@ def _ctx(
         path_filters=None,
         allowed_doc_ids=None,
         project_id=project_id,
-        kernel_manager=kernel_manager,
     )
 
 
@@ -247,15 +244,13 @@ def test_import_from_library_registered():
     assert "target_subdir" in spec.params_schema["properties"]
 
 
-def test_tools_for_offers_import_when_project_bound_no_kernel():
-    """KEY DIFFERENCE from python_exec: import_from_library is
-    available even WITHOUT a kernel_manager — copying bytes from
-    the Library doesn't need the sandbox to be up."""
-    ctx = _ctx(project_id="p_a", kernel_manager=None)
+def test_tools_for_offers_import_when_project_bound():
+    """import_from_library is available whenever a project binding
+    exists — copying bytes from the Library blob store doesn't need
+    the in-container agent runtime to be up."""
+    ctx = _ctx(project_id="p_a")
     names = {s.name for s in tools_for(ctx)}
     assert "import_from_library" in names
-    # Sanity: python_exec correctly absent (it needs the kernel)
-    assert "python_exec" not in names
 
 
 def test_tools_for_drops_import_when_no_project_binding():

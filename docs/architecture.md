@@ -928,11 +928,10 @@ Two distinct permission systems for the two surfaces:
 
 Why projects don't have `rw`:
 
-* A project owns the agent's live ipykernel state (Phase 2),
-  intermediate `python_exec` outputs, and the run-history audit
-  trail. Multi-writer creates races + state pollution
-  (whose `df` does the kernel hold? whose run gets paused?)
-  with no real collaboration upside.
+* A project owns the agent's working directory, intermediate
+  files, and run-history audit trail. Multi-writer creates races
+  + state pollution (whose intermediate file gets overwritten?
+  whose run gets paused?) with no real collaboration upside.
 * Users collaborate by sharing **Library content** and each
   running their own agent in their own project against the
   shared knowledge.
@@ -978,8 +977,8 @@ When a chat is bound:
   (name + workdir file list + Phase-2 caveat) — see
   `api/routes/agent.py::_build_system_prompt_for_conversation`
 * Phase 2+ agent runs (`agent_runs.project_id`) inherit the
-  binding so `python_exec` / `import_from_library` route into
-  the project's workdir + container
+  binding so `import_from_library` and the in-container Hermes
+  Agent both route into the project's workdir
 
 Soft-deleting a project sets all its conversations'
 `project_id` to NULL (handled in `ProjectService.move_to_trash`)
@@ -1002,7 +1001,7 @@ away.
 |---|---|
 | **0** | Library / Workspace split; project CRUD; data model |
 | **1** | Workdir file manager UI (this section); Library → Workspace manual import; chat ↔ project binding |
-| **2** | `python_exec` + `import_from_library` agent tools; per-user Docker container + `jupyter_client` sandbox |
+| **2** | `import_from_library` MCP tool + per-user Docker sandbox; in-container [Hermes Agent](https://github.com/NousResearch/hermes-agent) (MIT) drives code execution via its own bash/edit/grep tools, reaches back to the backend's MCP server for our domain capabilities (search, KG, library, artifacts) and to a litellm-backed proxy for LLM calls |
 | **3** | Local file I/O agent tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` |
 | **4** | Plan-Execute-Reflect orchestrator + per-step context bounding + cost ceiling |
 | **5** | Web search + fetch_url |

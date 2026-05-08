@@ -8,11 +8,11 @@
 #       -v <host>/storage/user-envs/<uid>:/workspace/.envs \
 #       opencraig/sandbox:py3.13
 #
-# Container's PID 1 just keeps the box alive; per-project ipykernels
-# are launched via ``docker exec`` and driven via jupyter_client over
-# ZMQ (Phase 2.3). The container itself never opens a public port —
-# all kernel traffic rides on host-mounted IPC sockets so we don't
-# burn 5 TCP ports per kernel.
+# Container's PID 1 just keeps the box alive; the in-container
+# agent runtime (Hermes Agent, MIT) is launched via ``docker exec``
+# per chat turn and reaches back to the backend's MCP server +
+# LLM proxy over loopback. The container never opens a public
+# port — outbound HTTP only, no inbound listeners.
 #
 # Design notes:
 # - Non-root ``runner`` user (uid 1000) inside. With Linux daemon-
@@ -141,12 +141,6 @@ ENV PATH="/opt/conda/bin:${PATH}"
 COPY requirements.txt /tmp/sandbox-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/sandbox-requirements.txt \
     && rm /tmp/sandbox-requirements.txt
-
-# bash_kernel registers a Jupyter kernel that runs against /bin/bash
-# so the same SandboxManager + jupyter_client wiring drives Python
-# AND shell agent tools (Phase 2.7). System-prefix install means
-# the kernelspec is visible to whatever jupyter_client looks up.
-RUN python -m bash_kernel.install --sys-prefix
 
 # ── Non-root user ────────────────────────────────────────────────
 # uid 1000 to match the typical first user on the host (matters for

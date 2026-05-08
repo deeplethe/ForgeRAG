@@ -200,10 +200,10 @@ class AgentLoop:
             messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
-        # ``tools_for(ctx)`` filters project-aware tools (python_exec /
-        # bash_exec / import_from_library) out of the offered list when
-        # the conversation isn't bound to a project — cleaner than
-        # leaving them visible and erroring on call.
+        # ``tools_for(ctx)`` filters project-aware tools
+        # (``import_from_library``) out when the conversation
+        # isn't bound to a project — cleaner than leaving them
+        # visible and erroring on call.
         tools = [spec.to_openai_tool() for spec in tools_for(ctx)]
 
         iterations = 0
@@ -861,12 +861,6 @@ def _summarise_result(result: dict) -> dict:
     duplicated to avoid pulling private symbols across modules);
     full tool result is what the LLM sees, this summary is for the
     UI / telemetry only.
-
-    Phase 2.5: ``_rich_outputs`` (from python_exec) is copied to a
-    public ``rich_outputs`` field so the frontend trace can render
-    figures inline without the LLM seeing the file paths. The
-    underscore-prefixed key is stripped from the LLM-facing tool
-    result by ``_strip_internal_keys`` before serialization.
     """
     summary: dict = {}
     if not isinstance(result, dict):
@@ -884,16 +878,6 @@ def _summarise_result(result: dict) -> dict:
         summary["chunk_id"] = result["chunk_id"]
     elif "node_id" in result:
         summary["node_id"] = result["node_id"]
-    # python_exec adds a few stdout/stderr-shaped fields that are
-    # useful in the trace too. The LLM-facing dict has the same
-    # data; copying just count + flag keeps the SSE event small.
-    if "execution_count" in result:
-        summary["execution_count"] = result.get("execution_count")
-    if result.get("timed_out"):
-        summary["timed_out"] = True
-    rich = result.get("_rich_outputs") or []
-    if rich:
-        summary["rich_outputs"] = rich
     return summary
 
 
@@ -906,9 +890,8 @@ def _strip_internal_keys(result: dict) -> dict:
     feeding it back into the LLM context. Keeps the model's view
     text-shaped + cheap; keeps the UI's view rich.
 
-    Currently only ``_rich_outputs`` (python_exec) uses this; the
-    helper is generic so future tools can adopt the convention
-    without re-touching the loop.
+    Generic helper — any future tool can adopt the underscore
+    convention without re-touching the loop.
     """
     if not isinstance(result, dict):
         return result

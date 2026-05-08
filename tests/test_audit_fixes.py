@@ -69,7 +69,6 @@ def test_list_owned_project_ids_caches_per_ctx():
         path_filters=None,
         allowed_doc_ids=None,
         project_id="p_a",
-        kernel_manager=None,
     )
 
     # Five calls within the same context = one DB hit
@@ -108,7 +107,6 @@ def test_list_owned_project_ids_separate_ctxs_dont_share():
             path_filters=None,
             allowed_doc_ids=None,
             project_id="p_alpha",
-            kernel_manager=None,
         )
 
     c1, c2 = _ctx(), _ctx()

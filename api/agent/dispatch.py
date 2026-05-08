@@ -97,20 +97,16 @@ class ToolContext:
     """Always exclude these — doc may be in user's accessible set
     but be currently trashed."""
 
-    # ── Phase 2: agent-workspace bindings (Phase 2.4 wires them) ──
-    # When the conversation is bound to a project (Phase 1.5),
-    # ``project_id`` carries the binding through to project-aware
-    # tools (``python_exec`` / ``import_from_library``). None means
-    # "plain Q&A chat" — those tools are filtered out of the
-    # offered tool list by ``tools_for(ctx)``.
+    # ── Phase 2: agent-workspace bindings ──
+    # When the conversation is bound to a project, ``project_id``
+    # carries the binding through to project-aware tools (currently
+    # only ``import_from_library``). None means "plain Q&A chat" —
+    # project tools are filtered out by ``tools_for(ctx)``.
+    #
+    # Code execution itself no longer flows through this dispatch —
+    # Hermes Agent runs inside the sandbox container and reaches
+    # back to our domain tools via the MCP server route.
     project_id: str | None = None
-
-    # ``kernel_manager`` is the live ``KernelManager`` from
-    # ``state.kernel_manager``, hoisted onto ctx for tool handlers
-    # that don't want to import the type just to thread it through.
-    # None when the operator hasn't enabled the agent sandbox
-    # (default until Phase 2.9 wires it into AppState).
-    kernel_manager: Any | None = None
 
     # Citation accumulator — chunk_id → chunk record. Populated by
     # every tool that returns chunks; the agent's final ``done()``
@@ -122,12 +118,11 @@ class ToolContext:
     tool_calls_log: list[dict] = field(default_factory=list)
 
     # Per-turn cache for ``_list_owned_project_ids`` (Phase 2 audit
-    # finding #3). Same user message often triggers multiple
-    # python_exec / bash_exec / import_from_library calls; without
-    # caching each one re-queries the projects table. ToolContext
-    # is built once per turn and discarded after — no staleness
-    # risk from caching across turns. Default ``None`` = "not
-    # populated yet"; first lookup fills it.
+    # finding #3). Same user message can trigger several
+    # import_from_library calls; without caching each one re-queries
+    # the projects table. ToolContext is built once per turn and
+    # discarded after — no staleness risk from caching across turns.
+    # Default ``None`` = "not populated yet"; first lookup fills it.
     owned_project_ids_cache: tuple[str, ...] | None = None
 
 
@@ -193,7 +188,6 @@ def build_tool_context(
             allowed_doc_ids=set(),
             trashed_doc_ids=set(),
             project_id=project_id,
-            kernel_manager=getattr(state, "kernel_manager", None),
         )
 
     scope = resolver.run({"_path_filters": raw_filters} if raw_filters else None)
@@ -213,7 +207,6 @@ def build_tool_context(
         allowed_doc_ids=scope.allowed_doc_ids,
         trashed_doc_ids=scope.trashed_doc_ids,
         project_id=project_id,
-        kernel_manager=getattr(state, "kernel_manager", None),
     )
 
 
@@ -222,27 +215,23 @@ def tools_for(ctx: ToolContext) -> list:
     context.
 
     Filtering is per-tool, not blanket — different tools have
-    different prerequisites:
-      * ``python_exec`` / ``bash_exec``: need a bound project AND
-        the operator-enabled kernel/sandbox stack
-      * ``import_from_library``: needs a bound project only;
-        copying bytes from the Library blob store doesn't require
-        the sandbox to be up. So a chat in a project chat that
-        precedes Phase 2's docker setup can still trigger imports
-        the agent then operates on later
+    different prerequisites. Today only ``import_from_library``
+    needs a bound project; everything else (search, KG, web, etc.)
+    runs against the user's accessible-set regardless.
+
+    Code-execution tools (bash / python / file ops) live INSIDE
+    the agent's sandbox container (Hermes Agent owns them); they
+    don't appear in this registry at all.
 
     Cleaner UX than surfacing "tool not available" errors mid-loop:
     the LLM never sees tools it can't use.
     """
     from .tools import TOOL_REGISTRY
 
-    needs_project = {"python_exec", "bash_exec", "import_from_library"}
-    needs_kernel = {"python_exec", "bash_exec"}
+    needs_project = {"import_from_library"}
     out = []
     for name, spec in TOOL_REGISTRY.items():
         if name in needs_project and ctx.project_id is None:
-            continue
-        if name in needs_kernel and ctx.kernel_manager is None:
             continue
         out.append(spec)
     return out

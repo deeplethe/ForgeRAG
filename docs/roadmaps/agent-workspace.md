@@ -1,7 +1,64 @@
 # Roadmap: Agent Workspace (Multi-Agent Production System)
 
-**Status:** Phase 2 in progress
+**Status:** Phase 2 — pivoted (2026-05-09)
 **Last updated:** 2026-05-09
+
+> ## ⚠️ Pivot — 2026-05-09: Hermes Agent in container
+>
+> Phase 2.3–2.7 originally built our own agent runtime: KernelManager
+> (per-(user, project) ipykernel via jupyter_client + ZMQ),
+> `python_exec` + `bash_exec` tools, IPython-display-data rich-output
+> capture. That work is now **torn out**.
+>
+> **New direction:** install
+> [Hermes Agent](https://github.com/NousResearch/hermes-agent) (MIT, Nous
+> Research) inside the per-user sandbox container as the agent runtime.
+> Hermes brings:
+>
+> * Mature agent loop (think / call tool / observe, error recovery,
+>   token-budget management) — months of upstream engineering we'd
+>   otherwise duplicate badly
+> * 40+ built-in tools (Read / Edit / MultiEdit / Glob / Grep / Bash /
+>   WebFetch / WebSearch / etc.) — every one is a week of work to
+>   build well
+> * First-class MCP support for plugging in our domain tools
+> * Multi-LLM provider support (incl. user-supplied endpoints)
+>
+> **Our remaining job:**
+>
+> 1. **MCP server** (backend route `/mcp/<conv_id>`) exposing our
+>    domain capabilities — `search_chunks`, `search_kg`, `search_bm25`,
+>    `get_doc_chunks`, `graph_explore`, `retrieve_for_qa`,
+>    `search_artifacts`, `get_artifact`, `import_from_library`. Per-
+>    connection auth scopes the ToolContext to the right user.
+> 2. **LLM proxy** (backend route `/llm/v1/*`) — OpenAI-compatible
+>    endpoint backed by litellm router; uses our keys, billed centrally.
+> 3. **Container integration** — `pip install hermes-agent==0.13.0` in
+>    the sandbox image; backend spawns Hermes per chat turn,
+>    parses its stdout (JSONL), translates to our SSE event format
+>    for the frontend trace.
+>
+> **Why this matters:** the agent loop was ~200 lines we wrote; the
+> tools (multi-user retrieval, KG, library, sandbox lifecycle) are
+> thousands of lines and remain ours. We're swapping the smallest /
+> least-differentiated layer for a much better off-the-shelf one and
+> keeping all the IP. Estimated total pivot cost: 4–6 weeks.
+>
+> **Wave structure (post-pivot):**
+>
+> | Wave | Content | Estimated time |
+> |---|---|---|
+> | 1 (this commit) | Tear out KernelManager + python_exec + bash_exec wrappers + their tests; clean comments / locale / docs | 1–2 days |
+> | 2 | LLM proxy + MCP server + container Hermes install + spawn-and-stream route + frontend trace adapter | 2–3 weeks |
+> | 3 | Cutover: delete `loop.py` / `dispatch.py` / old agent route; switch frontend to new route | 3–5 days |
+> | 4 | Workspace folder model: drop `Project` entity, `cwd_path` on `Conversation`/`AgentRun`/`Artifact`, sandbox rebind | 1 week |
+> | 5 | Container hardening (non-root, no-net default, cap drop) | 3–5 days |
+>
+> The original Phase numbering / content below is **retained for
+> historical context** but no longer accurately describes the
+> implementation path. Treat the wave table above as authoritative for
+> what ships next; the long sections below describe the underlying
+> goals and design intent that survive the pivot.
 
 ## Product positioning
 

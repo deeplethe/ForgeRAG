@@ -1104,38 +1104,11 @@ _GRAPH_EXPLORE_SPEC = ToolSpec(
 
 
 # ---------------------------------------------------------------------------
-# Tool: python_exec  (Phase 2.4)
+# Project-ownership helper (used by import_from_library and any
+# future project-scoped tool). Code execution moved out of this
+# layer — Hermes Agent runs inside the sandbox container and gets
+# bash/python via its own built-in tools.
 # ---------------------------------------------------------------------------
-#
-# The first agent tool that runs CODE (not just retrieval). Routes
-# to the project's per-(user, project) ipykernel via KernelManager.
-# Available only in chats bound to a project — ``tools_for(ctx)``
-# in ``api/agent/dispatch.py`` filters this out when ctx.project_id
-# is None or ctx.kernel_manager is None, so the LLM never sees a
-# tool it can't use.
-
-# Cap how much output the LLM sees per call. Long DataFrames printed
-# via ``print(df)`` would otherwise blow the context budget. The full
-# output streams to the user UI (Phase 2.5 rich-output rendering)
-# unaffected; this only trims the LLM-facing summary.
-_PYTHON_EXEC_OUTPUT_CHARS_LIMIT = 5000
-# Default per-call timeout. Agent loop's outer ``max_wall_time_s``
-# already governs total budget; this is the inner cap.
-_PYTHON_EXEC_DEFAULT_TIMEOUT = 30.0
-_PYTHON_EXEC_MAX_TIMEOUT = 120.0
-
-
-def _truncate_for_llm(text: str, limit: int = _PYTHON_EXEC_OUTPUT_CHARS_LIMIT) -> str:
-    """Cap output at ``limit`` chars; if overflowing, keep the head
-    plus a clear marker. The user UI sees the full string; only the
-    LLM's view is trimmed."""
-    if not text or len(text) <= limit:
-        return text
-    return (
-        text[: limit - 80]
-        + f"\n\n[truncated — full output is {len(text):,} chars, "
-        f"shown to user UI in full]"
-    )
 
 
 def _list_owned_project_ids(
@@ -1148,8 +1121,8 @@ def _list_owned_project_ids(
     forbidden by the read-only-share contract.
 
     Cached on the ToolContext (per-turn lifetime) — same chat turn
-    often triggers multiple python_exec / bash_exec / import calls,
-    each used to re-query the DB. Audit fix #3.
+    often triggers multiple import-related calls each used to re-
+    query the DB. Audit fix #3.
     """
     if ctx is not None and ctx.owned_project_ids_cache is not None:
         return ctx.owned_project_ids_cache
@@ -1173,199 +1146,6 @@ def _list_owned_project_ids(
     return cached
 
 
-def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
-    code = params.get("code") or ""
-    if not isinstance(code, str) or not code.strip():
-        return DispatchError(
-            error="python_exec needs a non-empty 'code' string",
-            tool="python_exec",
-        ).to_result()
-
-    timeout = params.get("timeout", _PYTHON_EXEC_DEFAULT_TIMEOUT)
-    try:
-        timeout = float(timeout)
-    except Exception:
-        timeout = _PYTHON_EXEC_DEFAULT_TIMEOUT
-    timeout = min(max(timeout, 1.0), _PYTHON_EXEC_MAX_TIMEOUT)
-
-    # Two preconditions tools_for(ctx) already enforces — but the
-    # dispatch path can be called directly (tests, future programmatic
-    # callers), so we check defensively.
-    if ctx.project_id is None:
-        return DispatchError(
-            error=(
-                "python_exec is available only in chats bound to a project. "
-                "Open the chat from a Workspace project to use this tool."
-            ),
-            tool="python_exec",
-        ).to_result()
-    if ctx.kernel_manager is None:
-        return DispatchError(
-            error=(
-                "python_exec is not available — the operator hasn't enabled "
-                "the agent sandbox. Ask the admin to set up Docker + the "
-                "OpenCraig sandbox image."
-            ),
-            tool="python_exec",
-        ).to_result()
-
-    user_id = ctx.principal.user_id
-    project_id = ctx.project_id
-
-    # SandboxManager needs the user's owned projects so per-project
-    # workdirs land at /workdir/<pid>/. Computed once per call;
-    # subsequent calls within the same chat hit
-    # SandboxManager.ensure_container's reuse path so the DB query
-    # is the only repeated cost.
-    owned = _list_owned_project_ids(ctx.state, user_id, ctx=ctx)
-    if project_id not in owned:
-        # Non-owner can chat ABOUT a project (viewer-share / Phase 1.5)
-        # but must not run code in someone else's container — our
-        # threat model says only the owner runs agents. Surface a
-        # clean error rather than starting a kernel that would write
-        # outputs into the wrong user's workdir.
-        return DispatchError(
-            error=(
-                "python_exec is available only to the project's owner. "
-                "Viewers can read but not run code."
-            ),
-            tool="python_exec",
-        ).to_result()
-
-    # Phase 2.7: snapshot outputs/ BEFORE execute so we can diff
-    # afterwards and create Artifact rows for any new / modified
-    # files. ``scratch/`` and ``inputs/`` are NOT tracked.
-    _outputs_snapshot = None
-    try:
-        from pathlib import Path
-
-        from persistence.artifact_auto_tracker import snapshot_outputs
-
-        _projects_root_pre = Path(
-            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
-        )
-        _outputs_snapshot = snapshot_outputs(_projects_root_pre / project_id)
-    except Exception:
-        log.exception("python_exec: pre-execute snapshot failed")
-
-    try:
-        result = ctx.kernel_manager.execute(
-            user_id,
-            project_id,
-            code,
-            timeout=timeout,
-            owned_project_ids=owned,
-        )
-    except Exception as e:
-        log.exception(
-            "python_exec: kernel execute failed user=%s project=%s",
-            user_id, project_id,
-        )
-        return DispatchError(
-            error=(
-                f"python_exec failed to start or run: {type(e).__name__}. "
-                "If this persists, the sandbox may be down — try a different "
-                "approach, or ask the user to retry."
-            ),
-            tool="python_exec",
-        ).to_result()
-
-    # Persist rich outputs to the project workdir so the chat trace
-    # can render them via the existing file-download API and
-    # survives a refresh / reconnect (Phase 2.5).
-    rich_refs: list = []
-    artifact_ids: list[str] = []
-    try:
-        from pathlib import Path
-
-        from persistence.artifact_auto_tracker import (
-            diff_outputs,
-            hash_code,
-            persist_auto_artifacts,
-        )
-        from persistence.rich_output_persister import persist_rich_outputs
-
-        projects_root = Path(
-            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
-        )
-        project_workdir = projects_root / project_id
-        rich_refs = persist_rich_outputs(
-            result.rich_outputs, project_workdir
-        )
-        # Phase 2.7: scan for new/modified files in outputs/ and
-        # auto-create Artifact rows. ``snapshot_before`` was taken
-        # by ``_snapshot_outputs_for_call`` in the caller's wrapper
-        # — passed via the closure-bound name below.
-        if _outputs_snapshot is not None:
-            changes = diff_outputs(project_workdir, _outputs_snapshot)
-            if changes:
-                with ctx.state.store.transaction() as sess:
-                    arts = persist_auto_artifacts(
-                        sess,
-                        project_id=project_id,
-                        user_id=user_id,
-                        changes=changes,
-                        code_hash=hash_code(code),
-                        tool="python_exec",
-                        actor_id=user_id,
-                    )
-                    artifact_ids = [a.artifact_id for a in arts]
-    except Exception:
-        # Never let rich-output / auto-artifact persistence kill the
-        # call — the LLM still needs stdout/stderr. Log + continue.
-        log.exception("python_exec: post-execute persist failed")
-
-    # Compose the LLM-facing summary. The frontend gets richer data
-    # via the trace SSE (the ``_rich_outputs`` channel below); this
-    # is what the LLM sees in its tool_result block. Keep it
-    # text-shaped so the LLM can quote pieces back to the user.
-    out: dict[str, Any] = {
-        "stdout": _truncate_for_llm(result.stdout),
-        "stderr": _truncate_for_llm(result.stderr),
-        "execution_count": result.execution_count,
-        "wall_ms": result.wall_ms,
-        "timed_out": result.timed_out,
-        # Number of rich outputs (figures / DataFrame HTML / etc.)
-        # the user sees; the LLM treats this as a hint that "I made
-        # something visual; tell the user about it" rather than
-        # trying to inline-quote binary data.
-        "rich_outputs_count": len(rich_refs),
-        # Phase 2.7: count of new/modified files in outputs/ that
-        # were auto-Artifact-tracked. The LLM sees this as a hint
-        # ("I produced N deliverables"); paths are NOT included
-        # (LLM doesn't need to enumerate them — workdir is the
-        # source of truth).
-        "artifacts_created": len(artifact_ids),
-    }
-    if result.error is not None:
-        # Compress the traceback to last few frames so a NameError
-        # doesn't dump 80 lines of Jupyter traceback into the LLM
-        # context.
-        tb = result.error.get("traceback") or []
-        out["error"] = {
-            "ename": result.error.get("ename", ""),
-            "evalue": result.error.get("evalue", ""),
-            "traceback_short": "\n".join(tb[-6:]) if tb else "",
-        }
-    # Internal-only channel for the trace UI — leading underscore is
-    # the "strip before LLM serialization" convention. The agent
-    # loop's ``_strip_internal_keys`` removes it from the
-    # ``tool_result`` content sent back to the model;
-    # ``_summarise_result`` copies it to the SSE event the frontend
-    # uses to render figures inline.
-    if rich_refs:
-        # ``project_id`` baked into each ref so the frontend can build
-        # ``/api/v1/projects/<pid>/files/download?path=<rel>`` without
-        # prop-drilling the project id through the trace component
-        # tree. Self-contained refs keep ToolChip / ToolRichOutputs
-        # composable.
-        out["_rich_outputs"] = [
-            {**r.to_summary_dict(), "project_id": project_id}
-            for r in rich_refs
-        ]
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Tool: import_from_library  (Phase 2.6)
 # ---------------------------------------------------------------------------
@@ -1376,13 +1156,13 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
 # idempotency. Filtered out of ``tools_for(ctx)`` when the chat
 # isn't bound to a project.
 #
-# Why this is its own tool (not folded into python_exec via
-# subprocess): the Library is on the SERVER, not in the agent's
-# container. python_exec running ``urllib.request`` against the
-# Library API would have to thread auth tokens, deal with chunked
-# downloads, retry, etc. — all of which the import service already
-# handles cleanly. A dedicated tool keeps the LLM's view simple:
-# "I want this doc; pull it in" → one call.
+# Why this is exposed as an MCP tool (not pulled into the agent's
+# in-container shell): the Library is on the SERVER, not in the
+# agent's sandbox. Hermes calling ``curl`` against the Library API
+# would have to thread auth tokens, deal with chunked downloads,
+# retry, etc. — all of which the import service already handles
+# cleanly. A dedicated tool keeps the agent's view simple: "I want
+# this doc in my workdir; pull it in" → one call.
 
 
 def _handle_import_from_library(params: dict, ctx: ToolContext) -> dict:
@@ -1549,8 +1329,8 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
     name="import_from_library",
     description=(
         "Copy a Library document into this project's `inputs/` "
-        "directory so you can read / process it with python_exec / "
-        "bash_exec.\n\n"
+        "directory so the agent can read / process it from its "
+        "sandbox shell.\n\n"
         "Use this when:\n"
         "  - search_library found a relevant doc and you need to "
         "operate on the FILE itself (Excel cells, PDF tables, raw "
@@ -1569,8 +1349,8 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
         "After import, the file is at "
         "`{target_subdir}/<filename>` inside the project workdir "
         "(default subdir: `inputs/`). Use `pd.read_excel('inputs/"
-        "<filename>')` etc. — relative paths work because python_exec "
-        "runs with the project workdir as CWD."
+        "<filename>')` etc. — relative paths work because the agent "
+        "shell runs with the project workdir as CWD."
     ),
     params_schema={
         "type": "object",
@@ -1595,308 +1375,6 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
         "required": ["doc_id"],
     },
     handler=_handle_import_from_library,
-)
-
-
-_PYTHON_EXEC_SPEC = ToolSpec(
-    name="python_exec",
-    description=(
-        "Run Python code in this project's persistent ipykernel. State "
-        "(variables, imports, opened files) PERSISTS across calls within "
-        "the same chat — define `df = pd.read_csv(...)` once and refer "
-        "to `df` in subsequent calls.\n\n"
-        "The kernel runs in a Docker container with the project's "
-        "workdir bind-mounted at `/workdir/<project_id>/` (already cd'd "
-        "into it). The conventional layout is `inputs/` for source data, "
-        "`outputs/` for files you want kept, `scratch/` for intermediate "
-        "results.\n\n"
-        "PRE-INSTALLED libraries: pandas, numpy, scipy, scikit-learn, "
-        "matplotlib, seaborn, plotly, openpyxl, pdfplumber, pymupdf, "
-        "duckdb, requests, beautifulsoup4. (R / Julia / other languages "
-        "land via install_runtime in a follow-up phase.)\n\n"
-        "OUTPUT: stdout / stderr / execution_count / timed_out flag. "
-        "Long output is truncated for your view; the user sees the full "
-        "thing in the chat trace. Charts produced via matplotlib / plotly "
-        "render in the user's UI automatically — you don't need to "
-        "extract or describe the bytes.\n\n"
-        "TIMEOUT default 30s, max 120s. For longer ops, use "
-        "background-friendly idioms (write to disk, return early, then "
-        "describe the layout) rather than blocking the whole turn.\n\n"
-        "ONLY available in chats bound to a Workspace project — if you "
-        "see this tool, it's available; if not, the chat is plain Q&A and "
-        "you can't run code."
-    ),
-    params_schema={
-        "type": "object",
-        "properties": {
-            "code": {
-                "type": "string",
-                "description": (
-                    "Python source to execute. Can be multi-line; "
-                    "`print()` and the last expression's value both surface "
-                    "in the result. Use absolute paths under "
-                    "`/workdir/<project_id>/` when reading project files."
-                ),
-            },
-            "timeout": {
-                "type": "number",
-                "description": (
-                    f"Per-call timeout in seconds. Default "
-                    f"{_PYTHON_EXEC_DEFAULT_TIMEOUT}, max "
-                    f"{_PYTHON_EXEC_MAX_TIMEOUT}."
-                ),
-            },
-        },
-        "required": ["code"],
-    },
-    handler=_handle_python_exec,
-)
-
-
-# ---------------------------------------------------------------------------
-# Tool: bash_exec  (Phase 2.7)
-# ---------------------------------------------------------------------------
-#
-# One-shot shell command in the user's per-user sandbox container.
-# Direct ``docker exec`` (NOT a persistent bash kernel) — bash_exec
-# semantics are stateless across calls; agent chains multi-step work
-# with ``cmd1 && cmd2`` or pipelines. Uses the same sandbox container
-# as python_exec; agent shares /workdir/<project_id>/ as the CWD.
-#
-# When the LLM should pick bash over python:
-#   - calling one of the 25 pre-installed CLIs (pdftotext / xsv / jq /
-#     pandoc / ffmpeg / tesseract / rg / find / git / etc.)
-#   - simple file ops (mv / cp / rm / mkdir / chmod)
-#   - shell pipelines (`xsv stats x.csv | jq '.numeric'`)
-#   - one-shot inspection (``head`` / ``wc`` / ``file`` / ``ls -la``)
-#
-# When python_exec is the right call:
-#   - any computation that uses pandas / numpy / matplotlib state
-#   - anything that needs to PERSIST a value across calls
-#   - data transformations more complex than a one-liner
-#
-# Auto-Artifact tracking applies to bash_exec too — files written
-# into outputs/ via ``cmd > outputs/x.csv`` etc. surface as
-# Artifact rows the same way python_exec writes do.
-
-_BASH_EXEC_DEFAULT_TIMEOUT = 30.0
-_BASH_EXEC_MAX_TIMEOUT = 120.0
-
-
-def _handle_bash_exec(params: dict, ctx: ToolContext) -> dict:
-    cmd = params.get("command") or ""
-    if not isinstance(cmd, str) or not cmd.strip():
-        return DispatchError(
-            error="bash_exec needs a non-empty 'command' string",
-            tool="bash_exec",
-        ).to_result()
-    timeout = params.get("timeout", _BASH_EXEC_DEFAULT_TIMEOUT)
-    try:
-        timeout = float(timeout)
-    except Exception:
-        timeout = _BASH_EXEC_DEFAULT_TIMEOUT
-    timeout = min(max(timeout, 1.0), _BASH_EXEC_MAX_TIMEOUT)
-
-    if ctx.project_id is None:
-        return DispatchError(
-            error=(
-                "bash_exec is available only in chats bound to a project. "
-                "Open the chat from a Workspace project to use this tool."
-            ),
-            tool="bash_exec",
-        ).to_result()
-    if ctx.kernel_manager is None:
-        return DispatchError(
-            error=(
-                "bash_exec is not available — the operator hasn't enabled "
-                "the agent sandbox. Ask the admin to set up Docker + the "
-                "OpenCraig sandbox image."
-            ),
-            tool="bash_exec",
-        ).to_result()
-
-    user_id = ctx.principal.user_id
-    project_id = ctx.project_id
-
-    # Owner check — viewers can read but not run code (same rule as
-    # python_exec). The route's two-gate authz handles this on the
-    # HTTP path; we re-check at the tool boundary so the LLM gets a
-    # clean refusal.
-    owned = _list_owned_project_ids(ctx.state, user_id, ctx=ctx)
-    if project_id not in owned:
-        return DispatchError(
-            error=(
-                "bash_exec is available only to the project's owner. "
-                "Viewers can read but not run code."
-            ),
-            tool="bash_exec",
-        ).to_result()
-
-    # Reuse SandboxManager's container — bash_exec doesn't need a
-    # fresh kernel, just a fresh shell ``docker exec``. Going via
-    # ``ctx.kernel_manager.sandbox`` keeps the container-lifecycle
-    # decisions in one place.
-    sandbox = getattr(ctx.kernel_manager, "sandbox", None)
-    if sandbox is None:
-        return DispatchError(
-            error="bash_exec: sandbox not configured",
-            tool="bash_exec",
-        ).to_result()
-
-    try:
-        container = sandbox.ensure_container_for_user(
-            user_id, owned_project_ids=tuple(owned)
-        )
-    except Exception as e:
-        log.exception(
-            "bash_exec: container ensure failed user=%s project=%s",
-            user_id, project_id,
-        )
-        return DispatchError(
-            error=(
-                f"bash_exec failed to start the sandbox: {type(e).__name__}. "
-                "If this persists the docker daemon may be down — try a "
-                "different approach or ask the user to retry."
-            ),
-            tool="bash_exec",
-        ).to_result()
-
-    # Phase 2.7: snapshot outputs/ BEFORE the call for auto-Artifact
-    # tracking after.
-    _outputs_snapshot = None
-    try:
-        from pathlib import Path
-
-        from persistence.artifact_auto_tracker import snapshot_outputs
-
-        projects_root = Path(
-            getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
-        )
-        project_workdir = projects_root / project_id
-        _outputs_snapshot = snapshot_outputs(project_workdir)
-    except Exception:
-        log.exception("bash_exec: pre-execute snapshot failed")
-
-    # Run as ``bash -c "<cmd>"`` so the LLM can use shell syntax:
-    # pipes, redirects, ``&&``, here-docs (within the single-line
-    # constraint), etc. ``workdir=/workdir/<pid>`` so relative paths
-    # resolve to the project's dir.
-    workdir = f"/workdir/{project_id}"
-    t0 = time.time()
-    try:
-        ec = sandbox.backend.exec(
-            container.container_id,
-            ["bash", "-lc", cmd],
-            workdir=workdir,
-            timeout=timeout,
-            detach=False,
-        )
-    except Exception as e:
-        log.exception(
-            "bash_exec: backend.exec raised user=%s project=%s",
-            user_id, project_id,
-        )
-        return DispatchError(
-            error=f"bash_exec failed: {type(e).__name__}",
-            tool="bash_exec",
-        ).to_result()
-    wall_ms = int((time.time() - t0) * 1000)
-    sandbox.touch(user_id)
-
-    stdout = (ec.stdout or b"").decode("utf-8", errors="replace")
-    stderr = (ec.stderr or b"").decode("utf-8", errors="replace")
-
-    # Auto-Artifact scan AFTER the call.
-    artifact_ids: list[str] = []
-    try:
-        from pathlib import Path as _Path
-
-        from persistence.artifact_auto_tracker import (
-            diff_outputs,
-            hash_code,
-            persist_auto_artifacts,
-        )
-
-        if _outputs_snapshot is not None:
-            projects_root = _Path(
-                getattr(ctx.state.cfg.agent, "projects_root", "./storage/projects")
-            )
-            changes = diff_outputs(projects_root / project_id, _outputs_snapshot)
-            if changes:
-                with ctx.state.store.transaction() as sess:
-                    arts = persist_auto_artifacts(
-                        sess,
-                        project_id=project_id,
-                        user_id=user_id,
-                        changes=changes,
-                        code_hash=hash_code(cmd),
-                        tool="bash_exec",
-                        actor_id=user_id,
-                    )
-                    artifact_ids = [a.artifact_id for a in arts]
-    except Exception:
-        log.exception("bash_exec: auto-artifact persist failed")
-
-    return {
-        "stdout": _truncate_for_llm(stdout),
-        "stderr": _truncate_for_llm(stderr),
-        "exit_code": ec.exit_code,
-        "wall_ms": wall_ms,
-        "artifacts_created": len(artifact_ids),
-    }
-
-
-_BASH_EXEC_SPEC = ToolSpec(
-    name="bash_exec",
-    description=(
-        "Run one shell command in the project's sandbox container. "
-        "STATELESS across calls — variables don't persist, each call "
-        "is a fresh shell. Chain multi-step work with `&&` / `;` / "
-        "pipelines.\n\n"
-        "CWD is the project workdir, so paths like `inputs/x.csv` and "
-        "`outputs/y.png` resolve naturally. Files written into "
-        "`outputs/` are AUTO-TRACKED as Artifact rows (no need to "
-        "explicitly save).\n\n"
-        "AVAILABLE CLIs include: pdftotext / qpdf / pandoc / "
-        "libreoffice (for office formats) / ffmpeg / tesseract (OCR, "
-        "incl. Chinese) / xsv / jq / dasel / sqlite3 / duckdb / "
-        "ripgrep / fd / git / curl / wget. Pipe them: "
-        "`xsv stats data.csv | jq '.numeric'`.\n\n"
-        "When to pick bash_exec OVER python_exec:\n"
-        "  - Calling one of the CLIs above\n"
-        "  - Simple file ops (mv / cp / mkdir / chmod)\n"
-        "  - One-shot inspection (head / wc / file / ls -la)\n"
-        "  - Shell pipelines\n\n"
-        "When python_exec is right:\n"
-        "  - Any pandas / numpy / matplotlib computation\n"
-        "  - Anything that needs to PERSIST a value across calls\n"
-        "  - Multi-line transformations\n\n"
-        "TIMEOUT default 30s, max 120s. Output truncated at 5000 "
-        "chars for your view; user sees the full thing in the trace."
-    ),
-    params_schema={
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": (
-                    "Shell command to run. Wrapped in `bash -lc`, so "
-                    "syntax like pipes, redirects, `&&`, env-var "
-                    "expansion all work as in a normal shell."
-                ),
-            },
-            "timeout": {
-                "type": "number",
-                "description": (
-                    f"Per-call timeout in seconds. Default "
-                    f"{_BASH_EXEC_DEFAULT_TIMEOUT}, max "
-                    f"{_BASH_EXEC_MAX_TIMEOUT}."
-                ),
-            },
-        },
-        "required": ["command"],
-    },
-    handler=_handle_bash_exec,
 )
 
 
@@ -1928,8 +1406,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _WEB_SEARCH_SPEC.name: _WEB_SEARCH_SPEC,
     _RERANK_SPEC.name: _RERANK_SPEC,
     # Project-aware tools — filtered out by ``tools_for(ctx)`` when
-    # the conversation isn't bound to a project / sandbox isn't enabled.
-    _PYTHON_EXEC_SPEC.name: _PYTHON_EXEC_SPEC,
-    _BASH_EXEC_SPEC.name: _BASH_EXEC_SPEC,
+    # the conversation isn't bound to a project. Code execution
+    # (bash / python) is no longer here — Hermes Agent runs inside
+    # the sandbox container and brings its own bash/edit/grep/etc.
+    # tools. The agent reaches our domain capabilities (search, KG,
+    # library, artifacts) via the MCP server (``api/routes/mcp.py``).
     _IMPORT_FROM_LIBRARY_SPEC.name: _IMPORT_FROM_LIBRARY_SPEC,
 }

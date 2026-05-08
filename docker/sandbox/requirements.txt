@@ -1,19 +1,21 @@
 # OpenCraig sandbox image — Python data stack.
 #
-# Pinned conservatively. Each block is one capability the agent's
-# python_exec / library_search workflows lean on; trimming a block
-# means deciding the agent doesn't need that ability.
+# Pinned conservatively. Each block is one capability the
+# in-container agent (Hermes Agent) leans on for analysis /
+# spreadsheet / PDF workflows; trimming a block means deciding
+# the agent doesn't need that ability.
 #
 # DO NOT add ML training stacks (pytorch / transformers / xgboost).
-# Phase 2's sandbox is for analysis + visualisation, not model
-# training. Heavy numerics belong in install_runtime("ml") in a
-# follow-up; default image stays small enough for fast cold start.
-
-# ── Kernel + messaging ──
-ipykernel==6.30.0          # Python kernel run inside the container
-jupyter_client==8.6.3      # SandboxManager talks to kernels via this
-ipywidgets==8.1.5          # rich-output widgets (Phase 2.5)
-bash_kernel==0.10.0        # backs `bash_exec` agent tool (Phase 2.7)
+# The default image is for analysis + visualisation, not model
+# training. Heavy numerics belong in a future ``install_runtime``
+# step; the base image stays small enough for fast cold start.
+#
+# Hermes Agent itself is installed separately via the Dockerfile
+# (pinned MIT-licensed package); it brings its own loop, tools,
+# and LLM client. We don't run an ipykernel inside the container —
+# code execution is subprocess-based via Hermes' built-in shell
+# tools, so jupyter_client / ipykernel / bash_kernel are NOT
+# installed here.
 
 # ── Numerics + tables ──
 numpy==2.1.3

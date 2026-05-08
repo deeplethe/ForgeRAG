@@ -343,16 +343,13 @@ class AppState:
 
         self.authz = AuthorizationService(self.store)
 
-        # ── Phase 2 agent sandbox (Phase 2.9 wires lifecycle) ──
-        # ``sandbox`` is the per-user Docker container manager;
-        # ``kernel_manager`` is the per-(user, project) ipykernel
-        # driver layered on top. Both stay None until 2.9 wires
-        # the lifecycle into AppState.connect / shutdown — Phase
-        # 2.4's python_exec tool spec checks ``kernel_manager``
-        # presence and is filtered out of the agent's tool list
-        # by ``tools_for(ctx)`` when None.
+        # ── Phase 2 agent sandbox ──
+        # ``sandbox`` is the per-user Docker container manager
+        # (``persistence.sandbox_manager.SandboxManager``). It stays
+        # None until the lifespan startup wires it. Hermes Agent
+        # runs inside the container and owns code-execution; we
+        # only need the lifecycle (start / stop / bind-mount) here.
         self.sandbox = None
-        self.kernel_manager = None
 
     # ------------------------------------------------------------------
     def _ensure_indices(self) -> None:

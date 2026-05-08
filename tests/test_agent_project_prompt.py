@@ -47,9 +47,9 @@ def test_format_project_block_with_files():
     assert "inputs/sales.csv" in block
     assert "12.1 KB" in block  # 12345 / 1024 rounded
     assert "outputs/summary.md" in block
-    # Phase-2 caveat must be present
+    # Phase-2 caveat must be present (code execution lands later)
     assert "Phase 1" in block
-    assert "python_exec" in block
+    assert "code execution" in block
 
 
 def test_format_project_block_empty_workdir():

@@ -343,8 +343,7 @@
       "read_tree": "梳理文章结构",
       "graph_explore": "全局知识理解",
       "web_search": "联网搜索",
-      "rerank": "结果筛选整理",
-      "python_exec": "运行 Python"
+      "rerank": "结果筛选整理"
     },
     "thinking_phase": {
       "planning": "理解问题中",
@@ -366,8 +365,7 @@
       "read_tree": "浏览 {n} 篇文档结构",
       "graph_explore": "查询图谱 {n} 次",
       "web_search": "联网搜索 {n} 次",
-      "rerank": "重排 {n} 次",
-      "python_exec": "运行 {n} 段代码"
+      "rerank": "重排 {n} 次"
     }
   },
   "search": {

@@ -142,10 +142,8 @@ def agent_chat(
     the wire format + event vocabulary.
     """
     # If the request carries a conversation_id, resolve any project
-    # binding BEFORE we build the tool context — Phase 2.4's
-    # ``python_exec`` (and Phase 2.6+'s ``import_from_library`` /
-    # ``bash_exec``) need ``ctx.project_id`` to route into the right
-    # kernel + workdir, and the system-prompt augmentation already
+    # binding BEFORE we build the tool context — ``import_from_library``
+    # needs ``ctx.project_id``, and the system-prompt augmentation
     # uses the same project_id elsewhere.
     bound_project_id: str | None = None
     if body.conversation_id is not None:
@@ -556,11 +554,13 @@ def _format_project_block(
         "IMPORTANT — Phase 1: you can already retrieve from the Library "
         "(search_vector / read_chunk / graph_explore / read_tree as usual). "
         "You CANNOT yet directly read these project workdir files, run code "
-        "against them, or create new ones — those tools (python_exec, "
-        "read_file, write_file, import_from_library) ship in Phase 2. "
-        "If the user asks you to operate on a workdir file, explain that "
-        "the agent can see the file exists but can't yet open or process "
-        "it; offer to retrieve relevant Library content instead."
+        "against them, or create new ones — code execution ships in a "
+        "follow-up phase via the in-container agent runtime. The "
+        "``import_from_library`` tool is available now if you need to copy "
+        "a Library document into this project's inputs/. If the user asks "
+        "you to operate on a workdir file, explain that the agent can see "
+        "the file exists but can't yet open or process it; offer to "
+        "retrieve relevant Library content instead."
     )
     return "\n".join(lines)
 
@@ -719,18 +719,11 @@ def _accumulate_trace(trace: list[dict], evt: dict) -> None:
     elif kind == "tool.call_end":
         cid = evt.get("id")
         summary = evt.get("result_summary") or {}
-        rich_outputs = summary.get("rich_outputs") or []
         sum_text = (
             f"{summary.get('hit_count')} hits" if summary.get("hit_count") is not None
             else f"{summary.get('entity_count')} entities" if summary.get("entity_count") is not None
             else f"{summary.get('chunk_count')} chunks" if summary.get("chunk_count") is not None
             else "error" if summary.get("error")
-            # python_exec: surface stdout-bearing call as "ran" + figure count
-            else (
-                f"ran ({len(rich_outputs)} figure{'s' if len(rich_outputs) != 1 else ''})"
-                if rich_outputs
-                else "ran"
-            ) if summary.get("execution_count") is not None or summary.get("timed_out")
             else ""
         )
         for e in trace:
@@ -738,12 +731,6 @@ def _accumulate_trace(trace: list[dict], evt: dict) -> None:
                 e["status"] = "done"
                 e["summary"] = sum_text
                 e["elapsedMs"] = evt.get("latency_ms") or 0
-                # Phase 2.5: rich outputs (figures / HTML / etc.)
-                # carried through so a refreshed Chat.vue rebuilds
-                # the same view with inline images. Server-side
-                # trace parity with the live SSE handler.
-                if rich_outputs:
-                    e["rich_outputs"] = rich_outputs
                 break
     elif kind == "agent.turn_end":
         # Mark any remaining running phase done.

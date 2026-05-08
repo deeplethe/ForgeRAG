@@ -255,10 +255,12 @@ class SandboxManager:
         self.user_envs_root = Path(user_envs_root)
         self.container_name_prefix = container_name_prefix
         self.container_idle_seconds = container_idle_seconds
-        # Port range to publish on every fresh container — kernel
-        # ZMQ ports allocated from here by KernelManager (Phase 2.3).
-        # All bindings are loopback-only at the docker layer; no
-        # exposure to non-localhost callers.
+        # Port range to publish on every fresh container. Originally
+        # allocated for ipykernel ZMQ; under the Hermes Agent model
+        # the in-container agent doesn't need bound ports, but we
+        # keep the range for any future MCP / debug / preview server
+        # that wants to listen. All bindings stay loopback-only at
+        # the docker layer; no exposure to non-localhost callers.
         self.published_ports = published_ports
         self._clock = clock
 
@@ -680,13 +682,13 @@ class DockerBackend:
     ) -> ExecResult:
         client = self._docker()
         container = client.containers.get(container_id)
-        # ``detach=True`` is what KernelManager uses to launch
-        # ipykernel — that's a long-running process; if we waited
-        # synchronously the call would block forever. Detached:
-        # ``exec_run`` returns immediately and the kernel keeps
-        # running in the background. We get no exit code back; the
-        # caller (KernelManager) confirms the kernel is alive via
-        # the jupyter_client heartbeat instead.
+        # ``detach=True`` is for launching long-running processes
+        # in the container (e.g. an MCP-bridged agent runtime). If
+        # we waited synchronously the call would block forever.
+        # Detached: ``exec_run`` returns immediately and the process
+        # keeps running in the background. We get no exit code back;
+        # the caller verifies liveness through whatever protocol the
+        # detached process speaks.
         if detach:
             container.exec_run(
                 cmd,
