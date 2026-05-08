@@ -255,9 +255,11 @@ def create_app(
     app.include_router(metrics_routes.router)
     from .routes import admin as admin_routes
     from .routes import auth as auth_routes
+    from .routes import setup as setup_routes
 
     app.include_router(auth_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(setup_routes.router)
 
     # ── Auth middleware (no-op when auth.enabled=false) ──────────────
     # Installed LAST so it wraps all routes above. The middleware reads

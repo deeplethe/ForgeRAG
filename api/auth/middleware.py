@@ -138,6 +138,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # their email). The token in the URL is the auth.
         if path.startswith("/api/v1/auth/invitations/"):
             return await call_next(request)
+        # First-boot setup wizard runs unauthenticated by design — by
+        # definition the operator hasn't created an account yet, and
+        # the LLM keys it sets gate every other endpoint that needs
+        # real LLM compute. The endpoints themselves enforce a
+        # ``configured=False`` precondition so they self-disable
+        # once the deploy is past first boot.
+        if path.startswith("/api/v1/setup/"):
+            return await call_next(request)
         for prefix in cfg.public_paths or []:
             if path.startswith(prefix):
                 return await call_next(request)
