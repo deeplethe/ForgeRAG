@@ -63,7 +63,7 @@ python main.py --workers 1 --reload
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/deeplethe/OpenCraig/issues) to report bugs or request features
+- Use [GitHub Issues](https://github.com/opencraig/opencraig/issues) to report bugs or request features
 - Include reproduction steps, expected behavior, and environment details
 
 ## License

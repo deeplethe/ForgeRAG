@@ -239,7 +239,7 @@ onBeforeUnmount(() => {
       </button>
       <span class="text-[10px] text-t3 select-none">v{{ version }}</span>
       <a
-        href="https://github.com/deeplethe/ForgeRAG"
+        href="https://github.com/opencraig/opencraig"
         target="_blank"
         rel="noopener"
         class="ml-auto p-1 -mr-1 rounded text-t3 hover:text-t1 hover:bg-bg3 transition-colors"

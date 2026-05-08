@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/deeplethe/OpenCraig/releases"><img src="https://img.shields.io/badge/version-0.3.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.3.0-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
-  <a href="https://github.com/deeplethe/OpenCraig/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/OpenCraig?style=for-the-badge&logo=github" alt="Stars"></a>
-  <a href="https://github.com/deeplethe/OpenCraig/issues"><img src="https://img.shields.io/github/issues/deeplethe/OpenCraig?style=for-the-badge" alt="Issues"></a>
+  <a href="https://github.com/opencraig/opencraig/stargazers"><img src="https://img.shields.io/github/stars/opencraig/opencraig?style=for-the-badge&logo=github" alt="Stars"></a>
+  <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge" alt="Issues"></a>
   <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-加入-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
@@ -104,8 +104,8 @@ UI 提供完整的 retrieval trace，可看到每条路在每次查询里贡献�
 **最快路径**是 docker compose：
 
 ```bash
-git clone https://github.com/deeplethe/OpenCraig.git
-cd OpenCraig
+git clone https://github.com/opencraig/opencraig.git
+cd opencraig
 cp .env.example .env  &&  $EDITOR .env       # 设置密码（LLM key 可选——向导会收集）
 docker compose up -d                          # postgres + neo4j + opencraig
 ```
@@ -278,10 +278,10 @@ OpenCraig/
 
 ## 📈 Star history
 
-<a href="https://star-history.com/#deeplethe/OpenCraig&Date">
+<a href="https://star-history.com/#opencraig/opencraig&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=deeplethe/OpenCraig&type=Date&theme=dark" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=deeplethe/OpenCraig&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=opencraig/opencraig&type=Date&theme=dark" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=opencraig/opencraig&type=Date" />
   </picture>
 </a>
 

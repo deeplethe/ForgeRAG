@@ -13,8 +13,8 @@ This guide covers setting up a development environment, project conventions, tes
 ### Install
 
 ```bash
-git clone https://github.com/deeplethe/OpenCraig.git
-cd OpenCraig
+git clone https://github.com/opencraig/opencraig.git
+cd opencraig
 
 # Python
 python -m venv .venv

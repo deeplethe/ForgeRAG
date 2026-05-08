@@ -49,7 +49,7 @@ Hard-burn the captions in the editor. One short line per beat:
 | 18–28s | `4 retrieval paths run in parallel: BM25, vector, knowledge graph, tree navigation.` |
 | 28–38s | `Every claim links to its source — page and bounding box.` |
 | 38–48s | `Knowledge graph for cross-document reasoning.` |
-| 50–60s | `OpenCraig — github.com/deeplethe/OpenCraig` |
+| 50–60s | `OpenCraig — github.com/opencraig/opencraig` |
 
 ### Editing
 

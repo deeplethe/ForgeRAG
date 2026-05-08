@@ -10,8 +10,8 @@ The fastest way to deploy OpenCraig in production.
 
 ```bash
 # 1. Clone
-git clone https://github.com/deeplethe/OpenCraig.git
-cd OpenCraig
+git clone https://github.com/opencraig/opencraig.git
+cd opencraig
 
 # 2. Pick passwords (LLM key is collected by the in-app wizard later)
 cp .env.example .env
@@ -99,92 +99,36 @@ Once the LLM credentials are valid, `/setup/status` returns
 `configured=true` and the wizard step is skipped — the operator
 proceeds directly to `/register`.
 
-### Docker Compose Services
+### Service shape
 
-#### OpenCraig
-
-```yaml
-forgerag:
-  build: .
-  ports:
-    - "8000:8000"
-  environment:
-    - FORGERAG_CONFIG=/app/config.yaml
-    - OPENAI_API_KEY=${OPENAI_API_KEY}
-    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forgerag}
-  volumes:
-    - storage:/app/storage
-    - ./docker/config.yaml:/app/config.yaml:ro
-  depends_on:
-    postgres:
-      condition: service_healthy
-```
-
-#### PostgreSQL with pgvector
-
-```yaml
-postgres:
-  image: pgvector/pgvector:pg16
-  environment:
-    POSTGRES_USER: forgerag
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forgerag}
-    POSTGRES_DB: forgerag
-  volumes:
-    - pgdata:/var/lib/postgresql/data
-  ports:
-    - "5432:5432"
-  healthcheck:
-    test: ["CMD-SHELL", "pg_isready -U forgerag"]
-    interval: 5s
-    timeout: 3s
-    retries: 5
-```
-
-#### Neo4j (Optional)
-
-Started only with the `neo4j` profile:
-
-```bash
-docker compose --profile neo4j up -d
-```
-
-```yaml
-neo4j:
-  image: neo4j:5
-  profiles: [neo4j]
-  environment:
-    NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-forgerag}
-    NEO4J_PLUGINS: '["apoc"]'
-  volumes:
-    - neo4jdata:/data
-  ports:
-    - "7474:7474"   # HTTP browser
-    - "7687:7687"   # Bolt protocol
-```
-
-### Dockerfile
-
-Multi-stage build:
-
-1. **Stage 1 (Node 20 Alpine):** Builds Vue 3 frontend → `web/dist/`
-2. **Stage 2 (Python 3.11-slim):** Installs Python dependencies, copies built frontend, runs `main.py`
-
-### Volumes
+The actual `docker-compose.yml` is the source of truth — this
+section is just a quick reference for what each volume / port /
+service is for. If it conflicts with the YAML, the YAML wins.
 
 | Volume | Mount | Purpose |
 |--------|-------|---------|
-| `storage` | `/app/storage` | BM25 index, embedding cache |
-| `pgdata` | `/var/lib/postgresql/data` | PostgreSQL data |
-| `neo4jdata` | `/data` | Neo4j data |
+| `storage` | `/app/storage` | Uploaded files, parser cache, embedding cache, setup-overlay yaml |
+| `pgdata` | `/var/lib/postgresql/data` | PostgreSQL data + pgvector index |
+| `neo4jdata` | `/data` | Neo4j graph + indexes |
 
-### Common Operations
+| Port | Service | Notes |
+|------|---------|-------|
+| `8000` | opencraig | Backend + frontend (override via `OPENCRAIG_PORT` in `.env`) |
+| `7474` | neo4j | Web UI for ops / debugging the KG (override via `NEO4J_HTTP_PORT`) |
+| `7687` | neo4j | Bolt protocol — only the opencraig container talks to it (override via `NEO4J_BOLT_PORT`) |
+
+Postgres is **not** exposed to the host by default. Add a
+`ports:` block to the compose file — or use `docker-compose.dev.yml`,
+which maps it to `5433` — when you need a local DB client.
+
+### Common operations
 
 ```bash
 # View logs
-docker compose logs -f forgerag
+docker compose logs -f opencraig
 
-# Restart after config change
-docker compose restart forgerag
+# Restart after config change (pick up storage/setup-overlay.yaml)
+docker compose restart opencraig
 
 # Stop everything
 docker compose down
@@ -194,7 +138,18 @@ docker compose down -v
 
 # Rebuild after code change
 docker compose build && docker compose up -d
+
+# Backup / restore — see docs/operations/backup.md
+./scripts/backup.sh
+./scripts/restore.sh ./backups/<timestamp>.tar.gz
 ```
+
+### Dockerfile
+
+Multi-stage build:
+
+1. **Stage 1 (Node 20 Alpine):** Builds Vue 3 frontend → `web/dist/`
+2. **Stage 2 (Python 3.13-slim):** Installs Python dependencies, copies built frontend, runs `main.py` — defaults to 4 uvicorn workers (override via `OPENCRAIG_WORKERS`)
 
 ---
 

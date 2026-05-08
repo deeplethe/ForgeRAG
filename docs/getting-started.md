@@ -17,8 +17,8 @@ You also need an API key for at least one LLM provider (OpenAI, DeepSeek, Cohere
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/deeplethe/OpenCraig.git
-cd OpenCraig
+git clone https://github.com/opencraig/opencraig.git
+cd opencraig
 ```
 
 ### 2. Create a virtual environment
