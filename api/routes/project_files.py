@@ -49,10 +49,18 @@ from persistence.project_file_service import (
     TrashEntry,
     TrashEntryNotFound,
 )
+from persistence.project_import_service import (
+    ImportError as ProjectImportError,
+)
+from persistence.project_import_service import (
+    ProjectImportService,
+    SourceDocumentHasNoBlob,
+    SourceDocumentNotFound,
+)
 from persistence.project_service import ProjectNotFound, ProjectService
 
 from ..auth import AuthenticatedPrincipal
-from ..deps import get_principal, get_state
+from ..deps import get_principal, get_state, require_doc_access
 from ..state import AppState
 
 log = logging.getLogger(__name__)
@@ -89,6 +97,25 @@ class MoveReq(BaseModel):
 
 class MkdirReq(BaseModel):
     path: str = Field(..., description="Relative path of the directory to create")
+
+
+class ImportFromLibraryReq(BaseModel):
+    doc_id: str = Field(..., description="Library document to copy in")
+    target_subdir: str = Field(
+        default="inputs",
+        description="Project subdir to land the file in (default: inputs/)",
+    )
+
+
+class ImportResultOut(BaseModel):
+    artifact_id: str
+    project_id: str
+    source_doc_id: str
+    target_path: str
+    size_bytes: int
+    mime: str
+    sha256: str | None = None
+    reused: bool
 
 
 class WriteResultOut(FileEntryOut):
@@ -376,6 +403,111 @@ def make_dir(
         sess_ctx.__exit__(None, None, None)
         raise
     return _entry_to_out(entry)
+
+
+# ---------------------------------------------------------------------------
+# Library → Workspace import
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{project_id}/import",
+    response_model=ImportResultOut,
+    status_code=201,
+)
+def import_from_library(
+    project_id: str,
+    body: ImportFromLibraryReq,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Copy a Library document's blob into this project's workdir as
+    an Artifact.
+
+    Authz (both checks must pass):
+      1. Caller has **write** access on the project (owner / admin).
+         Read-only viewers cannot import — they'd be writing into
+         someone else's workdir.
+      2. Caller has **read** access on the source Library doc — the
+         same gate the Library UI's "open this doc" button uses. A
+         user can't import a file they wouldn't see in the Library.
+
+    Idempotent: importing the same `doc_id` into the same project
+    twice returns the existing artifact (200/201 with `reused=true`)
+    without re-copying the blob.
+
+    Phase 2 will mount the Phase-2 agent tool `import_from_library`
+    on the same service — no other endpoint, no other authz model.
+    """
+    # 1. Project resolution + write-permission gate (404 on miss)
+    sess_ctx, sess, proj = _resolve_project(
+        state, principal, project_id, require_write=True
+    )
+    try:
+        # 2. Library doc-access gate. ``require_doc_access`` returns
+        #    the doc row OR raises 404 — same code as a missing doc,
+        #    so an unauthorised caller can't enumerate doc_ids by
+        #    diffing 404 vs 403.
+        try:
+            require_doc_access(state, principal, body.doc_id, "read")
+        except HTTPException:
+            sess_ctx.__exit__(None, None, None)
+            raise
+
+        # 3. Run the import
+        svc = ProjectImportService(
+            sess,
+            file_store=state.file_store,
+            projects_root=_projects_root(state),
+            max_workdir_bytes=getattr(
+                state.cfg.agent, "max_project_workdir_bytes", 0
+            ),
+            max_upload_bytes=getattr(
+                state.cfg.agent, "max_workdir_upload_bytes", 0
+            ),
+            actor_id=principal.user_id,
+        )
+        try:
+            result = svc.import_doc(
+                proj, body.doc_id, target_subdir=body.target_subdir
+            )
+        except SourceDocumentNotFound:
+            # Should not be reachable past require_doc_access, but
+            # keep the explicit handler for clarity.
+            sess_ctx.__exit__(None, None, None)
+            raise HTTPException(404, "library document not found")
+        except SourceDocumentHasNoBlob:
+            sess_ctx.__exit__(None, None, None)
+            raise HTTPException(
+                422,
+                "library document has no associated file blob to copy",
+            )
+        except ProjectQuotaExceeded as e:
+            sess_ctx.__exit__(None, None, None)
+            raise HTTPException(413, str(e))
+        except InvalidProjectPath as e:
+            sess_ctx.__exit__(None, None, None)
+            raise HTTPException(400, str(e))
+        except ProjectImportError as e:
+            sess_ctx.__exit__(None, None, None)
+            raise HTTPException(500, f"import failed: {e}")
+        sess_ctx.__exit__(None, None, None)
+    except HTTPException:
+        raise
+    except Exception:
+        sess_ctx.__exit__(None, None, None)
+        raise
+
+    return ImportResultOut(
+        artifact_id=result.artifact_id,
+        project_id=result.project_id,
+        source_doc_id=result.source_doc_id,
+        target_path=result.target_path,
+        size_bytes=result.size_bytes,
+        mime=result.mime,
+        sha256=result.sha256,
+        reused=result.reused,
+    )
 
 
 # ---------------------------------------------------------------------------
