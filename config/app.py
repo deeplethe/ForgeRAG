@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
+from .agent import AgentConfig
 from .answering import AnsweringSection, CORSConfig
 from .auth_config import AuthConfig
 from .benchmark import BenchmarkConfig
@@ -48,6 +49,7 @@ class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     @model_validator(mode="after")
     def _validate_dimensions(self) -> AppConfig:

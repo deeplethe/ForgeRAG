@@ -12,6 +12,7 @@ Typical usage:
     cfg.storage.mode
 """
 
+from .agent import AgentConfig
 from .answering import AnsweringSection, GeneratorConfig
 from .app import AppConfig
 from .benchmark import BenchmarkConfig
@@ -72,6 +73,7 @@ from .web_search import (
 )
 
 __all__ = [
+    "AgentConfig",
     "AnsweringSection",
     "AppConfig",
     "BM25Config",
