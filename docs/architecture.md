@@ -875,6 +875,145 @@ volume and are layered on top at startup.
 
 ---
 
+## Workspace & Projects
+
+**The Library is the indexed knowledge base. The Workspace is the
+agent's per-project workdir.** Both ship with their own URL,
+sidebar entry, and storage tree:
+
+* `/library` — file manager over the corpus that gets ingested,
+  parsed, embedded, and indexed (vector + KG + BM25). Multi-user
+  shared via `Folder.shared_with`.
+* `/workspace` — list of agent projects. Each project owns an
+  on-disk workdir under `storage/projects/<project_id>/` plus
+  ORM rows for runs / artifacts / kernel sessions. **Single-
+  writer**: only the project owner runs agents and writes files;
+  read-only viewers can be invited (Phase 6+ UI; backend supports
+  it today via `Project.shared_with`).
+
+### Disk layout
+
+```
+storage/
+├── blobs/                          # Library content-addressed blobs
+├── chroma/                         # Library vector index
+├── kg.json                         # Library knowledge graph
+├── projects/                       # NEW (Phase 0)
+│   ├── <project_id>/
+│   │   ├── inputs/                 # uploads + Library imports
+│   │   ├── outputs/                # agent-produced artifacts
+│   │   ├── scratch/                # intermediate / safe to delete
+│   │   ├── .agent-state/
+│   │   │   └── trash.json          # per-project trash index
+│   │   ├── .trash/<trash_id>       # soft-deleted files
+│   │   └── README.md               # auto-generated description
+│   └── __trash__/                  # whole-project soft-deletes
+└── user-envs/                      # Phase 2 — per-user runtime volumes
+```
+
+The convention `inputs/ outputs/ scratch/` is **soft** — the agent
+is told to use them in its system prompt, but the file API
+doesn't enforce it. `.trash/` and `.agent-state/` are reserved:
+the file resolver refuses direct writes / reads against them so
+users can't bypass the trash routes by hand.
+
+### Authz model
+
+Two distinct permission systems for the two surfaces:
+
+| Surface | Authz |
+|---|---|
+| **Library** (`Folder.shared_with`) | Owner + `rw` collaborators + `r` viewers; admin role bypasses globally |
+| **Project** (`Project.owner_user_id` + `Project.shared_with`) | Single owner-writer; `r` viewers can read; **no `rw` role exists** (rejected at the route + service layer) |
+
+Why projects don't have `rw`:
+
+* A project owns the agent's live ipykernel state (Phase 2),
+  intermediate `python_exec` outputs, and the run-history audit
+  trail. Multi-writer creates races + state pollution
+  (whose `df` does the kernel hold? whose run gets paused?)
+  with no real collaboration upside.
+* Users collaborate by sharing **Library content** and each
+  running their own agent in their own project against the
+  shared knowledge.
+* `r` (read-only viewer) is genuinely useful — consultants
+  showing progress to clients, leads watching teammates' agent
+  runs. UI for it ships in Phase 6+; service + routes work today.
+
+### Library → Workspace bridge
+
+Both the manual UI button (Phase 1) and the agent tool (Phase 2)
+go through the same backend service:
+
+```
+POST /api/v1/projects/{id}/import { doc_id, target_subdir? }
+  → ProjectImportService.import_doc
+      ├── verify project write access (owner / admin)
+      ├── verify Library doc read access (require_doc_access — same
+      │   gate as the Library UI's "open this doc" button)
+      ├── idempotency check by lineage_json.sources[].doc_id
+      ├── FileStore.materialize(file_id, target_path)
+      └── Artifact row with lineage = {sources: [{type:"doc", doc_id}]}
+```
+
+A user can never import a Library doc they couldn't open in the
+Library UI — same authz, new caller.
+
+### Chat ↔ Project binding
+
+`Conversation.project_id` (nullable FK) binds a chat to a
+project. URL convention:
+
+```
+/chat                      ← plain Q&A (no project)
+/chat?project=<id>         ← chat in project context
+/chat?c=<conv>             ← resume a conversation (project_id
+                              comes from the row)
+```
+
+When a chat is bound:
+* The first send writes `Conversation.project_id = <id>` so
+  reloads / resumes preserve the binding
+* The agent's system prompt is augmented with project context
+  (name + workdir file list + Phase-2 caveat) — see
+  `api/routes/agent.py::_build_system_prompt_for_conversation`
+* Phase 2+ agent runs (`agent_runs.project_id`) inherit the
+  binding so `python_exec` / `import_from_library` route into
+  the project's workdir + container
+
+Soft-deleting a project sets all its conversations'
+`project_id` to NULL (handled in `ProjectService.move_to_trash`)
+so chats keep working as plain Q&A even if their project goes
+away.
+
+### Quotas
+
+* `agent.max_project_workdir_bytes` (default **10 GiB**) — total
+  workdir size cap, including trash. Exceeding returns 413 from
+  the file API; quota is recomputed per-write via a recursive
+  `os.walk` (cheap at typical project sizes; cache to
+  `Project.metadata_json` if it ever becomes hot).
+* `agent.max_workdir_upload_bytes` (default **500 MiB**) —
+  per-file upload cap, mirrors `files.max_bytes` for the Library.
+
+### What ships when
+
+| Phase | Workspace capability |
+|---|---|
+| **0** | Library / Workspace split; project CRUD; data model |
+| **1** | Workdir file manager UI (this section); Library → Workspace manual import; chat ↔ project binding |
+| **2** | `python_exec` + `import_from_library` agent tools; per-user Docker container + `jupyter_client` sandbox |
+| **3** | Local file I/O agent tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` |
+| **4** | Plan-Execute-Reflect orchestrator + per-step context bounding + cost ceiling |
+| **5** | Web search + fetch_url |
+| **6** | Lineage UI + project export + cost dashboard |
+
+See `docs/roadmaps/agent-workspace.md` for the full design
+including sandbox isolation, on-demand language runtimes, and
+context/memory strategy.
+
+---
+
 ## Configuration System
 
 **YAML is the single source of truth.** The DB holds a one-way mirror (`settings` table) written at startup so admin tools can read a snapshot of the effective config, but the runtime never reads it back. v0.2.0 dropped the `provider_id` indirection: model + api_key + api_base are now inlined directly under each subsystem in yaml.
