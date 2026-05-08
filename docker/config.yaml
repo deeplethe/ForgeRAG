@@ -1,46 +1,98 @@
-# Docker Compose config for ForgeRAG
-# Postgres + pgvector + Neo4j
+# ════════════════════════════════════════════════════════════════════════════
+# OpenCraig config — bind-mounted into the opencraig container by
+# docker-compose.yml. Edit values in this file to change runtime
+# behaviour; passwords + LLM keys come in via environment variables
+# (set in .env) so this file stays free of secrets.
+# ════════════════════════════════════════════════════════════════════════════
 
+# ── Auth ────────────────────────────────────────────────────────────────────
+# Enabled by default. The auth_users table starts empty; the first account
+# created via /register auto-promotes to admin. After that, registration
+# follows ``registration_mode`` (default ``approval`` — admin reviews
+# new sign-ups).
+auth:
+  enabled: true
+  mode: db
+  registration_mode: approval
+  # Empty initial_password = no pre-baked admin row. The first /register
+  # call against an empty auth_users gets promoted to admin automatically.
+  # Set this to a string ONLY if you want a baked-in ``admin`` user.
+  initial_password: ""
+  session_cookie_name: opencraig_session
+  # Set to true ONLY when serving over HTTPS in front of opencraig
+  # (e.g. behind a reverse proxy with TLS terminated). On http://localhost
+  # browsers refuse Secure cookies and login loops.
+  session_cookie_secure: false
+
+# ── Persistence ─────────────────────────────────────────────────────────────
 persistence:
   relational:
     backend: postgres
+    schema_auto_init: true                    # alembic upgrade head on boot
     postgres:
-      host: postgres
+      host: postgres                           # docker service name
       port: 5432
-      database: forgerag
-      user: forgerag
+      database: opencraig
+      user: opencraig
       password_env: POSTGRES_PASSWORD
+      pool_min: 2
+      pool_max: 10
   vector:
+    # pgvector co-tenants with postgres — one fewer service to run
+    # vs running a standalone Chroma / Qdrant container.
     backend: pgvector
     pgvector:
-      dimension: 1536
+      dimension: 1024                         # MUST match embedder.dimension
       distance: cosine
       index_type: hnsw
 
+# ── Knowledge Graph (Neo4j) ────────────────────────────────────────────────
+graph:
+  backend: neo4j
+  neo4j:
+    uri: bolt://neo4j:7687                   # docker service name
+    user: neo4j
+    password_env: NEO4J_PASSWORD
+    database: neo4j
+
+# ── Storage (uploaded blobs) ───────────────────────────────────────────────
 storage:
   mode: local
   local:
     root: /app/storage/blobs
 
+# ── Embedder ────────────────────────────────────────────────────────────────
+# Default = OpenAI text-embedding-3-small at 1024 dims (configurable to
+# 1536). Swap to a self-hosted model (Ollama / vLLM) by changing
+# litellm.model + litellm.api_base; remove api_key_env when using a
+# server that doesn't require auth.
 embedder:
   backend: litellm
-  dimension: 1536
+  dimension: 1024
   litellm:
     model: openai/text-embedding-3-small
+    requested_dimensions: 1024
     api_key_env: OPENAI_API_KEY
 
-# Graph store: defaults to networkx (in-memory, zero setup).
-# To use Neo4j, start with: docker compose --profile neo4j up
-# and uncomment the block below:
-# graph:
-#   backend: neo4j
-#   neo4j:
-#     uri: bolt://neo4j:7687
-#     user: neo4j
-#     password_env: NEO4J_PASSWORD
-
+# ── Answering (chat generation) ────────────────────────────────────────────
 answering:
   generator:
     backend: litellm
     model: openai/gpt-4o-mini
     api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    timeout: 60.0
+
+# ── Files (upload validation) ──────────────────────────────────────────────
+files:
+  hash_algorithm: sha256
+  max_bytes: 524288000                        # 500 MiB
+
+# ── Observability ──────────────────────────────────────────────────────────
+# stdout exporter → spans land in container logs. Switch to ``otlp`` and
+# set otlp_endpoint when wiring up Langfuse / Honeycomb / Jaeger.
+observability:
+  enabled: true
+  service_name: opencraig
+  exporter: stdout
+  sample_ratio: 1.0

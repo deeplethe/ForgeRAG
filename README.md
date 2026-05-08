@@ -99,7 +99,14 @@ python main.py             # http://localhost:8000
 
 The setup wizard is bilingual (EN/中文), checkpointed (Ctrl+C resumable), and **only installs the backend deps your config picks** — don't memorize pip names per database.
 
-> **Docker?** `python scripts/docker_setup.py && docker compose up -d` — PostgreSQL + pgvector + ForgeRAG, one command.
+> **Docker?**
+> ```bash
+> cp .env.example .env  &&  $EDITOR .env       # set passwords + LLM key
+> docker compose up -d                          # postgres + neo4j + opencraig
+> open http://localhost:8000                    # → register the first admin
+> ```
+> The first registered account is auto-promoted to admin. See
+> [docs/deployment.md](docs/deployment.md) for backup, upgrade, and TLS notes.
 
 > **Tip:** Enable [MinerU](https://github.com/opendatalab/MinerU) in the web Settings panel for a step-change in PDF parsing quality on tables, formulas, and complex layouts.
 

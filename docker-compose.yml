@@ -1,59 +1,116 @@
-version: "3.9"
+# ════════════════════════════════════════════════════════════════════════════
+# OpenCraig — one-shot self-host deploy.
+#
+# Quick start:
+#   1. cp .env.example .env  &&  $EDITOR .env       # set passwords + LLM key
+#   2. docker compose up -d
+#   3. open http://localhost:8000  →  Create your first account
+#
+# What you get on a single host:
+#   * Postgres (with pgvector) — relational + vector store, 5432 internal
+#   * Neo4j 5 — knowledge graph, 7474 (web UI) / 7687 (bolt)
+#   * OpenCraig — Python backend serving the Vue frontend, port 8000
+#
+# Data lives in named docker volumes (``pgdata``, ``neo4jdata``, ``storage``)
+# — see ``scripts/backup.sh`` for the corresponding backup procedure.
+# Single-tenant deployment: every customer / org gets their own copy of this
+# stack. There is no multi-tenant routing layer; isolation comes from
+# running separate compose projects.
+# ════════════════════════════════════════════════════════════════════════════
 
 services:
+  # ── Application server ─────────────────────────────────────────────
   opencraig:
     build: .
+    image: opencraig:local
+    container_name: opencraig_app
     ports:
-      - "8000:8000"
+      - "${OPENCRAIG_PORT:-8000}:8000"
     environment:
-      - OPENCRAIG_CONFIG=/app/config.yaml
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-opencraig}
+      OPENCRAIG_CONFIG: /app/config.yaml
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set in .env}
+      # LLM provider keys — fill in .env. The first-boot wizard
+      # surfaces a friendlier prompt if these are missing, but
+      # operators who'd rather configure declaratively can just
+      # set them here and skip the wizard.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     volumes:
       - storage:/app/storage
       - ./docker/config.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
+  # ── Postgres + pgvector ────────────────────────────────────────────
+  # pgvector image embeds the pgvector extension; SQL-side
+  # ``CREATE EXTENSION`` is run by alembic on first boot.
   postgres:
     image: pgvector/pgvector:pg16
+    container_name: opencraig_postgres
     environment:
       POSTGRES_USER: opencraig
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencraig}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: opencraig
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # 5432 is NOT exposed to the host by default. Operators who
+    # want a local DB client can map it via docker-compose.dev.yml,
+    # or uncomment:
+    #   ports:
+    #     - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opencraig"]
+      test: ["CMD-SHELL", "pg_isready -U opencraig -d opencraig"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
     restart: unless-stopped
 
-  # Optional: Neo4j for knowledge graph (start with --profile neo4j)
+  # ── Neo4j 5 (Knowledge Graph) ──────────────────────────────────────
+  # Default-on. Single-database community edition with APOC core
+  # plugin enabled (used by the KG ingestion path for batched
+  # writes and a few utility procs).
   neo4j:
-    image: neo4j:5
-    profiles: [neo4j]
+    image: neo4j:5.20-community
+    container_name: opencraig_neo4j
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-opencraig}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set in .env}
       NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_memory_heap_initial__size: "512m"
+      NEO4J_dbms_memory_heap_max__size: "1G"
     volumes:
       - neo4jdata:/data
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      # 7474 = web UI (useful for ops + debugging the graph).
+      # 7687 = bolt (driver protocol; only opencraig talks to it).
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
     healthcheck:
-      test: ["CMD", "neo4j", "status"]
+      # cypher-shell ships with the image; ``RETURN 1`` is the
+      # smallest possible round-trip that proves bolt is up AND
+      # auth works. Quieter than the legacy ``neo4j status``
+      # (which only checks the server process exists, not that
+      # bolt is accepting clients).
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_PASSWORD}\" 'RETURN 1' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
-  storage:
-  pgdata:
-  neo4jdata:
+  storage:    # /app/storage — blobs, uploaded files, parser cache, embedding cache
+  pgdata:     # postgres data + pgvector tables
+  neo4jdata:  # neo4j graph + indexes
