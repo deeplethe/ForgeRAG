@@ -388,6 +388,7 @@ class QueryRequest(BaseModel):
 class ConversationOut(BaseModel):
     conversation_id: str
     title: str | None = None
+    project_id: str | None = None  # nullable; set when chat is bound to a project
     created_at: Any = None
     updated_at: Any = None
     message_count: int | None = None

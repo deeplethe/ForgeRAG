@@ -65,6 +65,7 @@
       "no_chats_title": "No chats here yet",
       "no_chats_subtitle": "When you bind a chat to this project, the agent's tool calls will land in this project's workdir and the run history will appear here.",
       "phase0_note": "Chat ↔ project binding lands in Phase 1.",
+      "open_chat": "Open chat",
       "load_error": "Couldn't load this project: {msg}"
     },
     "picker": {
@@ -318,6 +319,10 @@
     "tagline": "Every claim has a coordinate. Ask anything in your documents — we show you the page.",
     "ask_a_question": "Ask anything about your documents...",
     "ask_followup": "Ask a follow-up...",
+    "project_banner": {
+      "working_on": "Working on:",
+      "clear": "Leave project context"
+    },
     "may_make_mistakes": "OpenCraig may make mistakes. Citations link to the source — verify before quoting.",
     "preset": {
       "whats_here": "What's in this workspace?",

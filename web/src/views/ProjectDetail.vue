@@ -18,7 +18,15 @@
            single-writer with no UI-exposed sharing in Phase 0-5. The
            ProjectMembersDialog component file is kept on disk for the
            Phase 6+ read-only-share rollout. -->
-      <div v-if="project" class="proj-detail__actions"></div>
+      <div v-if="project" class="proj-detail__actions">
+        <button
+          class="btn btn--primary"
+          @click="onOpenChat"
+        >
+          <MessageSquare :size="14" :stroke-width="1.75" />
+          <span>{{ t('workspace.detail.open_chat') }}</span>
+        </button>
+      </div>
     </header>
 
     <main class="proj-detail__body">
@@ -54,7 +62,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ArrowLeft } from 'lucide-vue-next'
+import { AlertCircle, ArrowLeft, MessageSquare } from 'lucide-vue-next'
 
 import { getProject } from '@/api'
 import Skeleton from '@/components/Skeleton.vue'
@@ -102,6 +110,15 @@ function back() {
 
 function onImportFromLibrary() {
   pickerOpen.value = true
+}
+
+// Opens chat with this project bound. Chat.vue reads ``?project=``
+// on mount, fetches the project for the banner, and writes
+// ``Conversation.project_id`` on the first send so subsequent
+// agent runs route into this project's workdir.
+function onOpenChat() {
+  if (!project.value) return
+  router.push({ path: '/chat', query: { project: project.value.project_id } })
 }
 
 function onPickerClose() {
@@ -243,5 +260,15 @@ onMounted(load)
 
 .btn--ghost:hover {
   background: var(--surface-muted, #f9fafb);
+}
+
+.btn--primary {
+  background: var(--accent, #111827);
+  border-color: var(--accent, #111827);
+  color: white;
+}
+
+.btn--primary:hover {
+  background: var(--accent-hover, #000);
 }
 </style>

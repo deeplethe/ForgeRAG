@@ -35,8 +35,8 @@ export const listConversations = (params = {}) =>
  * @param {string} [title] - 初始标题,不传则由第一条消息自动设置
  * @returns {Promise<ConversationOut>}
  */
-export const createConversation = (title = null) =>
-  post('/api/v1/conversations', { title })
+export const createConversation = (title = null, project_id = null) =>
+  post('/api/v1/conversations', { title, project_id })
 
 /**
  * 获取会话详情 (含 message_count)

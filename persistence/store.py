@@ -819,6 +819,7 @@ class Store:
         limit: int = 50,
         offset: int = 0,
         user_id: str | None = None,
+        project_id: str | None = None,
     ) -> list[dict]:
         """List conversations, newest first.
 
@@ -826,22 +827,37 @@ class Store:
         conversations are returned. Conversations are user-private
         regardless of admin role; passing ``None`` means "no filter"
         (used by auth-disabled deployments and background jobs).
+
+        ``project_id`` is an optional secondary filter — when set,
+        only conversations bound to that project are returned. Used
+        by the project detail page to show "chats in this project".
+        Combine with ``user_id`` for the typical case (a user's
+        chats in a particular project).
         """
         with self._session() as s:
             stmt = select(Conversation).order_by(Conversation.updated_at.desc())
             if user_id is not None:
                 stmt = stmt.where(Conversation.user_id == user_id)
+            if project_id is not None:
+                stmt = stmt.where(Conversation.project_id == project_id)
             stmt = stmt.limit(limit).offset(offset)
             rows = s.execute(stmt).scalars().all()
             return [_conversation_to_dict(r) for r in rows]
 
-    def count_conversations(self, *, user_id: str | None = None) -> int:
+    def count_conversations(
+        self,
+        *,
+        user_id: str | None = None,
+        project_id: str | None = None,
+    ) -> int:
         with self._session() as s:
             from sqlalchemy import func as sa_func
 
             stmt = select(sa_func.count()).select_from(Conversation)
             if user_id is not None:
                 stmt = stmt.where(Conversation.user_id == user_id)
+            if project_id is not None:
+                stmt = stmt.where(Conversation.project_id == project_id)
             return s.execute(stmt).scalar() or 0
 
     def delete_conversation(self, conversation_id: str) -> None:
@@ -1255,6 +1271,7 @@ def _conversation_to_dict(row: Conversation) -> dict:
         "conversation_id": row.conversation_id,
         "title": row.title,
         "user_id": row.user_id,
+        "project_id": row.project_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},

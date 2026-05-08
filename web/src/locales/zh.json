@@ -65,6 +65,7 @@
       "no_chats_title": "还没有对话",
       "no_chats_subtitle": "当对话与该项目绑定后，智能体的工具调用会写入项目工作目录，运行记录将在此显示。",
       "phase0_note": "对话与项目绑定将在 Phase 1 落地。",
+      "open_chat": "打开对话",
       "load_error": "项目加载失败：{msg}"
     },
     "picker": {
@@ -318,6 +319,10 @@
     "tagline": "每一句话都能指回原文。在你的文档里问任何问题 —— 答案会附上页码。",
     "ask_a_question": "在你的文档里问任何问题...",
     "ask_followup": "继续追问...",
+    "project_banner": {
+      "working_on": "当前项目：",
+      "clear": "退出项目上下文"
+    },
     "may_make_mistakes": "OpenCraig 可能出错。引用都附原文出处 —— 引用前请核对。",
     "preset": {
       "whats_here": "这里有些什么文档？",

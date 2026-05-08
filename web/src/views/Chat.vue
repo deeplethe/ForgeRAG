@@ -63,7 +63,8 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getTrace } from '@/api'
+import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace } from '@/api'
+import { FolderKanban as FolderKanbanIcon, X as XIcon } from 'lucide-vue-next'
 
 const { t } = useI18n()
 import { renderMarkdown } from '@/utils/renderMarkdown'
@@ -124,6 +125,33 @@ watch(pathFilter, v => {
   else delete q.path_filter
   router.replace({ query: q })
 })
+
+// Project binding via ?project=<id>. When set, NEW conversations
+// created here (the first send() in an unbound chat) will write
+// ``Conversation.project_id`` so subsequent agent runs land in the
+// project's workdir + run history. Resolved name is shown in the
+// header banner so users see they're "working on" a project rather
+// than firing free-floating chat. Phase 1.6 will use the same id
+// to augment the system prompt with the project's name + workdir
+// file list.
+const boundProjectId = ref(route.query.project || '')
+const boundProject = ref(null)  // {project_id, name, ...} once fetched
+watch(() => route.query.project, v => { boundProjectId.value = v || '' })
+watch(boundProjectId, async v => {
+  if (!v) { boundProject.value = null; return }
+  try { boundProject.value = await getProject(v) }
+  catch { boundProject.value = null }
+}, { immediate: true })
+
+// Clear the binding from the URL only — the conversation row, if
+// already created, keeps its project_id (un-binding the row needs
+// a PATCH the Phase-1.7 polish surfaces). This intentionally
+// matches the path-filter chip's "remove from URL" behaviour.
+function clearProjectBinding() {
+  const q = { ...route.query }
+  delete q.project
+  router.replace({ query: q })
+}
 
 // Bind module-level refs to local names for template access
 const msgs = _msgs
@@ -468,7 +496,13 @@ async function send(text) {
 
   if (!convId.value) try {
     _skipNextWatch = true  // prevent watch from resetting UI on convId change
-    const newId = (await createConversation(q.slice(0, 60))).conversation_id
+    // Pass the URL's bound project (if any) so the new conversation
+    // row carries ``project_id`` from the moment it lands. Subsequent
+    // agent runs see this on Conversation.project_id and route
+    // tool-calls into the project's workdir.
+    const newId = (
+      await createConversation(q.slice(0, 60), boundProjectId.value || null)
+    ).conversation_id
     convId.value = newId
     // Sync the URL → ``/chat?c=<id>``. Without this, a refresh
     // mid-stream loses the conversation entirely (App.vue's
@@ -1030,6 +1064,37 @@ function onTraceClick(m) {
 
     <!-- ═══════ Chat main ═══════ -->
     <div class="flex-1 flex flex-col min-w-0">
+
+      <!-- Project binding banner — visible whenever ?project=<id> is
+           in the URL. Tells the user this chat is "working on" a
+           project so the agent's tool calls (Phase 2+) will land in
+           that project's workdir. Click the project name to jump
+           into the project detail view; the small × clears the
+           binding for THIS view only (the conversation row, if it
+           exists, keeps its project_id — un-binding the row needs
+           a separate PATCH which Phase 1.7 will surface). -->
+      <div
+        v-if="boundProject"
+        class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[11.5px] text-t2"
+      >
+        <div class="flex items-center gap-2 min-w-0">
+          <FolderKanbanIcon :size="13" :stroke-width="1.75" class="text-t3 shrink-0" />
+          <span class="text-t3 shrink-0">{{ t('chat.project_banner.working_on') }}</span>
+          <button
+            class="font-medium text-t1 truncate hover:underline"
+            @click="router.push(`/workspace/${boundProject.project_id}`)"
+          >
+            {{ boundProject.name }}
+          </button>
+        </div>
+        <button
+          class="p-0.5 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors shrink-0"
+          :title="t('chat.project_banner.clear')"
+          @click="clearProjectBinding"
+        >
+          <XIcon :size="13" :stroke-width="1.75" />
+        </button>
+      </div>
 
       <!-- EMPTY STATE -->
       <div v-if="empty" class="flex-1 flex flex-col">
