@@ -221,9 +221,16 @@
     "no_match": "没有匹配 \"{query}\" 的结果"
   },
   "chat": {
-    "ask_a_question": "请输入问题...",
+    "tagline": "每一句话都能指回原文。在你的文档里问任何问题 —— 答案会附上页码。",
+    "ask_a_question": "在你的文档里问任何问题...",
     "ask_followup": "继续追问...",
-    "may_make_mistakes": "OpenCraig 可能出错，请核实重要信息。",
+    "may_make_mistakes": "OpenCraig 可能出错。引用都附原文出处 —— 引用前请核对。",
+    "preset": {
+      "whats_here": "这里有些什么文档？",
+      "recent": "总结最近上传的文档",
+      "entities": "这些文档里出现了哪些关键实体？",
+      "find_topic": "找出关于某个主题的段落"
+    },
     "stop_generation": "停止生成",
     "error_title": "生成回答失败",
     "error_generic": "Agent 循环结束于错误状态，但 provider 没有返回消息。",

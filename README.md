@@ -2,10 +2,10 @@
   <img src="web/public/text_logo_padding.png" alt="OpenCraig" height="64">
 </p>
 
-<h3 align="center">Self-hosted document intelligence with citations you can point at.</h3>
+<h3 align="center">Every claim has a coordinate.</h3>
 
 <p align="center">
-  Most RAG retrieves chunks. OpenCraig <strong>navigates document trees</strong>, <strong>traverses knowledge graphs</strong>, and <strong>cites the exact pixels</strong> behind every claim — on your servers, your LLM keys, your data.
+  Self-hosted document intelligence for the people who can't afford to misquote. Every answer cites the page + bounding box it came from — on your servers, your LLM keys, your data.
 </p>
 
 <p align="center">
@@ -29,17 +29,15 @@
 
 ## ✨ Why OpenCraig
 
-Existing RAG products force a tradeoff:
-
-| Approach | Strength | Where it breaks |
+| You're using | Good for | Where OpenCraig differs |
 |---|---|---|
-| **Naive embedding** RAG | Fast semantic search | Similarity ≠ relevance — misses exact matches and section context |
-| **GraphRAG** (Microsoft) | Cross-doc entity links | Library-only; concept skeleton without source-text grounding |
-| **LightRAG** (HKUDS) | Dual-level graph retrieval | Answers synthesized from KG summaries — high hallucination risk |
-| **PageIndex** | Tree reasoning, single-doc accuracy | Latency scales linearly with doc count — not production |
-| **Glean / Mendable / Notion AI** | Polished UX | Cloud-only; your corpus leaves your network; not for regulated industries |
+| **ChatGPT / Claude with PDF uploads** | Casual one-off Q&A on a few files | Persistent multi-document workspace, multi-user, knowledge graph, runs on your servers |
+| **Notion AI / Mendable** | SaaS-first teams who don't mind cloud | Your corpus stays local; pixel-precise citations; KG retrieval; no SaaS subscription |
+| **Glean** | Big-co enterprise search | Glean is five-figures-USD/year + needs an enterprise admin team; OpenCraig serves a department, a lab, or a single professional |
+| **AnythingLLM** | OSS self-host RAG | The closest peer — OpenCraig goes deeper on KG/tree retrieval, citation precision, and folder-grant multi-user |
+| **Hand-rolled embedding RAG** | "We have a Python team" | Skip 6 months of work: KG extraction, tree retrieval, citation pipeline, multi-user authz, recycle bin, audit log, setup wizard — already shipped |
 
-**OpenCraig fuses the technical wins, ships them as a real product, and keeps your data on your hardware.** BM25 + vector for fast pre-filter, LLM tree navigation for structural reasoning, knowledge graph for multi-hop, RRF fusion for the merge — every claim grounded back to a **page + bbox** the user can click and verify. Multi-user with folder-level permissions. Self-hostable end-to-end.
+> Compared to **GraphRAG (Microsoft)** — OpenCraig productises the multi-hop KG idea (parallel KG retrieval lane fused via RRF) instead of leaving it as a research library. Tree retrieval is influenced by **PageIndex** but reuses a tree built once at ingest, not per query.
 
 ---
 

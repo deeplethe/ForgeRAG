@@ -221,9 +221,16 @@
     "no_match": "No matches for \"{query}\""
   },
   "chat": {
-    "ask_a_question": "Ask a question...",
+    "tagline": "Every claim has a coordinate. Ask anything in your documents — we show you the page.",
+    "ask_a_question": "Ask anything about your documents...",
     "ask_followup": "Ask a follow-up...",
-    "may_make_mistakes": "OpenCraig may make mistakes. Verify important information.",
+    "may_make_mistakes": "OpenCraig may make mistakes. Citations link to the source — verify before quoting.",
+    "preset": {
+      "whats_here": "What's in this workspace?",
+      "recent": "Summarize the most recent uploads",
+      "entities": "What entities show up across these documents?",
+      "find_topic": "Find passages about a specific topic"
+    },
     "stop_generation": "Stop generation",
     "error_title": "Failed to generate a response",
     "error_generic": "The agent loop ended with an error but the provider didn't return a message.",

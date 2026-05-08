@@ -2,10 +2,10 @@
   <img src="web/public/text_logo_padding.png" alt="OpenCraig" height="64">
 </p>
 
-<h3 align="center">自托管的文档智能引擎，每一个引用都能精确指认。</h3>
+<h3 align="center">每一句话，都能指回原文。</h3>
 
 <p align="center">
-  多数 RAG 只是检索片段。OpenCraig <strong>导航文档树</strong>、<strong>遍历知识图谱</strong>、把<strong>每一个论断都精确到像素级溯源</strong> —— 跑在你自己的服务器、你自己的 LLM key、你自己的数据上。
+  自托管的文档智能引擎，为不能误引的工作场景而建。每个回答都附**页码 + bbox** 出处 —— 跑在你自己的服务器、你自己的 LLM key、你自己的数据上。
 </p>
 
 <p align="center">
@@ -29,17 +29,15 @@
 
 ## ✨ 为什么
 
-现有 RAG 产品都在迫使你做取舍：
-
-| 方案 | 优点 | 失效之处 |
+| 你正在用 | 适合什么 | OpenCraig 的不同 |
 |---|---|---|
-| **朴素 embedding** RAG | 语义召回快 | 相似 ≠ 相关；漏精确匹配和章节上下文 |
-| **GraphRAG**（微软） | 跨文档实体打通 | 仅是 library，没产品壳；只有概念骨架、缺原文锚定 |
-| **LightRAG**（HKUDS） | 双层图检索 | 答案靠 KG 摘要合成、幻觉风险高 |
-| **PageIndex** | 树推理、单文档准确率高 | 延迟随文档数线性增长，不能上生产 |
-| **Glean / Mendable / Notion AI** | 体验打磨好 | 仅 SaaS；语料离开你自己的网络；不适合监管行业 |
+| **ChatGPT / Claude 上传 PDF** | 几个文件的临时问答 | 持久多文档工作区、多用户、含知识图谱、跑在你自己服务器上 |
+| **Notion AI / Mendable** | SaaS 优先、不介意上云的小团队 | 语料留在本地；像素级引用；KG 检索；没有 SaaS 订阅 |
+| **Glean** | 大企业内部搜索 | Glean 是五位数美金/年起 + 需要企业 admin 团队；OpenCraig 服务一个部门、一个实验室、或一个独立专业人士 |
+| **AnythingLLM** | OSS 自托管 RAG | 最接近的同类 —— OpenCraig 在 KG/树检索深度、引用精度、文件夹级多用户授权上更深 |
+| **手搓 embedding RAG** | "我们有 Python 团队" | 省掉 6 个月工作：KG 抽取、树检索、引用流水线、多用户 authz、回收站、审计日志、Setup 向导 —— 都已经发布 |
 
-**OpenCraig 把技术胜势全部融合，做成完整产品，并且把数据留在你的硬件上。** BM25 + 向量做毫秒级粗排、LLM 树导航做结构推理、知识图谱做多跳推断、RRF 融合做合并 —— 每一句话最终都能 click 跳到 **页 + bbox** 校验。多用户、文件夹级权限。完全自托管。
+> 对比 **GraphRAG（微软）** —— OpenCraig 把"多跳 KG 检索"这个思路产品化（独立 KG 检索路 + RRF 融合）而不是留在研究 library。树检索受 **PageIndex** 启发，但树**只在入库时建一次**，不在每次查询时重建。
 
 ---
 

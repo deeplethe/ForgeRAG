@@ -438,107 +438,16 @@ async function enrichHistoricalCitations() {
   }
 }
 
-const presetQA = [
-  {
-    q: 'What is OpenCraig?',
-    a: `**OpenCraig** is a self-hosted document Q&A system built on one principle: **"Don't just search. Reason. And show me where."**
-
-Most RAG systems treat documents as bags of chunks — they split text into fixed-size fragments, embed them, and hope the nearest vectors contain the answer. This works for simple lookups but falls apart when questions require understanding **where** information lives within a document's structure, or **how** entities relate across multiple documents.
-
-OpenCraig takes a different approach.
-
-### Structural Tree Reasoning
-
-For every document ingested, OpenCraig builds a **hierarchical tree** with per-node summaries using LLM-based page-group analysis. Pages are grouped into windows, and an LLM infers logical section boundaries, titles, and one-sentence summaries — all in a single call. Existing TOC and heading signals are passed as hints, but the LLM makes all structural decisions, ensuring reliable trees even for flat documents without headings.
-
-At query time, BM25 and vector search first identify "hot" regions in candidate documents. These hits are **annotated onto the tree outline** as heat-map markers. An LLM then reads the annotated outline (titles + summaries + hit markers) and reasons about which sections are truly relevant and which adjacent sections may also contain answers. This "verify + expand" approach is more accurate than blind exploration because the LLM starts from evidence, not from scratch.
-
-### Knowledge Graph & Multi-hop Reasoning
-
-During ingestion, OpenCraig uses LLM-based extraction to build a knowledge graph of **entities and relations** from each chunk. At query time, this enables two retrieval modes:
-
-- **Local retrieval** — direct entity chunks + 1-hop and 2-hop neighbors in the graph
-- **Global retrieval** — keyword-based entity search across the entire graph
-
-This powers **multi-hop questions** that no keyword or vector search could answer: *"Which suppliers of Apple also supply Samsung?"* — the KG traverses Apple → supplier relations → shared entities → Samsung, discovering connections across documents.
-
-### Dual-Reasoning Retrieval
-
-Every query follows a two-phase retrieval pipeline:
-
-**Phase 1 — Fast Pre-filtering:** BM25 keyword matching and vector semantic search run in parallel to identify candidate documents and "hot" regions.
-
-**Phase 2 — Deep Reasoning:** Two reasoning paths operate on the pre-filtered results:
-
-| Path | What it does |
-|------|-------------|
-| **Tree Navigation** | LLM reads document outlines annotated with Phase 1 hits, verifies relevance and discovers adjacent sections |
-| **KG Traversal** | Graph walk — discovers entity relationships and cross-document links |
-
-Results are merged via **Reciprocal Rank Fusion (RRF)**. When tree navigation is unavailable, BM25/vector results enter RRF as fallback.
-
-### Pixel-precise Citations
-
-Every citation in OpenCraig's answers carries **page number + bounding box coordinates**. The built-in PDF viewer highlights the exact source region — not just "page 5", but the specific paragraph, table cell, or figure caption the answer was derived from.
-
-### Forge Your RAG — From Simple to Sophisticated
-
-| Level | What you get | Config effort |
-|-------|-------------|---------------|
-| **Minimal** | BM25 + vector search, SQLite, local storage | Just set an API key |
-| **Standard** | + LLM tree navigation, query understanding, reranking | Enable in web UI |
-| **Advanced** | + KG extraction, multi-hop reasoning, VLM image enrichment | Toggle features on |
-| **Production** | + PostgreSQL/pgvector, S3, Neo4j, Docker one-click deploy | Setup wizard |
-
-Every component is independently toggleable. All settings — LLM providers, retrieval parameters, parsing strategies — live in \`opencraig.yaml\`; edit and restart to change.
-
-Upload PDFs, DOCX, PPTX, XLSX, HTML, or Markdown. Ask questions. Get grounded answers with highlighted source regions you can actually verify.`,
-  },
-  {
-    q: 'vs PageIndex',
-    a: `### OpenCraig vs PageIndex
-
-Both reject the traditional "chunk-and-embed" paradigm in favor of **structure-aware reasoning** — using LLMs to navigate document hierarchies rather than relying solely on vector similarity. PageIndex (by VectifyAI) pioneered vectorless, reasoning-based RAG; OpenCraig builds on this foundation and extends it significantly.
-
-| Dimension | **OpenCraig** | **PageIndex** |
-|-----------|-------------|---------------|
-| **Core Idea** | Dual-reasoning: BM25/vector pre-filter → tree reasoning + KG | Pure reasoning-based: **no vector database**, no chunking |
-| **Retrieval** | BM25/vector pre-filter + tree + KG, fused via RRF | LLM tree navigation as the sole retrieval mechanism |
-| **Vector Search** | ✅ Pre-filter for tree navigation + fallback path | ❌ Deliberately eliminated — relies entirely on LLM reasoning |
-| **Tree Building** | LLM page-group inference with TOC/heading hints + per-node summaries | Hierarchical indexing with node-level summaries |
-| **Knowledge Graph** | Built-in entity/relation extraction + multi-hop traversal | None |
-| **Multi-hop** | Cross-document entity connections via KG graph traversal | Within-document structural navigation only |
-| **Citation** | Pixel-level bbox highlighting on PDF | Page / section level references |
-| **Deployment** | Web UI + REST API + Docker one-click deploy | Framework / SDK for integration |
-| **Performance** | Balanced latency (parallel paths, vector for speed) | Higher latency per query (LLM reasoning at every step) |
-| **Best For** | General-purpose document Q&A with full-stack deployment | Structured professional documents (finance, legal) where hierarchy is paramount |
-
-**Key insight:** PageIndex proves that LLM reasoning over document structure can outperform vector similarity (98.7% on FinanceBench). OpenCraig incorporates this insight in its tree navigation path, but takes a different approach: BM25/vector pre-filter provides "hot region" hints that make the LLM's structural reasoning faster and more accurate than cold-start exploration. Even for flat documents without headings, the LLM infers section structure during indexing, making tree navigation universally applicable.`,
-  },
-  {
-    q: 'vs GraphRAG',
-    a: `### OpenCraig vs GraphRAG (Microsoft)
-
-Both use **knowledge graphs** to enhance RAG, but their architectural philosophies are fundamentally different:
-
-| Dimension | **OpenCraig** | **GraphRAG (Microsoft)** |
-|-----------|-------------|--------------------------|
-| **Retrieval Strategy** | BM25/vector pre-filter → tree reasoning + KG, fused via RRF | Graph-centric: community summaries + entities |
-| **Role of the Graph** | One of two primary reasoning paths (alongside tree nav), fused via RRF | Core and only retrieval mechanism |
-| **Document Structure** | LLM-built hierarchical tree with per-node summaries, heat-map guided navigation | No document structure awareness |
-| **Graph Construction** | Entity + relation extraction (per chunk, incremental) | Entity + relation + community detection + hierarchical summaries |
-| **Citations** | Pixel-level bbox, pinpoints exact document region | Community summary level, no precise location |
-| **Incremental Updates** | Document-level incremental, no full index rebuild | Requires rebuilding entire graph + communities |
-| **Configurability** | Every component independently toggleable, runtime hot-reload | Relatively fixed pipeline |
-| **Resource Cost** | Enable KG on demand — zero cost if unused | Must build full graph + community summaries upfront |
-
-**Key Differences:**
-
-1. **Complementary vs Dependent** — OpenCraig's graph is one of two reasoning paths (alongside tree navigation); turn it off and retrieval still works via tree + BM25/vector fallback. GraphRAG's graph is the core; no graph, no retrieval
-2. **Structure + Semantics** — OpenCraig understands both document structure (tree) and semantic relations (graph); GraphRAG has only the semantic graph
-3. **Precise Citations** — OpenCraig traces back to the exact location in a document (pixel-level); GraphRAG traces to community summaries
-4. **Opt-in graph construction** — OpenCraig's KG extraction is off by default (toggle \`retrieval.kg_extraction.enabled\`); GraphRAG requires full graph construction before any query`,
-  },
+// Empty-state suggestion chips. Each entry is a translation key
+// under "chat.preset.*". Clicking a chip fires the question
+// straight into the agent loop — no more canned essays, the
+// real retrieval/KG/LLM stack answers exactly as it would for
+// any user-typed question.
+const presetChipKeys = [
+  'whats_here',
+  'recent',
+  'entities',
+  'find_topic',
 ]
 
 async function send(text) {
@@ -569,32 +478,6 @@ async function send(text) {
     setActiveConvIdNoHistory(newId)
     loadConvs()  // refresh sidebar immediately so the new conversation is visible
   } catch { _skipNextWatch = false }
-
-  // Check if this is a preset question — simulate fast streaming + persist
-  const preset = presetQA.find(p => p.q === q)
-  if (preset) {
-    const myGenId = ++_presetGenId
-    streaming.value = true; streamText.value = ''
-    scroll()
-    const text = preset.a
-    const step = 8
-    for (let i = 0; i < text.length; i += step) {
-      if (myGenId !== _presetGenId) return  // cancelled by navigation
-      streamText.value = text.slice(0, i + step)
-      scroll()
-      await new Promise(r => setTimeout(r, 18))
-    }
-    if (myGenId !== _presetGenId) return  // cancelled
-    streamText.value = ''
-    msgs.value.push({ role: 'assistant', content: text, citations: null })
-    streaming.value = false
-    scroll()
-    // Preset answers don't go through the agent loop — the backend
-    // hasn't seen them. Skip persistence; they re-render from
-    // ``presetQA`` on reload anyway.
-    loadConvs()
-    return
-  }
 
   // (streaming.value, streamText, streamTrace, startTimer already
   // initialised at the top of send() via the optimistic-UI block.)
@@ -1155,11 +1038,11 @@ function onTraceClick(m) {
           <div class="max-w-2xl mx-auto text-center">
             <img src="/craig.png" alt="" class="w-20 h-20 rounded-full mx-auto mb-3" />
             <h1 class="wordmark text-[32px] mb-2">OpenCraig</h1>
-            <p class="text-sm text-t3 mb-8">Multi-path fusion · Tree reasoning · Knowledge graph · Pixel-precise citations</p>
+            <p class="text-sm text-t3 mb-8 max-w-md mx-auto leading-relaxed">{{ t('chat.tagline') }}</p>
             <div class="flex flex-wrap justify-center gap-2 mb-10">
-              <button v-for="p in presetQA" :key="p.q" @click="send(p.q)"
+              <button v-for="key in presetChipKeys" :key="key" @click="send(t('chat.preset.' + key))"
                 class="px-4 py-2 rounded-full border border-line text-xs text-t2 hover:bg-bg3 hover:border-line2 transition-colors"
-              >{{ p.q }}</button>
+              >{{ t('chat.preset.' + key) }}</button>
             </div>
           </div>
         </div>
