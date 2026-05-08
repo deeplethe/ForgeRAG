@@ -27,11 +27,29 @@ ijson>=3.5
 # ── Auth (argon2id for password hashing) ─────────────────────────────────────
 argon2-cffi>=23.1
 
-# ── MCP server (Hermes Agent inside the sandbox container reaches our
-#    domain tools — search / KG / library / artifacts — via the MCP
-#    protocol; backend hosts the server at /api/v1/mcp). Pulls in
-#    sse-starlette + httpx-sse + pyjwt as transitive deps.
+# ── MCP server (Hermes Agent reaches our domain tools — search /
+#    KG / library / artifacts — via the MCP protocol; backend hosts
+#    the server at /api/v1/mcp). Pulls in sse-starlette + httpx-sse
+#    + pyjwt as transitive deps.
 mcp>=1.27
+
+# ── Hermes Agent (NousResearch, MIT) — used IN-PROCESS as the agent
+#    runtime via ``api/agent/hermes_runtime.HermesRuntime`` (not as
+#    a CLI subprocess for B-MVP — its quiet mode emits only the final
+#    text, no machine-readable event stream). Built-in toolsets are
+#    hard-disabled at the AIAgent constructor level so it can't touch
+#    our backend's filesystem; tools come exclusively from our MCP
+#    server. Container / sandbox mode for code execution lands in a
+#    later wave (Wave 2.5b).
+#
+#    NB: hermes-agent's hard deps include ``firecrawl-py``,
+#    ``parallel-web``, ``fal-client``, ``edge-tts``, ``exa-py`` —
+#    none of which we actually use. ~50–100 MB extra. Acceptable
+#    cost for not maintaining our own agent loop. If the bloat ever
+#    becomes a problem, we'd vendor just the ``run_agent`` module.
+#
+#    Pinned to the version we tested against; bump deliberately.
+hermes-agent==0.10.0
 
 # ── Observability (OpenTelemetry) ────────────────────────────────────────────
 # SDK + OTLP HTTP exporter (so users can point at Langfuse / Jaeger / etc.)
