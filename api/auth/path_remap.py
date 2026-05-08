@@ -169,9 +169,22 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
     Excludes nested grants (if user has both /a and /a/b, only
     /a is returned). Excludes trashed folders.
 
-    Auth-disabled mode short-circuits to "every top-level folder
-    of /": the dev synthetic admin sees every space.
+    Two role-driven shortcuts:
+
+      * Auth disabled — every non-system top-level folder is a
+        Space. Single-user dev mode.
+      * Admin — same shape (every non-system top-level folder is
+        a Space) PLUS the admin's personal ``/users/<username>``
+        marked ``is_personal=True``. Admins manage the global
+        tree, so they see it as their workspace; the personal
+        Space is just one entry alongside.
+
+    Regular users follow the strict grant-walking path below:
+    only folders whose ``shared_with`` lists them get yielded.
     """
+    from persistence.models import AuthUser
+    from persistence.models import Folder as _F
+
     cfg_auth = getattr(state.cfg, "auth", None)
     auth_disabled = cfg_auth is None or not getattr(cfg_auth, "enabled", False)
     user_id = principal.user_id
@@ -179,9 +192,7 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
     with state.store.transaction() as sess:
         if auth_disabled:
             # Every direct child of root becomes a space. System
-            # folders (__trash__) excluded.
-            from persistence.models import Folder as _F
-
+            # folders (__trash__, /users) excluded.
             rows = sess.execute(
                 select(_F.folder_id, _F.path).where(
                     _F.parent_id == "__root__",
@@ -198,7 +209,49 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
                 )
             return
 
-        # Auth-enabled: walk every folder, find ones where the
+        user = sess.get(AuthUser, user_id) if user_id else None
+
+        # Admin role bypass: admins manage the workspace, so they
+        # see every non-system top-level folder as a Space — same
+        # behaviour as auth-disabled, plus the personal Space
+        # tagged so the UI can land them there by default.
+        if user is not None and user.role == "admin":
+            personal_path = (
+                f"/users/{user.username}" if user.username else None
+            )
+            rows = sess.execute(
+                select(_F.folder_id, _F.path).where(
+                    _F.parent_id == "__root__",
+                    _F.is_system.is_(False),
+                    _F.trashed_metadata.is_(None),
+                )
+            ).all()
+            for folder_id, path in rows:
+                yield GrantRoot(
+                    folder_id=folder_id,
+                    abs_path=path,
+                    role="rw",
+                    is_personal=False,
+                )
+            # Personal Space lives under /users/ (system folder, so
+            # excluded above) — yield it separately if it exists.
+            if personal_path:
+                row = sess.execute(
+                    select(_F.folder_id, _F.path).where(
+                        _F.path == personal_path,
+                        _F.trashed_metadata.is_(None),
+                    )
+                ).one_or_none()
+                if row is not None:
+                    yield GrantRoot(
+                        folder_id=row[0],
+                        abs_path=row[1],
+                        role="rw",
+                        is_personal=True,
+                    )
+            return
+
+        # Regular user: walk every folder, find ones where the
         # user has a direct ``shared_with`` grant. Then dedup
         # nested grants — keep only ancestors when both ancestor
         # and descendant are granted.
@@ -233,9 +286,8 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
         # row instead of pattern-matching on path so the literal
         # /users/ prefix isn't load-bearing — admins could
         # rename the parent folder later without breaking this.
-        from persistence.models import AuthUser
-
-        user = sess.get(AuthUser, user_id) if user_id else None
+        # ``user`` was already fetched at the top of this block
+        # for the role check.
         personal_path = (
             f"/users/{user.username}" if user and user.username else None
         )
