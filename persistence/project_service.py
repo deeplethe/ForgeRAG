@@ -427,18 +427,24 @@ class ProjectService:
         if existing is None:
             raise ProjectMemberNotFound(user_id)
 
-        members = list(proj.shared_with or [])
+        # Build a fresh list of fresh dicts so SQLAlchemy's
+        # attribute-history detection actually fires. In-place
+        # ``m["role"] = role`` on the existing dict-inside-list
+        # reads as "no change" against most JSON column type
+        # implementations and the demotion silently no-ops on the
+        # next flush. (Mirrors the functional builder in
+        # ``folder_share_service._set_grant``.)
         prior_role: str | None = None
-        for m in members:
-            if (m or {}).get("user_id") == user_id:
+        new_members: list[dict] = []
+        for m in proj.shared_with or []:
+            mid = (m or {}).get("user_id")
+            if mid == user_id:
                 prior_role = m.get("role")
-                m["role"] = role
-                break
-        else:
-            members.append({"user_id": user_id, "role": role})
-        # SQLAlchemy doesn't track in-place JSON mutations across all
-        # backends — reassigning the column makes the change visible.
-        proj.shared_with = members
+                continue  # drop; we re-append at the end
+            if mid:
+                new_members.append({"user_id": mid, "role": m.get("role", "r")})
+        new_members.append({"user_id": user_id, "role": role})
+        proj.shared_with = new_members
         self._audit(
             "project.update_role" if prior_role else "project.share",
             project_id,
