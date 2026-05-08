@@ -425,12 +425,13 @@ class SandboxManager:
     # ── Internals ────────────────────────────────────────────────
 
     def _lock_for(self, user_id: str) -> threading.Lock:
-        with self._table_lock:
-            lock = self._user_locks.get(user_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._user_locks[user_id] = lock
-            return lock
+        # CPython's ``dict.setdefault`` is atomic for the simple
+        # "get or create" pattern, so we don't need to acquire
+        # ``_table_lock`` here. Doing so would serialize all users
+        # through this method (every ``ensure_container_for_user``
+        # passes through it) — a real bottleneck under multi-user
+        # load that the audit (May 2026) flagged. Audit finding #4.
+        return self._user_locks.setdefault(user_id, threading.Lock())
 
     def _touch(self, user_id: str) -> None:
         h = self._containers.get(user_id)

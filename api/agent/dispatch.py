@@ -121,6 +121,15 @@ class ToolContext:
     # surfaced through the SSE stream to the frontend trace.
     tool_calls_log: list[dict] = field(default_factory=list)
 
+    # Per-turn cache for ``_list_owned_project_ids`` (Phase 2 audit
+    # finding #3). Same user message often triggers multiple
+    # python_exec / bash_exec / import_from_library calls; without
+    # caching each one re-queries the projects table. ToolContext
+    # is built once per turn and discarded after — no staleness
+    # risk from caching across turns. Default ``None`` = "not
+    # populated yet"; first lookup fills it.
+    owned_project_ids_cache: tuple[str, ...] | None = None
+
 
 def build_tool_context(
     state: AppState,

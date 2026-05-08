@@ -1138,13 +1138,21 @@ def _truncate_for_llm(text: str, limit: int = _PYTHON_EXEC_OUTPUT_CHARS_LIMIT) -
     )
 
 
-def _list_owned_project_ids(state, user_id: str) -> tuple[str, ...]:
+def _list_owned_project_ids(
+    state, user_id: str, *, ctx: "ToolContext | None" = None
+) -> tuple[str, ...]:
     """Project IDs owned by the user, for the SandboxManager to
     bind-mount at container start. Owned only — viewer-shared
     projects don't get mounted because the agent in this user's
     container would write into someone else's workdir, which is
     forbidden by the read-only-share contract.
+
+    Cached on the ToolContext (per-turn lifetime) — same chat turn
+    often triggers multiple python_exec / bash_exec / import calls,
+    each used to re-query the DB. Audit fix #3.
     """
+    if ctx is not None and ctx.owned_project_ids_cache is not None:
+        return ctx.owned_project_ids_cache
     try:
         from sqlalchemy import select
 
@@ -1159,7 +1167,10 @@ def _list_owned_project_ids(state, user_id: str) -> tuple[str, ...]:
         for p in rows:
             if p.trashed_metadata is None:
                 out.append(p.project_id)
-    return tuple(out)
+    cached = tuple(out)
+    if ctx is not None:
+        ctx.owned_project_ids_cache = cached
+    return cached
 
 
 def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
@@ -1206,7 +1217,7 @@ def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
     # subsequent calls within the same chat hit
     # SandboxManager.ensure_container's reuse path so the DB query
     # is the only repeated cost.
-    owned = _list_owned_project_ids(ctx.state, user_id)
+    owned = _list_owned_project_ids(ctx.state, user_id, ctx=ctx)
     if project_id not in owned:
         # Non-owner can chat ABOUT a project (viewer-share / Phase 1.5)
         # but must not run code in someone else's container — our
@@ -1711,7 +1722,7 @@ def _handle_bash_exec(params: dict, ctx: ToolContext) -> dict:
     # python_exec). The route's two-gate authz handles this on the
     # HTTP path; we re-check at the tool boundary so the LLM gets a
     # clean refusal.
-    owned = _list_owned_project_ids(ctx.state, user_id)
+    owned = _list_owned_project_ids(ctx.state, user_id, ctx=ctx)
     if project_id not in owned:
         return DispatchError(
             error=(
