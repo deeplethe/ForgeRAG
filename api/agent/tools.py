@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -1101,6 +1102,230 @@ _GRAPH_EXPLORE_SPEC = ToolSpec(
 )
 
 
+# ---------------------------------------------------------------------------
+# Tool: python_exec  (Phase 2.4)
+# ---------------------------------------------------------------------------
+#
+# The first agent tool that runs CODE (not just retrieval). Routes
+# to the project's per-(user, project) ipykernel via KernelManager.
+# Available only in chats bound to a project — ``tools_for(ctx)``
+# in ``api/agent/dispatch.py`` filters this out when ctx.project_id
+# is None or ctx.kernel_manager is None, so the LLM never sees a
+# tool it can't use.
+
+# Cap how much output the LLM sees per call. Long DataFrames printed
+# via ``print(df)`` would otherwise blow the context budget. The full
+# output streams to the user UI (Phase 2.5 rich-output rendering)
+# unaffected; this only trims the LLM-facing summary.
+_PYTHON_EXEC_OUTPUT_CHARS_LIMIT = 5000
+# Default per-call timeout. Agent loop's outer ``max_wall_time_s``
+# already governs total budget; this is the inner cap.
+_PYTHON_EXEC_DEFAULT_TIMEOUT = 30.0
+_PYTHON_EXEC_MAX_TIMEOUT = 120.0
+
+
+def _truncate_for_llm(text: str, limit: int = _PYTHON_EXEC_OUTPUT_CHARS_LIMIT) -> str:
+    """Cap output at ``limit`` chars; if overflowing, keep the head
+    plus a clear marker. The user UI sees the full string; only the
+    LLM's view is trimmed."""
+    if not text or len(text) <= limit:
+        return text
+    return (
+        text[: limit - 80]
+        + f"\n\n[truncated — full output is {len(text):,} chars, "
+        f"shown to user UI in full]"
+    )
+
+
+def _list_owned_project_ids(state, user_id: str) -> tuple[str, ...]:
+    """Project IDs owned by the user, for the SandboxManager to
+    bind-mount at container start. Owned only — viewer-shared
+    projects don't get mounted because the agent in this user's
+    container would write into someone else's workdir, which is
+    forbidden by the read-only-share contract.
+    """
+    try:
+        from sqlalchemy import select
+
+        from persistence.models import Project
+    except Exception:
+        return ()
+    out: list[str] = []
+    with state.store.transaction() as sess:
+        rows = sess.execute(
+            select(Project).where(Project.owner_user_id == user_id)
+        ).scalars()
+        for p in rows:
+            if p.trashed_metadata is None:
+                out.append(p.project_id)
+    return tuple(out)
+
+
+def _handle_python_exec(params: dict, ctx: ToolContext) -> dict:
+    code = params.get("code") or ""
+    if not isinstance(code, str) or not code.strip():
+        return DispatchError(
+            error="python_exec needs a non-empty 'code' string",
+            tool="python_exec",
+        ).to_result()
+
+    timeout = params.get("timeout", _PYTHON_EXEC_DEFAULT_TIMEOUT)
+    try:
+        timeout = float(timeout)
+    except Exception:
+        timeout = _PYTHON_EXEC_DEFAULT_TIMEOUT
+    timeout = min(max(timeout, 1.0), _PYTHON_EXEC_MAX_TIMEOUT)
+
+    # Two preconditions tools_for(ctx) already enforces — but the
+    # dispatch path can be called directly (tests, future programmatic
+    # callers), so we check defensively.
+    if ctx.project_id is None:
+        return DispatchError(
+            error=(
+                "python_exec is available only in chats bound to a project. "
+                "Open the chat from a Workspace project to use this tool."
+            ),
+            tool="python_exec",
+        ).to_result()
+    if ctx.kernel_manager is None:
+        return DispatchError(
+            error=(
+                "python_exec is not available — the operator hasn't enabled "
+                "the agent sandbox. Ask the admin to set up Docker + the "
+                "OpenCraig sandbox image."
+            ),
+            tool="python_exec",
+        ).to_result()
+
+    user_id = ctx.principal.user_id
+    project_id = ctx.project_id
+
+    # SandboxManager needs the user's owned projects so per-project
+    # workdirs land at /workdir/<pid>/. Computed once per call;
+    # subsequent calls within the same chat hit
+    # SandboxManager.ensure_container's reuse path so the DB query
+    # is the only repeated cost.
+    owned = _list_owned_project_ids(ctx.state, user_id)
+    if project_id not in owned:
+        # Non-owner can chat ABOUT a project (viewer-share / Phase 1.5)
+        # but must not run code in someone else's container — our
+        # threat model says only the owner runs agents. Surface a
+        # clean error rather than starting a kernel that would write
+        # outputs into the wrong user's workdir.
+        return DispatchError(
+            error=(
+                "python_exec is available only to the project's owner. "
+                "Viewers can read but not run code."
+            ),
+            tool="python_exec",
+        ).to_result()
+
+    try:
+        result = ctx.kernel_manager.execute(
+            user_id,
+            project_id,
+            code,
+            timeout=timeout,
+            owned_project_ids=owned,
+        )
+    except Exception as e:
+        log.exception(
+            "python_exec: kernel execute failed user=%s project=%s",
+            user_id, project_id,
+        )
+        return DispatchError(
+            error=(
+                f"python_exec failed to start or run: {type(e).__name__}. "
+                "If this persists, the sandbox may be down — try a different "
+                "approach, or ask the user to retry."
+            ),
+            tool="python_exec",
+        ).to_result()
+
+    # Compose the LLM-facing summary. The frontend gets richer data
+    # via the trace SSE (Phase 2.5 rendering); this is what the LLM
+    # sees in its tool_result block. Keep it text-shaped so the LLM
+    # can quote pieces back to the user.
+    out: dict[str, Any] = {
+        "stdout": _truncate_for_llm(result.stdout),
+        "stderr": _truncate_for_llm(result.stderr),
+        "execution_count": result.execution_count,
+        "wall_ms": result.wall_ms,
+        "timed_out": result.timed_out,
+        # Number of rich outputs (figures / DataFrame HTML / etc.)
+        # the user sees; the LLM treats this as a hint that "I made
+        # something visual; tell the user about it" rather than
+        # trying to inline-quote binary data.
+        "rich_outputs_count": len(result.rich_outputs),
+    }
+    if result.error is not None:
+        # Compress the traceback to last few frames so a NameError
+        # doesn't dump 80 lines of Jupyter traceback into the LLM
+        # context.
+        tb = result.error.get("traceback") or []
+        out["error"] = {
+            "ename": result.error.get("ename", ""),
+            "evalue": result.error.get("evalue", ""),
+            "traceback_short": "\n".join(tb[-6:]) if tb else "",
+        }
+    return out
+
+
+_PYTHON_EXEC_SPEC = ToolSpec(
+    name="python_exec",
+    description=(
+        "Run Python code in this project's persistent ipykernel. State "
+        "(variables, imports, opened files) PERSISTS across calls within "
+        "the same chat — define `df = pd.read_csv(...)` once and refer "
+        "to `df` in subsequent calls.\n\n"
+        "The kernel runs in a Docker container with the project's "
+        "workdir bind-mounted at `/workdir/<project_id>/` (already cd'd "
+        "into it). The conventional layout is `inputs/` for source data, "
+        "`outputs/` for files you want kept, `scratch/` for intermediate "
+        "results.\n\n"
+        "PRE-INSTALLED libraries: pandas, numpy, scipy, scikit-learn, "
+        "matplotlib, seaborn, plotly, openpyxl, pdfplumber, pymupdf, "
+        "duckdb, requests, beautifulsoup4. (R / Julia / other languages "
+        "land via install_runtime in a follow-up phase.)\n\n"
+        "OUTPUT: stdout / stderr / execution_count / timed_out flag. "
+        "Long output is truncated for your view; the user sees the full "
+        "thing in the chat trace. Charts produced via matplotlib / plotly "
+        "render in the user's UI automatically — you don't need to "
+        "extract or describe the bytes.\n\n"
+        "TIMEOUT default 30s, max 120s. For longer ops, use "
+        "background-friendly idioms (write to disk, return early, then "
+        "describe the layout) rather than blocking the whole turn.\n\n"
+        "ONLY available in chats bound to a Workspace project — if you "
+        "see this tool, it's available; if not, the chat is plain Q&A and "
+        "you can't run code."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": (
+                    "Python source to execute. Can be multi-line; "
+                    "`print()` and the last expression's value both surface "
+                    "in the result. Use absolute paths under "
+                    "`/workdir/<project_id>/` when reading project files."
+                ),
+            },
+            "timeout": {
+                "type": "number",
+                "description": (
+                    f"Per-call timeout in seconds. Default "
+                    f"{_PYTHON_EXEC_DEFAULT_TIMEOUT}, max "
+                    f"{_PYTHON_EXEC_MAX_TIMEOUT}."
+                ),
+            },
+        },
+        "required": ["code"],
+    },
+    handler=_handle_python_exec,
+)
+
+
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     # ``search_bm25`` (``_BM25_SPEC``) intentionally OMITTED from
     # the agent's tool registry pending two fixes:
@@ -1128,4 +1353,7 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _GRAPH_EXPLORE_SPEC.name: _GRAPH_EXPLORE_SPEC,
     _WEB_SEARCH_SPEC.name: _WEB_SEARCH_SPEC,
     _RERANK_SPEC.name: _RERANK_SPEC,
+    # Project-aware tools — filtered out by ``tools_for(ctx)`` when
+    # the conversation isn't bound to a project / sandbox isn't enabled.
+    _PYTHON_EXEC_SPEC.name: _PYTHON_EXEC_SPEC,
 }

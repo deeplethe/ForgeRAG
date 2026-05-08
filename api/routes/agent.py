@@ -141,6 +141,24 @@ def agent_chat(
     """SSE stream of agent loop events. See module docstring for
     the wire format + event vocabulary.
     """
+    # If the request carries a conversation_id, resolve any project
+    # binding BEFORE we build the tool context — Phase 2.4's
+    # ``python_exec`` (and Phase 2.6+'s ``import_from_library`` /
+    # ``bash_exec``) need ``ctx.project_id`` to route into the right
+    # kernel + workdir, and the system-prompt augmentation already
+    # uses the same project_id elsewhere.
+    bound_project_id: str | None = None
+    if body.conversation_id is not None:
+        try:
+            conv_row = state.store.get_conversation(body.conversation_id)
+            if conv_row is not None:
+                bound_project_id = conv_row.get("project_id")
+        except Exception:
+            log.exception(
+                "agent: failed to resolve conversation project_id; "
+                "falling back to plain Q&A binding"
+            )
+
     # Resolve scope synchronously — UnauthorizedPath surfaces as 403
     # BEFORE we open the stream so the client gets a clean HTTP error
     # instead of a malformed event stream.
@@ -149,6 +167,7 @@ def agent_chat(
             state,
             principal,
             requested_path_filters=body.path_filters,
+            project_id=bound_project_id,
         )
     except UnauthorizedPath as e:
         raise HTTPException(

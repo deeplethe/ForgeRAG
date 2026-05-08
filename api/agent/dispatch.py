@@ -97,6 +97,21 @@ class ToolContext:
     """Always exclude these — doc may be in user's accessible set
     but be currently trashed."""
 
+    # ── Phase 2: agent-workspace bindings (Phase 2.4 wires them) ──
+    # When the conversation is bound to a project (Phase 1.5),
+    # ``project_id`` carries the binding through to project-aware
+    # tools (``python_exec`` / ``import_from_library``). None means
+    # "plain Q&A chat" — those tools are filtered out of the
+    # offered tool list by ``tools_for(ctx)``.
+    project_id: str | None = None
+
+    # ``kernel_manager`` is the live ``KernelManager`` from
+    # ``state.kernel_manager``, hoisted onto ctx for tool handlers
+    # that don't want to import the type just to thread it through.
+    # None when the operator hasn't enabled the agent sandbox
+    # (default until Phase 2.9 wires it into AppState).
+    kernel_manager: Any | None = None
+
     # Citation accumulator — chunk_id → chunk record. Populated by
     # every tool that returns chunks; the agent's final ``done()``
     # picks from this pool by chunk_id.
@@ -112,6 +127,7 @@ def build_tool_context(
     principal: AuthenticatedPrincipal,
     *,
     requested_path_filters: list[str] | None = None,
+    project_id: str | None = None,
 ) -> ToolContext:
     """Resolve scope + accessible set + trashed set for one query.
 
@@ -167,6 +183,8 @@ def build_tool_context(
             path_filters=[],
             allowed_doc_ids=set(),
             trashed_doc_ids=set(),
+            project_id=project_id,
+            kernel_manager=getattr(state, "kernel_manager", None),
         )
 
     scope = resolver.run({"_path_filters": raw_filters} if raw_filters else None)
@@ -185,7 +203,33 @@ def build_tool_context(
         path_filters=scope.path_prefixes or None,
         allowed_doc_ids=scope.allowed_doc_ids,
         trashed_doc_ids=scope.trashed_doc_ids,
+        project_id=project_id,
+        kernel_manager=getattr(state, "kernel_manager", None),
     )
+
+
+def tools_for(ctx: ToolContext) -> list:
+    """Return the subset of TOOL_REGISTRY entries relevant for this
+    context.
+
+    Tools that need a project workdir (``python_exec``,
+    ``import_from_library`` once Phase 2.6 ships, etc.) are dropped
+    when the conversation isn't bound to a project OR the operator
+    hasn't enabled the agent sandbox. The LLM then doesn't see them
+    in its tool list and can't try to call them — cleaner UX than
+    surfacing "tool not available" errors mid-loop.
+    """
+    from .tools import TOOL_REGISTRY
+
+    project_aware = {"python_exec", "import_from_library", "bash_exec"}
+    out = []
+    for name, spec in TOOL_REGISTRY.items():
+        if name in project_aware and (
+            ctx.project_id is None or ctx.kernel_manager is None
+        ):
+            continue
+        out.append(spec)
+    return out
 
 
 def dispatch(tool_name: str, params: dict, ctx: ToolContext) -> dict:

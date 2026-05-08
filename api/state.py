@@ -343,6 +343,17 @@ class AppState:
 
         self.authz = AuthorizationService(self.store)
 
+        # ── Phase 2 agent sandbox (Phase 2.9 wires lifecycle) ──
+        # ``sandbox`` is the per-user Docker container manager;
+        # ``kernel_manager`` is the per-(user, project) ipykernel
+        # driver layered on top. Both stay None until 2.9 wires
+        # the lifecycle into AppState.connect / shutdown — Phase
+        # 2.4's python_exec tool spec checks ``kernel_manager``
+        # presence and is filtered out of the agent's tool list
+        # by ``tools_for(ctx)`` when None.
+        self.sandbox = None
+        self.kernel_manager = None
+
     # ------------------------------------------------------------------
     def _ensure_indices(self) -> None:
         """Build the BM25 + filename BM25 indices on first need.

@@ -63,7 +63,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from .dispatch import ToolContext, dispatch, enrich_citations
+from .dispatch import ToolContext, dispatch, enrich_citations, tools_for
 from .llm import LLMClient, LLMResponse, ToolCall
 from .prompts import SYSTEM_PROMPT
 from .tools import TOOL_REGISTRY
@@ -200,7 +200,11 @@ class AgentLoop:
             messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
-        tools = [spec.to_openai_tool() for spec in TOOL_REGISTRY.values()]
+        # ``tools_for(ctx)`` filters project-aware tools (python_exec /
+        # bash_exec / import_from_library) out of the offered list when
+        # the conversation isn't bound to a project — cleaner than
+        # leaving them visible and erroring on call.
+        tools = [spec.to_openai_tool() for spec in tools_for(ctx)]
 
         iterations = 0
         tool_calls_count = 0
