@@ -57,7 +57,26 @@ _MAX_DESC_LEN = 4096
 # Soft-conventional subdirs the agent's prompt expects to find.
 # Created on every project; the agent is encouraged but NOT forced
 # to keep things in the right bucket.
-_DEFAULT_SUBDIRS = ("inputs", "outputs", "scratch", ".agent-state")
+#
+# ``.trash`` is system-managed: ``ProjectFileService.soft_delete``
+# moves files in, restore / purge moves them out. Hidden from the
+# Workspace UI's file list — the trash view reads it directly.
+# ``.agent-state`` holds plan checkpoints + the trash index json
+# + retry counters; also hidden from the file list. Both are
+# refused as direct write targets by the file service's path
+# resolver.
+_DEFAULT_SUBDIRS = (
+    "inputs",
+    "outputs",
+    "scratch",
+    ".agent-state",
+    ".trash",
+)
+
+# Path inside the workdir where ``ProjectFileService`` keeps its
+# soft-delete index. Atomically rewritten on every soft-delete /
+# restore / purge.
+TRASH_INDEX_REL_PATH = ".agent-state/trash.json"
 
 # README emitted into a fresh project workdir so an operator
 # hand-inspecting the directory understands what they're looking at.
@@ -536,11 +555,14 @@ class ProjectService:
         name: str,
         description: str,
     ) -> Path:
-        """Create the on-disk directory tree + README.
+        """Create the on-disk directory tree + README + empty trash index.
 
         Idempotent: re-running on an existing workdir will not error
-        and will not overwrite a hand-edited README.
+        and will not overwrite a hand-edited README. The trash index
+        is initialized to ``[]`` only if the file is missing.
         """
+        import json
+
         workdir = self.workdir_for(project_id)
         workdir.mkdir(parents=True, exist_ok=True)
         for sub in _DEFAULT_SUBDIRS:
@@ -554,6 +576,9 @@ class ProjectService:
                 ),
                 encoding="utf-8",
             )
+        trash_index = workdir / TRASH_INDEX_REL_PATH
+        if not trash_index.exists():
+            trash_index.write_text("[]", encoding="utf-8")
         return workdir
 
     def _audit(

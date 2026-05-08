@@ -26,3 +26,17 @@ class AgentConfig(BaseModel):
     # S3 / OSS, so the agent surface stays local even when figure
     # storage is remote.
     projects_root: str = "./storage/projects"
+
+    # Hard upper bound on the total size of a project's workdir
+    # (uploads + agent outputs + trash combined). Default ~10 GiB
+    # is generous enough for "drop a few datasets and produce some
+    # charts" and small enough that a buggy `python_exec` writing
+    # in a loop doesn't fill the host disk before the next
+    # heartbeat. Set to 0 to disable the check (not recommended).
+    max_project_workdir_bytes: int = 10 * 1024 * 1024 * 1024  # 10 GiB
+
+    # Soft upper bound on a single uploaded file (multipart upload
+    # via the Workspace UI). The Library pipeline already has its
+    # own max via ``files.max_bytes``; this is the project-workdir
+    # equivalent. Defaults to 500 MiB to mirror the Library default.
+    max_workdir_upload_bytes: int = 500 * 1024 * 1024  # 500 MiB
