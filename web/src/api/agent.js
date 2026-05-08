@@ -1,29 +1,42 @@
 /**
- * Agent chat — POST /api/v1/agent/chat (SSE)
+ * Agent chat — SSE-streamed agentic chat.
  *
- * The post-cutover replacement for the old /api/v1/query route.
- * Returns a Server-Sent Events stream of the agent loop's
- * structured events so the UI can render tool calls live.
+ * Two backends speak the same wire format and can be toggled
+ * via the `VITE_AGENT_BACKEND` env var:
  *
- * Event vocabulary (each event is a `data: <json>\n\n` block,
- * the `type` field on the JSON dict is the discriminator — there
- * is no `event:` line, unlike the old query stream):
+ *   - 'legacy'  → POST /api/v1/agent/chat       (handcrafted loop.py)
+ *   - 'hermes'  → POST /api/v1/agent/hermes-chat (Hermes Agent runtime)
  *
- *   { type: 'agent.turn_start', turn, synthesis_only? }
+ * Default is 'hermes' (B-MVP). Wave 3 will delete the legacy path
+ * + this toggle once the Hermes route has bake time in production.
+ *
+ * Event vocabulary (each event is a `data: <json>\n\n` block, the
+ * `type` field on the JSON dict is the discriminator — both routes
+ * emit identical envelopes):
+ *
+ *   { type: 'agent.turn_start', turn, run_id? }
+ *   { type: 'agent.thought',    text }                  (Hermes-only, optional)
  *   { type: 'tool.call_start',  id, tool, params }
  *   { type: 'tool.call_end',    id, tool, latency_ms, result_summary }
- *   { type: 'agent.turn_end',   turn, tools_called, decision }
- *   { type: 'answer',           text }
- *   { type: 'done',             stop_reason, citations[],
- *                               iterations, tool_calls_count,
- *                               total_latency_ms, tokens_in, tokens_out }
+ *   { type: 'answer.delta',     text }                  (token stream)
+ *   { type: 'agent.turn_end',   turn, run_id? }
+ *   { type: 'done',             stop_reason, total_latency_ms,
+ *                               final_text?, error?,
+ *                               citations[]?, iterations?, ... }
  *
  * `done` is always the last event — clients should close on it.
  *
  * Conversation persistence: pass `conversationId` and the backend
  * loads prior turns from the messages table + writes the new turn
  * after the stream closes. No frontend-side addMessage needed.
+ *
+ * Body schema differs slightly between backends (legacy expects
+ * `message`, Hermes expects `query` + optional `model`); we
+ * normalise client-side so callers pass `message` to either.
  */
+
+const AGENT_BACKEND =
+  (import.meta.env.VITE_AGENT_BACKEND || 'hermes').toLowerCase()
 
 /**
  * Stream agent chat events.
@@ -42,15 +55,25 @@ export async function* agentChatStream({
   signal,
 }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
-  const res = await fetch(`${BASE}/api/v1/agent/chat`, {
+
+  // Pick the backend route + body shape based on the build-time
+  // toggle. The Hermes route's body uses `query` instead of
+  // `message` and doesn't need `path_filters` (path-filter authz
+  // already runs server-side per request via the principal /
+  // ToolContext, not via an explicit body field).
+  const useHermes = AGENT_BACKEND === 'hermes'
+  const url = useHermes
+    ? `${BASE}/api/v1/agent/hermes-chat`
+    : `${BASE}/api/v1/agent/chat`
+  const body = useHermes
+    ? { query: message, conversation_id: conversationId }
+    : { message, conversation_id: conversationId, path_filters: pathFilters }
+
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({
-      message,
-      conversation_id: conversationId,
-      path_filters: pathFilters,
-    }),
+    body: JSON.stringify(body),
     signal,
   })
 

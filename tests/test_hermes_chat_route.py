@@ -138,21 +138,19 @@ def stub_stream(monkeypatch):
 
 
 def _parse_sse(text: str) -> list[tuple[str, dict]]:
-    """Parse ``event: X\\ndata: {...}\\n\\n`` blocks into (name, payload) tuples."""
+    """Parse ``data: {...}\\n\\n`` blocks where the JSON dict
+    carries a ``type`` discriminator. Matches the legacy /agent/chat
+    wire format — see api/routes/hermes_chat.py::_sse."""
     blocks = [b for b in text.split("\n\n") if b.strip()]
     out: list[tuple[str, dict]] = []
     for blk in blocks:
-        name = ""
-        payload: dict = {}
         for line in blk.splitlines():
-            if line.startswith("event: "):
-                name = line[len("event: "):].strip()
-            elif line.startswith("data: "):
+            if line.startswith("data: "):
                 try:
                     payload = json.loads(line[len("data: "):])
+                    out.append((payload.get("type", ""), payload))
                 except Exception:
-                    payload = {"_raw": line[len("data: "):]}
-        out.append((name, payload))
+                    out.append(("", {"_raw": line[len("data: "):]}))
     return out
 
 

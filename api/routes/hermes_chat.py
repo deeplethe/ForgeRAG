@@ -224,18 +224,22 @@ def _persist_agent_run(
 # ---------------------------------------------------------------------------
 
 
-def _sse(name: str, payload: dict) -> str:
-    """One SSE block. We use the ``event:`` field plus a JSON
-    ``data:`` so clients can switch on event type without parsing
-    the JSON envelope first. Same shape the legacy route uses."""
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def _sse(type_: str, payload: dict) -> str:
+    """One SSE block in the format the legacy ``/agent/chat`` route
+    uses: ``data: <json>\\n\\n`` where the JSON dict carries the
+    event type as its ``type`` field. Matching this exactly means
+    the frontend SSE parser (``web/src/api/agent.js``) doesn't need
+    to change for Wave 2.6 — only the URL changes."""
+    payload = {"type": type_, **payload}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _translate(evt: dict) -> str | None:
     """Map a HermesRuntime event dict to a single SSE block.
 
-    Returns ``None`` for events we don't surface (none right now,
-    but future event types might be debug-only).
+    Returns ``None`` for runtime events we fold into a different
+    SSE event (``error`` and ``done`` are surfaced via the outer
+    layer's terminal ``done`` block, not as their own SSE events).
     """
     kind = evt.get("kind")
     if kind == "thinking":
