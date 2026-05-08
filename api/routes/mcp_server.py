@@ -155,23 +155,131 @@ def ping() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI mount (Wave 2.3 wraps with auth middleware)
+# FastAPI mount + auth bridge (Wave 2.3)
 # ---------------------------------------------------------------------------
+
+
+class _MCPPrincipalBridge:
+    """ASGI middleware that bridges FastAPI's ``request.state.principal``
+    (set by the app-level ``AuthMiddleware``) into the MCP-side
+    ``ContextVar``, so tool handlers see the right user.
+
+    AuthMiddleware runs ahead of the mounted MCP app on every HTTP
+    request. It sets:
+      * ``request.state.principal`` → AuthenticatedPrincipal on success
+      * 401 response on auth failure (we never get called)
+      * synthetic ``via="auth_disabled"`` principal when auth is off
+
+    All we do here is read that principal off the scope's State object
+    and copy it into the ContextVar before letting the FastMCP app
+    run. Reset the var in ``finally`` so concurrent requests can't
+    leak each other's principals.
+
+    If, despite AuthMiddleware running first, we somehow see a request
+    with no principal on state, the safest move is to fall through
+    with the var unset; the MCP wrappers in ``mcp_tools.py`` reject
+    unauthenticated calls explicitly. This matches AuthMiddleware's
+    own auth-disabled fallback semantics — it sets a synthetic
+    principal rather than failing requests.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Lifespan / WebSocket etc. — no principal context needed.
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        principal = _principal_from_scope(scope)
+        if principal is None:
+            # AuthMiddleware would normally set it; missing means
+            # something upstream skipped auth. We refuse rather than
+            # silently letting an unauthenticated call through.
+            await _send_json_error(
+                send,
+                status=401,
+                payload={
+                    "error": {
+                        "code": "unauthenticated",
+                        "message": (
+                            "MCP server requires an authenticated "
+                            "principal — include a session cookie or "
+                            "Bearer token (the in-container agent gets "
+                            "one via the OPENCRAIG_API_TOKEN env var)."
+                        ),
+                    }
+                },
+            )
+            return
+
+        token = set_mcp_principal(principal)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_mcp_principal(token)
+
+
+def _principal_from_scope(scope) -> AuthenticatedPrincipal | None:
+    """Read the AuthMiddleware-set principal off the ASGI scope's
+    ``state`` slot. Returns None if absent.
+
+    Starlette stashes ``request.state`` at ``scope["state"]``; FastAPI
+    middlewares mutating ``request.state.X`` show up there too. We
+    read either dict-style (``state["principal"]``) or attr-style
+    (``state.principal``) since Starlette's ``State`` supports both.
+    """
+    state = scope.get("state")
+    if state is None:
+        return None
+    # Starlette ``State`` is attribute-style; some test paths use a
+    # plain dict. Try attr first, then dict.
+    principal = getattr(state, "principal", None)
+    if principal is None and isinstance(state, dict):
+        principal = state.get("principal")
+    return principal
+
+
+async def _send_json_error(send, *, status: int, payload: dict) -> None:
+    import json
+
+    body = json.dumps(payload).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 def mount_mcp(app) -> None:
     """Mount the MCP HTTP server under ``/api/v1/mcp`` on the given
-    FastAPI app.
+    FastAPI app, with the principal-bridge ASGI middleware in front.
 
-    Wave 2.2 mounts the server raw — no auth in front yet. Wave 2.3
-    will wrap with an auth middleware that resolves the standard
-    OpenCraig principal (cookie / bearer) and sets the ContextVar
-    before delegating to the inner app.
+    Auth flow:
+        request → app-level ``AuthMiddleware`` → sets
+        ``request.state.principal`` → mounted MCP sub-app →
+        ``_MCPPrincipalBridge`` reads it → sets ContextVar → FastMCP
+        protocol handler → tool wrappers in ``mcp_tools.py`` read
+        the ContextVar → dispatch into ``api/agent/dispatch.dispatch``
+        with a fresh ToolContext built for that user.
 
-    The FastAPI ``AuthMiddleware`` already runs ahead of mounted
-    sub-apps for all standard /api/v1 paths. The MCP mount is
-    currently in its bypass list (Wave 2.2) so the diagnostic
-    ``ping`` tool works pre-auth; Wave 2.3 removes that bypass and
-    runs MCP through the normal auth path.
+    Importing ``mcp_tools`` here triggers the ``@mcp_server.tool()``
+    decorators that register every domain tool. Importing inside
+    the function (not at module top) avoids a circular import:
+    ``mcp_tools`` imports from ``mcp_server``.
     """
-    app.mount("/api/v1/mcp", mcp_server.streamable_http_app())
+    from . import mcp_tools  # registers tool decorators
+
+    # Bind the AppState lookup so tool wrappers can build ToolContext.
+    mcp_tools._set_app_state_getter(lambda: getattr(app.state, "app", None))
+
+    inner = mcp_server.streamable_http_app()
+    wrapped = _MCPPrincipalBridge(inner)
+    app.mount("/api/v1/mcp", wrapped)
