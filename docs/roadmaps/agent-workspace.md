@@ -886,38 +886,157 @@ feature for git backup (``opencraig skills export → ./skills/``)
 
 ### Schema
 
-Phase 5 alembic migration:
+Phase 5 alembic migration. **Two tables, no embedding table** —
+embeddings live in the existing vector store (see "Embeddings via
+the existing VectorStore" below):
 
 ```python
 class Skill(Base):
     __tablename__ = "skills"
-    skill_id: str                  # 32-char hex, primary key
-    name: str                      # unique within (scope, scope_id)
-    scope: 'workspace' | 'project' # workspace = team-shared; project = local
-    project_id: str | None         # FK projects.project_id, only for project scope
-    description: str               # what `search_skills` shows the LLM
-    body: str                      # full markdown the agent walks when run_skill loads
-    params_schema: dict            # JSON-schema for run_skill params
-    version: str                   # semver; bumps create a SkillVersion row
-    owner_user_id: str             # creator
-    shared_with: list[dict]        # same shape as Folder.shared_with — viewers can run, not edit
-    metadata_json: dict            # tags, category, etc.
+    skill_id: str                          # 32-char hex, primary key
+    name: str                              # unique within (scope, project_id)
+    scope: 'workspace' | 'project'         # workspace = team-shared; project = local to one project
+    project_id: str | None                 # FK projects.project_id, only for scope='project'
+    description: str                       # what `search_skills` shows the LLM (NL, ~1-3 sentences)
+    body: str                              # full markdown the agent walks on run_skill
+    params_schema: dict                    # JSON-schema for run_skill params
+
+    version: str                           # semver — bumps create a SkillVersion row
+    created_by_user_id: str FK auth_users  # original author (immutable)
+    last_modified_by_user_id: str FK auth_users
+    import_source: dict | None             # null = locally created; else
+                                           # {type:'marketplace', url, original_skill_id, version, imported_at}
+    metadata_json: dict                    # tags, category, deprecated flag, etc.
+    trashed_metadata: dict | None          # soft-delete marker, mirrors Project.trashed_metadata
     created_at, updated_at
 
-class SkillEmbedding(Base):
-    skill_id: str FK
-    vec: Vector(dim)               # embedding of description + body for semantic search
-
-class SkillVersion(Base):          # rollback / diff
+class SkillVersion(Base):                  # rollback / diff history
     skill_version_id: str
     skill_id: str FK
     version: str
-    body: str
+    body: str                              # snapshot at this version
     params_schema: dict
-    changed_by: str FK auth_users
+    description: str
+    changed_by_user_id: str FK auth_users
     changed_at: datetime
     change_note: str | None
 ```
+
+**No `shared_with` on Skill.** Visibility is **derived** from the
+combination of `scope` + the parent container's authz:
+
+| `scope` | Who can `search_skills` + `run_skill`? | Who can edit / delete? |
+|---|---|---|
+| `workspace` | Any authenticated user in the deployment | admin role OR `created_by_user_id` |
+| `project` | Anyone with project read (owner + viewers) | project owner OR admin OR `created_by_user_id` |
+
+This avoids duplicating ACL bookkeeping that already exists on
+``Folder.shared_with`` (workspace docs) and ``Project.shared_with``
+(per-project access). Skills inherit; they don't track their own.
+
+**Audit trail** lives in `created_by_user_id` (immutable, original
+attribution), `last_modified_by_user_id` (most-recent editor), and
+the `SkillVersion` rows (full history of who changed what when).
+Same `audit_log` row writes as folder/project mutations.
+
+### Embeddings via the existing VectorStore (NOT a separate table)
+
+Earlier draft proposed a `skill_embeddings` table — wrong. We
+already have a vector backend (`cfg.persistence.vector` configured
+to chromadb / pgvector / qdrant / etc.). Skills embed there too;
+two tables of vectors in one deployment would mean double the
+operational surface for no benefit.
+
+Implementation:
+
+* On skill create / update: backend computes
+  `embed(description + "\n" + body)` via the existing
+  ``state.embedder``, upserts into the vector store under a
+  **separate namespace / collection** (chromadb collection name
+  ``opencraig_skills``; pgvector with a ``kind='skill'``
+  discriminator; qdrant collection; etc.) keyed on ``skill_id``,
+  with metadata `{kind:'skill', scope, project_id, owner_user_id}`.
+* On delete / trash: remove the vector entry. (Soft-delete keeps
+  the row but pulls the vector — matched skills wouldn't be
+  runnable; cleaner to drop them from search.)
+
+**Phase 5 small refactor on `VectorStore`**: today the API is
+implicitly chunk-flavoured (``vec.search(...)`` searches the
+chunks namespace). Phase 5 adds a tiny abstraction:
+
+```python
+class VectorStore:
+    # Existing — sugar for namespace='chunks'
+    def search(self, vec, *, top_k=10, filter=None) -> list[VectorHit]: ...
+
+    # NEW — collection-aware
+    def search_namespace(
+        self, namespace: str, vec, *, top_k=10, filter=None
+    ) -> list[VectorHit]: ...
+    def upsert_namespace(
+        self, namespace: str, items: list[VectorItem]
+    ) -> None: ...
+    def delete_namespace(
+        self, namespace: str, ids: list[str]
+    ) -> None: ...
+```
+
+Each backend's implementation maps `namespace` to its native
+notion (chroma collection / qdrant collection / pgvector
+``kind`` filter / ...). Existing chunk code keeps working
+unchanged via the sugared `.search()`.
+
+### CRUD interfaces (HTTP + Service + future marketplace)
+
+Same service powers UI editing + agent-driven creation + future
+marketplace imports. They differ only in the metadata stamped on
+the row.
+
+**HTTP API** (`api/routes/skills.py`):
+
+```
+POST   /api/v1/skills                          create workspace skill (admin or self-curate)
+POST   /api/v1/projects/{id}/skills            create project skill (project owner)
+PATCH  /api/v1/skills/{skill_id}               edit (creator / admin / project owner)
+DELETE /api/v1/skills/{skill_id}               soft-delete (same gate as PATCH)
+GET    /api/v1/skills?scope=&project_id=       list (authz-filtered)
+GET    /api/v1/skills/{skill_id}               detail
+GET    /api/v1/skills/{skill_id}/versions      version history
+POST   /api/v1/skills/{skill_id}/restore       roll back to a SkillVersion
+POST   /api/v1/skills/import                   import from a marketplace URL
+                                                 → calls SkillService.import_from_url(url)
+                                                 → stamps import_source metadata
+                                                 → otherwise behaves like a fresh create
+```
+
+**Service**: `persistence/skill_service.py`
+
+```python
+class SkillService:
+    def create(*, name, scope, project_id, description, body,
+               params_schema, by_user_id, import_source=None) -> Skill: ...
+    def update(*, skill_id, by_user_id, **fields) -> Skill: ...
+    def delete(*, skill_id, by_user_id) -> Skill: ...
+    def restore_version(*, skill_id, target_version, by_user_id) -> Skill: ...
+    def list(*, principal, scope=None, project_id=None) -> list[Skill]: ...
+    def search(*, principal, query, top_k=5, scope=None) -> list[SearchHit]: ...
+    def import_from_url(*, url, by_user_id) -> Skill: ...
+```
+
+Every mutation:
+* writes / updates the SQL row,
+* re-embeds + upserts into the vector store,
+* writes a `SkillVersion` snapshot,
+* writes an `audit_log` row (`skill.create` / `skill.update` /
+  `skill.delete` / `skill.import` / `skill.restore`).
+
+**Optional Phase 5 polish — `create_skill` agent tool.** Lets
+the agent codify an ad-hoc workflow it just performed into a
+reusable skill: "Hey agent, save the steps you just did as a skill
+called `q3-sales-review`." Adds ~200 tokens to the catalog;
+behind a config flag (`agent.allow_skill_authoring: bool`,
+default off — operator opts in for power-user deployments). Calls
+the same `SkillService.create` underneath.
 
 ### Two new agent primitives
 
