@@ -1,10 +1,10 @@
 # Architecture Overview
 
-ForgeRAG is built around three core pipelines — **Ingestion**, **Retrieval**, and **Answering** — connected through a unified persistence layer. This document explains how each pipeline works and how they fit together.
+OpenCraig is built around three core pipelines — **Ingestion**, **Retrieval**, and **Answering** — connected through a unified persistence layer. This document explains how each pipeline works and how they fit together.
 
 ## Design Philosophy
 
-1. **Structure-aware processing** — Documents have hierarchy (chapters, sections, subsections). ForgeRAG preserves and leverages this structure throughout the pipeline, from parsing to retrieval.
+1. **Structure-aware processing** — Documents have hierarchy (chapters, sections, subsections). OpenCraig preserves and leverages this structure throughout the pipeline, from parsing to retrieval.
 
 2. **Dual-reasoning retrieval** — BM25 and vector search provide fast pre-filtering; LLM tree navigation and knowledge graph inference perform deep reasoning on the pre-filtered results. Results are fused via Reciprocal Rank Fusion.
 
@@ -84,7 +84,7 @@ flowchart LR
 ## Project Structure
 
 ```
-ForgeRAG/
+OpenCraig/
 ├── api/                  # FastAPI routes, schemas, state management
 │   ├── app.py            # Application factory with lifespan
 │   ├── state.py          # AppState singleton (holds all pipelines)
@@ -170,7 +170,7 @@ ForgeRAG/
 
 The ingestion pipeline transforms raw documents into searchable, structured data. It operates in two phases: a fast synchronous upload, followed by background processing.
 
-> **Crash recovery:** On startup, ForgeRAG automatically detects documents stuck in intermediate states (`processing`, `parsing`, `structuring`, etc.) from a previous crash or restart, resets them to `pending`, and re-queues them for ingestion. No manual intervention needed — works across both SQLite and PostgreSQL backends.
+> **Crash recovery:** On startup, OpenCraig automatically detects documents stuck in intermediate states (`processing`, `parsing`, `structuring`, etc.) from a previous crash or restart, resets them to `pending`, and re-queues them for ingestion. No manual intervention needed — works across both SQLite and PostgreSQL backends.
 
 ```mermaid
 flowchart TB
@@ -720,6 +720,161 @@ erDiagram
 
 ---
 
+## Multi-user & Auth
+
+OpenCraig is **multi-user, NOT multi-tenant**. There is one shared
+workspace tree per deployed instance; users see different *views*
+of it based on their grants. Customers who want hard tenant
+isolation deploy separate instances (the docker compose stack
+takes ~60s to spin up a fresh one).
+
+### The path-as-authz primitive
+
+Every retrieval, document-listing, and folder-mutation API takes
+a `path_filters: list[str]` parameter. The auth layer resolves
+the principal's grants and rewrites that parameter before it
+reaches the storage layer:
+
+* **Admin** → `path_filters = None` (sees everything that exists).
+* **Regular user with grants on `/legal` and `/contracts/2024`** →
+  `path_filters = ["/legal", "/contracts/2024"]`.
+* **Regular user with no grants** → empty list, every retrieval
+  returns nothing (the `/` synthetic-root view is the only thing
+  they see, and it's empty for them).
+
+This single primitive enforces isolation across vector search,
+BM25, KG traversal, document listing, chunk fetch, and
+folder navigation. No per-feature ACL code; one resolver, one
+parameter, every call site checked.
+
+### Spaces (per-user workspace view)
+
+Each user lands in their **personal Space**, a folder at
+`/users/<username>` auto-created at registration with `rw` grant
+for that user. The frontend renders this Space's root as `/` —
+the user never sees the literal `/users/<username>` prefix. This
+keeps URLs / paths readable while letting the storage layer keep
+its single shared tree.
+
+```
+Storage layer (one shared tree):
+  /
+  ├── users/
+  │   ├── alice/      (Alice's personal Space)
+  │   │   └── notes/
+  │   └── bob/        (Bob's personal Space)
+  │       └── 2024-q4/
+  ├── legal/          (admin-shared with the legal team)
+  └── eng/            (admin-shared with engineering)
+
+Alice's view:                Bob's view:
+  /                            /
+  └── notes/                   └── 2024-q4/
+                               (plus /legal if she has a grant)
+```
+
+Implementation: `api/auth/path_remap.py::PathRemap` is built per
+request from the principal's grant set. It exposes:
+
+* `to_user(abs_path) → (space_id, rel_path) | None` — translate
+  storage path to user-facing form, or signal "not visible".
+* `to_abs(space_id, rel_path) → abs_path` — inverse for write
+  operations.
+
+Frontend `useWorkspace` consumes the spaces list from
+`GET /folders/spaces` and renders breadcrumbs / file grid /
+tree against it. The Phase 2 path translation in `breadcrumbs`
+and `displayPath` lives in `web/src/composables/useWorkspace.js`.
+
+### Folder Members (sharing)
+
+`Folder.shared_with` is a JSON column shaped as:
+
+```json
+[
+  {"user_id": "abc123", "role": "rw"},
+  {"user_id": "def456", "role": "r"}
+]
+```
+
+with the invariant: **subfolder rights are a superset of parent
+rights**. A new subfolder copies its parent's `shared_with`;
+adding a member to a parent cascades downward via
+`FolderShareService.set_member_role`; removing a member from a
+folder is rejected when they still have access via an ancestor
+(the operator must remove from the ancestor or move the folder
+out from under it).
+
+Routes:
+* `GET /folders/{id}/members` — visible to anyone with read access
+* `POST /folders/{id}/members` — owner / admin only, by email
+* `PATCH /folders/{id}/members/{user_id}` — change role
+* `DELETE /folders/{id}/members/{user_id}` — drop the grant
+
+Frontend lives in `FolderMembersDialog.vue`, opened from the
+right-click menu's "Members…" item.
+
+### Auth modes
+
+`config.auth_config.AuthConfig.mode`:
+
+* **`db`** (default) — Argon2id-hashed passwords + opaque session
+  cookies + bearer SK tokens, all stored in `auth_users` /
+  `auth_sessions` / `auth_tokens`. The first registered account
+  is auto-promoted to admin (no pre-baked credentials by default).
+* **`forwarded`** — the X-Forwarded-User header from an upstream
+  OAuth proxy (oauth2-proxy / Authelia / Cloudflare Access) is
+  the auth. CIDR allowlist of trusted proxies prevents header
+  spoofing. Auto-provisions users on first contact.
+* **Disabled** (`enabled: false`) — single-user dev mode. The
+  middleware synthesises a local-admin principal so the same
+  routes work without the operator having to log in.
+
+### Audit log
+
+`AuditLogRow` captures every folder / document / share / role
+mutation with the actor's `principal.user_id` stamped in (or
+the synthetic `system` actor for scheduled cleanups). Surfaced
+to admins via `GET /admin/audit` with filters for actor /
+action category / time range. The frontend page is
+`/settings/audit`.
+
+The log is **append-only** by design — no UPDATE / DELETE paths
+in the API. Admins who need to scrub for compliance can do it
+via direct SQL; the row schema (`actor_id` is a string column
+without an FK constraint to `auth_users`) deliberately survives
+account deletion so the trail outlives the user.
+
+```mermaid
+flowchart LR
+    Req["HTTP request<br/>(POST /folders, etc.)"] --> Mid["AuthMiddleware<br/>resolve principal"]
+    Mid --> Route["Route handler<br/>e.g. create_folder"]
+    Route --> Svc["FolderService(sess, actor_id=principal.user_id)"]
+    Svc -->|"sess.add(AuditLogRow)"| Audit[("audit_log table")]
+    Audit --> Page["/settings/audit<br/>admin paginated view"]
+
+    style Audit fill:#fff3e0
+```
+
+### Setup wizard
+
+A fresh deploy lands on `/setup` (the App.vue gate probes
+`/api/v1/setup/status` on first load). Operator picks a
+**model-platform preset** — SiliconFlow / OpenAI / DeepSeek /
+Anthropic / Ollama / Custom — supplies the API key, hits Apply.
+The wizard writes the rendered config to a yaml overlay at
+`storage/setup-overlay.yaml`, signals a SIGTERM, and the
+container's `restart: unless-stopped` brings the new config up.
+After `configured=True`, all `/setup/*` endpoints 403 to
+prevent drive-by config resets.
+
+The overlay layer (loaded via `config.loader._deep_merge`) means
+the operator's hand-edited `docker/config.yaml` is never mutated
+by the wizard — the wizard's choices live next to the storage
+volume and are layered on top at startup.
+
+---
+
 ## Configuration System
 
 **YAML is the single source of truth.** The DB holds a one-way mirror (`settings` table) written at startup so admin tools can read a snapshot of the effective config, but the runtime never reads it back. v0.2.0 dropped the `provider_id` indirection: model + api_key + api_base are now inlined directly under each subsystem in yaml.
@@ -727,8 +882,11 @@ erDiagram
 ```mermaid
 flowchart TB
     subgraph Startup ["Application Startup"]
-        YAML["forgerag.yaml<br/>(+ myconfig.yaml for deployment secrets)"]
+        YAML["opencraig.yaml<br/>(or docker/config.yaml in compose deploys)"]
         YAML -->|"parse + validate"| AppCfg["AppConfig<br/>(Pydantic root model)"]
+
+        Overlay["storage/setup-overlay.yaml<br/>(written by the first-boot wizard)"]
+        Overlay -->|"deep-merge if present"| AppCfg
 
         AppCfg -->|"snapshot_to_db()<br/>overwrite every key"| DB[("settings table<br/>read-only mirror")]
 
@@ -755,9 +913,12 @@ The frontend (Vue 3 + TailwindCSS) provides these pages:
 
 | Page | Description |
 |------|-------------|
-| **Chat** | Q&A interface with streaming progress, inline citations, PDF viewer with bbox highlights, trace inspection |
-| **Workspace** | Folder-centric file manager (tree sidebar + grid/list view) — upload, rename, move, trash/restore (Windows-style with auto-rebuild of missing parents) |
+| **Chat** | Q&A interface with streaming progress, inline citations, PDF viewer with bbox highlights, trace inspection. Citations carry across follow-up turns so the LLM doesn't re-fetch the same context |
+| **Workspace** | Folder-centric file manager — upload, rename, move, trash/restore (Windows-style with auto-rebuild of missing parents), right-click "Members…" to share with teammates. Personal Space root displays as `/`; admin sees the full global tree |
 | **Document Detail** | Three-pane: tree navigator + PDF viewer + chunks/KG mini panel. Hover a chunk to see its source bbox |
 | **Knowledge Graph** | Visual graph exploration with Sigma.js — entities, relations, subgraph queries |
+| **Search** | Standalone retrieval primitive (no LLM). Cross-lingual zh/en query expansion, result-row drill-in, format-by-format facets |
+| **Settings** | Profile, Sessions, API Tokens, **Users** (admin), **Activity** (admin audit log) |
+| **Setup wizard** | Public unauth route at `/setup` — first-boot model-platform picker; self-disables once configured |
 
 See [Configuration Reference](configuration.md) for all available options.

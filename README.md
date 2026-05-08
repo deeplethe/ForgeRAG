@@ -1,24 +1,24 @@
 <p align="center">
-  <img src="web/public/text_logo_padding.png" alt="ForgeRAG" height="64">
+  <img src="web/public/text_logo_padding.png" alt="OpenCraig" height="64">
 </p>
 
-<h3 align="center">RAG that thinks like a domain expert.</h3>
+<h3 align="center">Self-hosted document intelligence with citations you can point at.</h3>
 
 <p align="center">
-  Most RAG retrieves chunks. ForgeRAG <strong>navigates document trees</strong>, <strong>traverses knowledge graphs</strong>, and <strong>cites the exact pixels</strong> behind every claim.
+  Most RAG retrieves chunks. OpenCraig <strong>navigates document trees</strong>, <strong>traverses knowledge graphs</strong>, and <strong>cites the exact pixels</strong> behind every claim — on your servers, your LLM keys, your data.
 </p>
 
 <p align="center">
-  <a href="https://github.com/deeplethe/ForgeRAG/releases"><img src="https://img.shields.io/badge/version-0.2.3-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/deeplethe/OpenCraig/releases"><img src="https://img.shields.io/badge/version-0.3.0-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
-  <a href="https://github.com/deeplethe/ForgeRAG/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/ForgeRAG?style=for-the-badge&logo=github" alt="Stars"></a>
-  <a href="https://github.com/deeplethe/ForgeRAG/issues"><img src="https://img.shields.io/github/issues/deeplethe/ForgeRAG?style=for-the-badge" alt="Issues"></a>
+  <a href="https://github.com/deeplethe/OpenCraig/stargazers"><img src="https://img.shields.io/github/stars/deeplethe/OpenCraig?style=for-the-badge&logo=github" alt="Stars"></a>
+  <a href="https://github.com/deeplethe/OpenCraig/issues"><img src="https://img.shields.io/github/issues/deeplethe/OpenCraig?style=for-the-badge" alt="Issues"></a>
   <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-join-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
   <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-why-forgerag">Why</a> ·
+  <a href="#-who-its-for">Who it's for</a> ·
   <a href="#-how-it-works">How</a> ·
   <a href="#-benchmark">Benchmark</a> ·
   <a href="docs/">Docs</a> ·
@@ -27,18 +27,34 @@
 
 ---
 
-## ✨ Why ForgeRAG
+## ✨ Why OpenCraig
 
-Existing RAG systems each fail in their own way:
+Existing RAG products force a tradeoff:
 
 | Approach | Strength | Where it breaks |
 |---|---|---|
 | **Naive embedding** RAG | Fast semantic search | Similarity ≠ relevance — misses exact matches and section context |
-| **GraphRAG** (Microsoft) | Cross-doc entity links | Concept skeleton without source-text grounding |
+| **GraphRAG** (Microsoft) | Cross-doc entity links | Library-only; concept skeleton without source-text grounding |
 | **LightRAG** (HKUDS) | Dual-level graph retrieval | Answers synthesized from KG summaries — high hallucination risk |
 | **PageIndex** | Tree reasoning, single-doc accuracy | Latency scales linearly with doc count — not production |
+| **Glean / Mendable / Notion AI** | Polished UX | Cloud-only; your corpus leaves your network; not for regulated industries |
 
-**ForgeRAG fuses all four**: BM25 + vector for fast pre-filter, LLM tree navigation for structural reasoning, knowledge graph for multi-hop, RRF fusion for the merge — every claim grounded back to a **page + bbox** the user can click and verify.
+**OpenCraig fuses the technical wins, ships them as a real product, and keeps your data on your hardware.** BM25 + vector for fast pre-filter, LLM tree navigation for structural reasoning, knowledge graph for multi-hop, RRF fusion for the merge — every claim grounded back to a **page + bbox** the user can click and verify. Multi-user with folder-level permissions. Self-hostable end-to-end.
+
+---
+
+## 🎯 Who it's for
+
+OpenCraig is built for **knowledge-dense small teams that can't or won't put their corpus on a SaaS**:
+
+- **Patent agents / IP boutiques** — long technical specs, prior art, citation accuracy is a legal asset
+- **Small law firms / litigation teams** — privileged documents, case law, internal precedent
+- **Biotech / pharma R&D departments** — HIPAA-adjacent compliance, literature, internal protocols
+- **Independent analysts / financial research desks** — IPO prospectuses, regulatory filings, alpha hides in cross-document detail
+- **University labs / research centers** — student researcher onboarding, paper libraries, internal datasets
+- **Independent professionals running an LLC or 个体工作室** — when "your data on your laptop / your VPS" is the whole point
+
+It's **not** built for: customer-support chatbots, public knowledge bases, marketing-content generation, casual ChatPDF use.
 
 ---
 
@@ -72,60 +88,50 @@ A retrieval trace UI shows every path's contribution per query — see what BM25
 
 ## 📸 What you get
 
-> **Screenshots:** see [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md) for the current set. Drop new ones into `docs/screenshots/` to refresh — no other file changes needed.
+> **Screenshots:** see [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md) for the current set.
 
 | | |
 |---|---|
-| **Workspace** | File-manager UX with drag-and-drop, recycle bin, Windows-style restore. Live ingestion status per file (parsing → embedding → building graph). |
-| **Chat** | Streaming answers with `[c_N]` citations. Click any citation → opens the source PDF at the exact bbox. |
+| **Workspace** | File-manager UX with drag-drop, recycle bin, folder Members invite-and-share. Each user has a personal Space at `/users/<username>` displayed as their `/`; admins also see the global tree. Live ingestion status per file (parsing → embedding → building graph). |
+| **Chat** | Streaming answers with `[c_N]` citations. Click any citation → opens the source PDF at the exact bbox. Citations carry across follow-up turns. |
 | **Document Detail** | 3-pane: tree navigator + PDF viewer + chunks/KG-mini. Hover a chunk → highlights its source region. |
 | **Knowledge Graph** | Sigma-rendered force-directed view. Filter by document, search entities, click an edge to see the supporting chunk. |
+| **Activity log** (admin) | Every folder / document / share / role mutation, with the actor's identity stamped in. Filter by user, action category, time range. |
+| **Setup wizard** | One-key model-platform presets (SiliconFlow / OpenAI / DeepSeek / Anthropic / Ollama). New deploy → web UI → pick a tile → done. No yaml editing. |
 
 ---
 
 ## 🚀 Quick Start
 
-```bash
-git clone https://github.com/deeplethe/ForgeRAG.git
-cd ForgeRAG
+The **fastest path** is docker compose:
 
+```bash
+git clone https://github.com/deeplethe/OpenCraig.git
+cd OpenCraig
+cp .env.example .env  &&  $EDITOR .env       # set passwords (LLM key optional — wizard collects it)
+docker compose up -d                          # postgres + neo4j + opencraig
+```
+
+Then open <http://localhost:8000>:
+
+1. **Pick a model platform** in the wizard (SiliconFlow recommended for China / cost-sensitive deploys; Ollama for fully air-gapped).
+2. **Register** the first account — it's auto-promoted to admin.
+3. **Drop in a PDF** and ask a question. The first ingest takes a minute; afterwards retrieval is sub-second.
+
+### Bare-metal install
+
+```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cd web && npm install && npm run build && cd ..
 
-python scripts/setup.py    # interactive wizard: backends + LLM keys + auto-pip
-python main.py             # http://localhost:8000
+python scripts/setup.py                              # CLI wizard alternative to the web one
+python main.py                                        # http://localhost:8000
 ```
 
-The setup wizard is bilingual (EN/中文), checkpointed (Ctrl+C resumable), and **only installs the backend deps your config picks** — don't memorize pip names per database.
+The CLI wizard is bilingual (EN/中文), checkpointed (Ctrl+C resumable), and **only installs the backend deps your config picks** — don't memorize pip names per database.
 
-> **Docker?**
-> ```bash
-> cp .env.example .env  &&  $EDITOR .env       # set passwords + LLM key
-> docker compose up -d                          # postgres + neo4j + opencraig
-> open http://localhost:8000                    # → register the first admin
-> ```
-> The first registered account is auto-promoted to admin. See
-> [docs/deployment.md](docs/deployment.md) for backup, upgrade, and TLS notes.
-
-> **Tip:** Enable [MinerU](https://github.com/opendatalab/MinerU) in the web Settings panel for a step-change in PDF parsing quality on tables, formulas, and complex layouts.
-
----
-
-## 📊 Benchmark
-
-[UltraDomain](https://github.com/HKUDS/LightRAG) methodology · LLM-as-judge pairwise · win % shown as **ForgeRAG / LightRAG**:
-
-| Domain | Comprehensiveness | Diversity | Empowerment | **Overall** |
-|---|:---:|:---:|:---:|:---:|
-| Agriculture | **58.6** / 41.4 | 47.1 / **52.9** | **52.9** / 47.1 | **56.4** / 43.6 |
-| Computer Science | **55.6** / 44.4 | 48.4 / **51.6** | **54.0** / 46.0 | **54.8** / 45.2 |
-| Legal | **57.0** / 43.0 | 46.5 / **53.5** | **53.5** / 46.5 | **55.6** / 44.4 |
-| Mix | **56.3** / 43.7 | 47.8 / **52.2** | **54.3** / 45.7 | **55.1** / 44.9 |
-
-<sub>Judge: qwen3-max · Reproduce: [`scripts/compare_bench.py`](scripts/compare_bench.py) · ForgeRAG additionally provides verifiable `[c_N]` citations the benchmark doesn't score for.</sub>
-
-🚧 _More benchmarks (vs RAGFlow, GraphRAG, vanilla RAG, on more domains and metrics) in progress._
+> **Tip:** Enable [MinerU](https://github.com/opendatalab/MinerU) in the Settings panel for a step-change in PDF parsing quality on tables, formulas, and complex layouts.
 
 ---
 
@@ -134,13 +140,14 @@ The setup wizard is bilingual (EN/中文), checkpointed (Ctrl+C resumable), and 
 ```mermaid
 flowchart TB
     subgraph "Frontend (Vue 3)"
-        UI[Workspace · Chat · Knowledge Graph · DocDetail]
+        UI[Workspace · Chat · KG · DocDetail · Settings]
     end
-    subgraph "Backend (FastAPI · Python 3.10+)"
+    subgraph "Backend (FastAPI · Python 3.13)"
         API[REST + SSE]
         ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
         RET[Retrieval Pipeline<br/>BM25 · vector · KG · tree-nav · merge]
         ANS[Answer Pipeline<br/>generate · cite]
+        AUTH[Auth + Spaces<br/>folder grants · audit log · per-user space]
     end
     subgraph "Pluggable Backends"
         REL[(SQLite · PostgreSQL)]
@@ -151,8 +158,8 @@ flowchart TB
         LLM[Any LiteLLM provider]
     end
     UI --> API
-    API --> ING
-    API --> RET
+    API --> AUTH
+    AUTH --> ING & RET & ANS
     RET --> ANS
     ING -.-> REL & VEC & BLOB & KGS
     ING --> PARSE
@@ -161,39 +168,65 @@ flowchart TB
     ANS --> LLM
 ```
 
-Every component is a config swap — pick your stack at the wizard, change later by editing `forgerag.yaml` and re-running `setup.py --sync-deps`.
+Every component is a config swap — pick your stack at the wizard, change later by editing `docker/config.yaml`.
 
 ---
 
 ## ⚙️ Highlights
 
 - **🎯 Pixel-precise citations** — every `[c_N]` carries `doc_id + page + bbox`; click highlights in PDF viewer
+- **👥 Multi-user (NOT multi-tenant)** — one shared workspace, folder-level grants. Each user has a personal Space; admins manage. Path-as-authz primitive plumbed through every retrieval call
+- **🪪 Folder Members UI** — right-click any folder → invite teammates by email, set view/edit role, see inherited members from parent
+- **📜 Activity log** — every folder / document / share / role mutation surfaces in `/settings/audit` with actor + filter + pagination
+- **🔌 One-key model platforms** — SiliconFlow / OpenAI / DeepSeek / Anthropic / Ollama presets in the first-boot wizard. One API key → chat + embedding + reranker
 - **🛤️ Full retrieval trace** — see which path scored what, what got expanded, what got rerank-dropped
 - **🧱 Tree-aware chunking** — chunk boundaries respect document structure (chapters, sections, tables/figures isolated)
 - **🌐 Knowledge graph w/ embeddings** — entity name embeddings for cross-lingual fuzzy match; relation-description embeddings for relation-semantic search
 - **🔁 RRF fusion** — Reciprocal Rank Fusion merges 4 retrieval paths; sibling/descendant/cross-ref expansion before rerank
-- **🎛️ Per-request overrides** — `QueryOverrides` on `POST /query` toggles paths, top-ks, rerank — great for A/B and SDK
 - **🗑️ Recycle bin + Undo** — soft-delete, Windows-style restore (rebuilds missing parent folders), 30-day auto-purge
 - **⚡ SQLite single-process · PG multi-process** — startup checks prevent foot-guns; clamps workers automatically
-- **🌍 Multi-format** — PDF, DOCX, PPTX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) and spreadsheets (XLSX/CSV/TSV) as native one-block-per-page documents — VLM describes each image, LLM describes each sheet, descriptions feed retrieval and KG just like text chunks
+- **🌍 Multi-format** — PDF, DOCX, PPTX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) and spreadsheets (XLSX/CSV/TSV) as native one-block-per-page documents
+- **🔒 No phone home** — zero telemetry, zero analytics, zero error reporting back to OpenCraig itself. See [`PRIVACY.md`](PRIVACY.md)
+
+---
+
+## 📊 Benchmark
+
+[UltraDomain](https://github.com/HKUDS/LightRAG) methodology · LLM-as-judge pairwise · win % shown as **OpenCraig / LightRAG**:
+
+| Domain | Comprehensiveness | Diversity | Empowerment | **Overall** |
+|---|:---:|:---:|:---:|:---:|
+| Agriculture | **58.6** / 41.4 | 47.1 / **52.9** | **52.9** / 47.1 | **56.4** / 43.6 |
+| Computer Science | **55.6** / 44.4 | 48.4 / **51.6** | **54.0** / 46.0 | **54.8** / 45.2 |
+| Legal | **57.0** / 43.0 | 46.5 / **53.5** | **53.5** / 46.5 | **55.6** / 44.4 |
+| Mix | **56.3** / 43.7 | 47.8 / **52.2** | **54.3** / 45.7 | **55.1** / 44.9 |
+
+<sub>Judge: qwen3-max · Reproduce: [`scripts/compare_bench.py`](scripts/compare_bench.py) · OpenCraig additionally provides verifiable `[c_N]` citations the benchmark doesn't score for.</sub>
+
+🚧 _More benchmarks (vs RAGFlow, GraphRAG, vanilla RAG, on more domains and metrics) in progress._
 
 ---
 
 ## 🗂️ Project Layout
 
 ```
-ForgeRAG/
-├── api/             FastAPI routes + Pydantic schemas
-├── answering/       Answer + citation pipeline
-├── ingestion/       Parse → tree → chunk → embed → KG
-├── parser/          PDF parsing, chunking, tree building
-├── retrieval/       BM25 / vector / KG / tree-nav / RRF merge
-├── embedder/        Embedding backends (LiteLLM, sentence-transformers)
-├── graph/           KG stores (NetworkX, Neo4j)
-├── persistence/     Relational + vector + blob layer
-├── config/          Pydantic config models, YAML schema
-├── web/             Vue 3 frontend
-└── docs/            Architecture, configuration, API reference
+OpenCraig/
+├── api/                 FastAPI routes, auth middleware, setup wizard
+│   ├── auth/             AuthMiddleware, PathRemap, FolderShareService
+│   ├── routes/           One file per resource
+│   └── setup_presets.py  SiliconFlow / OpenAI / Ollama / ... presets
+├── answering/           Answer + citation pipeline
+├── ingestion/           Parse → tree → chunk → embed → KG
+├── parser/              PDF parsing, chunking, tree building
+├── retrieval/           BM25 / vector / KG / tree-nav / RRF merge
+├── embedder/            Embedding backends (LiteLLM, sentence-transformers)
+├── graph/               KG stores (NetworkX, Neo4j)
+├── persistence/         Relational + vector + blob + folder service + share service
+├── config/              Pydantic config models, YAML loader (with overlay merge)
+├── web/src/             Vue 3 frontend (Workspace, Chat, KG, Settings, Setup wizard)
+├── docs/operations/     Backup / restore / upgrading runbooks
+├── docs/roadmaps/       In-flight feature design docs (per-user spaces, etc.)
+└── scripts/             backup.sh, restore.sh, setup.py, batch_ingest.py
 ```
 
 ---
@@ -205,40 +238,52 @@ ForgeRAG/
 - **[Configuration](docs/configuration.md)** — every YAML option with defaults
 - **[API Reference](docs/api-reference.md)** — REST + SSE streaming
 - **[Deployment](docs/deployment.md)** — Docker, production checklist, Nginx
-- **[Development](docs/development.md)** — dev setup, testing, adding backends
-- **[Auth](docs/auth.md)** — single-admin password + SK tokens
-- **[Roadmaps](docs/roadmaps/)** — design docs for in-flight features ([retrieval evolution](docs/roadmaps/retrieval-evolution.md), [spreadsheet support](docs/roadmaps/spreadsheet-as-document.md))
+- **[Backup & Restore](docs/operations/backup.md)** — RTO/RPO, schedule, cross-version recovery
+- **[Upgrading](docs/operations/upgrading.md)** — alembic flow, pinning, rollback
+- **[Auth](docs/auth.md)** — multi-user, folder grants, OAuth-proxy mode
+- **[Privacy](PRIVACY.md)** — what data leaves your network (spoiler: only LLM API calls you configure)
+- **[Roadmaps](docs/roadmaps/)** — design docs for in-flight features
 
 ---
 
 ## 🗺️ Roadmap
 
-**Next wave — retrieval evolution** ([full design](docs/roadmaps/retrieval-evolution.md)):
+### Shipped
 
-- [x] **Unified `/search`** — retrieval primitive exposed standalone, no LLM. Chunks default, files rollup opt-in. Shipped.
-- [ ] **Web search** — Tavily / Brave / Bing through `/search` via `include=["web"]`. Untrusted-content + prompt-injection defense lands here so every later layer inherits it.
-- [ ] **Multi-user + folder permissions** — email/password auth, per-folder `(owner, shared_with)` model, `path_filters: list[str]` as authz primitive. **Multi-user, not multi-tenant** — shared global tree, shared indices.
-- [ ] **Agentic search** — multi-step retrieval driven by LLM tool calls (`search_local` / `web_search` / `fetch_url` / `read_chunk`). Bounded by iteration / token / time / web-call budgets.
-- [ ] 🚀 **Public release** — at this point: differentiator (AS) live, multi-user ready, web blended. Ship.
-- [ ] **Deep research with HITL** — Plan → parallel per-section AS → draft → synthesis. Three HITL modes; `checkpoint` is default (review each section before research moves on). Export Markdown / PDF.
-- [ ] **Retrieval MCP** — expose `search / query / agentic_search / research_*` as MCP tools. Lands last so the tool list is the full surface in one shot.
+- [x] **Pixel-precise citations** — `doc_id + page + bbox` on every claim
+- [x] **Tree retrieval** + **KG retrieval** + **RRF fusion**
+- [x] **Multi-user, folder grants, per-user Spaces** (path-as-authz, no multi-tenant)
+- [x] **Folder Members UI** — invite teammates, set view/edit role
+- [x] **Audit log** — admin-visible activity feed of every mutation
+- [x] **First-boot setup wizard** — one-key model platform presets (SiliconFlow / OpenAI / etc.)
+- [x] **One-shot docker compose** — postgres + neo4j + opencraig with healthchecks
+- [x] **Backup + restore scripts** with cross-version recovery notes
+- [x] **AGPL v3 + commercial dual license**
 
-**Foundation work** (in parallel as needed):
+### Next
 
-- [ ] Comprehensive benchmark suite (vs RAGFlow / GraphRAG / vanilla, additional domains)
+- [ ] **Group / Team abstraction** — invite groups instead of users; on-demand based on first big customer's org chart
+- [ ] **SCIM provisioning** — Okta / Azure AD auto-sync for enterprise tier
+- [ ] **Web search** — Tavily / Brave / Bing through `/search` via `include=["web"]`. Untrusted-content + prompt-injection defense lands here so every later layer inherits it
+- [ ] **Agentic search** — multi-step retrieval driven by LLM tool calls (`search_local` / `web_search` / `fetch_url` / `read_chunk`)
+- [ ] **Deep research with HITL** — Plan → parallel per-section AS → draft → synthesis. Three HITL modes
+- [ ] **Retrieval MCP** — expose `search / query / agentic_search / research_*` as MCP tools
+- [ ] **Comprehensive benchmark suite** vs RAGFlow / GraphRAG / vanilla on more domains
+
+### Foundation work (in parallel)
+
 - [ ] Scale to 1M+ documents — incremental indexing, async KG, sharded vector store
-- [ ] Multi-language retrieval — cross-lingual query/document support
-- [ ] Python SDK (`pip install forgerag-sdk`)
-- [ ] Config panel diagnostics (missing-provider warnings, validation feedback)
+- [ ] Python SDK (`pip install opencraig-sdk`)
+- [ ] More connectors —飞书 / 企业微信 / 钉钉 / SharePoint / Google Drive ingestion
 
 ---
 
 ## 📈 Star history
 
-<a href="https://star-history.com/#deeplethe/ForgeRAG&Date">
+<a href="https://star-history.com/#deeplethe/OpenCraig&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=deeplethe/ForgeRAG&type=Date&theme=dark" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=deeplethe/ForgeRAG&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=deeplethe/OpenCraig&type=Date&theme=dark" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=deeplethe/OpenCraig&type=Date" />
   </picture>
 </a>
 
@@ -248,12 +293,15 @@ ForgeRAG/
 
 Bug reports, features, and docs improvements all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Stop by [Discord](https://discord.gg/XJadJHvxdQ) for design discussions.
 
+PRs require accepting the [CLA](RELICENSING.md#future-contributions) so the project retains the right to issue commercial licenses derived from the codebase. The core stays AGPLv3 — that doesn't change.
+
 ## 🔗 Related work
 
 - [LightRAG](https://github.com/HKUDS/LightRAG) — graph-based RAG with dual-level retrieval
 - [GraphRAG](https://github.com/microsoft/graphrag) — Microsoft's graph-powered RAG with community summaries
 - [PageIndex](https://github.com/VectifyAI/PageIndex) — reasoning-based vectorless retrieval
-- [MinerU](https://github.com/opendatalab/MinerU) — document parsing engine ForgeRAG uses for rich layouts
+- [MinerU](https://github.com/opendatalab/MinerU) — document parsing engine OpenCraig uses for rich layouts
+- [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) — closest commercial-OSS peer in the self-host RAG space
 
 ## License
 
