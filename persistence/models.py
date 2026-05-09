@@ -278,16 +278,30 @@ class Conversation(Base):
         nullable=True,
         index=True,
     )
-    # Optional binding to an agent-workspace project. NULL = plain
-    # Q&A chat (today's default). Set when the chat is opened from
-    # inside a Project (Phase 1) so the agent's tool calls land in
-    # that project's workdir + run history. Added in
-    # 20260516_add_projects_artifacts_runs. ON DELETE SET NULL so
-    # deleting a project leaves the chat history intact (with
-    # project_id reset to NULL, falling back to plain-chat mode).
+    # Optional binding to an agent-workspace project. **Deprecated**
+    # by ``cwd_path`` below as of the folder-as-cwd refactor (see
+    # 20260518_add_conversation_cwd_path). Kept for backwards
+    # compatibility with rows that pre-date the refactor; new
+    # conversations should use ``cwd_path``. NULL = plain Q&A chat.
+    # ON DELETE SET NULL so deleting a project leaves the chat
+    # history intact.
     project_id: Mapped[str | None] = mapped_column(
         String(32),
         ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # Folder path the chat is "running in" — the agent's working
+    # directory and the default location for any artifacts it
+    # writes. Replaces the project_id mental model with
+    # ``folder-as-cwd``: the user opens a chat IN A FOLDER, and the
+    # agent's tool calls (read / edit / bash) operate inside that
+    # subtree. Editable mid-conversation; updates here propagate to
+    # the agent's next turn. NULL on legacy rows (pre-refactor) and
+    # on plain Q&A chats with no folder context.
+    # Added in 20260518_add_conversation_cwd_path.
+    cwd_path: Mapped[str | None] = mapped_column(
+        String(1024),
         nullable=True,
         index=True,
     )
@@ -807,9 +821,25 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
+    # Legacy binding to a Project — kept so historical rows keep
+    # their lineage but **deprecated** by ``cwd_path`` below as of
+    # the folder-as-cwd refactor (20260518). Made nullable in that
+    # migration; new folder-bound runs have ``project_id=NULL`` and
+    # store their location in ``cwd_path``.
+    project_id: Mapped[str | None] = mapped_column(
         String(32),
         ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Folder path the run was launched from — i.e. the agent's
+    # working directory for the duration of the run. Mirror of
+    # ``Conversation.cwd_path`` at the moment the run started; the
+    # user can change the conversation's cwd later, but the
+    # historical record of WHERE this run worked stays pinned.
+    cwd_path: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
         index=True,
     )
     # Nullable because (a) the chat ↔ project binding lands in 0.5
@@ -920,9 +950,23 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     artifact_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
+    # Legacy Project binding — kept for back-compat, **deprecated** by
+    # ``cwd_path`` below as of 20260518. Made nullable in that
+    # migration; new folder-as-cwd artifacts have ``project_id=NULL``
+    # and live under ``cwd_path``.
+    project_id: Mapped[str | None] = mapped_column(
         String(32),
         ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Folder path the artifact lives in. For agent-produced
+    # artifacts this is the ``cwd_path`` of the run that wrote it;
+    # for user-uploaded artifacts it's whichever folder the upload
+    # targeted.
+    cwd_path: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
         index=True,
     )
     # NULL for user-uploaded artifacts; set when an agent run produced

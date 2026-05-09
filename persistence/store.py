@@ -1272,6 +1272,10 @@ def _conversation_to_dict(row: Conversation) -> dict:
         "title": row.title,
         "user_id": row.user_id,
         "project_id": row.project_id,
+        # Folder-as-cwd: where this chat's agent works. NULL on
+        # legacy / unbound rows. See models.Conversation docstring
+        # + 20260518_add_conversation_cwd_path migration.
+        "cwd_path": getattr(row, "cwd_path", None),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},
