@@ -234,20 +234,41 @@ class ClaudeRuntime:
         # ``query()`` accepts an AsyncIterable[dict] when you want
         # multi-message history; the dict envelope matches the SDK's
         # streaming-input contract documented in query()'s docstring.
+        # The SDK's streaming-input mode treats EVERY ``type:"user"``
+        # dict as a fresh prompt the agent must respond to. Replaying
+        # history as a series of user/assistant pairs causes the SDK
+        # to re-answer each historical user turn (observed: msgs=1 →
+        # msgs=3 → msgs=5 progression on the LLM proxy logs, with the
+        # frontend rendering all the responses concatenated as one
+        # ballooning answer). Instead, fold history into a single
+        # ``type:"user"`` whose content includes the prior turns as
+        # context — the SDK then makes exactly one LLM call.
+        #
+        # The bundled claude.exe CLI iterates ``message.content`` looking
+        # for tool-use blocks (``"tool_use_id" in block``); a plain string
+        # makes JS iterate characters and the ``in`` operator throws
+        # ``J is not an Object``. Always wrap as a content-block array.
         async def _prompt_stream():
-            for msg in conversation_history or []:
-                role = msg.get("role")
-                content = msg.get("content")
-                if role in ("user", "assistant") and isinstance(content, str) and content:
-                    yield {
-                        "type": "user" if role == "user" else "assistant",
-                        "message": {"role": role, "content": content},
-                        "parent_tool_use_id": None,
-                        "session_id": "",
-                    }
+            if conversation_history:
+                lines: list[str] = ["[prior conversation]"]
+                for m in conversation_history:
+                    role = m.get("role")
+                    content = m.get("content")
+                    if role in ("user", "assistant") and isinstance(content, str) and content:
+                        speaker = "User" if role == "user" else "Assistant"
+                        lines.append(f"{speaker}: {content}")
+                lines.append("[end prior conversation]")
+                lines.append("")
+                lines.append(user_message)
+                composed = "\n".join(lines)
+            else:
+                composed = user_message
             yield {
                 "type": "user",
-                "message": {"role": "user", "content": user_message},
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": composed}],
+                },
                 "parent_tool_use_id": None,
                 "session_id": "",
             }
@@ -331,6 +352,15 @@ class ClaudeRuntime:
                 # Token-level streaming — fans out to answer_delta
                 # events so the frontend ticker shows progress.
                 include_partial_messages=True,
+                # Thinking disabled by default. Non-Anthropic providers
+                # reached through our LiteLLM Anthropic-compat proxy
+                # (DeepSeek / OpenAI / SiliconFlow / etc.) typically
+                # don't emit signed thinking blocks; their reasoning
+                # comes back as plain text content and bleeds into the
+                # answer body. Disabling at the SDK level keeps the
+                # answer clean. Native-Anthropic deployments can opt
+                # back in by setting OPENCRAIG_THINKING=enabled.
+                thinking={"type": "disabled"},
                 env={
                     "ANTHROPIC_BASE_URL": config.base_url,
                     "ANTHROPIC_API_KEY": config.api_key,
@@ -358,25 +388,37 @@ class ClaudeRuntime:
                     prompt=_prompt_stream(), options=options
                 ):
                     if isinstance(msg, sdk.AssistantMessage):
-                        # Whole-message content blocks. Token-level
-                        # deltas come via StreamEvent (handled below)
-                        # so we only emit thought / tool_use here —
-                        # text content blocks would double-emit.
-                        for block in msg.content:
+                        # Whole-message content blocks land here AFTER all
+                        # the per-token StreamEvent deltas for this turn.
+                        # If we already streamed a block's content via
+                        # ``content_block_delta`` events, re-emitting the
+                        # full block text would duplicate the answer in
+                        # the UI (observed: every reply rendered twice
+                        # back-to-back). Skip blocks at indices we already
+                        # streamed; emit only blocks that arrived without
+                        # partial deltas (non-streaming providers).
+                        for i, block in enumerate(msg.content):
+                            if i in _streamed_indices:
+                                continue
                             if isinstance(block, sdk.ThinkingBlock):
-                                emit(_evt_thinking(block.thinking))
+                                if block.thinking:
+                                    emit(_evt_thinking(block.thinking))
                             elif isinstance(block, sdk.TextBlock):
-                                # If partial-streaming is OFF (or no
-                                # delta events arrived for this block),
-                                # emit the whole text once.
-                                if block.text and not _seen_partial.get(id(block)):
+                                if block.text:
                                     emit(_evt_answer_delta(block.text))
+                        # Reset for the next assistant message — each
+                        # turn opens a fresh content_block sequence.
+                        _streamed_indices.clear()
                     elif isinstance(msg, sdk.StreamEvent):
                         # Token-level streaming. Anthropic SSE format:
                         #   {"type": "content_block_delta",
+                        #    "index": 0,
                         #    "delta": {"type": "text_delta", "text": "..."}}
                         ev = msg.event or {}
                         if ev.get("type") == "content_block_delta":
+                            idx = ev.get("index")
+                            if isinstance(idx, int):
+                                _streamed_indices.add(idx)
                             delta = ev.get("delta") or {}
                             if delta.get("type") == "text_delta":
                                 t = delta.get("text") or ""
@@ -408,10 +450,12 @@ class ClaudeRuntime:
                 ) from e
             return final_text, iterations, raw
 
-        # Track which TextBlock objects already had their text fed
-        # via partial deltas — avoids double-emission of the same
-        # text on the wrap-up AssistantMessage.
-        _seen_partial: dict[int, bool] = {}
+        # Track which content_block indices were emitted via
+        # token-level StreamEvent deltas this turn, so we don't
+        # re-emit the same text when the wrap-up AssistantMessage
+        # arrives with the same blocks. Reset at every
+        # AssistantMessage (each turn opens fresh indices).
+        _streamed_indices: set[int] = set()
 
         try:
             final_text, iterations, raw = asyncio.run(_drive())
