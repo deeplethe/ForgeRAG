@@ -224,6 +224,72 @@ def test_start_failure_wraps_in_sandbox_start_error(make_manager, backend):
 
 
 # ---------------------------------------------------------------------------
+# Folder-as-cwd: per-user workdir mount at /workdir/
+# ---------------------------------------------------------------------------
+
+
+def test_user_workdirs_root_mounts_at_slash_workdir(
+    make_manager, tmp_path, backend
+):
+    """When ``user_workdirs_root`` is set, the user's private
+    workdir tree gets mounted at ``/workdir/`` (single mount,
+    not per-project). This is the v1.0.0 OSS folder-as-cwd path
+    — chat ``cwd_path`` is interpreted as a subpath of this mount.
+    """
+    workdirs = tmp_path / "user-workdirs"
+    workdirs.mkdir()
+    mgr = make_manager(user_workdirs_root=workdirs)
+    h = mgr.ensure_container_for_user("u_alice")
+    paths = {m.container_path: m.host_path for m in h.mounts}
+    assert "/workdir" in paths
+    # Auto-created on first ensure
+    assert (workdirs / "u_alice").exists()
+    # Hosts the user's private subtree
+    assert paths["/workdir"].endswith("u_alice") or \
+        paths["/workdir"].endswith("u_alice/") or \
+        "u_alice" in paths["/workdir"]
+
+
+def test_user_workdirs_root_displaces_per_project_mounts(
+    make_manager, tmp_path, projects_root, backend
+):
+    """When user_workdirs_root is set, owned_project_ids is
+    intentionally ignored. The two mount layouts don't coexist —
+    /workdir/ either IS the user's tree or has per-project subdirs,
+    never both."""
+    workdirs = tmp_path / "user-workdirs"
+    workdirs.mkdir()
+    (projects_root / "p1").mkdir()
+    (projects_root / "p2").mkdir()
+    mgr = make_manager(user_workdirs_root=workdirs)
+    h = mgr.ensure_container_for_user(
+        "u_alice", owned_project_ids=["p1", "p2"]
+    )
+    container_paths = {m.container_path for m in h.mounts}
+    assert "/workdir" in container_paths
+    # Per-project subdirs NOT mounted under the new model
+    assert "/workdir/p1" not in container_paths
+    assert "/workdir/p2" not in container_paths
+
+
+def test_legacy_per_project_path_when_user_workdirs_root_unset(
+    make_manager, projects_root, backend
+):
+    """Without user_workdirs_root, fall back to the pre-refactor
+    per-project mount behaviour. Locked in so future deployments
+    can opt out cleanly."""
+    (projects_root / "p1").mkdir()
+    mgr = make_manager()  # no user_workdirs_root
+    h = mgr.ensure_container_for_user(
+        "u_alice", owned_project_ids=["p1"]
+    )
+    container_paths = {m.container_path for m in h.mounts}
+    assert "/workdir/p1" in container_paths
+    # The single-mount /workdir is NOT used in legacy mode
+    assert "/workdir" not in container_paths
+
+
+# ---------------------------------------------------------------------------
 # Concurrency
 # ---------------------------------------------------------------------------
 

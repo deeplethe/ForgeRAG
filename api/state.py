@@ -345,11 +345,118 @@ class AppState:
 
         # ── Phase 2 agent sandbox ──
         # ``sandbox`` is the per-user Docker container manager
-        # (``persistence.sandbox_manager.SandboxManager``). It stays
-        # None until the lifespan startup wires it. Hermes Agent
-        # runs inside the container and owns code-execution; we
-        # only need the lifecycle (start / stop / bind-mount) here.
-        self.sandbox = None
+        # (``persistence.sandbox_manager.SandboxManager``). When
+        # available, the chat route dispatches the Hermes runtime
+        # in-container (agent has full filesystem tools operating on
+        # the bind-mounted user workdir); when ``None``, the route
+        # falls back to in-process Hermes with built-in toolsets
+        # disabled (degraded but functional Q&A).
+        #
+        # We try to construct it eagerly here. Failures (docker SDK
+        # not installed, daemon unreachable, image missing) leave
+        # ``sandbox = None`` and the chat route picks up the
+        # fallback automatically — the deployment can run without
+        # Docker; the Workspace UX is just degraded.
+        self.sandbox = self._try_init_sandbox()
+
+    # ------------------------------------------------------------------
+    def _try_init_sandbox(self):
+        """Best-effort SandboxManager construction.
+
+        Returns a live SandboxManager when:
+          * the docker SDK is importable AND
+          * the daemon is reachable AND
+          * the configured sandbox image exists (we don't pull
+            it — the operator did ``scripts/build-sandbox.sh``)
+
+        Returns ``None`` otherwise. The chat route checks this and
+        falls back to in-process Hermes (toolsets disabled, MCP
+        domain-tools only) so the deployment stays functional even
+        without Docker.
+
+        Logs at INFO when sandbox is up, at WARNING when we'd have
+        liked to use Docker but couldn't — operators see in startup
+        logs which mode they're in.
+        """
+        import logging as _logging
+
+        _log = _logging.getLogger(__name__)
+
+        try:
+            import docker
+        except ImportError:
+            _log.info(
+                "sandbox: docker SDK not installed — Hermes will run "
+                "in-process (Workspace agent tools degraded; install "
+                "the docker package + run scripts/build-sandbox.sh "
+                "for the full experience)"
+            )
+            return None
+
+        try:
+            from persistence.sandbox_manager import (
+                DEFAULT_SANDBOX_IMAGE,
+                DockerBackend,
+                SandboxManager,
+            )
+        except Exception:
+            _log.exception("sandbox: SandboxManager import failed")
+            return None
+
+        try:
+            client = docker.from_env()
+            client.ping()  # cheap reachability check
+        except Exception as e:
+            _log.info(
+                "sandbox: docker daemon unreachable (%s: %s) — "
+                "in-process fallback active",
+                type(e).__name__,
+                e,
+            )
+            return None
+
+        # Image presence check — skip the manager construction if the
+        # operator hasn't built the sandbox image yet. Pulling it on
+        # demand would be a 2 GB surprise; better to be loud about
+        # the missing-image state.
+        image = DEFAULT_SANDBOX_IMAGE
+        try:
+            client.images.get(image)
+        except Exception:
+            _log.warning(
+                "sandbox: image %r not found locally — Workspace agent "
+                "tools degraded. Run ``scripts/build-sandbox.sh`` to "
+                "build it; the chat route will pick up the change on "
+                "next backend restart.",
+                image,
+            )
+            return None
+
+        try:
+            user_workdirs_root = (
+                getattr(self.cfg.agent, "user_workdirs_root", None)
+                or "./storage/user-workdirs"
+            )
+            mgr = SandboxManager(
+                backend=DockerBackend(client),
+                image=image,
+                projects_root=getattr(
+                    self.cfg.agent, "projects_root", "./storage/projects"
+                ),
+                user_envs_root="./storage/user-envs",
+                user_workdirs_root=user_workdirs_root,
+            )
+        except Exception:
+            _log.exception("sandbox: SandboxManager construction failed")
+            return None
+
+        _log.info(
+            "sandbox: Hermes-in-container path active (image=%s, "
+            "user_workdirs_root=%s)",
+            image,
+            user_workdirs_root,
+        )
+        return mgr
 
     # ------------------------------------------------------------------
     def _ensure_indices(self) -> None:

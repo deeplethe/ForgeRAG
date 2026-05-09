@@ -16,16 +16,37 @@ from pydantic import BaseModel
 
 
 class AgentConfig(BaseModel):
-    # Where project workdirs live on disk. Containers bind-mount the
-    # per-project subdir at /workdir/<project_id>/ in Phase 2; for
-    # now the directory just hosts the soft-conventional layout
-    # ``inputs/``, ``outputs/``, ``scratch/``, ``.agent-state/`` that
-    # ProjectService.scaffold_workdir creates on project creation.
+    # Where project workdirs live on disk. Pre-folder-as-cwd, this
+    # was where containers bind-mounted per-project subdirs at
+    # ``/workdir/<project_id>/``. Under the v1.0.0 OSS folder-as-cwd
+    # model the agent path uses ``user_workdirs_root`` instead; this
+    # field is retained for legacy code paths (project_files routes,
+    # old agent_runs rows referencing project_id) until the cleanup
+    # migration drops Project entirely.
     #
     # Local filesystem only by design — containers can't bind-mount
     # S3 / OSS, so the agent surface stays local even when figure
     # storage is remote.
     projects_root: str = "./storage/projects"
+
+    # Where each user's private workdir tree lives on disk.
+    # ``<user_workdirs_root>/<user_id>/`` is bind-mounted into the
+    # user's sandbox container at ``/workdir/`` — the agent's view
+    # of "the user's filesystem".
+    #
+    # Chat ``cwd_path`` is interpreted RELATIVE to this mount: UI
+    # shows ``/sales/2025/``, host has
+    # ``<user_workdirs_root>/<user_id>/sales/2025/``, container
+    # sees ``/workdir/sales/2025/``. Three-layer mapping aligned.
+    #
+    # Auto-created on first chat. Files persist across container
+    # restarts (the mount is the durable store; the container is
+    # ephemeral compute).
+    #
+    # Set to empty string to disable the folder-as-cwd path and
+    # fall back to legacy per-project mounts (rare; intended only
+    # for deployments stuck on the pre-refactor data model).
+    user_workdirs_root: str = "./storage/user-workdirs"
 
     # Hard upper bound on the total size of a project's workdir
     # (uploads + agent outputs + trash combined). Default ~10 GiB

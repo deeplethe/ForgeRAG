@@ -244,6 +244,7 @@ class SandboxManager:
         image: str = DEFAULT_SANDBOX_IMAGE,
         projects_root: Path | str = "storage/projects",
         user_envs_root: Path | str = "storage/user-envs",
+        user_workdirs_root: Path | str | None = None,
         container_name_prefix: str = DEFAULT_CONTAINER_NAME_PREFIX,
         container_idle_seconds: int = DEFAULT_CONTAINER_IDLE_SECONDS,
         published_ports: dict[int, int] | None = None,
@@ -253,6 +254,21 @@ class SandboxManager:
         self.image = image
         self.projects_root = Path(projects_root)
         self.user_envs_root = Path(user_envs_root)
+        # Per-user workdir tree (folder-as-cwd). Each user gets a
+        # private filesystem at ``<user_workdirs_root>/<user_id>/``
+        # that's bind-mounted to ``/workdir/`` in their container.
+        # Chat ``cwd_path`` is interpreted RELATIVE to this mount
+        # — UI shows ``/sales/2025/``, host has
+        # ``<root>/<user_id>/sales/2025/``, container sees
+        # ``/workdir/sales/2025/``.
+        #
+        # ``None`` keeps the legacy per-project mount behaviour (for
+        # the rare deployment that hasn't migrated to folder-as-cwd
+        # yet, or for tests that don't want the user-workdir
+        # auto-create).
+        self.user_workdirs_root = (
+            Path(user_workdirs_root) if user_workdirs_root else None
+        )
         self.container_name_prefix = container_name_prefix
         self.container_idle_seconds = container_idle_seconds
         # Port range to publish on every fresh container. Originally
@@ -457,36 +473,65 @@ class SandboxManager:
     ) -> tuple[Mount, ...]:
         """Compose the bind-mount list for a fresh container.
 
-        Mount layout matches the roadmap's Deployment topology:
+        Two layouts coexist while we transition out of the legacy
+        Project-bound model:
 
-            <projects_root>/<pid>      → /workdir/<pid>     (one per owned project)
-            <user_envs_root>/<uid>     → /workspace/.envs   (per-user persistent runtimes)
+            user_workdirs_root SET (folder-as-cwd, the v1.0.0 OSS
+            path):
+                <user_workdirs_root>/<user_id>  → /workdir
+                <user_envs_root>/<user_id>      → /workspace/.envs
+
+            user_workdirs_root NOT SET (legacy per-project, kept for
+            deployments still on the project-bound model):
+                <projects_root>/<pid>           → /workdir/<pid>     (per owned project)
+                <user_envs_root>/<user_id>      → /workspace/.envs
+
+        The folder-as-cwd path is the future; HermesContainerRunner
+        always passes ``owned_project_ids=()`` so the per-project
+        branch is dead code under the new chat route.
         """
         mounts: list[Mount] = []
-        # Per-project mounts. Skip silently for missing host dirs —
-        # ProjectService.create scaffolds the dir before any agent
-        # work, so a missing dir means a stale project_id sneaked
-        # through; we'd rather start the container with one fewer
-        # mount than fail outright.
-        for pid in owned_project_ids:
-            host = self.projects_root / pid
-            if not host.exists():
-                log.warning(
-                    "sandbox: project workdir missing user=%s project=%s "
-                    "expected=%s — skipping mount",
-                    user_id,
-                    pid,
-                    host,
-                )
-                continue
+
+        if self.user_workdirs_root is not None:
+            # Folder-as-cwd: ONE mount, the user's private workdir
+            # tree. Auto-create the host dir on first ensure so the
+            # first chat doesn't fail with "host path missing" — same
+            # affordance the user_envs mount below uses.
+            user_workdir = self.user_workdirs_root / user_id
+            user_workdir.mkdir(parents=True, exist_ok=True)
             mounts.append(
                 Mount(
-                    host_path=str(host.resolve()),
-                    container_path=f"/workdir/{pid}",
+                    host_path=str(user_workdir.resolve()),
+                    container_path="/workdir",
                 )
             )
+        else:
+            # Legacy per-project mounts. Skip silently for missing
+            # host dirs — ProjectService.create scaffolds the dir
+            # before any agent work, so a missing dir means a stale
+            # project_id sneaked through; we'd rather start the
+            # container with one fewer mount than fail outright.
+            for pid in owned_project_ids:
+                host = self.projects_root / pid
+                if not host.exists():
+                    log.warning(
+                        "sandbox: project workdir missing user=%s project=%s "
+                        "expected=%s — skipping mount",
+                        user_id,
+                        pid,
+                        host,
+                    )
+                    continue
+                mounts.append(
+                    Mount(
+                        host_path=str(host.resolve()),
+                        container_path=f"/workdir/{pid}",
+                    )
+                )
+
         # Per-user envs volume. Auto-created if missing; this is the
-        # single source of truth for install_runtime caches.
+        # single source of truth for install_runtime caches and
+        # outlives container restarts.
         user_env = self.user_envs_root / user_id
         user_env.mkdir(parents=True, exist_ok=True)
         mounts.append(
