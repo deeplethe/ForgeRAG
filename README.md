@@ -423,7 +423,7 @@ Inquiries about Enterprise: [opencraig.com](https://opencraig.com).
 
 Bug reports, features, docs improvements, translations all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Stop by [Discord](https://discord.gg/XJadJHvxdQ) for design discussions.
 
-PRs require accepting the [CLA](RELICENSING.md#future-contributions) so the project retains the right to issue commercial licenses derived from the codebase. The OSS core stays AGPLv3 — that doesn't change.
+Contributions are accepted under AGPLv3, the same license the project ships under. The OSS core stays AGPLv3 — that doesn't change.
 
 Note that Enterprise-edition features (lineage, audit, promote-to-library, sandbox code execution, skills, SSO/SCIM) live in a separate codebase and don't accept external contributions.
 
@@ -444,8 +444,3 @@ OpenCraig is released under the [GNU Affero General Public License v3.0](LICENSE
 OpenCraig without AGPLv3 obligations — for example, embedding into a
 proprietary product, or running a closed-source managed service. Contact
 [info@deeplethe.com](mailto:info@deeplethe.com) for terms.
-
-> Versions tagged before the AGPL switch were released under the MIT License;
-> that grant remains valid for those earlier versions. The original MIT text
-> is preserved at [`LICENSE.MIT-historical`](LICENSE.MIT-historical) for
-> reference. See [`RELICENSING.md`](RELICENSING.md) for details.

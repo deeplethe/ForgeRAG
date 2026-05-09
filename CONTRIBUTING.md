@@ -68,7 +68,5 @@ python main.py --workers 1 --reload
 
 ## License
 
-OpenCraig is released under the [GNU AGPLv3](LICENSE). By contributing, you agree
-that your contributions will be licensed under the AGPLv3, and you accept the
-[Contributor License Agreement](RELICENSING.md#future-contributions) so the
-project retains the right to issue commercial licenses derived from the codebase.
+OpenCraig is released under the [GNU AGPLv3](LICENSE). By contributing, you
+agree that your contributions will be licensed under the AGPLv3.

@@ -379,7 +379,7 @@ Enterprise 咨询：[opencraig.com](https://opencraig.com)。
 
 欢迎 bug、功能、文档改进、翻译。见 [CONTRIBUTING.md](CONTRIBUTING.md)。可以来 [Discord](https://discord.gg/XJadJHvxdQ) 聊设计。
 
-PR 需要签 [CLA](RELICENSING.md#future-contributions)，让项目保留发商业 license 的权利。OSS 核心保持 AGPLv3——不变。
+贡献按 AGPLv3 授权，跟项目本身一致。OSS 核心保持 AGPLv3——不变。
 
 注意：Enterprise 版的功能（血缘、审计、promote-to-library、沙箱代码执行、skills、SSO/SCIM）在独立的代码库里，不接受外部贡献。
 
@@ -399,7 +399,3 @@ OpenCraig 采用 [GNU Affero 通用公共许可证 v3.0](LICENSE)（AGPLv3）发
 **商业许可**：如果你的组织需要在不受 AGPLv3 约束下使用 OpenCraig
 （例如嵌入到闭源产品中，或运行闭源的托管服务），可联系
 [info@deeplethe.com](mailto:info@deeplethe.com) 取得商业许可。
-
-> AGPL 切换之前发布的版本仍按 MIT License 授权，那些版本对应的授权
-> 永久有效。原始 MIT 文本保留在 [`LICENSE.MIT-historical`](LICENSE.MIT-historical)。
-> 详情见 [`RELICENSING.md`](RELICENSING.md)。
