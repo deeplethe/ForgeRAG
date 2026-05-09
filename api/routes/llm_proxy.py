@@ -321,6 +321,39 @@ async def anthropic_messages(
     if cfg_base and "api_base" not in kwargs:
         kwargs["api_base"] = cfg_base
 
+    # DeepSeek's V4-Pro / reasoner family ALWAYS emits reasoning_content
+    # unless the request body carries ``thinking={"type":"disabled"}``
+    # (per https://api.deepseek.com docs). The bundled claude CLI,
+    # however, silently drops the ``thinking`` field whenever it's set
+    # to disabled, so the param never reaches the wire — and even when
+    # it does, LiteLLM's own DeepSeek transformer
+    # (deepseek/chat/transformation.py:51-57) filters out anything
+    # other than ``{"type":"enabled"}``. The reliable bypass is
+    # ``extra_body``: LiteLLM's HTTP handler merges these keys into
+    # the request body AFTER transformation
+    # (custom_httpx/llm_http_handler.py:418-419), so the field survives
+    # to DeepSeek's API as native ``thinking={"type":"disabled"}``.
+    #
+    # This proxy is only called by the agent loopback; agent loops
+    # don't benefit from per-LLM-call CoT (they have their own
+    # iteration loop), so unconditionally disabling thinking here is
+    # the correct policy. Callers that want CoT should send
+    # ``thinking={"type":"enabled"}`` explicitly — we honor that.
+    if body.model.startswith("deepseek/"):
+        wanted_thinking = kwargs.get("thinking")
+        wants_enabled = (
+            isinstance(wanted_thinking, dict)
+            and wanted_thinking.get("type") == "enabled"
+        )
+        if not wants_enabled:
+            eb = dict(kwargs.get("extra_body") or {})
+            eb["thinking"] = {"type": "disabled"}
+            kwargs["extra_body"] = eb
+        # The top-level ``thinking`` field (whether enabled or disabled)
+        # confuses LiteLLM's mapper for non-Anthropic providers — keep
+        # the disable signal in extra_body only.
+        kwargs.pop("thinking", None)
+
     log.info(
         "llm_proxy.anthropic: user=%s model=%s stream=%s msgs=%d",
         principal.user_id,
@@ -412,6 +445,20 @@ async def _stream_anthropic_chunks(litellm_mod, kwargs: dict[str, Any]):
 
     try:
         async for chunk in stream:
+            # LiteLLM's anthropic adapter yields RAW SSE-formatted
+            # bytes/str (already ``event: ...\ndata: {...}\n\n``). Wrapping
+            # those again with ``f"data: {payload}\n\n"`` would double-
+            # encode and the bundled ``claude`` CLI binary sees a flood
+            # of empty ``data: {}`` events, falls back to non-streaming,
+            # and concatenates reasoning + answer into one text block.
+            # Pass bytes/str through unmodified.
+            if isinstance(chunk, (bytes, bytearray)):
+                yield bytes(chunk).decode("utf-8", errors="replace")
+                continue
+            if isinstance(chunk, str):
+                yield chunk
+                continue
+            # Pydantic / dict / unknown — fall back to JSON-wrapping.
             try:
                 if hasattr(chunk, "model_dump_json"):
                     payload = chunk.model_dump_json()
