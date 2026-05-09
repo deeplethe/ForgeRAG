@@ -347,11 +347,12 @@ lives here, and they need a commercial product behind them:
   compounds across runs
 - **Audit UI** — "what did the agent do with this folder?" reverse
   query; "this doc influenced which artifacts?"
-- **Sandboxed code execution** — Hermes runs in a per-user
-  container with bash / edit / grep tools enabled; backend
-  orchestrates lifecycle + lineage attribution
-- **Workspace folder model** — folder-as-project (Claude-Code-style)
-  with per-folder agent runtime + cwd scoping
+- **Per-folder agent runtime + lineage** — Enterprise pins each
+  user's chats to a separate sandbox per folder, with lineage
+  attribution (which run touched which files), runtime isolation
+  hardening, and skills-per-folder. OSS ships the baseline
+  folder-as-cwd model (one per-user sandbox; agent chdirs into
+  the chat's folder, runs bash / edit / grep there).
 - **Skills as auditable team workflows** — codified, versioned,
   team-shared agent procedures with full provenance
 - **SSO / SCIM** — Okta / Azure AD provisioning, group-based authz

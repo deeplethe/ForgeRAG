@@ -39,6 +39,24 @@ boundary.
 
 ### Added
 
+- **Folder-as-cwd workspace model.** v1.0 drops the project
+  entity from the agent's mental model: each user owns a private
+  workdir tree at `<user_workdirs_root>/<user_id>/`, bind-mounted
+  into their sandbox container at `/workdir/`. Chats carry a
+  `cwd_path` (e.g. `/sales/2025`) and the agent chdirs there
+  before reading or writing files. The Workspace UI is now a
+  folder browser over that tree; "Open chat here" anchors a
+  conversation to the folder you're in. The Project entity and
+  its routes are kept rendering for legacy project-bound chats
+  but marked deprecated.
+- **`/api/v1/workdir/...` route family** — list / mkdir / upload /
+  download against the user's private workdir. Path safety:
+  leading `/` means workdir root, `..` rejected, descendant
+  validation via `Path.relative_to`.
+- **`import_from_library(target_subpath=...)`** — workdir-relative
+  target, resolves against `<user_workdirs_root>/<user_id>/`. The
+  legacy `target_subdir` + bound `project_id` path stays for
+  project-bound chats.
 - **MCP server at `/api/v1/mcp`** — domain tools (`search_vector`,
   `read_chunk`, `read_tree`, `graph_explore`, `web_search`,
   `rerank`, `import_from_library`) exposed via the Model Context
