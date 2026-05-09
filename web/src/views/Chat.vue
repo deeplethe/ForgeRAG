@@ -64,9 +64,11 @@ import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyn
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace } from '@/api'
-import { FolderKanban as FolderKanbanIcon, X as XIcon } from 'lucide-vue-next'
+import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, X as XIcon } from 'lucide-vue-next'
+import { useDialog } from '@/composables/useDialog'
 
 const { t } = useI18n()
+const dialog = useDialog()
 import { renderMarkdown } from '@/utils/renderMarkdown'
 import { useDocCache } from '@/composables/useDocCache'
 // Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
@@ -126,14 +128,9 @@ watch(pathFilter, v => {
   router.replace({ query: q })
 })
 
-// Project binding via ?project=<id>. When set, NEW conversations
-// created here (the first send() in an unbound chat) will write
-// ``Conversation.project_id`` so subsequent agent runs land in the
-// project's workdir + run history. Resolved name is shown in the
-// header banner so users see they're "working on" a project rather
-// than firing free-floating chat. Phase 1.6 will use the same id
-// to augment the system prompt with the project's name + workdir
-// file list.
+// Project binding via ?project=<id>. **Legacy** — pre-folder-as-cwd.
+// New chats use ``?cwd=`` (boundCwdPath below). Kept rendering for
+// existing project-bound conversations until S6 deprecation.
 const boundProjectId = ref(route.query.project || '')
 const boundProject = ref(null)  // {project_id, name, ...} once fetched
 watch(() => route.query.project, v => { boundProjectId.value = v || '' })
@@ -143,13 +140,51 @@ watch(boundProjectId, async v => {
   catch { boundProject.value = null }
 }, { immediate: true })
 
-// Clear the binding from the URL only — the conversation row, if
-// already created, keeps its project_id (un-binding the row needs
-// a PATCH the Phase-1.7 polish surfaces). This intentionally
-// matches the path-filter chip's "remove from URL" behaviour.
 function clearProjectBinding() {
   const q = { ...route.query }
   delete q.project
+  router.replace({ query: q })
+}
+
+// Folder-as-cwd binding via ?cwd=<path>. The Workspace UI's
+// "Open chat here" navigates with this query param; the path is
+// the AGENT'S WORKING DIRECTORY for the chat — bash / edit / grep
+// operate within /workdir/<cwd_path>/ inside the sandbox, and any
+// files the agent writes land here. Editable mid-conversation:
+// the banner has a "switch folder" affordance that updates the
+// query and the next send carries the new cwd_path through to
+// the backend (which writes it back onto the Conversation row).
+const boundCwdPath = ref(route.query.cwd || '')
+watch(() => route.query.cwd, v => { boundCwdPath.value = v || '' })
+
+function clearCwdBinding() {
+  const q = { ...route.query }
+  delete q.cwd
+  router.replace({ query: q })
+}
+
+async function switchCwdFolder() {
+  // v1.0 minimal: prompt for a path. v1.1 will swap this for a
+  // proper folder-picker dialog showing the user's workdir tree.
+  // Backend creates the folder if it doesn't exist (mkdir
+  // semantics in workdir route + entrypoint chdir auto-create).
+  const next = await dialog.prompt({
+    title: t('chat.cwd_banner.switch_dialog.title'),
+    description: t('chat.cwd_banner.switch_dialog.description'),
+    placeholder: '/sales/2025',
+    initialValue: boundCwdPath.value || '',
+    confirmText: t('chat.cwd_banner.switch_dialog.confirm'),
+  })
+  if (next == null) return
+  const trimmed = String(next).trim()
+  // Empty input → clear binding (root chat).
+  if (!trimmed) {
+    clearCwdBinding()
+    return
+  }
+  let normalized = trimmed.startsWith('/') ? trimmed : '/' + trimmed
+  normalized = normalized.replace(/\/+$/, '') || '/'
+  const q = { ...route.query, cwd: normalized }
   router.replace({ query: q })
 }
 
@@ -559,7 +594,7 @@ async function send(text) {
     for await (const evt of agentChatStream({
       message: q,
       conversationId: convId.value,
-      pathFilters: pathFilter.value ? [pathFilter.value] : null,
+      cwdPath: boundCwdPath.value || null,
       signal: abortCtrl.value.signal,
     })) {
       // If conversation switched away, stop updating UI (but don't
@@ -1065,14 +1100,11 @@ function onTraceClick(m) {
     <!-- ═══════ Chat main ═══════ -->
     <div class="flex-1 flex flex-col min-w-0">
 
-      <!-- Project binding banner — visible whenever ?project=<id> is
-           in the URL. Tells the user this chat is "working on" a
-           project so the agent's tool calls (Phase 2+) will land in
-           that project's workdir. Click the project name to jump
-           into the project detail view; the small × clears the
-           binding for THIS view only (the conversation row, if it
-           exists, keeps its project_id — un-binding the row needs
-           a separate PATCH which Phase 1.7 will surface). -->
+      <!-- Project binding banner — LEGACY (pre-folder-as-cwd). Visible
+           only for conversations that already carry ?project=<id> in
+           the URL; new chats use the cwd banner below. Kept rendering
+           until S6 deprecation lands so existing project-bound chats
+           don't lose their visual context overnight. -->
       <div
         v-if="boundProject"
         class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[11.5px] text-t2"
@@ -1094,6 +1126,47 @@ function onTraceClick(m) {
         >
           <XIcon :size="13" :stroke-width="1.75" />
         </button>
+      </div>
+
+      <!-- cwd-binding banner — visible whenever ?cwd=<path> is in the
+           URL. Tells the user the agent is anchored to <path> inside
+           their workdir; tool calls that read/write files land there.
+           "Switch" prompts for a new path (v1.0 minimal — v1.1 will
+           swap this for a folder picker). The × clears the binding
+           for THIS view; the next send will run at /workdir root.
+           Backend writes the chosen path back onto the Conversation
+           row, so reload + sidebar return arrive in the same folder. -->
+      <div
+        v-if="boundCwdPath && !boundProject"
+        class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[11.5px] text-t2"
+      >
+        <div class="flex items-center gap-2 min-w-0">
+          <FolderOpenIcon :size="13" :stroke-width="1.75" class="text-t3 shrink-0" />
+          <span class="text-t3 shrink-0">{{ t('chat.cwd_banner.working_in') }}</span>
+          <button
+            class="font-mono text-t1 truncate hover:underline"
+            :title="t('chat.cwd_banner.open_in_workspace')"
+            @click="router.push({ path: '/workspace', query: { path: boundCwdPath } })"
+          >
+            {{ boundCwdPath }}
+          </button>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            class="px-1.5 py-0.5 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors"
+            :title="t('chat.cwd_banner.switch')"
+            @click="switchCwdFolder"
+          >
+            {{ t('chat.cwd_banner.switch') }}
+          </button>
+          <button
+            class="p-0.5 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors"
+            :title="t('chat.cwd_banner.clear')"
+            @click="clearCwdBinding"
+          >
+            <XIcon :size="13" :stroke-width="1.75" />
+          </button>
+        </div>
       </div>
 
       <!-- EMPTY STATE -->

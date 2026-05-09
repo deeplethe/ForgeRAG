@@ -36,17 +36,26 @@
 export async function* agentChatStream({
   message,
   conversationId = null,
+  cwdPath = null,
   signal,
 }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
+  const body = {
+    query: message,
+    conversation_id: conversationId,
+  }
+  // Folder-as-cwd: the agent's working directory for this turn.
+  // Backend resolves order: body.cwd_path > Conversation.cwd_path
+  // > none (pure Q&A at /workdir root). Sending it on every turn
+  // also handles the "switch folder" gesture — backend updates
+  // the Conversation row when this differs from what's stored.
+  if (cwdPath) body.cwd_path = cwdPath
+
   const res = await fetch(`${BASE}/api/v1/agent/hermes-chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({
-      query: message,
-      conversation_id: conversationId,
-    }),
+    body: JSON.stringify(body),
     signal,
   })
 

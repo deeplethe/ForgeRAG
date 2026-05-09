@@ -338,6 +338,17 @@
       "working_on": "当前项目：",
       "clear": "退出项目上下文"
     },
+    "cwd_banner": {
+      "working_in": "工作目录：",
+      "switch": "切换",
+      "clear": "退出目录上下文",
+      "open_in_workspace": "在工作区中打开",
+      "switch_dialog": {
+        "title": "切换工作目录",
+        "description": "输入工作目录中的路径（例如 /sales/2025）。Agent 下一轮会切到这个目录；不存在的目录会自动创建。留空则清除。",
+        "confirm": "切换"
+      }
+    },
     "may_make_mistakes": "OpenCraig 可能出错。引用都附原文出处 —— 引用前请核对。",
     "preset": {
       "whats_here": "这里有些什么文档？",

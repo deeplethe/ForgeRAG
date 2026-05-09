@@ -338,6 +338,17 @@
       "working_on": "Working on:",
       "clear": "Leave project context"
     },
+    "cwd_banner": {
+      "working_in": "Working in:",
+      "switch": "Switch",
+      "clear": "Leave folder context",
+      "open_in_workspace": "Open in Workspace",
+      "switch_dialog": {
+        "title": "Switch folder",
+        "description": "Enter a folder path inside your workdir (e.g. /sales/2025). The agent's next turn runs in this folder; missing folders are created on the fly. Leave empty to clear.",
+        "confirm": "Switch"
+      }
+    },
     "may_make_mistakes": "OpenCraig may make mistakes. Citations link to the source — verify before quoting.",
     "preset": {
       "whats_here": "What's in this workspace?",
