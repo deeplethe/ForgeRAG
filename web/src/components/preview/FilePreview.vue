@@ -80,6 +80,10 @@
               v-else-if="kind === 'docx'"
               :url="previewUrl"
             />
+            <HtmlPreview
+              v-else-if="kind === 'html'"
+              :url="previewUrl"
+            />
             <div v-else class="preview-modal__unsupported">
               <FileIcon
                 kind="file"
@@ -151,6 +155,7 @@ import MarkdownPreview from './MarkdownPreview.vue'
 const CodePreview = defineAsyncComponent(() => import('./CodePreview.vue'))
 const SpreadsheetPreview = defineAsyncComponent(() => import('./SpreadsheetPreview.vue'))
 const DocxPreview = defineAsyncComponent(() => import('./DocxPreview.vue'))
+const HtmlPreview = defineAsyncComponent(() => import('./HtmlPreview.vue'))
 
 const { t } = useI18n()
 
