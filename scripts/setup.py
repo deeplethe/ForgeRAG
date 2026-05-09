@@ -106,6 +106,16 @@ def dependencies_for(cfg: dict[str, Any]) -> list[tuple[str, str]]:
     if embedder_backend == "sentence_transformers":
         out.append(("sentence_transformers", "sentence-transformers"))
 
+    # NOTE: ``docker`` (Python Engine API client) is intentionally NOT
+    # listed here. It's a soft dependency for the Workbench agent's
+    # sandbox container path — when present + daemon reachable, the
+    # agent gets real Read / Edit / Write / Bash / python_exec; when
+    # absent, ``api/state.py`` falls back to in-process degraded
+    # mode (Library-search tools still work). Operators who want
+    # sandbox install it themselves: ``pip install docker``. The
+    # diagnostic in ``api/state.py`` distinguishes "SDK missing"
+    # from "daemon unreachable" so the right action is obvious.
+
     # De-dup on import_name (preserves first-seen order)
     seen = set()
     deduped: list[tuple[str, str]] = []

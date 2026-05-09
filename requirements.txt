@@ -54,34 +54,6 @@ mcp>=1.27
 #    API calls.
 claude-agent-sdk>=0.1.80
 
-# ── Sandbox container manager (Phase 2 agent loop) ──────────────────────────
-#
-#    The Docker Engine API client. ``api/state.py`` uses it to start /
-#    stop / reap per-user sandbox containers via SandboxManager — the
-#    container is what gives the agent SDK a real ``/workdir/`` to
-#    read / edit / write inside, plus the python_exec tool wired to
-#    a jupyter kernel.
-#
-#    Soft-required: when the SDK is missing OR the daemon is
-#    unreachable, ``api/state.py`` falls back to in-process mode and
-#    the agent loses Read / Edit / Write / Bash / Glob / Grep /
-#    python_exec (only the OpenCraig MCP search tools survive).
-#
-#    Why it's listed here despite the soft fallback: an empty
-#    ``./docker/`` folder lives at the repo root (Dockerfile +
-#    config.yaml material). When the SDK isn't installed, Python
-#    3.13's PEP 420 namespace-package resolution treats that folder
-#    as the ``docker`` module and ``import docker`` succeeds with an
-#    EMPTY namespace — ``docker.from_env()`` then raises
-#    ``AttributeError`` which the soft fallback misclassifies as
-#    "daemon unreachable", masking the missing-dep root cause.
-#    Pinning the SDK here removes the failure mode entirely.
-#
-#    Daemon connection respects ``DOCKER_HOST`` for remote daemons
-#    (e.g. ``tcp://infra:2375``). The Python SDK still needs to be
-#    installed locally even when the daemon lives on another host.
-docker>=7.1
-
 # ── Observability (OpenTelemetry) ────────────────────────────────────────────
 # SDK + OTLP HTTP exporter (so users can point at Langfuse / Jaeger / etc.)
 # + auto-instrumentation for FastAPI, SQLAlchemy, and outbound httpx (used by
