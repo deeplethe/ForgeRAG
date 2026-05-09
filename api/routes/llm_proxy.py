@@ -121,7 +121,7 @@ class _ChatCompletionsBody(BaseModel):
     (temperature / tools / tool_choice / max_tokens / stop /
     response_format / extra_body / ...) pass through unchanged
     via ``extra="allow"`` — keeping us forward-compatible with
-    whatever new parameter Hermes / OpenAI ship next month.
+    whatever new parameter the SDK / OpenAI ship next month.
     """
 
     model_config = ConfigDict(extra="allow")

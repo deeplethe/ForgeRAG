@@ -1,5 +1,5 @@
 """
-/api/v1/agent/hermes-chat — chat surface backed by Hermes Agent.
+/api/v1/agent/chat — chat surface backed by Claude Agent SDK.
 
 This is the Wave 2.5 route, the chat endpoint that B-MVP ships.
 Coexists with the legacy ``/api/v1/agent/chat`` (handcrafted
@@ -13,7 +13,7 @@ Wire format (SSE, ``text/event-stream``):
         agent.thought    { text }            (zero or more)
         tool.call_start  { id, tool, params }
         tool.call_end    { id, tool, latency_ms, result_summary }
-            (interleaved with answer.delta as Hermes loops)
+            (interleaved with answer.delta as the SDK loops)
         answer.delta     { text }            (token-stream of the model)
         agent.turn_end   { turn: 1 }
         done             { stop_reason, total_latency_ms,
@@ -25,7 +25,7 @@ adaptation. Wave 2.6's frontend changes are mostly about labelling
 and artifact preview, not protocol.
 
 Authz: the standard ``Depends(get_principal)`` covers cookie /
-bearer auth (same as every other route). Hermes itself runs
+bearer auth (same as every other route). the SDK itself runs
 in-process — its tool surface is whatever our MCP server exposes
 (``api.routes.mcp_tools``), and those tools enforce per-user authz
 via ``build_tool_context`` just like the legacy SSE route.
@@ -53,15 +53,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..agent.hermes_container_runtime import (
-    HermesContainerRunner,
+from ..agent.claude_container_runtime import (
+    ClaudeContainerRunner,
     SandboxUnavailableError,
     stream_turn_container,
 )
 from ..agent.claude_runtime import (
-    HermesRuntime,
-    HermesTurnConfig,
-    HermesUnavailableError,
+    ClaudeRuntime,
+    ClaudeTurnConfig,
+    ClaudeUnavailableError,
     stream_turn,
 )
 from ..auth import AuthenticatedPrincipal
@@ -70,7 +70,7 @@ from ..state import AppState
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/agent", tags=["hermes-chat"])
+router = APIRouter(prefix="/api/v1/agent", tags=["claude-chat"])
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ router = APIRouter(prefix="/api/v1/agent", tags=["hermes-chat"])
 # ---------------------------------------------------------------------------
 
 
-class HermesChatRequest(BaseModel):
+class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
     conversation_id: str | None = None
     """Optional conversation to continue. When set, prior user /
@@ -119,7 +119,7 @@ def _resolve_model_config(state: AppState, override: str | None) -> tuple[str, s
 
     Reads cfg.answering.generator as the default; ``override`` lets a
     request pin a specific model. Returns ``base_url=None`` when the
-    config doesn't pin one — Hermes falls back to the OPENAI_BASE_URL
+    config doesn't pin one — the SDK falls back to the OPENAI_BASE_URL
     env var or the provider default.
     """
     gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
@@ -132,7 +132,7 @@ def _resolve_model_config(state: AppState, override: str | None) -> tuple[str, s
     base_url = gen.api_base or None
 
     # Resolve api_key: explicit value wins, then env var name, then
-    # let Hermes / openai SDK fall back to OPENAI_API_KEY env.
+    # let the SDK / openai SDK fall back to OPENAI_API_KEY env.
     api_key: str | None = None
     if gen.api_key:
         api_key = gen.api_key
@@ -146,7 +146,7 @@ def _resolve_model_config(state: AppState, override: str | None) -> tuple[str, s
 
 def _load_conversation_history(state: AppState, conv_id: str) -> list[dict]:
     """Load prior user / assistant turns for an existing conversation
-    so Hermes sees the context. Tool-call detail is NOT included —
+    so the SDK sees the context. Tool-call detail is NOT included —
     re-running the agent from text-only history is cheap enough
     (BM25 + vector hits cache via the embedding cache layer) and
     the schema's role column is restricted to user / assistant."""
@@ -242,11 +242,11 @@ def _persist_agent_run(
             }
         )
     except Exception:
-        log.exception("hermes_chat: agent_run persist failed run_id=%s", run_id)
+        log.exception("claude_chat: agent_run persist failed run_id=%s", run_id)
 
 
 # ---------------------------------------------------------------------------
-# SSE event translation: HermesRuntime events → wire format
+# SSE event translation: ClaudeRuntime events → wire format
 # ---------------------------------------------------------------------------
 
 
@@ -261,7 +261,7 @@ def _sse(type_: str, payload: dict) -> str:
 
 
 def _translate(evt: dict) -> str | None:
-    """Map a HermesRuntime event dict to a single SSE block.
+    """Map a ClaudeRuntime event dict to a single SSE block.
 
     Returns ``None`` for runtime events we fold into a different
     SSE event (``error`` and ``done`` are surfaced via the outer
@@ -298,7 +298,7 @@ def _translate(evt: dict) -> str | None:
         # a single ``done { stop_reason: "error" }`` at the end.
         return None
     if kind == "done":
-        # Hermes' ``done`` is internal — we emit our own ``done``
+        # the SDK's ``done`` is internal — we emit our own ``done``
         # at the SSE layer so it carries total_latency_ms + the
         # final assembled text.
         return None
@@ -310,13 +310,13 @@ def _translate(evt: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/hermes-chat")
-async def hermes_chat(
-    body: HermesChatRequest,
+@router.post("/chat")
+async def claude_chat(
+    body: ChatRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     state: AppState = Depends(get_state),
 ) -> StreamingResponse:
-    """SSE stream of Hermes-driven agent events. See module docstring
+    """SSE stream of SDK-driven agent events. See module docstring
     for the wire format."""
 
     # Resolve runtime config first so a misconfigured model fails
@@ -324,7 +324,7 @@ async def hermes_chat(
     try:
         model, base_url, api_key = _resolve_model_config(state, body.model)
     except Exception as e:
-        log.exception("hermes_chat: model config resolution failed")
+        log.exception("claude_chat: model config resolution failed")
         raise HTTPException(status_code=500, detail=str(e))
 
     # Load history + resolve cwd_path + persist user message BEFORE
@@ -344,7 +344,7 @@ async def hermes_chat(
             history = _load_conversation_history(state, body.conversation_id)
         except Exception:
             log.exception(
-                "hermes_chat: history load failed conv=%s", body.conversation_id
+                "claude_chat: history load failed conv=%s", body.conversation_id
             )
             history = []
 
@@ -367,12 +367,12 @@ async def hermes_chat(
                         )
                     except Exception:
                         log.exception(
-                            "hermes_chat: cwd_path update failed conv=%s",
+                            "claude_chat: cwd_path update failed conv=%s",
                             body.conversation_id,
                         )
         except Exception:
             log.exception(
-                "hermes_chat: cwd_path resolution failed conv=%s",
+                "claude_chat: cwd_path resolution failed conv=%s",
                 body.conversation_id,
             )
 
@@ -380,11 +380,11 @@ async def hermes_chat(
             _persist_user_message(state, body.conversation_id, body.query)
         except Exception:
             log.exception(
-                "hermes_chat: user-message persist failed conv=%s",
+                "claude_chat: user-message persist failed conv=%s",
                 body.conversation_id,
             )
 
-    config = HermesTurnConfig(
+    config = ClaudeTurnConfig(
         model=model,
         base_url=base_url or "",  # empty = let openai SDK use its default
         api_key=api_key or "",
@@ -395,16 +395,16 @@ async def hermes_chat(
     run_id = uuid.uuid4().hex
     started_at = time.time()
 
-    # Pick which Hermes runtime drives this turn.
+    # Pick which Claude SDK runtime drives this turn.
     #
-    # ``container`` (preferred when available): Hermes runs INSIDE
+    # ``container`` (preferred when available): the Claude Agent SDK runs INSIDE
     #   the user's sandbox container with full built-in toolsets
     #   (Read / Edit / Bash / Glob / Grep) operating on the
     #   bind-mounted workdir. This is the path that makes the
     #   Workspace actually useful — agent can read project files,
     #   write artifacts, run commands.
     #
-    # ``in-process`` fallback: Hermes runs in this FastAPI worker
+    # ``in-process`` fallback: the Claude Agent SDK runs in this FastAPI worker
     #   with built-in toolsets HARD-DISABLED (would touch our fs).
     #   Only MCP-exposed domain tools (search / KG / library) are
     #   reachable. Fine for pure Q&A; Workspace work is degraded.
@@ -416,7 +416,7 @@ async def hermes_chat(
 
     async def _run_stream() -> AsyncIterator[bytes]:
         # Emit turn_start synchronously so the client sees activity
-        # immediately even if Hermes' first network call is slow.
+        # immediately even if the SDK's first network call is slow.
         yield _sse("agent.turn_start", {"turn": 1, "run_id": run_id}).encode("utf-8")
 
         final_text = ""
@@ -430,7 +430,7 @@ async def hermes_chat(
         # stays free for SSE flushes + concurrent connections.
         try:
             if use_container:
-                container_runner = HermesContainerRunner(state.sandbox)
+                container_runner = ClaudeContainerRunner(state.sandbox)
                 iter_ = stream_turn_container(
                     container_runner,
                     body.query,
@@ -440,14 +440,14 @@ async def hermes_chat(
                     conversation_history=history,
                 )
             else:
-                runtime = HermesRuntime()
+                runtime = ClaudeRuntime()
                 iter_ = stream_turn(
                     runtime,
                     body.query,
                     config=config,
                     conversation_history=history,
                 )
-        except (HermesUnavailableError, SandboxUnavailableError) as e:
+        except (ClaudeUnavailableError, SandboxUnavailableError) as e:
             error_message = f"agent runtime unavailable: {e}"
             yield _emit_done(
                 error_message=error_message,
@@ -496,7 +496,7 @@ async def hermes_chat(
                     )
                 elif evt.get("kind") == "done":
                     iterations = int(evt.get("iterations") or 0)
-                    # If Hermes' final dict already had a final_text
+                    # If the SDK's final dict already had a final_text
                     # (extracted by the runtime), prefer that —
                     # delta_buf may have lost partial chunks.
                     ft = evt.get("final_text") or ""
@@ -506,7 +506,7 @@ async def hermes_chat(
                 if line:
                     yield line.encode("utf-8")
         except Exception:
-            log.exception("hermes_chat: stream pump raised")
+            log.exception("claude_chat: stream pump raised")
             error_message = error_message or "agent failed: stream pump"
 
         # ``final_text`` falls back to the assembled deltas if the
@@ -530,7 +530,7 @@ async def hermes_chat(
                 )
             except Exception:
                 log.exception(
-                    "hermes_chat: assistant persist failed conv=%s",
+                    "claude_chat: assistant persist failed conv=%s",
                     body.conversation_id,
                 )
 

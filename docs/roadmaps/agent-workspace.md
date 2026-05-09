@@ -1,11 +1,11 @@
 # Roadmap: Agent Workspace (Multi-Agent Production System)
 
-**Status:** Phase 2 — pivoted to Hermes (2026-05-09); shipping B-MVP first, layering C on top
+**Status:** Phase 2 — pivoted to the SDK (2026-05-09); shipping B-MVP first, layering C on top
 **Last updated:** 2026-05-09
 
 > ## ⚠️ Strategic positioning — 2026-05-09: B-then-C
 >
-> After the Hermes pivot we faced a real product question: **what's
+> After the agent runtime selection we faced a real product question: **what's
 > the moat?** Three viable framings:
 >
 > | Framing | What we sell | Demoable in |
@@ -24,7 +24,7 @@
 > A working "team Claude Code" demo:
 >
 > * alice opens chat in a workspace folder
-> * agent (Hermes-in-container) reads files, runs code, produces
+> * agent (agent-in-container) reads files, runs code, produces
 >   `outputs/summary.xlsx` and `outputs/chart.png`
 > * agent can call our MCP tools to search the team Library and
 >   import relevant docs (path-filter authz still scopes to
@@ -75,16 +75,16 @@
 > | 2.1 | LLM proxy `/api/v1/llm/v1/chat/completions` via litellm | ✅ landed `7a722af` |
 > | 2.2 | MCP server scaffold at `/api/v1/mcp` | ✅ landed `729202a` |
 > | 2.3 | Wire 4–7 domain tools into MCP + ASGI auth middleware + lineage call_id hook | next, ~5 days |
-> | 2.4 | Container image: install Hermes + env injection (`OPENCRAIG_RUN_ID` etc.) | ~3 days |
-> | 2.5 | Backend route POST `/conversations/<id>/agent-turn`: spawn Hermes (in-container for workspace turns; in-process for pure Q&A); stream Hermes events → SSE; agent_run row per turn | ~5 days |
-> | 2.6 | Frontend: trace UI adapted to Hermes event format; artifact preview inline | ~3 days |
+> | 2.4 | Container image: install the SDK + env injection (`OPENCRAIG_RUN_ID` etc.) | ~3 days |
+> | 2.5 | Backend route POST `/conversations/<id>/agent-turn`: spawn the SDK (in-container for workspace turns; in-process for pure Q&A); stream SDK events → SSE; agent_run row per turn | ~5 days |
+> | 2.6 | Frontend: trace UI adapted to the SDK event format; artifact preview inline | ~3 days |
 > | 4-lite | Workspace UX: folder tree view, "open chat in folder". Project entity REMAINS in the DB for B; the folder-as-only-truth migration deferred | ~4 days |
 >
 > **Phase C-extensions (after B-MVP demo + feedback):**
 >
 > | Wave | Content | Estimated time |
 > |---|---|---|
-> | 3 | Cutover: delete `loop.py` / `dispatch.py` / old agent route; switch frontend entirely to Hermes path | 3–5 days |
+> | 3 | Cutover: delete `loop.py` / `dispatch.py` / old agent route; switch frontend entirely to SDK path | 3–5 days |
 > | 3.5 | Lineage backbone: `tool_call_log` and `artifact_lineage` tables actually persisted, queryable | 4 days |
 > | 3.6 | Promote-to-Library: artifact → Library doc with backwards links, ingestion pipeline integration | 5 days |
 > | 4 | Workspace folder model: drop `Project` entity, `cwd_path` everywhere, sandbox rebind | 1 week |

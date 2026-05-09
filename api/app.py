@@ -57,7 +57,7 @@ from .routes import files as file_routes
 from .routes import folders as folder_routes
 from .routes import graph as graph_routes
 from .routes import health as health_routes
-from .routes import hermes_chat as hermes_chat_routes
+from .routes import claude_chat as claude_chat_routes
 from .routes import llm_proxy as llm_proxy_routes
 from .routes import metrics as metrics_routes
 from .routes import project_files as project_files_routes
@@ -261,9 +261,9 @@ def create_app(
     app.include_router(metrics_routes.router)
     app.include_router(llm_proxy_routes.router)
     app.include_router(llm_proxy_routes.anthropic_router)
-    app.include_router(hermes_chat_routes.router)
+    app.include_router(claude_chat_routes.router)
 
-    # MCP server (Hermes-Agent-in-container reaches our domain tools
+    # MCP server (Claude-Agent-SDK-in-container reaches our domain tools
     # via this mount). State is resolved at request time from
     # ``app.state.app``; safe to mount before lifespan completes.
     from .routes.mcp_server import mount_mcp

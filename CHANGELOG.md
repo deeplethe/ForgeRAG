@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 This release reframes OpenCraig as **the permission-aware
 knowledge / context layer for enterprise agent runtimes** —
-the backend any MCP-compatible agent (Hermes, Claude Code, Cursor,
+the backend any MCP-compatible agent (the SDK, Claude Code, Cursor,
 Cline, custom) plugs into for retrieval that respects your team's
 folder permissions. v1.0.0 is the first major stable release; the
 OSS edition continues to be developed and maintained going forward.
@@ -27,7 +27,7 @@ boundary.
 - **Agent runtime: Claude Agent SDK (Anthropic, MIT).** v1.0.0 ships
   the same loop that powers Claude Code as the in-process and
   in-container agent driver. Wave 2.5b's earlier selection of
-  `hermes-agent==0.10.0` was a non-existent PyPI package; tests
+  `claude-agent-sdk>=0.1.80` was a non-existent PyPI package; tests
   mocked the import and the gap was only caught when the sandbox
   image actually tried to install it. The cutover keeps the same
   SSE event vocabulary so frontend parsers don't change.
@@ -52,7 +52,7 @@ boundary.
   per Anthropic API convention; without this branch every
   in-container turn 401'd. Same DB lookup either way; only the
   header source differs.
-- **Chat route stays at `POST /api/v1/agent/hermes-chat`** for
+- **Chat route stays at `POST /api/v1/agent/chat`** for
   backwards compat. Wire format unchanged. The legacy
   `/api/v1/agent/chat` route from v0.x was deleted; rebind any
   external clients before upgrading.
@@ -98,7 +98,7 @@ together.
 - **MCP server at `/api/v1/mcp`** — domain tools (`search_vector`,
   `read_chunk`, `read_tree`, `graph_explore`, `web_search`,
   `rerank`, `import_from_library`) exposed via the Model Context
-  Protocol. Any MCP-compatible agent (Hermes, Claude Code, Cline,
+  Protocol. Any MCP-compatible agent (the SDK, Claude Code, Cline,
   custom) can plug into OpenCraig's retrieval surface.
 - **OpenAI-compatible LLM proxy at `/api/v1/llm/v1/chat/completions`**
   — backed by litellm, multi-provider routing, streaming SSE,
@@ -111,8 +111,8 @@ together.
   agent's retrieval the same way it does to direct API calls.
   Forward-compat hook lands a `call_id` per dispatch (logged
   today; persisted in the Enterprise edition's lineage backbone).
-- **`HermesRuntime` wrapper** (`api/agent/hermes_runtime.py`) —
-  driver for in-process Hermes that translates upstream callbacks
+- **`ClaudeRuntime` wrapper** (`api/agent/claude_runtime.py`) —
+  driver for in-process Claude SDK that translates upstream callbacks
   into a stable event vocabulary, pumps work in a daemon thread,
   hard-disables built-in toolsets to prevent filesystem escape.
 
@@ -120,14 +120,14 @@ together.
 
 - **Legacy agent loop and route** — `api/agent/loop.py`,
   `api/agent/llm.py`, `api/routes/agent.py`. Replaced by the
-  Hermes-driven path.
+  SDK-driven path.
 - **KernelManager + python_exec / bash_exec wrappers** — the
   earlier Phase 2 design built our own per-project ipykernel
-  via `jupyter_client`. Hermes runs in-process for OSS; sandboxed
-  code execution moves to Enterprise (where Hermes runs in a
+  via `jupyter_client`. the Claude Agent SDK runs in-process for OSS; sandboxed
+  code execution moves to Enterprise (where the Claude Agent SDK runs in a
   hardened container with bash/edit/grep enabled).
 - **`benchmark/` module + `BenchmarkConfig`** — was coupled to
-  the deleted agent loop. Re-implementable against `HermesRuntime`
+  the deleted agent loop. Re-implementable against `ClaudeRuntime`
   if needed; not shipped here.
 - **`ToolRichOutputs.vue`** — rendered `python_exec` matplotlib
   output. With Python kernel removed, this preview surface is
@@ -135,7 +135,7 @@ together.
 
 ### Dependencies
 
-- Added `hermes-agent==0.10.0` (MIT) — pulls
+- Added `claude-agent-sdk>=0.1.80` (MIT) — pulls
   `firecrawl-py`, `parallel-web`, `fal-client`, `edge-tts`,
   `exa-py` as transitive deps (~50–100 MB, none used by
   OpenCraig). Acceptable cost for not maintaining our own loop.
@@ -161,7 +161,7 @@ together.
 - 852 tests passing, 4 skipped. Down from 897 in the v0.3.x line
   due to the deletion of legacy agent / benchmark tests
   (≈45 tests removed alongside the code they exercised). New
-  Hermes / MCP / LLM-proxy tests added: 51.
+  the SDK / MCP / LLM-proxy tests added: 51.
 
 ### Migration from v0.3.x
 
@@ -170,14 +170,14 @@ If you have an existing v0.3.x deployment:
 1. Database schema is unchanged; alembic migrations apply
    normally.
 2. **Frontend integrators**: swap any direct calls to
-   `/api/v1/agent/chat` for `/api/v1/agent/hermes-chat`. Body
+   `/api/v1/agent/chat` for `/api/v1/agent/chat`. Body
    shape is `{query, conversation_id}` (no `path_filters` or
    `message`). Wire format identical.
 3. Set `OPENAI_API_KEY` (or Anthropic / Gemini equivalent) in
-   `.env` — Hermes reads this directly. The setup wizard
+   `.env` — the SDK reads this directly. The setup wizard
    continues to work for first-boot configuration.
 4. Old `python_exec` / `bash_exec` calls in conversation
-   history will silently be ignored — Hermes won't see those
+   history will silently be ignored — the SDK won't see those
    tools. Re-running a turn produces a fresh trace.
 
 ---

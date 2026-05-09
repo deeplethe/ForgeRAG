@@ -2,7 +2,7 @@
 
 OpenCraig is **the permission-aware knowledge / context layer that
 enterprise agent runtimes plug into**. It's not a chat product —
-it's the backend that gives an agent (Hermes today, Claude Code /
+it's the backend that gives an agent (Claude Agent SDK today, Claude Code /
 Cursor / Cline / custom tomorrow) the ability to retrieve from a
 team's shared corpus while respecting that team's existing folder
 permissions on every call.
@@ -42,7 +42,7 @@ This document walks each layer top-down.
 
 3. **MCP-native tool surface.** The retrieval surface is exposed at
    `/api/v1/mcp` as Model Context Protocol tools, not just an
-   internal API. Any compatible agent runtime — Hermes (the OSS
+   internal API. Any compatible agent runtime — the SDK (the OSS
    default), Claude Code, Cursor, Cline — connects with a session
    bearer and gets the user-scoped tool catalogue automatically.
    The principal-bridge ASGI middleware reads the authenticated
@@ -1025,7 +1025,7 @@ When a chat is bound:
   (name + workdir file list + Phase-2 caveat) — see
   `api/routes/agent.py::_build_system_prompt_for_conversation`
 * Phase 2+ agent runs (`agent_runs.project_id`) inherit the
-  binding so `import_from_library` and the in-container Hermes
+  binding so `import_from_library` and the in-container Claude SDK
   Agent both route into the project's workdir
 
 Soft-deleting a project sets all its conversations'
@@ -1049,7 +1049,7 @@ away.
 |---|---|
 | **0** | Library / Workspace split; project CRUD; data model |
 | **1** | Workdir file manager UI (this section); Library → Workspace manual import; chat ↔ project binding |
-| **2** | `import_from_library` MCP tool + per-user Docker sandbox; in-container [Hermes Agent](https://github.com/NousResearch/hermes-agent) (MIT) drives code execution via its own bash/edit/grep tools, reaches back to the backend's MCP server for our domain capabilities (search, KG, library, artifacts) and to a litellm-backed proxy for LLM calls |
+| **2** | `import_from_library` MCP tool + per-user Docker sandbox; in-container [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) drives code execution via its own bash/edit/grep tools, reaches back to the backend's MCP server for our domain capabilities (search, KG, library, artifacts) and to a litellm-backed proxy for LLM calls |
 | **3** | Local file I/O agent tools (`list_files` / `read_file` / `write_file`) + `promote_to_library` |
 | **4** | Plan-Execute-Reflect orchestrator + per-step context bounding + cost ceiling |
 | **5** | Web search + fetch_url |

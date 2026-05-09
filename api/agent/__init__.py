@@ -2,9 +2,9 @@
 Agent tooling — tool definitions + dispatch + per-request context.
 
 This package no longer contains an agent loop of our own. The
-agent runtime is Hermes Agent (NousResearch, MIT) — see
-``api/agent/hermes_runtime.py`` for the in-process wrapper and
-``api/routes/hermes_chat.py`` for the SSE chat route. Hermes
+agent runtime is Claude Agent SDK (NousResearch, MIT) — see
+``api/agent/claude_runtime.py`` for the in-process wrapper and
+``api/routes/claude_chat.py`` for the SSE chat route. the SDK
 reaches our domain capabilities through the MCP server
 (``api/routes/mcp_server.py``) which dispatches into the handlers
 defined here.

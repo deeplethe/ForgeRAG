@@ -1,7 +1,7 @@
 """
-Tests for ``POST /api/v1/agent/hermes-chat`` (Wave 2.5).
+Tests for ``POST /api/v1/agent/chat`` (Wave 2.5).
 
-The route streams SSE events translating ``HermesRuntime`` events
+The route streams SSE events translating ``ClaudeRuntime`` events
 into the wire format the frontend already understands. We verify:
 
   * happy path: events arrive in the right order, ``done`` is the
@@ -13,11 +13,11 @@ into the wire format the frontend already understands. We verify:
     assistant message lands after, agent_run row recorded
   * unauthenticated requests get 401 (covered by the auth dep — we
     confirm by overriding it)
-  * HermesUnavailableError surfaces as a clean ``done { error }``,
+  * ClaudeUnavailableError surfaces as a clean ``done { error }``,
     not a 500 / dropped connection
 
-Tests stub ``HermesRuntime`` + ``stream_turn`` so no real LLM
-or hermes-agent install is exercised.
+Tests stub ``ClaudeRuntime`` + ``stream_turn`` so no real LLM
+call or bundled-CLI subprocess is exercised.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.deps import get_principal, get_state
-from api.routes import hermes_chat as hermes_chat_module
+from api.routes import claude_chat as claude_chat_module
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ def state():
 @pytest.fixture
 def app(state):
     a = FastAPI()
-    a.include_router(hermes_chat_module.router)
+    a.include_router(claude_chat_module.router)
     a.dependency_overrides[get_principal] = _principal
     a.dependency_overrides[get_state] = lambda: state
     return a
@@ -146,15 +146,15 @@ def stub_stream(monkeypatch):
         for evt in holder["events"]:
             yield evt
 
-    monkeypatch.setattr(hermes_chat_module, "stream_turn", _stream_turn)
+    monkeypatch.setattr(claude_chat_module, "stream_turn", _stream_turn)
     monkeypatch.setattr(
-        hermes_chat_module, "stream_turn_container", _stream_turn_container,
+        claude_chat_module, "stream_turn_container", _stream_turn_container,
     )
 
     # Patch the runner constructor too so the route doesn't try to
     # instantiate a real one (it'd reach into state.sandbox.backend).
     monkeypatch.setattr(
-        hermes_chat_module, "HermesContainerRunner", lambda _sb: object(),
+        claude_chat_module, "ClaudeContainerRunner", lambda _sb: object(),
     )
 
     def _set(events):
@@ -172,7 +172,7 @@ def stub_stream(monkeypatch):
 def _parse_sse(text: str) -> list[tuple[str, dict]]:
     """Parse ``data: {...}\\n\\n`` blocks where the JSON dict
     carries a ``type`` discriminator. Matches the legacy /agent/chat
-    wire format — see api/routes/hermes_chat.py::_sse."""
+    wire format — see api/routes/claude_chat.py::_sse."""
     blocks = [b for b in text.split("\n\n") if b.strip()]
     out: list[tuple[str, dict]] = []
     for blk in blocks:
@@ -220,7 +220,7 @@ def test_happy_path_streams_events_in_order(client, stub_stream):
     )
 
     with client.stream(
-        "POST", "/api/v1/agent/hermes-chat", json={"query": "Tell me about X"}
+        "POST", "/api/v1/agent/chat", json={"query": "Tell me about X"}
     ) as r:
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
@@ -255,14 +255,14 @@ def test_final_text_falls_back_to_concatenated_deltas(client, stub_stream):
         [
             {"kind": "answer_delta", "text": "Hello "},
             {"kind": "answer_delta", "text": "world"},
-            # No final_text in done — common when Hermes' return shape
+            # No final_text in done — common when the SDK's return shape
             # didn't expose one
             {"kind": "done", "iterations": 1},
         ]
     )
 
     with client.stream(
-        "POST", "/api/v1/agent/hermes-chat", json={"query": "hi"}
+        "POST", "/api/v1/agent/chat", json={"query": "hi"}
     ) as r:
         body = b"".join(r.iter_bytes()).decode("utf-8")
 
@@ -289,7 +289,7 @@ def test_runtime_error_event_folds_into_done_error(client, stub_stream):
     )
 
     with client.stream(
-        "POST", "/api/v1/agent/hermes-chat", json={"query": "x"}
+        "POST", "/api/v1/agent/chat", json={"query": "x"}
     ) as r:
         body = b"".join(r.iter_bytes()).decode("utf-8")
 
@@ -302,19 +302,19 @@ def test_runtime_error_event_folds_into_done_error(client, stub_stream):
     assert "ConnectionError" in done["error"]
 
 
-def test_hermes_unavailable_returns_clean_done_error(client, monkeypatch):
-    """run_agent module not installed → HermesUnavailableError;
+def test_runtime_unavailable_returns_clean_done_error(client, monkeypatch):
+    """SDK import / bundled-CLI lookup fails → ClaudeUnavailableError;
     the route catches it and emits ``done { stop_reason: "error" }``
     instead of crashing or 500'ing."""
-    from api.agent.claude_runtime import HermesUnavailableError
+    from api.agent.claude_runtime import ClaudeUnavailableError
 
     def _raises(*_a, **_kw):
-        raise HermesUnavailableError("not installed (test)")
+        raise ClaudeUnavailableError("not installed (test)")
 
-    monkeypatch.setattr(hermes_chat_module, "stream_turn", _raises)
+    monkeypatch.setattr(claude_chat_module, "stream_turn", _raises)
 
     with client.stream(
-        "POST", "/api/v1/agent/hermes-chat", json={"query": "x"}
+        "POST", "/api/v1/agent/chat", json={"query": "x"}
     ) as r:
         assert r.status_code == 200  # SSE still 200; error rides in body
         body = b"".join(r.iter_bytes()).decode("utf-8")
@@ -340,7 +340,7 @@ def test_request_model_overrides_default(client, stub_stream, state):
     stub_stream([{"kind": "done", "iterations": 0}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "hi", "model": "openai/gpt-4o"},
     )
     call = stub_stream.calls[-1]
@@ -350,7 +350,7 @@ def test_request_model_overrides_default(client, stub_stream, state):
 def test_default_model_from_config(client, stub_stream, state):
     stub_stream([{"kind": "done", "iterations": 0}])
 
-    client.post("/api/v1/agent/hermes-chat", json={"query": "hi"})
+    client.post("/api/v1/agent/chat", json={"query": "hi"})
     call = stub_stream.calls[-1]
     assert call["config"].model == "anthropic/claude-3-5-sonnet"
 
@@ -359,7 +359,7 @@ def test_system_prompt_override_threaded(client, stub_stream):
     stub_stream([{"kind": "done", "iterations": 0}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "hi", "system_prompt_override": "Be terse."},
     )
     call = stub_stream.calls[-1]
@@ -382,7 +382,7 @@ def test_conversation_history_loaded_into_runtime(client, stub_stream, state):
     stub_stream([{"kind": "done", "iterations": 0}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "follow up", "conversation_id": "conv_42"},
     )
 
@@ -399,7 +399,7 @@ def test_user_message_persisted_before_stream(client, stub_stream, state):
     stub_stream([{"kind": "done", "iterations": 0}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "remember me", "conversation_id": "conv_42"},
     )
 
@@ -419,7 +419,7 @@ def test_assistant_message_persisted_after_stream(client, stub_stream, state):
     )
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "q", "conversation_id": "conv_42"},
     )
 
@@ -440,7 +440,7 @@ def test_agent_run_row_persisted_with_metadata(client, stub_stream, state):
     )
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "q", "conversation_id": "conv_99"},
     )
 
@@ -460,7 +460,7 @@ def test_no_persistence_when_conversation_id_absent(client, stub_stream, state):
     behaviour where conv_id is required for persistence)."""
     stub_stream([{"kind": "done", "iterations": 0}])
 
-    client.post("/api/v1/agent/hermes-chat", json={"query": "ephemeral"})
+    client.post("/api/v1/agent/chat", json={"query": "ephemeral"})
     assert state.store.messages == []
     # agent_runs still records the turn (with conv_id=None) so
     # Phase C audit can see "alice ran an agent at 14:32" even on
@@ -481,7 +481,7 @@ def test_no_sandbox_falls_back_to_in_process_runtime(client, stub_stream, state)
     state.sandbox = None  # explicit, makes the intent clear
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
-    client.post("/api/v1/agent/hermes-chat", json={"query": "hi"})
+    client.post("/api/v1/agent/chat", json={"query": "hi"})
     assert stub_stream.calls, "no stream call recorded"
     assert stub_stream.calls[-1]["runtime_kind"] == "inprocess"
 
@@ -489,14 +489,14 @@ def test_no_sandbox_falls_back_to_in_process_runtime(client, stub_stream, state)
 def test_sandbox_present_routes_to_container(client, stub_stream, state):
     """When the deployment has Docker + a SandboxManager, the
     container path becomes the default. This is the OSS path that
-    makes the Workspace actually useful (full Hermes built-in tools
+    makes the Workspace actually useful (full the SDK built-in tools
     operating on the bind-mounted workdir)."""
     # A truthy stand-in is enough — the route only checks
     # ``state.sandbox is not None``; the actual runner is stubbed.
     state.sandbox = SimpleNamespace(name="fake-sandbox")
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
-    client.post("/api/v1/agent/hermes-chat", json={"query": "hi"})
+    client.post("/api/v1/agent/chat", json={"query": "hi"})
     assert stub_stream.calls[-1]["runtime_kind"] == "container"
     # Container path threads the principal id through so the
     # SandboxManager can resolve which user's container to exec into.
@@ -519,7 +519,7 @@ def test_container_runtime_carries_history_and_config_too(
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={
             "query": "follow-up",
             "conversation_id": "conv_42",
@@ -549,7 +549,7 @@ def test_explicit_cwd_path_in_body_passed_to_runtime(
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "x", "cwd_path": "/data/sales/2025"},
     )
     call = stub_stream.calls[-1]
@@ -587,7 +587,7 @@ def test_cwd_path_falls_back_to_conversation_row(
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={"query": "x", "conversation_id": "conv_42"},
     )
     call = stub_stream.calls[-1]
@@ -622,7 +622,7 @@ def test_cwd_path_override_writes_back_to_conversation(
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
     client.post(
-        "/api/v1/agent/hermes-chat",
+        "/api/v1/agent/chat",
         json={
             "query": "x",
             "conversation_id": "conv_77",
@@ -642,5 +642,5 @@ def test_no_cwd_path_anywhere_is_pure_qa(client, stub_stream, state):
     state.sandbox = SimpleNamespace(name="fake-sandbox")
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 
-    client.post("/api/v1/agent/hermes-chat", json={"query": "ephemeral"})
+    client.post("/api/v1/agent/chat", json={"query": "ephemeral"})
     assert stub_stream.calls[-1]["cwd_path"] is None

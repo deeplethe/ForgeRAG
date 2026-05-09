@@ -1,6 +1,6 @@
 """
 Tests for ``/api/v1/llm/v1/chat/completions`` — the OpenAI-compatible
-LLM proxy that the in-container Hermes Agent runtime hits in lieu of
+LLM proxy that the in-container Claude Agent SDK hits in lieu of
 calling provider APIs directly.
 
 Coverage:

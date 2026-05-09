@@ -346,10 +346,10 @@ class AppState:
         # ── Phase 2 agent sandbox ──
         # ``sandbox`` is the per-user Docker container manager
         # (``persistence.sandbox_manager.SandboxManager``). When
-        # available, the chat route dispatches the Hermes runtime
+        # available, the chat route dispatches the Claude SDK runtime
         # in-container (agent has full filesystem tools operating on
         # the bind-mounted user workdir); when ``None``, the route
-        # falls back to in-process Hermes with built-in toolsets
+        # falls back to in-process Claude SDK with built-in toolsets
         # disabled (degraded but functional Q&A).
         #
         # We try to construct it eagerly here. Failures (docker SDK
@@ -370,7 +370,7 @@ class AppState:
             it — the operator did ``scripts/build-sandbox.sh``)
 
         Returns ``None`` otherwise. The chat route checks this and
-        falls back to in-process Hermes (toolsets disabled, MCP
+        falls back to in-process Claude SDK (toolsets disabled, MCP
         domain-tools only) so the deployment stays functional even
         without Docker.
 
@@ -386,7 +386,7 @@ class AppState:
             import docker
         except ImportError:
             _log.info(
-                "sandbox: docker SDK not installed — Hermes will run "
+                "sandbox: docker SDK not installed — the SDK will run "
                 "in-process (Workspace agent tools degraded; install "
                 "the docker package + run scripts/build-sandbox.sh "
                 "for the full experience)"
@@ -451,7 +451,7 @@ class AppState:
             return None
 
         _log.info(
-            "sandbox: Hermes-in-container path active (image=%s, "
+            "sandbox: agent-in-container path active (image=%s, "
             "user_workdirs_root=%s)",
             image,
             user_workdirs_root,

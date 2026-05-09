@@ -1,12 +1,10 @@
-# Day 2 verification: confirms the sandbox image builds, hermes-
-# agent imports cleanly inside, and the entrypoint script emits
-# the expected JSONL events with a stub LLM.
+# Sandbox image structural verification: confirms the image builds,
+# the Claude Agent SDK imports cleanly inside the container, the
+# bundled `claude` binary is on PATH, and the entrypoint script
+# emits the expected JSONL error event when run without the required
+# env vars (smoke without a real LLM call).
 #
-# Run after `scripts/build-sandbox.ps1` succeeds.
-#
-# This script is what you SHOULD run before claiming Day 2 done.
-# Until then, treat the in-container path as "structurally
-# scaffolded but not exercised end-to-end".
+# Run after scripts/build-sandbox.ps1 succeeds.
 
 $ErrorActionPreference = "Stop"
 
@@ -19,10 +17,10 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "==> Step 2: hermes-agent imports inside container" -ForegroundColor Cyan
-docker run --rm $Image python -c "from run_agent import AIAgent; print('AIAgent OK:', AIAgent.__module__)"
+Write-Host "==> Step 2: claude-agent-sdk imports + bundled binary on PATH" -ForegroundColor Cyan
+docker run --rm $Image bash -lc "python -c 'import claude_agent_sdk; print(\""SDK\"", claude_agent_sdk.__version__)' && which claude && claude --version"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "hermes-agent didn't import — check the requirements.txt + image rebuild." -ForegroundColor Red
+    Write-Host "Claude Agent SDK / claude binary not available — check requirements.txt + Dockerfile symlink." -ForegroundColor Red
     exit 1
 }
 
@@ -43,5 +41,5 @@ if ($out -notmatch '"kind": ?"error"') {
 
 Write-Host ""
 Write-Host "All structural checks passed. The container can run the entrypoint." -ForegroundColor Green
-Write-Host "Next: Day 3-5 backend HermesContainerRunner + Day 8-9 end-to-end" -ForegroundColor Green
+Write-Host "Next: Day 3-5 backend ClaudeContainerRunner + Day 8-9 end-to-end" -ForegroundColor Green
 Write-Host "      smoke with a real LLM key + the full chat route." -ForegroundColor Green

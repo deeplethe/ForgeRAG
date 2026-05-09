@@ -136,8 +136,8 @@ def test_requirements_does_not_install_kernel_stack():
     )
 
 
-def test_requirements_does_not_install_dead_hermes_pin():
-    """Wave 2.5b shipped with ``hermes-agent==0.10.0`` in the
+def test_requirements_does_not_install_dead_runtime_pin():
+    """Wave 2.5b shipped with ``claude-agent-sdk>=0.1.80`` in the
     sandbox requirements but that PyPI package never existed under
     that name — every container build failed pip-resolve. C-3
     cutover removes the pin entirely; this test guards against
@@ -150,7 +150,7 @@ def test_requirements_does_not_install_dead_hermes_pin():
 
 
 def test_dockerfile_copies_run_turn_entrypoint():
-    """The backend's HermesContainerRunner invokes
+    """The backend's ClaudeContainerRunner invokes
     ``/opt/opencraig/opencraig_run_turn.py`` via ``docker exec``.
     The path is stable / hardcoded; if the Dockerfile stops
     copying it, agent turns silently fail with ``no such file``."""
@@ -173,7 +173,7 @@ def test_run_turn_script_present_and_emits_jsonl_per_event():
     # backend tail can render events live as the agent works.
     assert "json.dumps" in src
     assert "sys.stdout.flush()" in src
-    # Required event kinds (matches backend HermesContainerRunner
+    # Required event kinds (matches backend ClaudeContainerRunner
     # expectations + the SSE event-translation table).
     for kind in ("tool_start", "tool_end", "answer_delta", "done", "error"):
         assert f'"kind": "{kind}"' in src or f"'kind': '{kind}'" in src, (

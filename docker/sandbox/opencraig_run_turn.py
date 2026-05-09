@@ -1,7 +1,7 @@
 """
 OpenCraig agent-turn entrypoint, lives inside the sandbox container.
 
-The backend's ``HermesContainerRunner`` invokes this script via
+The backend's ``ClaudeContainerRunner`` invokes this script via
 ``docker exec <user-container> python /opt/opencraig/opencraig_run_turn.py``
 once per chat turn. The script:
 

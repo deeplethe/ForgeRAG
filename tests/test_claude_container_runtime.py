@@ -1,5 +1,5 @@
 """
-Tests for ``HermesContainerRunner`` (Wave 2.5b Day 3-5).
+Tests for ``ClaudeContainerRunner`` (Wave 2.5b Day 3-5).
 
 Doesn't require Docker. Mocks the SandboxManager + the docker SDK
 client so we can exercise:
@@ -28,13 +28,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from api.agent.hermes_container_runtime import (
+from api.agent.claude_container_runtime import (
     ENTRYPOINT_PATH,
-    HermesContainerRunner,
+    ClaudeContainerRunner,
     SandboxUnavailableError,
     stream_turn_container,
 )
-from api.agent.claude_runtime import HermesTurnConfig
+from api.agent.claude_runtime import ClaudeTurnConfig
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ from api.agent.claude_runtime import HermesTurnConfig
 # ---------------------------------------------------------------------------
 
 
-def _config(**overrides) -> HermesTurnConfig:
+def _config(**overrides) -> ClaudeTurnConfig:
     cfg = dict(
         model="gpt-4o",
         base_url="http://backend:8000/api/v1/llm/v1",
@@ -50,7 +50,7 @@ def _config(**overrides) -> HermesTurnConfig:
         max_iterations=42,
     )
     cfg.update(overrides)
-    return HermesTurnConfig(**cfg)
+    return ClaudeTurnConfig(**cfg)
 
 
 class _FakeAPI:
@@ -125,7 +125,7 @@ class _FakeSandbox:
 
 def test_runner_requires_sandbox():
     with pytest.raises(SandboxUnavailableError):
-        HermesContainerRunner(None)
+        ClaudeContainerRunner(None)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def test_env_includes_every_config_field():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "ok", "iterations": 1}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn(
         "Hello agent",
         config=_config(
@@ -177,7 +177,7 @@ def test_env_omits_optional_fields_when_unset():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "ok", "iterations": 0}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn(
         "x",
         config=_config(base_url="", api_key="", system_message=None),
@@ -193,7 +193,7 @@ def test_history_default_is_empty_array():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "ok", "iterations": 0}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn("x", config=_config(), principal_user_id="u_x")
     env = sb.backend._client.api.exec_creates[0]["environment"]
     assert env["OPENCRAIG_HISTORY"] == "[]"
@@ -219,7 +219,7 @@ def test_cwd_path_env_var_normalised():
                 b'{"kind": "done", "final_text": "", "iterations": 0}\n'
             ]
         )
-        runner = HermesContainerRunner(sb)
+        runner = ClaudeContainerRunner(sb)
         runner.run_turn(
             "x",
             config=_config(),
@@ -244,7 +244,7 @@ def test_uses_hardcoded_entrypoint_path():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "", "iterations": 0}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn("x", config=_config(), principal_user_id="u_x")
     cmd = sb.backend._client.api.exec_creates[0]["cmd"]
     assert cmd == ["python", "/opt/opencraig/opencraig_run_turn.py"]
@@ -269,7 +269,7 @@ def test_events_arrive_in_order():
         b' "iterations": 1}\n',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     result = runner.run_turn(
         "tell me",
@@ -304,7 +304,7 @@ def test_chunks_split_across_newlines():
         b'"final_text": "delta1", "iterations": 0}\n',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     runner.run_turn(
         "x",
@@ -327,7 +327,7 @@ def test_malformed_line_skipped_not_fatal():
         b'{"kind": "done", "final_text": "hi", "iterations": 0}\n',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     runner.run_turn(
         "x",
@@ -348,7 +348,7 @@ def test_trailing_partial_line_drained():
         b'{"kind": "done", "final_text": "x", "iterations": 0}',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     runner.run_turn(
         "x",
@@ -368,7 +368,7 @@ def test_non_dict_json_lines_skipped():
         b'{"kind": "done", "final_text": "ok", "iterations": 0}\n',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     runner.run_turn(
         "x",
@@ -393,7 +393,7 @@ def test_ensure_container_passes_empty_owned_project_ids():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "", "iterations": 0}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn(
         "x",
         config=_config(),
@@ -409,7 +409,7 @@ def test_touch_called_after_successful_turn():
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "", "iterations": 0}\n']
     )
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     runner.run_turn("x", config=_config(), principal_user_id="u_alice")
     assert sb.touch_calls == ["u_alice"]
 
@@ -426,7 +426,7 @@ def test_touch_called_even_after_stream_failure():
     sb = _FakeSandbox()
     sb.backend._client.api = _FailingAPI([])
 
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     with pytest.raises(RuntimeError):
         runner.run_turn("x", config=_config(), principal_user_id="u_alice")
     assert sb.touch_calls == ["u_alice"]
@@ -438,7 +438,7 @@ def test_ensure_failure_propagates_with_error_event(monkeypatch):
             raise RuntimeError("docker daemon down")
 
     sb = _BrokenSandbox()
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     seen: list[dict] = []
     with pytest.raises(RuntimeError):
         runner.run_turn(
@@ -466,7 +466,7 @@ def test_stream_turn_container_yields_events_in_order():
         b'{"kind": "done", "final_text": "ans", "iterations": 0}\n',
     ]
     sb = _FakeSandbox(stream_chunks=chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     out = list(
         stream_turn_container(
             runner, "x", config=_config(), principal_user_id="u_alice"
@@ -484,7 +484,7 @@ def test_stream_turn_container_emits_error_when_runner_raises():
             raise ValueError("kaboom")
 
     sb = _BrokenSandbox()
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
     out = list(
         stream_turn_container(
             runner, "x", config=_config(), principal_user_id="u_x"
@@ -511,7 +511,7 @@ def test_stream_turn_container_runs_in_worker_thread():
 
     sb = _FakeSandbox(stream_chunks=chunks)
     sb.backend._client.api = _ThreadObservingAPI(chunks)
-    runner = HermesContainerRunner(sb)
+    runner = ClaudeContainerRunner(sb)
 
     list(
         stream_turn_container(

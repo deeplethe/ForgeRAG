@@ -104,7 +104,7 @@ class ToolContext:
     # project tools are filtered out by ``tools_for(ctx)``.
     #
     # Code execution itself no longer flows through this dispatch —
-    # Hermes Agent runs inside the sandbox container and reaches
+    # Claude Agent SDK runs inside the sandbox container and reaches
     # back to our domain tools via the MCP server route.
     project_id: str | None = None
 
@@ -216,7 +216,7 @@ def tools_for(ctx: ToolContext) -> list:
 
     Filtering is per-tool, not blanket — different tools have
     different prerequisites. Code-execution tools (bash / python /
-    file ops) live INSIDE the agent's sandbox container (Hermes
+    file ops) live INSIDE the agent's sandbox container (the SDK
     Agent owns them) and don't appear in this registry at all.
 
     v1.0 folder-as-cwd: ``import_from_library`` is available to

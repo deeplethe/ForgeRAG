@@ -3,7 +3,7 @@ MCP-typed wrappers for OpenCraig's domain tools.
 
 This module turns each entry in ``api/agent/tools.py``'s
 ``TOOL_REGISTRY`` into a function with the right typed signature
-+ docstring so FastMCP can publish it to the in-container Hermes
++ docstring so FastMCP can publish it to the in-container Claude SDK
 Agent. The actual implementation is unchanged — every wrapper
 delegates to ``api.agent.dispatch.dispatch(name, params, ctx)``,
 which preserves the multi-user authz, citation pool, telemetry,
@@ -13,7 +13,7 @@ Forward-compat hook (lineage / Phase C):
     Every wrapper generates a ``call_id`` (uuid4) and currently
     only logs it. When Wave 3.5 lands the ``tool_call_log`` table,
     persisting that log row needs only one extra line in
-    ``_dispatch_via_mcp``. Hermes itself doesn't see the call_id —
+    ``_dispatch_via_mcp``. the SDK itself doesn't see the call_id —
     it goes straight from us to the lineage backbone.
 
 Why module-level decorators rather than a loop over TOOL_REGISTRY:
@@ -27,7 +27,7 @@ Tools NOT exposed here:
     - ``search_bm25``: omitted from the agent's tool registry today
       (CJK tokenizer issues + empty index after refresh — see
       comment in ``tools.py::TOOL_REGISTRY``)
-    - bash / edit / glob / grep / etc.: live in Hermes itself
+    - bash / edit / glob / grep / etc.: live in the SDK itself
       inside the sandbox container; not part of MCP
 """
 
@@ -104,7 +104,7 @@ def _dispatch_via_mcp(
     )
 
     # Forward-compat hook (Phase C): every tool call gets a stable
-    # ID we can later persist into ``tool_call_log``. Hermes never
+    # ID we can later persist into ``tool_call_log``. the SDK never
     # sees this — it lives on our side of the wire.
     call_id = uuid.uuid4().hex
     t0 = time.time()
@@ -300,7 +300,7 @@ def graph_explore(query: str, top_k: int = 5) -> dict:
     return _dispatch_via_mcp("graph_explore", {"query": query, "top_k": top_k})
 
 
-# Web search is intentionally NOT exposed via MCP — Hermes Agent
+# Web search is intentionally NOT exposed via MCP — Claude Agent SDK
 # (and most other MCP-compatible runtimes) ship their own
 # WebFetch / WebSearch built-in tools that target arbitrary URLs.
 # Duplicating ours here would put two `web_search` candidates in

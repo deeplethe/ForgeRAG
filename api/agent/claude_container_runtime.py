@@ -1,17 +1,17 @@
 """
-Container-side Hermes runtime — counterpart to ``HermesRuntime``.
+Container-side Claude SDK runtime — counterpart to ``ClaudeRuntime``.
 
-Where ``HermesRuntime`` (api/agent/hermes_runtime.py) drives Hermes
+Where ``ClaudeRuntime`` (api/agent/claude_runtime.py) drives the SDK
 in-process inside the FastAPI worker, this runner spawns the
 entrypoint script (``/opt/opencraig/opencraig_run_turn.py``) inside
 the user's sandbox container via ``docker exec`` and streams the
 JSONL events the entrypoint emits on stdout. Same public API
-shape (``HermesTurnConfig`` in, ``HermesTurnResult`` out, per-event
+shape (``ClaudeTurnConfig`` in, ``ClaudeTurnResult`` out, per-event
 callback fan-out) so the chat route can switch transparently.
 
 Why a container-side runner exists at all:
 
-  In-process Hermes runs with ``enabled_toolsets=[]`` — its
+  In-process the Claude Agent SDK runs with ``enabled_toolsets=[]`` — its
   built-in Read / Edit / Bash / Glob / Grep would otherwise touch
   the BACKEND's filesystem, which is a hard escape risk. With those
   disabled the agent can only use MCP tools (search / KG / library
@@ -19,16 +19,16 @@ Why a container-side runner exists at all:
   Workspace folder and expects the agent to actually read / edit
   files there.
 
-  In-container Hermes runs with full toolsets ENABLED — its bash /
+  In-container the Claude Agent SDK runs with full toolsets ENABLED — its bash /
   edit / grep operate on ``/workdir/`` which the SandboxManager
   bind-mounts to the user's project folder. That's the sandbox.
   The cost is per-turn ``docker exec`` overhead (~50–200 ms on a
   warm container) and a network hop for MCP calls; the win is a
   Workspace that actually does work.
 
-Selection logic lives in ``api/routes/hermes_chat.py`` — when a
+Selection logic lives in ``api/routes/claude_chat.py`` — when a
 chat is bound to a project AND a SandboxManager is available, use
-this runner; otherwise fall back to ``HermesRuntime`` (in-process,
+this runner; otherwise fall back to ``ClaudeRuntime`` (in-process,
 toolsets disabled, MCP-only).
 
 Wire format (the JSONL the entrypoint emits → the events this
@@ -45,7 +45,7 @@ runner fans out via ``on_event``):
                               "iterations": N}
     {"kind": "error",        "type": "...", "message": "..."}
 
-These are identical to ``HermesRuntime``'s event vocabulary so the
+These are identical to ``ClaudeRuntime``'s event vocabulary so the
 chat route's SSE translation layer doesn't need a second mapping.
 """
 
@@ -59,8 +59,8 @@ from collections.abc import Iterator
 from typing import Any
 
 from .claude_runtime import (
-    HermesTurnConfig,
-    HermesTurnResult,
+    ClaudeTurnConfig,
+    ClaudeTurnResult,
     _evt_done,
     _evt_error,
 )
@@ -80,8 +80,8 @@ class SandboxUnavailableError(RuntimeError):
     the in-process runtime — better than 5xx-ing the user."""
 
 
-class HermesContainerRunner:
-    """Drive a Hermes turn inside the user's sandbox container.
+class ClaudeContainerRunner:
+    """Drive a the SDK turn inside the user's sandbox container.
 
     Stateless across turns: instantiate once per chat route, reuse
     across requests. Conversation history travels through ``run_turn``
@@ -97,10 +97,10 @@ class HermesContainerRunner:
     def __init__(self, sandbox):
         if sandbox is None:
             raise SandboxUnavailableError(
-                "HermesContainerRunner requires a live SandboxManager. "
+                "ClaudeContainerRunner requires a live SandboxManager. "
                 "If you're running in a deployment without Docker, the "
                 "chat route should have selected the in-process "
-                "HermesRuntime instead."
+                "ClaudeRuntime instead."
             )
         self.sandbox = sandbox
 
@@ -108,15 +108,15 @@ class HermesContainerRunner:
         self,
         user_message: str,
         *,
-        config: HermesTurnConfig,
+        config: ClaudeTurnConfig,
         principal_user_id: str,
         cwd_path: str | None = None,
         conversation_history: list[dict] | None = None,
         on_event: callable | None = None,
-    ) -> HermesTurnResult:
+    ) -> ClaudeTurnResult:
         """Spawn the entrypoint inside ``principal_user_id``'s
         container, parse JSONL from stdout, fan events out via
-        ``on_event``, return a HermesTurnResult.
+        ``on_event``, return a ClaudeTurnResult.
 
         ``cwd_path``: folder path WITHIN the user's workdir tree
         (e.g. ``"/sales/2025"``) the agent should chdir into
@@ -142,7 +142,7 @@ class HermesContainerRunner:
             )
         except Exception as e:
             log.exception(
-                "hermes_container: ensure_container_for_user failed user=%s",
+                "claude_container: ensure_container_for_user failed user=%s",
                 principal_user_id,
             )
             emit(_evt_error(f"sandbox start failed: {type(e).__name__}",
@@ -168,7 +168,7 @@ class HermesContainerRunner:
                         iterations = iter_v
         except Exception as e:
             log.exception(
-                "hermes_container: stream pump raised user=%s",
+                "claude_container: stream pump raised user=%s",
                 principal_user_id,
             )
             emit(_evt_error(f"agent failed: {type(e).__name__}",
@@ -181,9 +181,9 @@ class HermesContainerRunner:
             try:
                 self.sandbox.touch(principal_user_id)
             except Exception:
-                log.exception("hermes_container: touch failed")
+                log.exception("claude_container: touch failed")
 
-        return HermesTurnResult(
+        return ClaudeTurnResult(
             final_text=final_text,
             history=[],  # container doesn't ship updated history;
                           # the route reconstructs from its DB
@@ -199,7 +199,7 @@ class HermesContainerRunner:
     def _build_env(
         *,
         user_message: str,
-        config: HermesTurnConfig,
+        config: ClaudeTurnConfig,
         conversation_history: list[dict] | None,
         cwd_path: str | None = None,
     ) -> dict[str, str]:
@@ -302,7 +302,7 @@ class HermesContainerRunner:
         try:
             decoded = line.decode("utf-8", errors="replace").strip()
         except Exception:
-            log.exception("hermes_container: line decode failed")
+            log.exception("claude_container: line decode failed")
             return None
         if not decoded:
             return None
@@ -310,7 +310,7 @@ class HermesContainerRunner:
             evt = json.loads(decoded)
         except Exception:
             log.warning(
-                "hermes_container: non-JSON line on stdout (skipping): %r",
+                "claude_container: non-JSON line on stdout (skipping): %r",
                 decoded[:200],
             )
             return None
@@ -325,17 +325,17 @@ class HermesContainerRunner:
 
 
 def stream_turn_container(
-    runner: HermesContainerRunner,
+    runner: ClaudeContainerRunner,
     user_message: str,
     *,
-    config: HermesTurnConfig,
+    config: ClaudeTurnConfig,
     principal_user_id: str,
     cwd_path: str | None = None,
     conversation_history: list[dict] | None = None,
 ) -> Iterator[dict]:
     """Sync generator the chat route iterates to push SSE events.
 
-    Same thread + queue pattern as ``HermesRuntime.stream_turn`` —
+    Same thread + queue pattern as ``ClaudeRuntime.stream_turn`` —
     keep the wire format identical so the route's translation
     layer doesn't need a second mapping.
     """
@@ -346,7 +346,7 @@ def stream_turn_container(
         try:
             q.put_nowait(evt)
         except Exception:
-            log.exception("hermes_container: queue put failed")
+            log.exception("claude_container: queue put failed")
 
     def _worker() -> None:
         try:
@@ -367,12 +367,12 @@ def stream_turn_container(
                     )
                 )
             except Exception:
-                log.exception("hermes_container: error-event put failed")
+                log.exception("claude_container: error-event put failed")
         finally:
             q.put(SENTINEL)
 
     t = threading.Thread(
-        target=_worker, daemon=True, name="hermes-container-turn"
+        target=_worker, daemon=True, name="claude-container-turn"
     )
     t.start()
     while True:

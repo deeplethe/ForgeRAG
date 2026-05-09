@@ -144,7 +144,7 @@ def test_mcp_tool_catalog_is_exact():
 
 
 def test_web_search_is_NOT_exposed_via_mcp():
-    """Hermes ships its own WebFetch / WebSearch built-in tools; we
+    """the SDK ships its own WebFetch / WebSearch built-in tools; we
     deliberately don't double-expose ours via MCP. Locking this in
     so a future re-add doesn't sneak through."""
     tools = asyncio.run(mcp_server.list_tools())

@@ -1,10 +1,10 @@
 """
 Claude Agent SDK runtime — backend-process integration.
 
-v1.0.0 cutover from the (never-published) hermes-agent package to
-the official ``claude-agent-sdk`` (Anthropic, MIT). Same loop that
-powers Claude Code, exposed as a Python library that wraps a
-self-contained CLI binary bundled in the wheel — no Node.js needed.
+Drives one chat turn through ``claude-agent-sdk`` — the same loop
+that powers Claude Code, exposed as a Python library wrapping a
+self-contained CLI binary bundled in the wheel (no Node.js needed
+at runtime).
 
 Architecture::
 
@@ -23,12 +23,9 @@ Architecture::
                        │
                        └─► returns final answer + iteration count
 
-Why claude-agent-sdk:
+Why this module exists:
 
   1. Same agent loop as Claude Code — production-tested at scale.
-     hermes-agent (the previous selection) was never PyPI-published
-     under that name and our tests had been mocking the import the
-     whole time, masking a runtime gap.
 
   2. PyPI-installable. The SDK ships a self-contained binary per
      platform; ``pip install claude-agent-sdk`` is enough.
@@ -75,7 +72,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #
 # Stable wire shape the chat route translates into SSE blocks. Match
-# the legacy hermes_runtime event vocabulary so the route's mapping
+# the legacy claude_runtime event vocabulary so the route's mapping
 # stays identical post-cutover.
 
 
@@ -125,7 +122,7 @@ def _evt_error(message: str, *, type_: str = "RuntimeError") -> dict:
 class ClaudeTurnConfig:
     """Per-turn knobs.
 
-    Names match the legacy HermesTurnConfig 1:1 so callers can
+    Names match the legacy ClaudeTurnConfig 1:1 so callers can
     swap the import without touching the body. ``base_url`` /
     ``api_key`` are forwarded as ``ANTHROPIC_BASE_URL`` /
     ``ANTHROPIC_API_KEY`` env vars to the SDK's bundled CLI.
@@ -451,7 +448,7 @@ def stream_turn(
 ) -> Iterator[dict]:
     """Run a turn in a worker thread, yield events as they arrive.
 
-    Same queue-based bridge as the legacy hermes_runtime helper —
+    Same queue-based bridge as the legacy claude_runtime helper —
     the chat route's SSE machinery doesn't have to change. Worker
     thread spins up its own asyncio loop just for the SDK's async
     iterator (FastAPI's loop runs in the main thread; nesting a
@@ -499,7 +496,7 @@ def stream_turn(
 # callsites migrate to Claude* names.
 # ---------------------------------------------------------------------------
 
-HermesRuntime = ClaudeRuntime
-HermesTurnConfig = ClaudeTurnConfig
-HermesTurnResult = ClaudeTurnResult
-HermesUnavailableError = ClaudeUnavailableError
+ClaudeRuntime = ClaudeRuntime
+ClaudeTurnConfig = ClaudeTurnConfig
+ClaudeTurnResult = ClaudeTurnResult
+ClaudeUnavailableError = ClaudeUnavailableError

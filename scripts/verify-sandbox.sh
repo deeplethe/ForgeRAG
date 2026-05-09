@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Day 2 verification: confirms the sandbox image builds, hermes-
-# agent imports cleanly inside, and the entrypoint script emits
-# the expected JSONL events with a stub LLM.
+# Sandbox image structural verification: confirms the image builds,
+# the Claude Agent SDK imports cleanly inside the container, the
+# bundled `claude` binary is on PATH, and the entrypoint script
+# emits the expected JSONL error event when run without the required
+# env vars (smoke without a real LLM call).
 #
 # Run after scripts/build-sandbox.sh succeeds.
 
@@ -15,9 +17,9 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> Step 2: hermes-agent imports inside container"
-docker run --rm "$IMAGE" python -c \
-    "from run_agent import AIAgent; print('AIAgent OK:', AIAgent.__module__)"
+echo "==> Step 2: claude-agent-sdk imports + bundled binary on PATH"
+docker run --rm "$IMAGE" bash -lc \
+    "python -c 'import claude_agent_sdk; print(\"SDK\", claude_agent_sdk.__version__)' && which claude && claude --version"
 
 echo "==> Step 3: opencraig_run_turn.py present at the expected path"
 docker run --rm "$IMAGE" test -f /opt/opencraig/opencraig_run_turn.py
@@ -32,5 +34,5 @@ fi
 
 echo
 echo "All structural checks passed. The container can run the entrypoint."
-echo "Next: Day 3-5 backend HermesContainerRunner + Day 8-9 end-to-end"
+echo "Next: Day 3-5 backend ClaudeContainerRunner + Day 8-9 end-to-end"
 echo "      smoke with a real LLM key + the full chat route."

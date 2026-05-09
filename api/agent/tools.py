@@ -1418,7 +1418,7 @@ _GRAPH_EXPLORE_SPEC = ToolSpec(
 # ---------------------------------------------------------------------------
 # Project-ownership helper (used by import_from_library and any
 # future project-scoped tool). Code execution moved out of this
-# layer — Hermes Agent runs inside the sandbox container and gets
+# layer — Claude Agent SDK runs inside the sandbox container and gets
 # bash/python via its own built-in tools.
 # ---------------------------------------------------------------------------
 
@@ -1917,7 +1917,7 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _RERANK_SPEC.name: _RERANK_SPEC,
     # Project-aware tools — filtered out by ``tools_for(ctx)`` when
     # the conversation isn't bound to a project. Code execution
-    # (bash / python) is no longer here — Hermes Agent runs inside
+    # (bash / python) is no longer here — Claude Agent SDK runs inside
     # the sandbox container and brings its own bash/edit/grep/etc.
     # tools. The agent reaches our domain capabilities (search, KG,
     # library, artifacts) via the MCP server (``api/routes/mcp.py``).

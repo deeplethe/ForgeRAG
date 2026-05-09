@@ -1,7 +1,7 @@
 # OpenCraig sandbox image — Python data stack.
 #
 # Pinned conservatively. Each block is one capability the
-# in-container agent (Hermes Agent) leans on for analysis /
+# in-container agent (Claude Agent SDK) leans on for analysis /
 # spreadsheet / PDF workflows; trimming a block means deciding
 # the agent doesn't need that ability.
 #
@@ -10,10 +10,10 @@
 # training. Heavy numerics belong in a future ``install_runtime``
 # step; the base image stays small enough for fast cold start.
 #
-# Hermes Agent itself is installed separately via the Dockerfile
+# Claude Agent SDK itself is installed separately via the Dockerfile
 # (pinned MIT-licensed package); it brings its own loop, tools,
 # and LLM client. We don't run an ipykernel inside the container —
-# code execution is subprocess-based via Hermes' built-in shell
+# code execution is subprocess-based via the SDK's built-in shell
 # tools, so jupyter_client / ipykernel / bash_kernel are NOT
 # installed here.
 
@@ -53,7 +53,7 @@ httpx==0.28.1
 
 # ── Agent runtime ──
 # Claude Agent SDK (Anthropic, MIT) — runs in-container per turn,
-# launched via ``docker exec`` by the backend's HermesContainerRunner.
+# launched via ``docker exec`` by the backend's ClaudeContainerRunner.
 # The wheel ships a self-contained ``claude`` binary in
 # ``_bundled/`` (no Node.js required); the SDK's Python API wraps
 # it. Built-in tools (Read / Edit / Bash / Glob / Grep / etc.)

@@ -1,6 +1,6 @@
 /**
  * Agent chat — SSE-streamed agentic chat against
- * POST /api/v1/agent/hermes-chat (Hermes Agent runtime, in-process).
+ * POST /api/v1/agent/chat (Claude Agent SDK, in-process).
  *
  * Event vocabulary (each event is a `data: <json>\n\n` block, the
  * `type` field on the JSON dict is the discriminator):
@@ -51,7 +51,7 @@ export async function* agentChatStream({
   // the Conversation row when this differs from what's stored.
   if (cwdPath) body.cwd_path = cwdPath
 
-  const res = await fetch(`${BASE}/api/v1/agent/hermes-chat`, {
+  const res = await fetch(`${BASE}/api/v1/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',

@@ -1,11 +1,11 @@
 """
 MCP server — exposes OpenCraig's domain tools to in-container agents.
 
-Hermes Agent (running inside the per-user sandbox container) reaches
+Claude Agent SDK (running inside the per-user sandbox container) reaches
 back to this server over HTTP/MCP for tools that need backend state:
 search the Library, walk the KG, list artifacts, import documents,
 etc. Code-execution tools (bash / edit / grep / etc.) live INSIDE
-Hermes itself; they don't appear here.
+the SDK itself; they don't appear here.
 
 Wave 2.2 (this commit) is the SCAFFOLD only:
 
@@ -103,10 +103,10 @@ def reset_mcp_principal(token) -> None:
 # ``streamable_http_path="/"``: when we ``app.mount("/api/v1/mcp",
 # mcp.streamable_http_app())``, the protocol endpoint lands cleanly
 # at ``/api/v1/mcp`` (not the awkward ``/api/v1/mcp/mcp``). The
-# Hermes container is configured to point at exactly that URL.
+# the SDK container is configured to point at exactly that URL.
 #
 # ``json_response=True``: clients that don't speak SSE get plain
-# JSON responses. Hermes' MCP client will negotiate the right
+# JSON responses. the SDK's MCP client will negotiate the right
 # transport via Accept headers; this just sets the default.
 mcp_server = FastMCP(
     "opencraig",

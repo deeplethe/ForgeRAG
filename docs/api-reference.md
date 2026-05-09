@@ -2,7 +2,7 @@
 
 OpenCraig exposes three categories of HTTP surface:
 
-* **Agent layer** — `/api/v1/agent/hermes-chat` for SSE-streamed
+* **Agent layer** — `/api/v1/agent/chat` for SSE-streamed
   agentic chat, `/api/v1/llm/v1/chat/completions` for the
   OpenAI-compatible LLM proxy any in-container or external client
   hits.
@@ -29,10 +29,10 @@ All REST request/response bodies use JSON. File uploads use
 ### Stream a turn
 
 ```
-POST /api/v1/agent/hermes-chat
+POST /api/v1/agent/chat
 ```
 
-Run one chat turn through the in-process Hermes Agent runtime.
+Run one chat turn through the in-process Claude Agent SDK.
 Returns an SSE stream of events as the agent thinks, calls tools
 (via MCP), and produces a final answer with citations.
 
@@ -90,7 +90,7 @@ POST /api/v1/llm/v1/chat/completions
 OpenAI-compatible endpoint backed by [litellm](https://github.com/BerriAI/litellm)
 router. Provider keys (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
 `GEMINI_API_KEY` / etc.) live in the backend env; clients (the
-in-container Hermes runtime, external SDK callers, anything that
+in-container Claude SDK runtime, external SDK callers, anything that
 speaks OpenAI's wire format) only know the proxy URL + a session
 bearer to *our* backend. Useful for:
 
@@ -146,7 +146,7 @@ SSE for streaming responses).
 | `rerank` | Cross-encoder rerank a candidate chunk set |
 | `import_from_library` | Copy a Library document into a project workdir (project-scoped) |
 
-> **Web search** is intentionally NOT exposed via MCP. Hermes Agent
+> **Web search** is intentionally NOT exposed via MCP. Claude Agent SDK
 > (and most other MCP-compatible runtimes) ship their own
 > `WebFetch` / `WebSearch` built-in tools; double-exposing ours
 > would put two `web_search` candidates in front of the agent
@@ -166,8 +166,8 @@ point at `http://<your-host>:8000/api/v1/mcp` with a Bearer token
 in the `Authorization` header. Any tool the user can't access is
 silently filtered before the agent sees the catalogue.
 
-For Hermes Agent (the in-process default), no client config is
-needed — the runtime wrapper at `api/agent/hermes_runtime.py`
+For Claude Agent SDK (the in-process default), no client config is
+needed — the runtime wrapper at `api/agent/claude_runtime.py`
 talks to the MCP server in-process via the same registered tool
 table.
 

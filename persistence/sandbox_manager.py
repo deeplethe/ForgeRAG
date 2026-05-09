@@ -272,7 +272,7 @@ class SandboxManager:
         self.container_name_prefix = container_name_prefix
         self.container_idle_seconds = container_idle_seconds
         # Port range to publish on every fresh container. Originally
-        # allocated for ipykernel ZMQ; under the Hermes Agent model
+        # allocated for ipykernel ZMQ; under the Claude Agent SDK model
         # the in-container agent doesn't need bound ports, but we
         # keep the range for any future MCP / debug / preview server
         # that wants to listen. All bindings stay loopback-only at
@@ -486,7 +486,7 @@ class SandboxManager:
                 <projects_root>/<pid>           → /workdir/<pid>     (per owned project)
                 <user_envs_root>/<user_id>      → /workspace/.envs
 
-        The folder-as-cwd path is the future; HermesContainerRunner
+        The folder-as-cwd path is the future; ClaudeContainerRunner
         always passes ``owned_project_ids=()`` so the per-project
         branch is dead code under the new chat route.
         """
