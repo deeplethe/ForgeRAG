@@ -584,7 +584,7 @@ def test_dispatch_error_shape():
 
 
 # ---------------------------------------------------------------------------
-# v0.5.0 polish: search hits expose folder ``path`` so the agent can
+# v0.6.0 polish: search hits expose folder ``path`` so the agent can
 # use directory hierarchy as a semantic signal
 # ---------------------------------------------------------------------------
 
@@ -614,7 +614,7 @@ class TestSearchHitsCarryPath:
 
 
 # ---------------------------------------------------------------------------
-# v0.5.0 polish: list_folders + list_docs progressive-browse tools
+# v0.6.0 polish: list_folders + list_docs progressive-browse tools
 # ---------------------------------------------------------------------------
 
 

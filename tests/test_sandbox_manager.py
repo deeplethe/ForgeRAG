@@ -233,7 +233,7 @@ def test_user_workdirs_root_mounts_at_slash_workdir(
 ):
     """When ``user_workdirs_root`` is set, the user's private
     workdir tree gets mounted at ``/workdir/`` (single mount,
-    not per-project). This is the v0.5.0 OSS folder-as-cwd path
+    not per-project). This is the v0.6.0 OSS folder-as-cwd path
     — chat ``cwd_path`` is interpreted as a subpath of this mount.
     """
     workdirs = tmp_path / "user-workdirs"

@@ -124,7 +124,7 @@ def with_principal():
 
 def test_mcp_tool_catalog_is_exact():
     """Make sure importing ``mcp_tools`` results in exactly the
-    expected catalog being published — locks in the v0.5.0 surface
+    expected catalog being published — locks in the v0.6.0 surface
     (no web_search; list_folders + list_docs added for progressive
     corpus browsing)."""
     tools = asyncio.run(mcp_server.list_tools())

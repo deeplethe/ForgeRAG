@@ -6,13 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.5.0] — 2026-05-09 — First preview release
+## [0.6.0] — 2026-05-09 — First preview release
 
 This release reframes OpenCraig as **managed agentic workspaces
 with permission-aware retrieval** — each user gets a per-user
 sandbox container where the agent does the work, and retrieval
 across the team's knowledge respects existing folder permissions.
-v0.5.0 is the first public preview of the OSS edition; the repo
+v0.6.0 is the first public preview of the OSS edition; the repo
 continues to be developed and maintained going forward, with v1.0
 targeted for a stable cut once the API surface settles.
 
@@ -25,7 +25,7 @@ boundary.
 
 ### Changed — major
 
-- **Agent runtime: Claude Agent SDK.** v0.5.0 ships the same loop
+- **Agent runtime: Claude Agent SDK.** v0.6.0 ships the same loop
   that powers Claude Code as the in-process and in-container agent
   driver. The runtime selection that landed in an earlier internal
   wave referenced a package that turned out not to exist on PyPI;

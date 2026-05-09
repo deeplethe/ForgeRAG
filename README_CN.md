@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.5.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.6.0-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
   <a href="https://github.com/opencraig/opencraig/stargazers"><img src="https://img.shields.io/github/stars/opencraig/opencraig?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge" alt="Issues"></a>
@@ -29,10 +29,10 @@
 
 ---
 
-> ## 📦 v0.5.0 ——首个预览版
+> ## 📦 v0.6.0 ——首个预览版
 >
 > OpenCraig 是**面向企业级 Agent runtime 的权限感知知识 / 上下文层**。
-> v0.5.0 是 OSS 版的首个公开预览版；本仓库后续会持续开发与维护，等
+> v0.6.0 是 OSS 版的首个公开预览版；本仓库后续会持续开发与维护，等
 > API 稳定后再切 v1.0。
 >
 > 同时存在的商业产品 **OpenCraig Enterprise（v3.0+）** 提供企业部署
@@ -301,7 +301,7 @@ OpenCraig/
 
 ---
 
-## 🗺️ v0.5.0 里有什么 / 没有什么
+## 🗺️ v0.6.0 里有什么 / 没有什么
 
 ### OSS 版已发布（本仓库）
 

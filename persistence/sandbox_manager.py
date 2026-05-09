@@ -476,7 +476,7 @@ class SandboxManager:
         Two layouts coexist while we transition out of the legacy
         Project-bound model:
 
-            user_workdirs_root SET (folder-as-cwd, the v0.5.0 OSS
+            user_workdirs_root SET (folder-as-cwd, the v0.6.0 OSS
             path):
                 <user_workdirs_root>/<user_id>  → /workdir
                 <user_envs_root>/<user_id>      → /workspace/.envs

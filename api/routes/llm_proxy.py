@@ -25,7 +25,7 @@ Two endpoint families:
     POST /api/v1/llm/anthropic/v1/messages     (Anthropic shape)
 
 The OpenAI surface is the legacy path used by every OpenAI-SDK
-client. The Anthropic surface lands in v0.5.0 to support the
+client. The Anthropic surface lands in v0.6.0 to support the
 Claude Agent SDK — it sets ``ANTHROPIC_BASE_URL`` and POSTs
 ``/v1/messages`` per Anthropic convention. Internally both routes
 funnel into ``litellm`` which translates wire format ↔ provider
