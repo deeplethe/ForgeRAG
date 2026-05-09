@@ -1,16 +1,8 @@
 <p align="center">
-  <img src="web/public/open_craig.png" alt="OpenCraig" width="400">
+  <img src="web/public/open_craig.png" alt="OpenCraig" width="560">
 </p>
 
-<h2 align="center">Your team's agentic workspace.</h2>
-
-<p align="center">
-  Each user gets a managed sandbox where the agent reads PDFs, runs code, and drafts reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions, so an agent only sees what its authenticated user can see.
-</p>
-
-<p align="center">
-  <em>Per-user sandbox containers · permission-aware retrieval · MCP-native · BYOK · self-hosted.</em>
-</p>
+# OpenCraig
 
 <p align="center">
   <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.6.0-blue?style=for-the-badge" alt="Version"></a>
@@ -20,14 +12,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
 </p>
 
-<p align="center">
-  <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-who-its-for">Who it's for</a> ·
-  <a href="#-how-it-works">How</a> ·
-  <a href="#-editions">Editions</a> ·
-  <a href="docs/">Docs</a> ·
-  <a href="./README_CN.md">中文</a>
-</p>
+**Your team's agentic workspace.** Each user gets a managed sandbox where the agent reads PDFs, runs code, and drafts reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions, so an agent only sees what its authenticated user can see.
+
+*Per-user sandbox containers · permission-aware retrieval · MCP-native · BYOK · self-hosted.*
+
+[Quick Start](#-quick-start) · [Who it's for](#-who-its-for) · [How](#-how-it-works) · [Editions](#-editions) · [Docs](docs/) · [中文](./README_CN.md)
 
 ---
 

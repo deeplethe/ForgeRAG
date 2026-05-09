@@ -1,16 +1,8 @@
 <p align="center">
-  <img src="web/public/open_craig.png" alt="OpenCraig" width="400">
+  <img src="web/public/open_craig.png" alt="OpenCraig" width="560">
 </p>
 
-<h2 align="center">团队的 agentic 工作台</h2>
-
-<p align="center">
-  每个用户都有一个托管沙盒，agent 在沙盒里读 PDF、跑代码、写报告 —— 而不是让用户在自己机器上做这些事。检索遵循团队既有的文件夹权限，agent 只能看到所属用户有权访问的内容。
-</p>
-
-<p align="center">
-  <em>每用户独立沙盒容器 · 权限感知检索 · MCP 原生 · BYOK · 自托管</em>
-</p>
+# OpenCraig
 
 <p align="center">
   <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.6.0-blue?style=for-the-badge" alt="Version"></a>
@@ -20,14 +12,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
 </p>
 
-<p align="center">
-  <a href="#-快速开始">快速开始</a> ·
-  <a href="#-为谁而做">为谁而做</a> ·
-  <a href="#-工作原理">原理</a> ·
-  <a href="#-版本">版本</a> ·
-  <a href="docs/">文档</a> ·
-  <a href="./README.md">English</a>
-</p>
+**团队的 agentic 工作台。** 每个用户都有一个托管沙盒，agent 在沙盒里读 PDF、跑代码、写报告 —— 而不是让用户在自己机器上做这些事。检索遵循团队既有的文件夹权限，agent 只能看到所属用户有权访问的内容。
+
+*每用户独立沙盒容器 · 权限感知检索 · MCP 原生 · BYOK · 自托管*
+
+[快速开始](#-快速开始) · [为谁而做](#-为谁而做) · [原理](#-工作原理) · [版本](#-版本) · [文档](docs/) · [English](./README.md)
 
 ---
 
