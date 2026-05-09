@@ -52,13 +52,16 @@ requests==2.32.3
 httpx==0.28.1
 
 # ── Agent runtime ──
-# Hermes Agent (NousResearch, MIT) — runs in-container per turn,
+# Claude Agent SDK (Anthropic, MIT) — runs in-container per turn,
 # launched via ``docker exec`` by the backend's HermesContainerRunner.
-# Built-in tools (Read / Edit / Bash / Glob / Grep / etc.) operate
-# on /workdir/ which the backend bind-mounts to the user's project
-# folder. MCP-based domain tools (search / KG / library / artifacts)
+# The wheel ships a self-contained ``claude`` binary in
+# ``_bundled/`` (no Node.js required); the SDK's Python API wraps
+# it. Built-in tools (Read / Edit / Bash / Glob / Grep / etc.)
+# operate on /workdir/ which the backend bind-mounts to the user's
+# private workspace. MCP-based domain tools (search / KG / library)
 # are reached via HTTP back to the backend.
 #
-# Pin matches the version the backend's HermesRuntime tested
-# against; any bump should be coordinated with both sides.
-hermes-agent==0.10.0
+# This pin must stay aligned with the backend's pin (root
+# requirements.txt) so the bundled binary's stream-json schema and
+# the message-types module the backend imports stay version-locked.
+claude-agent-sdk>=0.1.80

@@ -9,10 +9,10 @@
 #       opencraig/sandbox:py3.13
 #
 # Container's PID 1 just keeps the box alive; the in-container
-# agent runtime (Hermes Agent, MIT) is launched via ``docker exec``
-# per chat turn and reaches back to the backend's MCP server +
-# LLM proxy over loopback. The container never opens a public
-# port — outbound HTTP only, no inbound listeners.
+# agent runtime (Claude Agent SDK, Anthropic, MIT) is launched via
+# ``docker exec`` per chat turn and reaches back to the backend's
+# MCP server + LLM proxy over loopback. The container never opens
+# a public port — outbound HTTP only, no inbound listeners.
 #
 # Design notes:
 # - Non-root ``runner`` user (uid 1000) inside. With Linux daemon-
@@ -141,6 +141,23 @@ ENV PATH="/opt/conda/bin:${PATH}"
 COPY requirements.txt /tmp/sandbox-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/sandbox-requirements.txt \
     && rm /tmp/sandbox-requirements.txt
+
+# ── Claude Agent SDK CLI on PATH ─────────────────────────────────
+# The wheel installs a per-platform self-contained binary at
+# ``<site-packages>/claude_agent_sdk/_bundled/claude``. The SDK's
+# ``_find_cli()`` already checks that path first, but symlinking it
+# to /usr/local/bin/claude lets bash recipes / docker exec /
+# debugging shells invoke it directly without going through the
+# Python wrapper. Idempotent — symlink only if the source exists.
+RUN set -eux; \
+    src=$(python -c "import claude_agent_sdk, os; \
+print(os.path.join(os.path.dirname(claude_agent_sdk.__file__), '_bundled', 'claude'))"); \
+    if [ -f "$src" ]; then \
+        chmod +x "$src"; \
+        ln -sf "$src" /usr/local/bin/claude; \
+    else \
+        echo "WARNING: claude binary not found at $src" >&2; \
+    fi
 
 # ── OpenCraig agent-turn entrypoint ─────────────────────────────
 # This script is what the backend's HermesContainerRunner invokes
