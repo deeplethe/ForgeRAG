@@ -49,7 +49,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -114,34 +114,114 @@ class ChatRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_model_config(state: AppState, override: str | None) -> tuple[str, str | None, str | None]:
-    """Pick (model, base_url, api_key) for this turn.
+def _resolve_model_name(state: AppState, override: str | None) -> str:
+    """Pick the model name LiteLLM should dispatch to.
 
-    Reads cfg.answering.generator as the default; ``override`` lets a
-    request pin a specific model. Returns ``base_url=None`` when the
-    config doesn't pin one — the SDK falls back to the OPENAI_BASE_URL
-    env var or the provider default.
+    Reads ``cfg.answering.generator.model`` as the default;
+    ``override`` lets a request pin a specific model. The actual
+    upstream provider URL + API key are NOT resolved here — they
+    live on ``state.cfg.answering.generator`` and are injected by
+    the LLM proxy itself when it forwards to the upstream provider.
     """
     gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
     if gen is None:
-        # Defensive default — config schema guarantees this exists,
-        # but keep the route from crashing on a stale-config test.
-        return (override or "openai/gpt-4o-mini", None, None)
+        return override or "openai/gpt-4o-mini"
+    return override or gen.model
 
-    model = override or gen.model
-    base_url = gen.api_base or None
 
-    # Resolve api_key: explicit value wins, then env var name, then
-    # let the SDK / openai SDK fall back to OPENAI_API_KEY env.
-    api_key: str | None = None
-    if gen.api_key:
-        api_key = gen.api_key
-    elif gen.api_key_env:
-        import os
+def _agent_loopback_url(request) -> str:
+    """The URL the agent's bundled CLI uses to reach our LLM proxy's
+    Anthropic-compat surface (``/api/v1/llm/anthropic``).
 
-        api_key = os.environ.get(gen.api_key_env)
+    The agent's SDK gets ``ANTHROPIC_BASE_URL`` set to this; the SDK
+    appends ``/v1/messages`` per Anthropic SDK convention. The agent
+    speaks the Anthropic Messages wire format; our proxy converts it
+    to whichever provider ``cfg.answering.generator.model`` actually
+    points at (DeepSeek / OpenAI / SiliconFlow / native Anthropic /
+    ...).
 
-    return (model, base_url, api_key)
+    Derived from the incoming request so the loopback works whatever
+    port / interface the backend is bound to. Same backend, same
+    scheme + host that brought the chat request in.
+    """
+    host = request.url.hostname or "127.0.0.1"
+    # Backend on Windows binds 127.0.0.1; reverse-tunnelled hosts
+    # (smoke test pattern) get rewritten to localhost loopback so
+    # the SDK subprocess can reach it.
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    port = request.url.port or 8000
+    scheme = request.url.scheme or "http"
+    return f"{scheme}://{host}:{port}/api/v1/llm/anthropic"
+
+
+def _get_or_create_agent_token(
+    state: AppState, principal: AuthenticatedPrincipal,
+) -> str:
+    """Return the user's persistent agent-loopback bearer.
+
+    The SDK's bundled CLI calls our LLM proxy (and, in the future,
+    our MCP server) during a turn; those endpoints sit behind the
+    same auth middleware as everything else, and the agent's
+    outbound HTTP from a subprocess can't carry the user's web
+    session cookie. So each user gets one ``agent-loop`` bearer,
+    minted lazily on first chat and reused for every subsequent
+    turn — same lifecycle as Claude Code's ANTHROPIC_API_KEY.
+
+    Why one-per-user instead of one-per-turn:
+
+      * agent tasks routinely span many minutes (multi-step research,
+        reading dozens of PDFs, code generation with several bash
+        invocations) — a 5-minute per-turn token would expire mid-
+        task and every subsequent tool call would fail
+      * minting per-turn churns ``auth_tokens`` rows for nothing
+      * security posture stays the same: one user-scoped bearer with
+        the user's role, revokable explicitly via the existing token
+        management UI
+
+    Cache strategy:
+
+      * raw value cached in memory on the ``AppState`` instance
+        (``state._agent_token_cache: dict[user_id, raw]``) so the
+        token primer doesn't go to the DB on every chat turn
+      * cache scopes per backend process, so a backend restart re-
+        mints (and the previous DB row is left intact, unused, for
+        the existing token-prune housekeeping to clean up)
+      * no explicit expiry — same lifetime as the user account;
+        revoke explicitly if compromised
+
+    Memory cache lives on ``state`` (and so dies with the process)
+    rather than at module level so tests get a fresh cache per
+    fixture and so any future "rotate all tokens" admin action can
+    just clear the dict.
+    """
+    cache = getattr(state, "_agent_token_cache", None)
+    if cache is None:
+        cache = {}
+        state._agent_token_cache = cache
+
+    cached = cache.get(principal.user_id)
+    if cached:
+        return cached
+
+    from uuid import uuid4
+
+    from api.auth.primitives import generate_sk, hash_prefix, hash_sk
+    from persistence.models import AuthToken
+
+    raw = generate_sk()
+    with state.store.transaction() as sess:
+        sess.add(AuthToken(
+            token_id=uuid4().hex[:32],
+            user_id=principal.user_id,
+            name="agent-loop",
+            token_hash=hash_sk(raw),
+            hash_prefix=hash_prefix(raw),
+            role=getattr(principal, "role", "user"),
+            expires_at=None,  # persistent; revoke explicitly
+        ))
+    cache[principal.user_id] = raw
+    return raw
 
 
 def _load_conversation_history(state: AppState, conv_id: str) -> list[dict]:
@@ -312,6 +392,7 @@ def _translate(evt: dict) -> str | None:
 
 @router.post("/chat")
 async def claude_chat(
+    request: Request,
     body: ChatRequest,
     principal: AuthenticatedPrincipal = Depends(get_principal),
     state: AppState = Depends(get_state),
@@ -319,10 +400,29 @@ async def claude_chat(
     """SSE stream of SDK-driven agent events. See module docstring
     for the wire format."""
 
-    # Resolve runtime config first so a misconfigured model fails
-    # fast with a clean 400, not a mid-stream error.
+    # Resolve runtime config. Three independent things the SDK needs:
+    #   * model        — what name LiteLLM dispatches to. Reads from
+    #                    cfg.answering.generator.model unless the
+    #                    request body overrides.
+    #   * base_url     — OUR backend's Anthropic-compat proxy. The
+    #                    SDK speaks Anthropic Messages format; our
+    #                    /api/v1/llm/anthropic surface translates to
+    #                    whichever provider the model name dispatches
+    #                    to (DeepSeek / OpenAI / SiliconFlow /
+    #                    native Anthropic / etc.). Going direct to
+    #                    the upstream provider (e.g. api.deepseek.com)
+    #                    would 401 — DeepSeek doesn't speak Anthropic
+    #                    Messages.
+    #   * api_key      — a short-lived Bearer that authenticates the
+    #                    SDK's loopback call with our auth middleware.
+    #                    NOT the upstream provider's key — that lives
+    #                    on cfg.answering.generator.api_key and is
+    #                    injected by the LLM proxy when it forwards
+    #                    onward.
     try:
-        model, base_url, api_key = _resolve_model_config(state, body.model)
+        model = _resolve_model_name(state, body.model)
+        base_url = _agent_loopback_url(request)
+        api_key = _get_or_create_agent_token(state, principal)
     except Exception as e:
         log.exception("claude_chat: model config resolution failed")
         raise HTTPException(status_code=500, detail=str(e))

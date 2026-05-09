@@ -47,6 +47,11 @@ class _FakeStore:
         self.messages: list[dict] = []
         self.agent_runs: list[dict] = []
         self._history_by_conv: dict[str, list[dict]] = {}
+        # Captures rows added via ``transaction()`` — mainly the
+        # short-lived AuthToken rows the route mints for agent
+        # loopback auth. Tests can assert one was minted by reading
+        # this list.
+        self.added_rows: list = []
 
     def list_messages(self, conv_id):
         return list(self._history_by_conv.get(conv_id, []))
@@ -59,6 +64,21 @@ class _FakeStore:
 
     def add_agent_run(self, run: dict):
         self.agent_runs.append(dict(run))
+
+    def transaction(self):
+        """Stub mirroring the real Store's transaction context manager.
+        Captures ``sess.add(...)`` calls for inspection."""
+        outer = self
+
+        class _Sess:
+            def __enter__(self_): return self_
+            def __exit__(self_, *args): return False
+
+            def add(self_, row):
+                outer.added_rows.append(row)
+
+            def commit(self_): pass
+        return _Sess()
 
 
 def _principal():
