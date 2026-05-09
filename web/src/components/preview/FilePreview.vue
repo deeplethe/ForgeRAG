@@ -71,6 +71,11 @@
               :url="previewUrl"
               :filename="filename"
             />
+            <SpreadsheetPreview
+              v-else-if="kind === 'spreadsheet'"
+              :url="previewUrl"
+              :filename="filename"
+            />
             <div v-else class="preview-modal__unsupported">
               <FileIcon
                 kind="file"
@@ -140,6 +145,7 @@ import MarkdownPreview from './MarkdownPreview.vue'
 // keeps them out of the main entry bundle for users who never
 // preview those types.
 const CodePreview = defineAsyncComponent(() => import('./CodePreview.vue'))
+const SpreadsheetPreview = defineAsyncComponent(() => import('./SpreadsheetPreview.vue'))
 
 const { t } = useI18n()
 
