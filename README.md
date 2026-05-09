@@ -1,8 +1,7 @@
 <p align="center">
-  <img src="web/public/craig.png" alt="OpenCraig" width="160">
+  <img src="web/public/open_craig.png" alt="OpenCraig" width="320">
 </p>
 
-<h1 align="center">OpenCraig</h1>
 <h2 align="center">Free your team from the laptop.</h2>
 <h4 align="center">Managed agentic workspaces — per-user sandbox containers, permission-aware retrieval, MCP-native, BYOK.</h4>
 

@@ -1,8 +1,7 @@
 <p align="center">
-  <img src="web/public/craig.png" alt="OpenCraig" width="160">
+  <img src="web/public/open_craig.png" alt="OpenCraig" width="320">
 </p>
 
-<h1 align="center">OpenCraig</h1>
 <h2 align="center">让企业告别本机办公</h2>
 <h4 align="center">托管式 agentic 工作台 —— 每用户一个沙盒容器，权限感知检索，MCP 原生，BYOK。</h4>
 
