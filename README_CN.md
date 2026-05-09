@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/open_craig.png" alt="OpenCraig" width="500">
+  <img src="web/public/opencraig.png" alt="OpenCraig" width="500">
 </p>
 
 <p align="center">
