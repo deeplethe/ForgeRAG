@@ -59,6 +59,10 @@
     },
     "new_folder_error_title": "Couldn't create folder",
     "new_folder_error_separator": "Folder names can't contain '/' or '\\'.",
+    "preview": {
+      "unsupported_title": "Preview not available for this file",
+      "unsupported_desc": "Download the file to view it in a dedicated app."
+    },
     "upload_error_title": "Couldn't upload file",
     "create_button": "New project",
     "create_dialog": {

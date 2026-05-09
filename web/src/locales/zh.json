@@ -59,6 +59,10 @@
     },
     "new_folder_error_title": "文件夹创建失败",
     "new_folder_error_separator": "文件夹名不能包含 '/' 或 '\\'。",
+    "preview": {
+      "unsupported_title": "暂不支持该文件的预览",
+      "unsupported_desc": "下载文件后用合适的应用打开。"
+    },
     "upload_error_title": "上传失败",
     "create_button": "新建项目",
     "create_dialog": {

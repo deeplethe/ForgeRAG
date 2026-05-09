@@ -143,6 +143,14 @@
         </div>
       </main>
     </div>
+
+    <FilePreview
+      v-model:open="previewOpen"
+      :path="previewPath"
+      :filename="previewFilename"
+      :preview-url="previewSrcUrl"
+      :download-url="previewDownloadUrl"
+    />
   </div>
 </template>
 
@@ -164,9 +172,11 @@ import {
   makeWorkdirFolder,
   uploadWorkdirFile,
   workdirDownloadUrl,
+  workdirPreviewUrl,
 } from '@/api'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
 import FileIcon from '@/components/workspace/FileIcon.vue'
+import FilePreview from '@/components/preview/FilePreview.vue'
 import { useDialog } from '@/composables/useDialog'
 
 const { t } = useI18n()
@@ -246,11 +256,27 @@ function open(path) {
 function onEntryActivate(entry) {
   if (entry.is_dir) {
     open(entry.path)
+    return
   }
-  // Files: clicking the row body does nothing in v0.6; download
-  // is via the explicit Download action on the right. Future:
-  // inline preview for known types (txt / pdf / images / xlsx).
+  // Open the preview modal for files. The modal's per-kind viewer
+  // handles known types (image / video / audio for now; markdown,
+  // pdf, code, spreadsheet, docx, html land in subsequent commits).
+  // Unsupported extensions render a download fallback inside the
+  // modal — the user always has a way out.
+  previewEntry.value = entry
+  previewOpen.value = true
 }
+
+const previewEntry = ref(null)
+const previewOpen = ref(false)
+const previewPath = computed(() => previewEntry.value?.path || '')
+const previewFilename = computed(() => previewEntry.value?.name || '')
+const previewSrcUrl = computed(() =>
+  previewPath.value ? workdirPreviewUrl(previewPath.value) : '',
+)
+const previewDownloadUrl = computed(() =>
+  previewPath.value ? workdirDownloadUrl(previewPath.value) : '',
+)
 
 function onOpenChat(folderEntry) {
   // Navigate to /chat with cwd_path query param. Chat.vue picks
