@@ -40,7 +40,7 @@ python-pptx==1.0.2         # .pptx
 
 # ── PDF ──
 pypdf==5.1.0               # pure-python; metadata + page extraction
-pdfplumber==0.11.4         # text + tables; the agent's go-to for "what does this PDF say"
+pdfplumber>=0.11.7         # text + tables; >=0.11.7 relaxes its pdfminer.six pin so camelot-py's newer pdfminer can coexist
 pymupdf==1.25.1             # fast render + image extraction
 pdf2image==1.17.0          # rasterise to PNG when OCR is needed
 camelot-py[base]==1.0.9    # table extraction (lattice + stream); needs poppler-utils + ghostscript
