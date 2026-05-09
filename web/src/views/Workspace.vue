@@ -1,137 +1,141 @@
 <template>
-  <div class="workspace">
-    <header class="workspace__top">
-      <div class="workspace__heading">
-        <h1>{{ t('workspace.title') }}</h1>
-        <p class="workspace__subtitle">{{ t('workspace.subtitle') }}</p>
-      </div>
-      <div class="workspace__top-actions">
-        <button
-          class="btn btn--ghost"
-          :disabled="busy"
-          @click="onMakeFolder"
-        >
-          <FolderPlus :size="14" :stroke-width="1.75" />
-          <span>{{ t('workspace.new_folder') }}</span>
-        </button>
-        <label class="btn btn--ghost" :class="{ 'is-disabled': busy }">
-          <Upload :size="14" :stroke-width="1.75" />
-          <span>{{ t('workspace.upload') }}</span>
-          <input
-            ref="uploadInput"
-            type="file"
-            class="upload-input"
-            :disabled="busy"
-            @change="onUpload"
-          />
-        </label>
-      </div>
-    </header>
+  <div class="flex flex-col h-full">
+    <!-- Toolbar: breadcrumb on the left, actions on the right.
+         Same vertical metrics as Library's Toolbar so the page-header
+         line is continuous when navigating between the two views. -->
+    <div class="flex items-center gap-1 px-5 py-3 border-b border-line bg-bg2 min-h-[52px]">
+      <Breadcrumb :crumbs="crumbs" @navigate="open" />
 
-    <!-- Breadcrumb path navigator -->
-    <nav class="workspace__crumbs" v-if="crumbs.length">
+      <div class="flex-1"></div>
+
       <button
-        v-for="(c, i) in crumbs"
-        :key="c.path"
-        class="crumb"
-        :class="{ 'crumb--last': i === crumbs.length - 1 }"
-        @click="open(c.path)"
+        v-if="currentPath && currentPath !== '/'"
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] text-t2 hover:bg-bg3 hover:text-t1 transition-colors cursor-pointer"
+        :title="t('workspace.open_chat_in', { path: currentPath })"
+        @click="onOpenChatCurrent"
       >
-        {{ c.label }}
+        <MessageSquare :size="14" :stroke-width="1.5" />
+        <span>{{ t('workspace.open_chat_here') }}</span>
       </button>
-    </nav>
+      <button
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] text-t2 hover:bg-bg3 hover:text-t1 transition-colors cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
+        :disabled="busy"
+        @click="onMakeFolder"
+      >
+        <FolderPlus :size="14" :stroke-width="1.5" />
+        <span>{{ t('workspace.new_folder') }}</span>
+      </button>
+      <label
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] text-t2 hover:bg-bg3 hover:text-t1 transition-colors cursor-pointer"
+        :class="{ 'opacity-50 pointer-events-none': busy }"
+        :title="t('workspace.upload')"
+      >
+        <Upload :size="14" :stroke-width="1.5" />
+        <span>{{ t('workspace.upload') }}</span>
+        <input
+          ref="uploadInput"
+          type="file"
+          class="upload-input"
+          :disabled="busy"
+          @change="onUpload"
+        />
+      </label>
+    </div>
 
-    <main class="workspace__body">
-      <div v-if="loading" class="workspace__state">
-        <Skeleton v-for="i in 3" :key="i" class="workspace__skeleton" />
+    <!-- Body — single full-width pane, padded to match Library. -->
+    <main class="flex-1 overflow-auto px-5 py-4">
+      <div v-if="loading" class="text-[11px] text-t3 px-3 py-6 text-center">
+        Loading…
       </div>
 
-      <div v-else-if="error" class="workspace__state workspace__state--error">
-        <AlertCircle :size="20" :stroke-width="1.75" />
-        <p>{{ t('workspace.load_error', { msg: error }) }}</p>
-        <button class="btn btn--ghost" @click="load(currentPath)">
-          {{ t('common.retry') || 'Retry' }}
-        </button>
+      <div
+        v-else-if="error"
+        class="flex items-center gap-2 text-[11px] text-red-400 px-3 py-3 border border-red-500/30 rounded bg-red-500/5"
+      >
+        <AlertCircle :size="14" :stroke-width="1.75" />
+        <span>{{ t('workspace.load_error', { msg: error }) }}</span>
+        <button
+          class="ml-auto toolbar-btn"
+          @click="load(currentPath)"
+        >{{ t('common.retry') || 'Retry' }}</button>
       </div>
 
       <div
         v-else-if="!entries.length"
-        class="workspace__state workspace__state--empty"
+        class="text-[11px] text-t3 px-3 py-12 text-center"
       >
-        <FolderKanban :size="36" :stroke-width="1.25" />
-        <h2>{{ t('workspace.empty_title') }}</h2>
-        <p>{{ t('workspace.empty_subtitle') }}</p>
-        <div class="workspace__empty-actions">
-          <button class="btn btn--primary" @click="onMakeFolder">
-            <FolderPlus :size="14" :stroke-width="1.75" />
-            <span>{{ t('workspace.new_folder') }}</span>
-          </button>
-          <button class="btn btn--ghost" @click="triggerUpload">
-            <Upload :size="14" :stroke-width="1.75" />
-            <span>{{ t('workspace.upload') }}</span>
-          </button>
-        </div>
+        {{ t('workspace.empty_title') }}
       </div>
 
-      <ul v-else class="workspace__entries">
-        <li
-          v-for="entry in entries"
-          :key="entry.path"
-          class="entry"
-          :class="{ 'entry--dir': entry.is_dir }"
-        >
-          <button
-            class="entry__main"
-            @click="onEntryActivate(entry)"
-            :title="entry.path"
+      <table v-else class="w-full text-[11px]">
+        <colgroup>
+          <col class="w-auto" />
+          <col class="w-24" />
+          <col class="w-40" />
+        </colgroup>
+        <thead>
+          <tr class="text-t3 border-b border-line">
+            <th class="text-left px-3 py-2 font-normal">Name</th>
+            <th class="text-right px-3 py-2 font-normal">Size</th>
+            <th class="text-right px-3 py-2 font-normal"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="entry in entries"
+            :key="entry.path"
+            class="border-b border-line/50 hover:bg-bg2 group"
           >
-            <Folder
-              v-if="entry.is_dir"
-              :size="18"
-              :stroke-width="1.5"
-              class="entry__icon entry__icon--dir"
-            />
-            <FileText
-              v-else
-              :size="18"
-              :stroke-width="1.5"
-              class="entry__icon entry__icon--file"
-            />
-            <span class="entry__name">{{ entry.name }}</span>
-            <span v-if="!entry.is_dir" class="entry__size">
-              {{ fmtSize(entry.size_bytes) }}
-            </span>
-          </button>
-          <div class="entry__actions">
-            <button
-              v-if="entry.is_dir"
-              class="entry__action"
-              :title="t('workspace.open_chat_here')"
-              @click="onOpenChat(entry)"
-            >
-              <MessageSquare :size="14" :stroke-width="1.75" />
-              <span>{{ t('workspace.open_chat_here') }}</span>
-            </button>
-            <a
-              v-else
-              class="entry__action"
-              :href="downloadUrl(entry.path)"
-              :title="t('workspace.download')"
-            >
-              <Download :size="14" :stroke-width="1.75" />
-            </a>
-          </div>
-        </li>
-      </ul>
+            <td class="px-3 py-1.5">
+              <button
+                class="flex items-center gap-2 w-full text-left"
+                @click="onEntryActivate(entry)"
+                :title="entry.path"
+              >
+                <Folder
+                  v-if="entry.is_dir"
+                  :size="14"
+                  :stroke-width="1.5"
+                  class="text-amber-400 shrink-0"
+                />
+                <FileText
+                  v-else
+                  :size="14"
+                  :stroke-width="1.5"
+                  class="text-t3 shrink-0"
+                />
+                <span class="truncate">{{ entry.name }}</span>
+              </button>
+            </td>
+            <td class="text-right px-3 py-1.5 text-t3 tabular-nums">
+              <span v-if="!entry.is_dir">{{ fmtSize(entry.size_bytes) }}</span>
+              <span v-else>—</span>
+            </td>
+            <td class="text-right px-3 py-1.5">
+              <div class="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  v-if="entry.is_dir"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-t3 hover:text-t1 hover:bg-bg3 transition-colors cursor-pointer"
+                  :title="t('workspace.open_chat_here')"
+                  @click="onOpenChat(entry)"
+                >
+                  <MessageSquare :size="12" :stroke-width="1.5" />
+                  <span>{{ t('workspace.open_chat_here') }}</span>
+                </button>
+                <a
+                  v-else
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-t3 hover:text-t1 hover:bg-bg3 transition-colors cursor-pointer no-underline"
+                  :href="downloadUrl(entry.path)"
+                  :title="t('workspace.download')"
+                >
+                  <Download :size="12" :stroke-width="1.5" />
+                </a>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </main>
-
-    <!-- Hint footer when in a sub-folder -->
-    <footer v-if="currentPath && currentPath !== '/'" class="workspace__hint">
-      <button class="btn btn--ghost btn--small" @click="onOpenChatCurrent">
-        <MessageSquare :size="14" :stroke-width="1.75" />
-        <span>{{ t('workspace.open_chat_in', { path: currentPath }) }}</span>
-      </button>
-    </footer>
   </div>
 </template>
 
@@ -144,7 +148,6 @@ import {
   Download,
   FileText,
   Folder,
-  FolderKanban,
   FolderPlus,
   MessageSquare,
   Upload,
@@ -157,7 +160,7 @@ import {
   uploadWorkdirFile,
   workdirDownloadUrl,
 } from '@/api'
-import Skeleton from '@/components/Skeleton.vue'
+import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
 import { useDialog } from '@/composables/useDialog'
 
 const { t } = useI18n()
@@ -176,9 +179,10 @@ const busy = ref(false)
 const uploadInput = ref(null)
 
 const crumbs = computed(() => {
-  // Always include root; then split currentPath into a chain of
-  // clickable parents.
-  const out = [{ path: '/', label: t('workspace.root') }]
+  // Shape matches the shared <Breadcrumb> component contract:
+  // ``{ path, name }``. Always include the workspace root; then
+  // split currentPath into a chain of clickable parents.
+  const out = [{ path: '/', name: t('workspace.root') }]
   if (currentPath.value && currentPath.value !== '/') {
     const parts = currentPath.value
       .replace(/^\/+|\/+$/g, '')
@@ -186,7 +190,7 @@ const crumbs = computed(() => {
     let acc = ''
     for (const p of parts) {
       acc += '/' + p
-      out.push({ path: acc, label: p })
+      out.push({ path: acc, name: p })
     }
   }
   return out
@@ -223,7 +227,7 @@ function onEntryActivate(entry) {
   if (entry.is_dir) {
     open(entry.path)
   }
-  // Files: clicking the row body does nothing in v1.0; download
+  // Files: clicking the row body does nothing in v0.6; download
   // is via the explicit Download action on the right. Future:
   // inline preview for known types (txt / pdf / images / xlsx).
 }
@@ -259,8 +263,9 @@ async function onMakeFolder() {
   }
   busy.value = true
   try {
-    const target =
-      currentPath.value === '/' ? `/${name}` : `${currentPath.value}/${name}`
+    const target = currentPath.value === '/'
+      ? '/' + name
+      : currentPath.value.replace(/\/+$/, '') + '/' + name
     await makeWorkdirFolder(target)
     await load(currentPath.value)
   } catch (e) {
@@ -273,15 +278,9 @@ async function onMakeFolder() {
   }
 }
 
-function triggerUpload() {
-  uploadInput.value?.click()
-}
-
 async function onUpload(event) {
-  const file = event.target.files?.[0]
-  // Reset the input so the same file can be re-uploaded later.
-  event.target.value = ''
-  if (!file || busy.value) return
+  const file = event?.target?.files?.[0]
+  if (!file) return
   busy.value = true
   try {
     await uploadWorkdirFile(currentPath.value, file)
@@ -293,6 +292,7 @@ async function onUpload(event) {
     })
   } finally {
     busy.value = false
+    if (uploadInput.value) uploadInput.value.value = ''
   }
 }
 
@@ -300,19 +300,18 @@ function downloadUrl(path) {
   return workdirDownloadUrl(path)
 }
 
-function fmtSize(n) {
-  if (!n || n < 1024) return `${n || 0} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+function fmtSize(bytes) {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-// Re-load when the URL's ?path= changes (e.g. user clicks a
-// breadcrumb that calls router.replace, OR they navigate back).
 watch(
   () => route.query.path,
-  (newPath) => {
-    const p = newPath || '/'
+  (p) => {
+    p = p || '/'
     if (p !== currentPath.value) {
       load(p)
     }
@@ -325,230 +324,11 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.workspace {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  padding: 24px;
-  gap: 16px;
-}
-
-.workspace__top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.workspace__heading h1 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
-}
-
-.workspace__subtitle {
-  margin: 0;
-  color: var(--color-text-muted, #888);
-  font-size: 13px;
-}
-
-.workspace__top-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 .upload-input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
-  pointer-events: none;
-}
-
-.workspace__crumbs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 0;
-  font-size: 13px;
-}
-
-.crumb {
-  background: none;
-  border: none;
-  color: var(--color-text-muted, #888);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: inherit;
-}
-
-.crumb:hover {
-  background: var(--color-surface-2, #1f1f1f);
-  color: var(--color-text, #fff);
-}
-
-.crumb--last {
-  color: var(--color-text, #fff);
-  font-weight: 500;
-  cursor: default;
-}
-
-.crumb:not(:last-child)::after {
-  content: '/';
-  margin-left: 8px;
-  color: var(--color-text-muted, #555);
-}
-
-.workspace__body {
-  flex: 1;
-  overflow: auto;
-}
-
-.workspace__state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 48px 16px;
-  color: var(--color-text-muted, #888);
-}
-
-.workspace__state--error p {
-  color: var(--color-error, #ef4444);
-}
-
-.workspace__state--empty h2 {
-  margin: 8px 0 0;
-  font-size: 16px;
-  font-weight: 500;
-}
-
-.workspace__state--empty p {
-  margin: 0;
-  font-size: 13px;
-}
-
-.workspace__empty-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.workspace__skeleton {
-  height: 48px;
-  margin-bottom: 8px;
-}
-
-.workspace__entries {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.entry {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  transition: background 80ms ease;
-}
-
-.entry:hover {
-  background: var(--color-surface-2, #1f1f1f);
-}
-
-.entry__main {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: none;
-  border: none;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-}
-
-.entry--dir .entry__main {
-  cursor: pointer;
-}
-
-.entry__icon--dir {
-  color: var(--color-accent, #fbbf24);
-}
-
-.entry__icon--file {
-  color: var(--color-text-muted, #888);
-}
-
-.entry__name {
-  flex: 1;
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.entry__size {
-  color: var(--color-text-muted, #888);
-  font-size: 12px;
-  margin-left: 8px;
-}
-
-.entry__actions {
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 80ms ease;
-}
-
-.entry:hover .entry__actions {
-  opacity: 1;
-}
-
-.entry__action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: none;
-  border: 1px solid var(--color-border, #2a2a2a);
-  border-radius: 4px;
-  color: var(--color-text-muted, #888);
-  cursor: pointer;
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.entry__action:hover {
-  border-color: var(--color-accent, #3291ff);
-  color: var(--color-accent, #3291ff);
-}
-
-.workspace__hint {
-  border-top: 1px solid var(--color-border, #2a2a2a);
-  padding-top: 12px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.btn--small {
-  font-size: 12px;
-  padding: 4px 10px;
-}
-
-.is-disabled {
-  opacity: 0.5;
   pointer-events: none;
 }
 </style>
