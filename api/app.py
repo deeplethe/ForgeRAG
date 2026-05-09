@@ -61,6 +61,7 @@ from .routes import hermes_chat as hermes_chat_routes
 from .routes import llm_proxy as llm_proxy_routes
 from .routes import metrics as metrics_routes
 from .routes import project_files as project_files_routes
+from .routes import workdir_files as workdir_files_routes
 from .routes import projects as project_routes
 from .routes import search as search_routes
 from .routes import settings as settings_routes
@@ -255,6 +256,7 @@ def create_app(
     app.include_router(folder_routes.router)
     app.include_router(project_routes.router)
     app.include_router(project_files_routes.router)
+    app.include_router(workdir_files_routes.router)
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)
     app.include_router(llm_proxy_routes.router)
