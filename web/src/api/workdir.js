@@ -61,13 +61,14 @@ export async function uploadWorkdirFile(path, file) {
 }
 
 /**
- * Build a download URL for a workdir file. The Workspace UI uses
+ * Build a download URL for a workdir file. The Workbench UI uses
  * this for "open file" / "download" affordances; agent-produced
  * artifacts in chat trace also link via this URL.
  *
  * Returns a URL string (not a Promise) — the caller drops it into
  * an <a href>, an <iframe src>, or window.open. The route streams
- * with Content-Disposition: attachment.
+ * with Content-Disposition: attachment so the browser saves rather
+ * than navigating away.
  *
  * @param {string} path
  * @returns {string}
@@ -75,4 +76,19 @@ export async function uploadWorkdirFile(path, file) {
 export function workdirDownloadUrl(path) {
   const base = import.meta.env.VITE_API_BASE || ''
   return `${base}/api/v1/workdir/download?path=${encodeURIComponent(path)}`
+}
+
+/**
+ * Build an INLINE preview URL for a workdir file. Same endpoint as
+ * the download URL but with ``inline=1`` so the response carries a
+ * mime type derived from the extension and ``Content-Disposition:
+ * inline``. Lets ``<img>`` / ``<video>`` / ``<iframe>`` consume the
+ * bytes directly. Used by the Workbench's file preview modal.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function workdirPreviewUrl(path) {
+  const base = import.meta.env.VITE_API_BASE || ''
+  return `${base}/api/v1/workdir/download?path=${encodeURIComponent(path)}&inline=1`
 }

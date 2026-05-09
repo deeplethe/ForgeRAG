@@ -71,6 +71,7 @@ export {
   makeWorkdirFolder,
   uploadWorkdirFile,
   workdirDownloadUrl,
+  workdirPreviewUrl,
 } from './workdir'
 
 // Search (检索本体, 无 LLM)

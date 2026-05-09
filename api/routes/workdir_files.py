@@ -283,12 +283,35 @@ async def upload_file(
 @router.get("/download")
 def download_file(
     path: str = Query(..., description="File path within workdir"),
+    inline: bool = Query(
+        False,
+        description=(
+            "When true, serve with ``Content-Disposition: inline`` and a "
+            "mime type derived from the extension so the browser renders "
+            "the bytes directly (image, video, audio, pdf, html, plain "
+            "text). Default false → forced download (existing 'Download' "
+            "button behaviour)."
+        ),
+    ),
     principal: AuthenticatedPrincipal = Depends(get_principal),
     state: AppState = Depends(get_state),
 ) -> StreamingResponse:
     """Stream a file's bytes back to the client. Used by the
-    Workspace UI's preview / "open file" gesture and by the
-    post-agent-turn artifact download flow."""
+    Workbench UI's preview / "open file" gesture and by the
+    post-agent-turn artifact download flow.
+
+    Two modes:
+
+      * ``inline=false`` (default) — ``application/octet-stream`` +
+        ``Content-Disposition: attachment``. Forces a save dialog.
+      * ``inline=true`` — best-guess mime from extension (e.g.
+        ``image/png``, ``video/mp4``, ``application/pdf``,
+        ``text/markdown``, ``text/csv``) + ``Content-Disposition:
+        inline``. Lets ``<img>`` / ``<video>`` / ``<iframe src=...>``
+        render the bytes directly without download. Unknown
+        extensions still serve as ``application/octet-stream`` —
+        the front-end's preview shell handles the unsupported case.
+    """
     root = _user_workdir_root(state, principal.user_id)
     target = _resolve_safe(root, path, allow_root=False)
     if not target.exists() or not target.is_file():
@@ -302,11 +325,60 @@ def download_file(
                     break
                 yield chunk
 
-    return StreamingResponse(
-        _stream(),
-        media_type="application/octet-stream",
-        headers={
+    if inline:
+        media_type = _guess_inline_media_type(target.name)
+        # Quote-escape the filename so names containing ``"`` don't
+        # break the header (RFC 6266 — ``filename="..."`` is the
+        # most-compatible shape; the path safety check upstream
+        # already rejected slashes).
+        safe_name = target.name.replace('"', '\\"')
+        headers = {
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "X-Accel-Buffering": "no",
+        }
+    else:
+        media_type = "application/octet-stream"
+        headers = {
             "Content-Disposition": f'attachment; filename="{target.name}"',
             "X-Accel-Buffering": "no",
-        },
-    )
+        }
+    return StreamingResponse(_stream(), media_type=media_type, headers=headers)
+
+
+# Keep this list narrow — only types the Workbench preview shell
+# actually renders. Anything missing falls back to
+# ``application/octet-stream`` which the browser will offer to
+# download (the preview UI handles "unsupported" before reaching here).
+_INLINE_MIME_BY_EXT: dict[str, str] = {
+    # images
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+    "svg": "image/svg+xml",
+    "tif": "image/tiff", "tiff": "image/tiff",
+    # video
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+    "mkv": "video/x-matroska",
+    # audio
+    "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
+    "m4a": "audio/mp4", "flac": "audio/flac", "aac": "audio/aac",
+    # docs
+    "pdf": "application/pdf",
+    "html": "text/html", "htm": "text/html",
+    "md": "text/markdown", "markdown": "text/markdown",
+    "txt": "text/plain", "log": "text/plain",
+    "csv": "text/csv", "tsv": "text/tab-separated-values",
+    "json": "application/json", "xml": "application/xml",
+    "yaml": "text/yaml", "yml": "text/yaml", "toml": "text/plain",
+}
+
+
+def _guess_inline_media_type(name: str) -> str:
+    """Map a filename extension to an inline-displayable mime type.
+    Returns ``application/octet-stream`` when the extension isn't
+    in the explicit allow-list — keeps the surface area narrow so
+    we never accidentally serve a script with a content type the
+    browser would execute (the preview UI's CSP + sandbox attrs
+    are the second line of defence)."""
+    name = name or ""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return _INLINE_MIME_BY_EXT.get(ext, "application/octet-stream")
