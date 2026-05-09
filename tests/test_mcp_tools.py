@@ -349,10 +349,18 @@ def test_rerank_passes_chunk_ids_as_list(
 def test_import_from_library_threads_project_id(
     with_principal, fake_state, fake_dispatch
 ):
+    """Legacy project mode: project_id arrives on the ToolContext, and
+    explicit target_subdir threads through verbatim. The default-args
+    call no longer auto-injects target_subdir — v1.0 shipped the
+    cwd-relative ``target_subpath`` path and now defaults to "no
+    target", so the handler picks the mode based on which target the
+    agent supplied."""
     fake_dispatch.return_value = {"artifact_id": "a1"}
     with_principal(_principal())
 
-    _mcp_tools_module.import_from_library("d_abc", project_id="p_proj")
+    _mcp_tools_module.import_from_library(
+        "d_abc", target_subdir="inputs", project_id="p_proj"
+    )
     last = fake_dispatch.calls[-1]
     assert last["params"] == {"doc_id": "d_abc", "target_subdir": "inputs"}
     assert last["ctx"].project_id == "p_proj"
@@ -361,6 +369,27 @@ def test_import_from_library_threads_project_id(
     _mcp_tools_module.import_from_library("d_abc")
     last = fake_dispatch.calls[-1]
     assert last["ctx"].project_id is None
+    # Default call carries just doc_id — handler picks the mode.
+    assert last["params"] == {"doc_id": "d_abc"}
+
+
+def test_import_from_library_target_subpath_threads_through(
+    with_principal, fake_state, fake_dispatch
+):
+    """v1.0 folder-as-cwd mode: ``target_subpath`` reaches the handler
+    so it can resolve against ``user_workdirs_root`` instead of going
+    through ProjectImportService."""
+    fake_dispatch.return_value = {"target_path": "sales/2025/inputs/x.txt"}
+    with_principal(_principal())
+
+    _mcp_tools_module.import_from_library(
+        "d_abc", target_subpath="sales/2025/inputs"
+    )
+    last = fake_dispatch.calls[-1]
+    assert last["params"] == {
+        "doc_id": "d_abc",
+        "target_subpath": "sales/2025/inputs",
+    }
 
 
 # ---------------------------------------------------------------------------

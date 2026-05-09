@@ -1,5 +1,14 @@
 """
-Project CRUD + member management — the new agent-workspace surface.
+Project CRUD + member management.
+
+DEPRECATED (v1.0 folder-as-cwd refactor): the Project entity was the
+pre-folder-as-cwd home for "the agent's workspace for a piece of work."
+v1.0 replaces this with the per-user workdir tree at
+``<user_workdirs_root>/<user_id>/`` — chats carry a ``cwd_path`` instead
+of a ``project_id``. These endpoints are kept rendering for already-
+existing project-bound conversations and the legacy ProjectDetail UI;
+new code should use the workdir API (``/api/v1/workdir/...``) and the
+folder-as-cwd Chat banner.
 
 Endpoints:
     GET    /api/v1/projects                      List projects visible to caller

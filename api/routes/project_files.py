@@ -1,6 +1,14 @@
 """
 Project workdir file API + trash routes.
 
+DEPRECATED (v1.0 folder-as-cwd refactor): pre-v1.0 the agent's workdir
+lived under each Project at ``<projects_root>/<project_id>/``. v1.0
+replaces this with a per-user workdir tree at
+``<user_workdirs_root>/<user_id>/`` exposed by ``/api/v1/workdir/...``.
+These endpoints stay live for existing project-bound conversations
+and the legacy ProjectDetail UI; new code should target the workdir
+routes (``api/routes/workdir_files.py``).
+
 All endpoints under /api/v1/projects/{project_id}/files and
 /api/v1/projects/{project_id}/trash. Mounted alongside the
 projects router in api/app.py.

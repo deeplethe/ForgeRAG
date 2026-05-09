@@ -335,30 +335,42 @@ def rerank(query: str, chunk_ids: list[str], top_k: int = 10) -> dict:
 @mcp_server.tool()
 def import_from_library(
     doc_id: str,
-    target_subdir: str = "inputs",
+    target_subpath: str = "",
+    target_subdir: str = "",
     project_id: str = "",
 ) -> dict:
-    """Copy a Library document into the project's workdir so the
-    agent's local file tools (Read / Edit / Bash) can operate on
-    the actual file bytes.
+    """Copy a Library document into your workdir so the agent's
+    local file tools (Read / Edit / Bash inside the sandbox) can
+    operate on the actual file bytes.
 
     Use when you need to PROCESS the file itself (Excel cells, PDF
-    tables, raw JSON / CSV) — not just answer from chunks. Idempotent:
-    importing the same doc_id twice returns the existing artifact
-    with ``reused: true``.
+    tables, raw JSON / CSV) — not just answer from chunks.
+    Idempotent: importing the same doc twice to the same target
+    returns the existing path with ``reused: true``.
 
     Authz: refuses (404) for any doc the user can't read in the
     Library UI.
 
+    v1.0 folder-as-cwd: pass ``target_subpath`` (path relative to
+    ``/workdir/`` inside your sandbox). With cwd ``/sales/2025``,
+    use ``target_subpath="sales/2025/inputs"`` to land the file at
+    ``./inputs/<filename>`` from your pwd. Folders auto-created.
+
     Args:
-        doc_id: Library document id (from search_vector / read_tree
-            hit), e.g. ``"d_abc123"``. NOT a chunk_id.
-        target_subdir: Subdirectory under the project workdir to
-            copy into. Default ``"inputs"``.
-        project_id: Project to import into. Required — the agent
-            normally runs with this bound from the chat context.
+        doc_id: Library document id (from search_vector hit),
+            e.g. ``"d_abc123"``. NOT a chunk_id.
+        target_subpath: v1.0 — workdir-root-relative target dir.
+            With cwd ``/foo/bar``, pass ``"foo/bar/inputs"``.
+        target_subdir: [legacy] Project subdir for project-bound
+            chats. Ignored when ``target_subpath`` is set.
+        project_id: [legacy] Project to import into. Ignored when
+            ``target_subpath`` is set.
     """
-    params: dict[str, Any] = {"doc_id": doc_id, "target_subdir": target_subdir}
+    params: dict[str, Any] = {"doc_id": doc_id}
+    if target_subpath:
+        params["target_subpath"] = target_subpath
+    if target_subdir:
+        params["target_subdir"] = target_subdir
     return _dispatch_via_mcp(
         "import_from_library",
         params,

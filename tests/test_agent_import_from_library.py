@@ -241,6 +241,9 @@ def test_import_from_library_registered():
     spec = TOOL_REGISTRY["import_from_library"]
     assert spec.params_schema["required"] == ["doc_id"]
     assert "doc_id" in spec.params_schema["properties"]
+    # v1.0 — folder-as-cwd workdir-relative target
+    assert "target_subpath" in spec.params_schema["properties"]
+    # Legacy project-mode target — still in the schema for back-compat
     assert "target_subdir" in spec.params_schema["properties"]
 
 
@@ -253,10 +256,15 @@ def test_tools_for_offers_import_when_project_bound():
     assert "import_from_library" in names
 
 
-def test_tools_for_drops_import_when_no_project_binding():
+def test_tools_for_offers_import_without_project_binding():
+    """v1.0 folder-as-cwd: ``import_from_library`` is offered to every
+    chat — the user always has a workdir under ``user_workdirs_root``,
+    so the agent can always import via the cwd-relative path. The
+    legacy project-id filter that used to drop the tool when no
+    project was bound was removed when target_subpath landed."""
     ctx = _ctx(project_id=None)
     names = {s.name for s in tools_for(ctx)}
-    assert "import_from_library" not in names
+    assert "import_from_library" in names
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +342,8 @@ def test_dispatch_empty_doc_id():
 
 
 def test_dispatch_no_project_binding_returns_clean_error():
+    """Legacy mode (no target_subpath) on an unbound chat still surfaces
+    a clean error pointing the agent at the cwd-relative path."""
     ctx = _ctx(project_id=None)
     result = dispatch("import_from_library", {"doc_id": "d_brief"}, ctx)
     assert "error" in result
@@ -386,3 +396,241 @@ def test_dispatch_no_file_store_returns_clean_error():
     result = dispatch("import_from_library", {"doc_id": "d_brief"}, ctx)
     assert "error" in result
     assert "file store" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# v1.0 folder-as-cwd path: target_subpath (workdir-root-relative)
+# ---------------------------------------------------------------------------
+
+
+class _MaterializingFileStore:
+    """File store stub that writes some bytes at the target path so we
+    can assert on the on-disk result. Captures call args for the test."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, Path]] = []
+
+    def materialize(self, file_id: str, target_abs: Path) -> None:
+        self.calls.append((file_id, Path(target_abs)))
+        Path(target_abs).write_bytes(b"x" * 10)
+
+
+class _FakeDocument:
+    def __init__(self, doc_id: str, file_id: str | None, filename: str = ""):
+        self.doc_id = doc_id
+        self.file_id = file_id
+        self.filename = filename
+
+
+class _FakeFile:
+    def __init__(
+        self,
+        file_id: str,
+        original_name: str,
+        size_bytes: int = 10,
+        mime_type: str = "text/plain",
+        content_hash: str = "sha-x",
+    ):
+        self.file_id = file_id
+        self.original_name = original_name
+        self.size_bytes = size_bytes
+        self.mime_type = mime_type
+        self.content_hash = content_hash
+
+
+class _DocFileStore:
+    """A second store stub that resolves Document and File rows for
+    the cwd path (legacy tests' _FakeStore only knew about Project)."""
+
+    def __init__(self, docs: dict, files: dict):
+        self.docs = docs
+        self.files = files
+
+    def transaction(self):
+        store = self
+        from persistence.models import Document, File
+
+        class _Sess:
+            def __enter__(self_): return self_
+            def __exit__(self_, *args): return False
+
+            def get(self_, model, key):
+                if model is Document:
+                    return store.docs.get(key)
+                if model is File:
+                    return store.files.get(key)
+                return None
+        return _Sess()
+
+
+def _ctx_cwd(
+    *,
+    user_id: str = "u_alice",
+    user_workdirs_root: Path,
+    docs: dict,
+    files: dict,
+    materializing_file_store: _MaterializingFileStore | None = None,
+) -> ToolContext:
+    state = SimpleNamespace(
+        store=_DocFileStore(docs, files),
+        file_store=materializing_file_store or _MaterializingFileStore(),
+        cfg=SimpleNamespace(
+            agent=SimpleNamespace(
+                projects_root="./tmp/projects",
+                user_workdirs_root=str(user_workdirs_root),
+                max_project_workdir_bytes=10 * 1024 * 1024 * 1024,
+                max_workdir_upload_bytes=500 * 1024 * 1024,
+            ),
+            auth=SimpleNamespace(enabled=True),
+        ),
+        authz=SimpleNamespace(can=lambda *a, **kw: True),
+    )
+    principal = SimpleNamespace(
+        user_id=user_id,
+        username=user_id.removeprefix("u_"),
+        role="user",
+        via="cookie",
+    )
+    return ToolContext(
+        state=state,
+        principal=principal,
+        accessible=set(),
+        path_filters=None,
+        allowed_doc_ids=None,
+        project_id=None,
+    )
+
+
+def test_dispatch_cwd_path_target_subpath_happy(tmp_path, monkeypatch):
+    """target_subpath lands the file at user_root/<subpath>/<filename>."""
+    docs = {"d_brief": _FakeDocument("d_brief", "f_x", filename="brief.txt")}
+    files = {"f_x": _FakeFile("f_x", "brief.txt", size_bytes=10)}
+    fs = _MaterializingFileStore()
+    ctx = _ctx_cwd(
+        user_workdirs_root=tmp_path,
+        docs=docs,
+        files=files,
+        materializing_file_store=fs,
+    )
+
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_brief", "target_subpath": "sales/2025/inputs"},
+        ctx,
+    )
+
+    assert "error" not in result, result
+    assert result["doc_id"] == "d_brief"
+    assert result["target_path"] == "sales/2025/inputs/brief.txt"
+    assert result["size_bytes"] == 10
+    assert result["mime"] == "text/plain"
+    assert result["reused"] is False
+    # File store actually wrote bytes
+    assert len(fs.calls) == 1
+    landed = fs.calls[0][1]
+    assert landed == (tmp_path / "u_alice" / "sales" / "2025" / "inputs" / "brief.txt").resolve()
+    assert landed.exists()
+
+
+def test_dispatch_cwd_path_idempotent_reuses_existing(tmp_path, monkeypatch):
+    """Second call with the same target → reused: True without re-materialising."""
+    docs = {"d_brief": _FakeDocument("d_brief", "f_x", filename="brief.txt")}
+    files = {"f_x": _FakeFile("f_x", "brief.txt", size_bytes=10)}
+    fs = _MaterializingFileStore()
+
+    # Pre-create the file at the target with matching size
+    target = tmp_path / "u_alice" / "inputs" / "brief.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"y" * 10)
+
+    ctx = _ctx_cwd(
+        user_workdirs_root=tmp_path,
+        docs=docs,
+        files=files,
+        materializing_file_store=fs,
+    )
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_brief", "target_subpath": "inputs"},
+        ctx,
+    )
+    assert result.get("reused") is True
+    assert result["target_path"] == "inputs/brief.txt"
+    # Materialize was NOT called (idempotency short-circuit)
+    assert fs.calls == []
+
+
+def test_dispatch_cwd_path_rejects_traversal(tmp_path, monkeypatch):
+    docs = {"d_brief": _FakeDocument("d_brief", "f_x", filename="brief.txt")}
+    files = {"f_x": _FakeFile("f_x", "brief.txt", size_bytes=10)}
+    ctx = _ctx_cwd(
+        user_workdirs_root=tmp_path, docs=docs, files=files,
+    )
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_brief", "target_subpath": "../escape"},
+        ctx,
+    )
+    assert "error" in result
+    assert "'..'" in result["error"] or "escapes" in result["error"]
+
+
+def test_dispatch_cwd_path_no_user_workdirs_root_configured(tmp_path):
+    docs = {"d_brief": _FakeDocument("d_brief", "f_x", filename="brief.txt")}
+    files = {"f_x": _FakeFile("f_x", "brief.txt", size_bytes=10)}
+    ctx = _ctx_cwd(
+        user_workdirs_root=tmp_path, docs=docs, files=files,
+    )
+    # Override the cfg field to empty
+    ctx.state.cfg.agent.user_workdirs_root = ""
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_brief", "target_subpath": "inputs"},
+        ctx,
+    )
+    assert "error" in result
+    assert "user_workdirs_root" in result["error"]
+
+
+def test_dispatch_cwd_path_doc_not_found(tmp_path):
+    ctx = _ctx_cwd(user_workdirs_root=tmp_path, docs={}, files={})
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_missing", "target_subpath": "inputs"},
+        ctx,
+    )
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_dispatch_cwd_path_doc_has_no_blob(tmp_path):
+    """Doc exists but has no associated File row → clean placeholder error."""
+    docs = {"d_url": _FakeDocument("d_url", file_id=None, filename="placeholder.url")}
+    ctx = _ctx_cwd(user_workdirs_root=tmp_path, docs=docs, files={})
+    result = dispatch(
+        "import_from_library",
+        {"doc_id": "d_url", "target_subpath": "inputs"},
+        ctx,
+    )
+    assert "error" in result
+    assert "no associated file blob" in result["error"]
+
+
+def test_dispatch_cwd_path_takes_precedence_over_legacy(tmp_path):
+    """When both target_subpath AND legacy target_subdir/project_id are
+    provided, the cwd-relative path wins (forward-looking)."""
+    docs = {"d_brief": _FakeDocument("d_brief", "f_x", filename="brief.txt")}
+    files = {"f_x": _FakeFile("f_x", "brief.txt", size_bytes=10)}
+    ctx = _ctx_cwd(user_workdirs_root=tmp_path, docs=docs, files=files)
+    result = dispatch(
+        "import_from_library",
+        {
+            "doc_id": "d_brief",
+            "target_subpath": "inputs",
+            "target_subdir": "should-be-ignored",
+        },
+        ctx,
+    )
+    # cwd path used → no artifact_id (cwd mode produces no Artifact rows)
+    assert result.get("target_path") == "inputs/brief.txt"
+    assert "artifact_id" not in result

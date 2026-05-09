@@ -215,26 +215,25 @@ def tools_for(ctx: ToolContext) -> list:
     context.
 
     Filtering is per-tool, not blanket — different tools have
-    different prerequisites. Today only ``import_from_library``
-    needs a bound project; everything else (search, KG, web, etc.)
-    runs against the user's accessible-set regardless.
+    different prerequisites. Code-execution tools (bash / python /
+    file ops) live INSIDE the agent's sandbox container (Hermes
+    Agent owns them) and don't appear in this registry at all.
 
-    Code-execution tools (bash / python / file ops) live INSIDE
-    the agent's sandbox container (Hermes Agent owns them); they
-    don't appear in this registry at all.
+    v1.0 folder-as-cwd: ``import_from_library`` is available to
+    every chat — the user always has a workdir under
+    ``user_workdirs_root``, so the agent can always import. The
+    legacy ``ctx.project_id`` gate (drop the tool when no project
+    binding) is removed; the handler itself rejects calls that
+    pass ``target_subdir`` without a project_id (legacy mode), so
+    accidental misuse on an unbound chat still surfaces a clean
+    error.
 
     Cleaner UX than surfacing "tool not available" errors mid-loop:
     the LLM never sees tools it can't use.
     """
     from .tools import TOOL_REGISTRY
 
-    needs_project = {"import_from_library"}
-    out = []
-    for name, spec in TOOL_REGISTRY.items():
-        if name in needs_project and ctx.project_id is None:
-            continue
-        out.append(spec)
-    return out
+    return list(TOOL_REGISTRY.values())
 
 
 def dispatch(tool_name: str, params: dict, ctx: ToolContext) -> dict:

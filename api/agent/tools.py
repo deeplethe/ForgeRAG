@@ -1459,22 +1459,198 @@ def _list_owned_project_ids(
 
 
 # ---------------------------------------------------------------------------
-# Tool: import_from_library  (Phase 2.6)
+# Tool: import_from_library  (Phase 2.6, refactored for folder-as-cwd v1.0)
 # ---------------------------------------------------------------------------
 #
-# Thin agent-facing wrapper around the Phase-1 ``ProjectImportService``.
-# Same backend code path as the manual UI button (POST /projects/{id}/
-# import) — same authz (project-write × library-doc-read), same
-# idempotency. Filtered out of ``tools_for(ctx)`` when the chat
-# isn't bound to a project.
+# Two modes, chosen by which target param the agent supplies:
 #
-# Why this is exposed as an MCP tool (not pulled into the agent's
-# in-container shell): the Library is on the SERVER, not in the
-# agent's sandbox. Hermes calling ``curl`` against the Library API
-# would have to thread auth tokens, deal with chunked downloads,
-# retry, etc. — all of which the import service already handles
-# cleanly. A dedicated tool keeps the agent's view simple: "I want
-# this doc in my workdir; pull it in" → one call.
+# v1.0 — folder-as-cwd (preferred). Agent passes ``target_subpath``,
+#   interpreted relative to the user's workdir root (i.e. ``/workdir/``
+#   inside the sandbox). The library blob lands at
+#   ``<user_workdirs_root>/<user_id>/<target_subpath>/<filename>``.
+#   No Project / Artifact rows; the file simply appears in the user's
+#   filesystem and the agent can read it like any other workdir file.
+#   Use this for new chats — the cwd model has no project entity.
+#
+# Legacy — project model. Agent passes ``target_subdir`` (or omits the
+#   target param entirely) and ``ctx.project_id`` is set. Falls
+#   through to ``ProjectImportService``: write into the project's
+#   workdir, persist an Artifact row, two-gate authz (project write
+#   × library doc read). Kept for project-bound conversations that
+#   pre-date the folder-as-cwd refactor.
+#
+# Both modes share the library doc-access gate via
+# ``require_doc_access`` so neither leaks docs the user can't read.
+
+def _import_to_user_workdir(
+    doc_id: str, target_subpath: str, ctx: ToolContext
+) -> dict:
+    """v1.0 folder-as-cwd path: copy a library blob into the user's
+    workdir at ``<user_workdirs_root>/<user_id>/<target_subpath>/<fn>``.
+
+    No project ownership / Artifact rows. Idempotent: if a file with
+    the same name + size already lives at the target, returns the
+    existing path with ``reused: true``.
+    """
+    from pathlib import Path
+
+    cfg_agent = ctx.state.cfg.agent
+    user_workdirs_root = (
+        getattr(cfg_agent, "user_workdirs_root", "") or ""
+    ).strip()
+    if not user_workdirs_root:
+        return DispatchError(
+            error=(
+                "import_from_library: user_workdirs_root not configured "
+                "on this deployment"
+            ),
+            tool="import_from_library",
+        ).to_result()
+
+    file_store = getattr(ctx.state, "file_store", None)
+    if file_store is None:
+        return DispatchError(
+            error="import_from_library: file store unavailable",
+            tool="import_from_library",
+        ).to_result()
+
+    # Library doc-access gate (same as the legacy path).
+    try:
+        from api.deps import require_doc_access
+    except Exception as e:
+        log.exception("import_from_library: deps import failed")
+        return DispatchError(
+            error=f"import_from_library unavailable: {type(e).__name__}",
+            tool="import_from_library",
+        ).to_result()
+    try:
+        require_doc_access(ctx.state, ctx.principal, doc_id, "read")
+    except Exception:
+        return DispatchError(
+            error=(
+                f"library document not found or not accessible: {doc_id}. "
+                "Check the doc_id from search_vector / search_bm25 results."
+            ),
+            tool="import_from_library",
+        ).to_result()
+
+    # Load doc + file row
+    try:
+        from persistence.models import Document, File
+    except Exception:
+        return DispatchError(
+            error="import_from_library: persistence layer unavailable",
+            tool="import_from_library",
+        ).to_result()
+
+    user_id = ctx.principal.user_id
+    user_root = (Path(user_workdirs_root) / user_id).resolve()
+
+    # Sanitise target_subpath: strip leading/trailing slashes, refuse
+    # absolute paths and parent traversal that escapes the user root.
+    sub = target_subpath.replace("\\", "/").strip().strip("/")
+    if any(part == ".." for part in sub.split("/")):
+        return DispatchError(
+            error="target_subpath cannot contain '..'",
+            tool="import_from_library",
+        ).to_result()
+
+    target_dir = (user_root / sub).resolve() if sub else user_root
+    # Confine to user_root
+    try:
+        target_dir.relative_to(user_root)
+    except ValueError:
+        return DispatchError(
+            error="target_subpath escapes the user workdir",
+            tool="import_from_library",
+        ).to_result()
+
+    with ctx.state.store.transaction() as sess:
+        doc = sess.get(Document, doc_id)
+        if doc is None:
+            return DispatchError(
+                error=f"library document not found: {doc_id}",
+                tool="import_from_library",
+            ).to_result()
+        if not doc.file_id:
+            return DispatchError(
+                error=(
+                    f"library document {doc_id} has no associated file blob "
+                    "(it's a placeholder / URL-only doc) and can't be copied"
+                ),
+                tool="import_from_library",
+            ).to_result()
+        file_row = sess.get(File, doc.file_id)
+        if file_row is None:
+            return DispatchError(
+                error=(
+                    f"library document {doc_id} has no associated file blob "
+                    "(it's a placeholder / URL-only doc) and can't be copied"
+                ),
+                tool="import_from_library",
+            ).to_result()
+
+        fname = _safe_filename(
+            doc.filename or file_row.original_name,
+            fallback=f"imported_{doc_id}.bin",
+        )
+        target_path = target_dir / fname
+
+        # Idempotency: same name + size at the target → reuse
+        if target_path.exists() and target_path.is_file():
+            try:
+                if target_path.stat().st_size == file_row.size_bytes:
+                    return {
+                        "doc_id": doc_id,
+                        "source_doc_id": doc_id,
+                        "target_path": str(
+                            target_path.relative_to(user_root)
+                        ).replace("\\", "/"),
+                        "size_bytes": file_row.size_bytes,
+                        "mime": file_row.mime_type
+                        or "application/octet-stream",
+                        "reused": True,
+                    }
+            except OSError:
+                pass
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            file_store.materialize(file_row.file_id, target_path)
+        except Exception as e:
+            log.exception("import_from_library: materialize failed")
+            if target_path.exists():
+                try:
+                    target_path.unlink()
+                except OSError:
+                    pass
+            return DispatchError(
+                error=f"import failed: failed to copy Library blob: {e}",
+                tool="import_from_library",
+            ).to_result()
+
+        return {
+            "doc_id": doc_id,
+            "source_doc_id": doc_id,
+            "target_path": str(
+                target_path.relative_to(user_root)
+            ).replace("\\", "/"),
+            "size_bytes": file_row.size_bytes,
+            "mime": file_row.mime_type or "application/octet-stream",
+            "reused": False,
+        }
+
+
+def _safe_filename(name: str | None, *, fallback: str) -> str:
+    """Best-effort sanitiser for the doc's filename — strip directory
+    separators, refuse empty / dot-only names. Mirrors
+    ``persistence.project_import_service._safe_filename``."""
+    if not isinstance(name, str):
+        return fallback
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not base or base in {".", ".."}:
+        return fallback
+    return base
 
 
 def _handle_import_from_library(params: dict, ctx: ToolContext) -> dict:
@@ -1484,6 +1660,15 @@ def _handle_import_from_library(params: dict, ctx: ToolContext) -> dict:
             error="import_from_library needs a non-empty 'doc_id' string",
             tool="import_from_library",
         ).to_result()
+
+    # v1.0 folder-as-cwd path: agent passes target_subpath (workdir
+    # root-relative). No project entity involved.
+    target_subpath = params.get("target_subpath")
+    if isinstance(target_subpath, str) and target_subpath.strip():
+        return _import_to_user_workdir(
+            doc_id.strip(), target_subpath.strip(), ctx
+        )
+
     target_subdir = params.get("target_subdir") or "inputs"
     if not isinstance(target_subdir, str):
         target_subdir = "inputs"
@@ -1640,29 +1825,28 @@ def _handle_import_from_library(params: dict, ctx: ToolContext) -> dict:
 _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
     name="import_from_library",
     description=(
-        "Copy a Library document into this project's `inputs/` "
-        "directory so the agent can read / process it from its "
-        "sandbox shell.\n\n"
+        "Copy a Library document into your workdir so you can read / "
+        "process the FILE itself (Excel cells, PDF tables, raw "
+        "JSON / CSV) — not just the chunks.\n\n"
         "Use this when:\n"
-        "  - search_library found a relevant doc and you need to "
-        "operate on the FILE itself (Excel cells, PDF tables, raw "
-        "JSON / CSV) rather than just the chunks.\n"
-        "  - The user references a document by name and you've "
-        "located its `doc_id` via search_library.\n\n"
+        "  - search_vector / search_bm25 found a relevant doc and you "
+        "need byte-level access (open the spreadsheet, parse the JSON, "
+        "etc.).\n"
+        "  - The user references a document by name and you've located "
+        "its `doc_id` via search.\n\n"
         "DO NOT use for:\n"
-        "  - Just answering from chunks — search_library + read_chunk "
-        "is sufficient when you only need passages.\n"
-        "  - Pulling files OUTSIDE the user's Library access — the "
-        "tool refuses (404) for any doc the user can't read in the "
-        "Library UI.\n\n"
-        "IDEMPOTENT: importing the same doc_id twice into the same "
-        "project returns the existing artifact (you'll see "
-        "`reused: true`). Safe to retry.\n\n"
-        "After import, the file is at "
-        "`{target_subdir}/<filename>` inside the project workdir "
-        "(default subdir: `inputs/`). Use `pd.read_excel('inputs/"
-        "<filename>')` etc. — relative paths work because the agent "
-        "shell runs with the project workdir as CWD."
+        "  - Answering from chunks — search + read_chunk is sufficient "
+        "when you only need passages.\n"
+        "  - Docs OUTSIDE the user's Library access — the tool refuses "
+        "(404) for any doc the user can't read in the Library UI.\n\n"
+        "Pass `target_subpath` as a path relative to your workdir root "
+        "(`/workdir/` inside the sandbox). If your chat is bound to a "
+        "cwd folder (see `OPENCRAIG_CWD` env var), prepend it: e.g. "
+        "with cwd `/sales/2025`, pass `target_subpath='sales/2025/inputs'` "
+        "to land the file at `./inputs/<filename>` from your pwd.\n\n"
+        "IDEMPOTENT: importing the same doc twice to the same target "
+        "returns `reused: true` if a file with the same name and size "
+        "is already there. Safe to retry."
     ),
     params_schema={
         "type": "object",
@@ -1671,16 +1855,28 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
                 "type": "string",
                 "description": (
                     "The Library document id, exactly as returned by "
-                    "search_library / read_chunk results (e.g. "
-                    "'d_abc123'). NOT a chunk_id."
+                    "search_vector / search_bm25 / read_chunk results "
+                    "(e.g. 'd_abc123'). NOT a chunk_id."
+                ),
+            },
+            "target_subpath": {
+                "type": "string",
+                "description": (
+                    "Path relative to your workdir root (`/workdir/`) "
+                    "where the file should land. Folders are auto-"
+                    "created. Defaults to landing the file directly in "
+                    "the workdir root if omitted. With cwd `/sales/2025`, "
+                    "pass `'sales/2025/inputs'` to put it at "
+                    "`./inputs/<filename>` from your pwd."
                 ),
             },
             "target_subdir": {
                 "type": "string",
                 "description": (
-                    "Project subdir to land the file in. Default 'inputs/'. "
-                    "Reserved subdirs ('.trash' / '.agent-state') are "
-                    "rejected."
+                    "[Legacy project mode only] Project subdir to land "
+                    "the file in. Default 'inputs/'. Used for chats "
+                    "still bound to the pre-folder-as-cwd Project "
+                    "model; new chats should use `target_subpath`."
                 ),
             },
         },
