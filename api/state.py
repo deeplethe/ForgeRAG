@@ -387,9 +387,28 @@ class AppState:
         except ImportError:
             _log.info(
                 "sandbox: docker SDK not installed — the SDK will run "
-                "in-process (Workspace agent tools degraded; install "
+                "in-process (Workbench agent tools degraded; install "
                 "the docker package + run scripts/build-sandbox.sh "
                 "for the full experience)"
+            )
+            return None
+
+        # Defence against the ``./docker/`` namespace-package shadow:
+        # when the real SDK isn't installed, PEP 420 lets Python treat
+        # the local Dockerfile-material folder as the ``docker`` module
+        # and the bare ``import docker`` above succeeds — but the
+        # module is empty. Distinguish that case from a real install
+        # so the operator's log says "SDK missing" not "daemon
+        # unreachable" (the misleading message that masked this same
+        # bug for hours when the venv's docker package got cleared).
+        if not hasattr(docker, "from_env"):
+            _log.info(
+                "sandbox: docker SDK not installed (an empty ``./docker/`` "
+                "namespace package was loaded instead) — the SDK will run "
+                "in-process. Install the docker package: "
+                "``pip install docker`` (already in requirements.txt; "
+                "rerun ``pip install -r requirements.txt`` if your venv "
+                "lost it)."
             )
             return None
 
@@ -409,7 +428,9 @@ class AppState:
         except Exception as e:
             _log.info(
                 "sandbox: docker daemon unreachable (%s: %s) — "
-                "in-process fallback active",
+                "in-process fallback active. Make sure Docker Desktop "
+                "is running, or set DOCKER_HOST=tcp://your-host:2375 "
+                "for a remote daemon.",
                 type(e).__name__,
                 e,
             )
