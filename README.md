@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-1.0.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.5.0-brightgreen?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
   <a href="https://github.com/opencraig/opencraig/stargazers"><img src="https://img.shields.io/github/stars/opencraig/opencraig?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge" alt="Issues"></a>
@@ -29,12 +29,13 @@
 
 ---
 
-> ## 📦 v1.0.0 — first stable release
+> ## 📦 v0.5.0 — first preview release
 >
 > OpenCraig is the **permission-aware knowledge / context layer for
-> enterprise agent runtimes**. v1.0.0 is the first major stable
-> release of the OSS edition; the repo continues to be developed and
-> maintained going forward.
+> enterprise agent runtimes**. v0.5.0 is the first public preview
+> of the OSS edition; the repo continues to be developed and
+> maintained going forward, with v1.0 targeted for a stable cut once
+> the API surface settles.
 >
 > A separate commercial product, **OpenCraig Enterprise (v3.0+)**,
 > ships features specifically for enterprise deployments —
@@ -331,7 +332,7 @@ OpenCraig/
 
 ---
 
-## 🗺️ What's in v1.0.0 (and what's not)
+## 🗺️ What's in v0.5.0 (and what's not)
 
 ### Shipped in OSS (this repo, frozen)
 

@@ -18,7 +18,7 @@ from pydantic import BaseModel
 class AgentConfig(BaseModel):
     # Where project workdirs live on disk. Pre-folder-as-cwd, this
     # was where containers bind-mounted per-project subdirs at
-    # ``/workdir/<project_id>/``. Under the v1.0.0 OSS folder-as-cwd
+    # ``/workdir/<project_id>/``. Under the v0.5.0 OSS folder-as-cwd
     # model the agent path uses ``user_workdirs_root`` instead; this
     # field is retained for legacy code paths (project_files routes,
     # old agent_runs rows referencing project_id) until the cleanup

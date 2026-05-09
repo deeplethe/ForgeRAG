@@ -6,14 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [1.0.0] — 2026-05-09 — First stable release
+## [0.5.0] — 2026-05-09 — First preview release
 
-This release reframes OpenCraig as **the permission-aware
-knowledge / context layer for enterprise agent runtimes** —
-the backend any MCP-compatible agent (the SDK, Claude Code, Cursor,
-Cline, custom) plugs into for retrieval that respects your team's
-folder permissions. v1.0.0 is the first major stable release; the
-OSS edition continues to be developed and maintained going forward.
+This release reframes OpenCraig as **managed agentic workspaces
+with permission-aware retrieval** — each user gets a per-user
+sandbox container where the agent does the work, and retrieval
+across the team's knowledge respects existing folder permissions.
+v0.5.0 is the first public preview of the OSS edition; the repo
+continues to be developed and maintained going forward, with v1.0
+targeted for a stable cut once the API surface settles.
 
 A separate commercial product, **OpenCraig Enterprise (v3.0+)**,
 ships features specifically for enterprise deployments — lineage,
@@ -24,13 +25,14 @@ boundary.
 
 ### Changed — major
 
-- **Agent runtime: Claude Agent SDK.** v1.0.0 ships
-  the same loop that powers Claude Code as the in-process and
-  in-container agent driver. Wave 2.5b's earlier selection of
-  `claude-agent-sdk>=0.1.80` was a non-existent PyPI package; tests
-  mocked the import and the gap was only caught when the sandbox
-  image actually tried to install it. The cutover keeps the same
-  SSE event vocabulary so frontend parsers don't change.
+- **Agent runtime: Claude Agent SDK.** v0.5.0 ships the same loop
+  that powers Claude Code as the in-process and in-container agent
+  driver. The runtime selection that landed in an earlier internal
+  wave referenced a package that turned out not to exist on PyPI;
+  tests had been mocking the import, masking a runtime gap until
+  the sandbox image actually tried to install it. The cutover to
+  claude-agent-sdk keeps the same SSE event vocabulary so frontend
+  parsers don't change.
 - **In-container path uses the SDK's bundled CLI binary.** The wheel
   ships a per-platform self-contained binary (no Node.js runtime
   dep). `pip install claude-agent-sdk` in the sandbox image plus a
