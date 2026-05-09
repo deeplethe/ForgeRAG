@@ -231,7 +231,7 @@ def _load_conversation_history(state: AppState, conv_id: str) -> list[dict]:
     (BM25 + vector hits cache via the embedding cache layer) and
     the schema's role column is restricted to user / assistant."""
     msgs: list[dict] = []
-    rows = state.store.list_messages(conv_id)
+    rows = state.store.get_messages(conv_id)
     for row in rows or []:
         role = row.get("role") if isinstance(row, dict) else getattr(row, "role", None)
         content = (
@@ -257,19 +257,181 @@ def _persist_user_message(state: AppState, conv_id: str, content: str) -> None:
 
 
 def _persist_assistant_message(
-    state: AppState, conv_id: str, content: str
+    state: AppState,
+    conv_id: str,
+    content: str,
+    *,
+    agent_trace: list | None = None,
 ) -> None:
     """Always writes a row, even when ``content`` is empty. Empty =
     failed turn (LLM error / aborted) — the row's PRESENCE is what
-    tells the frontend's poll loop to stop waiting."""
-    state.store.add_message(
-        {
-            "message_id": uuid.uuid4().hex,
-            "conversation_id": conv_id,
-            "role": "assistant",
-            "content": content,
-        }
-    )
+    tells the frontend's poll loop to stop waiting.
+
+    ``agent_trace`` is the chronological sequence of phase / thought /
+    tool entries the runtime produced for this turn. The shape mirrors
+    what ``Chat.vue`` builds live as ``streamTrace`` so on conversation
+    reload, ``AgentMessageBody`` rebuilds the same step-by-step view
+    the user saw during streaming. ``None`` for failed turns / older
+    rows; the frontend renders just the answer body when absent."""
+    record: dict = {
+        "message_id": uuid.uuid4().hex,
+        "conversation_id": conv_id,
+        "role": "assistant",
+        "content": content,
+    }
+    if agent_trace:
+        record["agent_trace_json"] = agent_trace
+    state.store.add_message(record)
+
+
+class _TraceAccumulator:
+    """Mirrors the frontend's ``streamTrace`` reducer (Chat.vue) so the
+    persisted shape matches what the live UI builds. Without this,
+    reloading a conversation drops back to the bare ``content`` string
+    and loses every tool chip + intermediate narration the user saw.
+
+    Entry shapes (kept compatible with ``AgentMessageBody.vue``):
+      * phase:   {kind: 'phase', phase, text: '', elapsedSec, status}
+      * thought: {kind: 'thought', phase, text, elapsedSec, status}
+                 (a phase whose narration text was filled in)
+      * tool:    {kind: 'tool', call_id, name, detail, elapsedMs,
+                  status, summary}
+
+    Timing is recorded as ``elapsed*`` only (no absolute timestamps)
+    so the persisted blob is portable across timezones and reproducible
+    by a refresh."""
+
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+        self._turn: int = 0
+        self._answer_buf: list[str] = []
+        self._tool_t0: dict[str, float] = {}
+        self._phase_t0: dict[int, float] = {}
+
+    @staticmethod
+    def _phase_label(turn_idx: int) -> str:
+        return "planning" if turn_idx == 0 else "reviewing"
+
+    def _last_running_phaseish(self) -> dict | None:
+        for e in reversed(self.entries):
+            if e.get("kind") in ("phase", "thought") and e.get("status") == "running":
+                return e
+        return None
+
+    def on_turn_start(self) -> None:
+        idx = self._turn
+        self.entries.append(
+            {
+                "kind": "phase",
+                "phase": self._phase_label(idx),
+                "text": "",
+                "elapsedSec": 0,
+                "status": "running",
+            }
+        )
+        self._phase_t0[len(self.entries) - 1] = time.time()
+
+    def on_turn_end(self) -> None:
+        last = self._last_running_phaseish()
+        if last is not None:
+            last["status"] = "done"
+            idx = self.entries.index(last)
+            t0 = self._phase_t0.pop(idx, None)
+            if t0 is not None:
+                last["elapsedSec"] = max(0, int(time.time() - t0))
+        self._turn += 1
+        self._answer_buf.clear()
+
+    def on_thought(self, text: str) -> None:
+        last = self._last_running_phaseish()
+        if last is not None:
+            last["kind"] = "thought"
+            # If the model produces multiple thinking deltas for the
+            # same phase, concatenate (matches text-streaming intent).
+            last["text"] = (last.get("text") or "") + text
+        else:
+            self.entries.append(
+                {
+                    "kind": "thought",
+                    "phase": self._phase_label(self._turn),
+                    "text": text,
+                    "elapsedSec": 0,
+                    "status": "done",
+                }
+            )
+
+    def on_answer_delta(self, text: str) -> None:
+        # Buffered until either (a) a tool.call_start moves it into a
+        # thought entry as a tool-preface narration, or (b) the turn
+        # ends and the buffered text becomes the final answer body
+        # (which lives in ``content``, not in the trace).
+        if text:
+            self._answer_buf.append(text)
+
+    def on_tool_start(
+        self, call_id: str, name: str, params: dict | None
+    ) -> None:
+        # Move any buffered answer-delta text into the trailing
+        # phase/thought entry as preface ("Let me search for X first..."
+        # — Claude Code style narration before tool use).
+        last = self._last_running_phaseish()
+        if last is not None:
+            if self._answer_buf:
+                last["kind"] = "thought"
+                last["text"] = (last.get("text") or "") + "".join(
+                    self._answer_buf
+                )
+                self._answer_buf.clear()
+            last["status"] = "done"
+            idx = self.entries.index(last)
+            t0 = self._phase_t0.pop(idx, None)
+            if t0 is not None:
+                last["elapsedSec"] = max(0, int(time.time() - t0))
+
+        detail = ""
+        if isinstance(params, dict):
+            for key in ("query", "chunk_id", "doc_id", "command", "path"):
+                v = params.get(key)
+                if isinstance(v, str) and v:
+                    detail = v[:64]
+                    break
+        self.entries.append(
+            {
+                "kind": "tool",
+                "call_id": call_id,
+                "name": name,
+                "detail": detail,
+                "elapsedMs": 0,
+                "status": "running",
+                "summary": "",
+            }
+        )
+        self._tool_t0[call_id] = time.time()
+
+    def on_tool_end(
+        self,
+        call_id: str,
+        latency_ms: int,
+        result_summary: dict | None,
+    ) -> None:
+        for e in reversed(self.entries):
+            if e.get("kind") == "tool" and e.get("call_id") == call_id:
+                e["status"] = "done"
+                e["elapsedMs"] = int(latency_ms or 0)
+                summary = result_summary or {}
+                if summary.get("hit_count") is not None:
+                    e["summary"] = f"{summary['hit_count']} hits"
+                elif summary.get("entity_count") is not None:
+                    e["summary"] = f"{summary['entity_count']} entities"
+                elif summary.get("chunk_count") is not None:
+                    e["summary"] = f"{summary['chunk_count']} chunks"
+                elif summary.get("error"):
+                    e["summary"] = "error"
+                break
+        self._tool_t0.pop(call_id, None)
+
+    def snapshot(self) -> list[dict]:
+        return [dict(e) for e in self.entries]
 
 
 def _persist_agent_run(
@@ -523,6 +685,13 @@ async def claude_chat(
         error_message: str | None = None
         iterations = 0
         delta_buf: list[str] = []
+        # Mirror the frontend's streamTrace reducer in Python so we
+        # persist the same chronological phase/thought/tool sequence
+        # the user saw live. Without this, ``Message.agent_trace_json``
+        # stays NULL and reloading the conversation drops back to a
+        # bare answer body with no inline tool chips.
+        trace_acc = _TraceAccumulator()
+        trace_acc.on_turn_start()
 
         # Build the right iterator for this turn's runtime mode.
         # Both stream sync generators on a worker thread; we pump
@@ -587,14 +756,32 @@ async def claude_chat(
                     break
                 if not isinstance(evt, dict):
                     continue
-                if evt.get("kind") == "answer_delta":
+                kind = evt.get("kind")
+                if kind == "answer_delta":
                     delta_buf.append(evt.get("text", ""))
-                elif evt.get("kind") == "error":
+                    trace_acc.on_answer_delta(evt.get("text", ""))
+                elif kind == "thinking":
+                    trace_acc.on_thought(evt.get("text", ""))
+                elif kind == "tool_start":
+                    trace_acc.on_tool_start(
+                        evt.get("id", ""),
+                        evt.get("tool", ""),
+                        evt.get("params") if isinstance(evt.get("params"), dict) else None,
+                    )
+                elif kind == "tool_end":
+                    trace_acc.on_tool_end(
+                        evt.get("id", ""),
+                        int(evt.get("latency_ms") or 0),
+                        evt.get("result_summary")
+                        if isinstance(evt.get("result_summary"), dict)
+                        else None,
+                    )
+                elif kind == "error":
                     error_message = (
                         f"{evt.get('type', 'RuntimeError')}: "
                         f"{evt.get('message', 'agent failed')}"
                     )
-                elif evt.get("kind") == "done":
+                elif kind == "done":
                     iterations = int(evt.get("iterations") or 0)
                     # If the SDK's final dict already had a final_text
                     # (extracted by the runtime), prefer that —
@@ -614,6 +801,7 @@ async def claude_chat(
         if not final_text:
             final_text = "".join(delta_buf)
 
+        trace_acc.on_turn_end()
         yield _sse("agent.turn_end", {"turn": 1, "run_id": run_id}).encode("utf-8")
         yield _emit_done(
             error_message=error_message,
@@ -626,7 +814,10 @@ async def claude_chat(
         if body.conversation_id:
             try:
                 _persist_assistant_message(
-                    state, body.conversation_id, final_text
+                    state,
+                    body.conversation_id,
+                    final_text,
+                    agent_trace=trace_acc.snapshot() if trace_acc.entries else None,
                 )
             except Exception:
                 log.exception(

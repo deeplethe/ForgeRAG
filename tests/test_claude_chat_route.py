@@ -53,8 +53,8 @@ class _FakeStore:
         # this list.
         self.added_rows: list = []
 
-    def list_messages(self, conv_id):
-        return list(self._history_by_conv.get(conv_id, []))
+    def get_messages(self, conv_id, *, limit=100):
+        return list(self._history_by_conv.get(conv_id, []))[:limit]
 
     def seed_history(self, conv_id, msgs):
         self._history_by_conv[conv_id] = list(msgs)
