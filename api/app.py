@@ -169,7 +169,7 @@ def create_app(
 
     app = FastAPI(
         title="OpenCraig",
-        description="Structure-aware RAG with precise bbox citations.",
+        description="Managed agentic workspaces with permission-aware retrieval. Per-user sandbox containers, MCP-native tool surface, BYOK.",
         version="0.6.0",
         lifespan=lifespan,
     )
