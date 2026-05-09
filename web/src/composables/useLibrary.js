@@ -115,16 +115,16 @@ export function useLibrary() {
   }
 
   // ── Breadcrumbs ───────────────────────────────────────────────────
-  // The user only ever sees Space-relative paths — the literal
-  // ``/users/<username>/...`` prefix never reaches the UI. The
-  // user's PERSONAL Space is treated as their home: its root
-  // renders as ``/`` directly (no space-name crumb), because in
-  // the user's mental model their personal Space IS the root.
-  // Other (admin-shared) Spaces show up as a labelled crumb under
-  // ``/`` — that's the only place the space's display name
-  // surfaces in path UI.
+  // The user only sees Space-relative paths — the absolute prefix
+  // (``/users/...``, ``/eng/...``, etc.) never surfaces in crumbs.
+  // Every Space renders the same shape: a ``/`` crumb that links to
+  // the synthetic root (where the spaces list lives) plus a labelled
+  // crumb for the Space itself. Sub-paths fan out from there. The
+  // personal-Space special case (rendered the personal root as ``/``
+  // directly) was retired when the per-user-Space concept was
+  // dropped — every grant is now just a folder.
   //
-  // Each crumb still carries the ABSOLUTE path so click handlers
+  // Each crumb carries the ABSOLUTE path so click handlers
   // (``navigate``) keep working unchanged — only ``name`` is
   // translated.
   const breadcrumbs = computed(() => {
@@ -147,21 +147,10 @@ export function useLibrary() {
       return crumbs
     }
 
-    const isPersonal = !!resolved.space.is_personal_space
-    // Personal Space: ``/`` crumb's path is the Space root itself,
-    // so clicking ``/`` from a sub-folder takes the user to their
-    // personal home (not the synthetic-root spaces list — that's
-    // not where "home" lives in their head).
-    // Other Space: ``/`` crumb leads to the synthetic root (so the
-    // user can hop back out and see the spaces list / their personal
-    // Space), then the Space label crumb anchors the rest.
-    const crumbs = []
-    if (isPersonal) {
-      crumbs.push({ name: '/', path: resolved.space.path })
-    } else {
-      crumbs.push({ name: '/', path: '/' })
-      crumbs.push({ name: resolved.space.name, path: resolved.space.path })
-    }
+    const crumbs = [
+      { name: '/', path: '/' },
+      { name: resolved.space.name, path: resolved.space.path },
+    ]
     if (resolved.relPath) {
       const parts = resolved.relPath.split('/').filter(Boolean)
       let acc = resolved.space.path
@@ -174,40 +163,24 @@ export function useLibrary() {
   })
 
   // ── User-facing path string ───────────────────────────────────────
-  // Single slash-joined form of the breadcrumb. Personal Space
-  // root → ``/``; personal sub-folder → ``/sub/path``; other
-  // Space root → ``/<space>``; other Space sub → ``/<space>/sub``.
-  // Absolute ``/users/...`` never surfaces here.
+  // Single slash-joined form of the breadcrumb. Space root →
+  // ``/<space>``; sub-folder → ``/<space>/sub/path``. Absolute
+  // ``/users/...`` never surfaces here.
   const displayPath = computed(() => {
     if (currentPath.value === ROOT_PATH) return '/'
     const resolved = resolveSpace(currentPath.value)
     if (!resolved) return currentPath.value
     const tail = resolved.relPath ? '/' + resolved.relPath : ''
-    if (resolved.space.is_personal_space) {
-      return tail || '/'
-    }
     return '/' + resolved.space.name + tail
   })
 
-  // Find the user's personal Space ("Home"). Returns the synthesised
-  // tree child node (carries ``space_id`` / ``is_personal_space``
-  // because ``loadTree`` mixed those in). Used by Workspace.vue's
-  // mount to default-land users in their personal Space rather than
-  // the multi-Space landing.
-  function personalSpace() {
-    const spaces = tree.value?.children || []
-    return spaces.find((s) => s.is_personal_space) || null
-  }
-
-  // The Space the user should default-land in. Personal first; if
-  // there's no personal Space (admins who lost their /users/<name>
-  // somehow, or bootstrap admins pre-backfill) but they have exactly
-  // ONE Space, drop them into that one too. Anything else (no spaces,
-  // or multiple non-personal spaces) returns null and the caller
-  // should leave the user at the synthetic root.
+  // The Space the user should default-land in. With personal Spaces
+  // retired, there's no preferred home — pick the first Space alpha
+  // (matches PathRemap's sort order on the backend) so refresh /
+  // Library-tab clicks land somewhere consistent. Returns null when
+  // the user has zero or multiple Spaces and we'd rather leave them
+  // at the synthetic root showing the full Spaces list.
   function defaultLandingSpace() {
-    const personal = personalSpace()
-    if (personal) return personal
     const spaces = (tree.value?.children || []).filter((c) => !c.is_system)
     if (spaces.length === 1) return spaces[0]
     return null
@@ -252,10 +225,9 @@ export function useLibrary() {
           name: s.space.name,
           // Carry the space metadata through so consumers that
           // need to know "this top-level node is a space root"
-          // (Phase 2 / 3 — doc detail breadcrumb, scope picker)
-          // can find it without a second fetch.
+          // (doc detail breadcrumb, scope picker) can find it
+          // without a second fetch.
           space_id: s.space.space_id,
-          is_personal_space: s.space.is_personal,
           space_role: s.space.role,
         })),
       }
@@ -407,7 +379,7 @@ export function useLibrary() {
     selection, isSelected, toggleSelect, selectAll, clearSelection,
     clipboard, setClipboard, clearClipboard, hasClipboard,
     breadcrumbs, displayPath,
-    resolveSpace, personalSpace, defaultLandingSpace,
+    resolveSpace, defaultLandingSpace,
     // actions
     loadTree, loadContents, navigate,
     opCreateFolder, opRenameFolder, opMoveFolder, opDeleteFolder,

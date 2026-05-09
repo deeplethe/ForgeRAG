@@ -189,7 +189,6 @@ class SpaceOut(BaseModel):
     name: str
     abs_root: str    # for back-compat with callers that still need absolute paths
     role: str        # "rw" / "r"
-    is_personal: bool
 
 
 class SpaceTree(BaseModel):
@@ -258,7 +257,6 @@ def get_spaces(
                     name=space.name,
                     abs_root=space.abs_root,
                     role=space.role,
-                    is_personal=space.is_personal,
                 ),
                 tree=build(root_folder, depth),
             ))

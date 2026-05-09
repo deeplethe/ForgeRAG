@@ -1058,11 +1058,11 @@ onMounted(async () => {
     ? seedPath
     : '/'
   // Default landing: when the URL doesn't pin a path AND the user has
-  // a sensible default Space (their personal Space, or their only
-  // Space), drop straight into it. Saves a click for the common
-  // "I just want my own files" workflow and gives the Space-relative
-  // breadcrumb something to render. Multi-Space users who want the
-  // spaces-list view can still get there via the leftmost ``/`` crumb.
+  // exactly one Space, drop straight into it. Saves a click for the
+  // single-Space workflow and gives the breadcrumb something to render.
+  // Multi-Space users land on the synthetic root showing the spaces
+  // list (no preferred "home" — every Space is a peer now that the
+  // personal-Space concept has been retired).
   if (initial === '/') {
     const home = ws.defaultLandingSpace()
     if (home?.path) initial = home.path

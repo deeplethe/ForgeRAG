@@ -45,7 +45,6 @@ class GrantRoot:
     folder_id: str
     abs_path: str
     role: str       # "rw" / "r"
-    is_personal: bool   # True iff abs_path == /users/<this_user>'s_username
 
 
 @dataclass(frozen=True)
@@ -54,7 +53,6 @@ class Space:
     name: str       # display label (folder basename, or basename + " (owner)" on collision)
     abs_root: str   # absolute path of the grant root
     role: str
-    is_personal: bool
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +74,11 @@ class PathRemap:
     def __init__(self, spaces: Iterable[Space]):
         self._spaces: list[Space] = sorted(
             spaces,
-            # Personal first, then by display name. Stable order
-            # so the UI presents the same layout across requests.
-            key=lambda s: (not s.is_personal, s.name.lower()),
+            # Display-name alpha order; stable across requests so the
+            # UI layout is consistent. The personal-Space-first pin
+            # was removed when the personal-Space concept was
+            # retired — every grant is just a folder now.
+            key=lambda s: s.name.lower(),
         )
         self._by_id: dict[str, Space] = {s.space_id: s for s in self._spaces}
         # Reverse index for ``to_user``: longest-prefix match.
@@ -174,10 +174,8 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
       * Auth disabled — every non-system top-level folder is a
         Space. Single-user dev mode.
       * Admin — same shape (every non-system top-level folder is
-        a Space) PLUS the admin's personal ``/users/<username>``
-        marked ``is_personal=True``. Admins manage the global
-        tree, so they see it as their workspace; the personal
-        Space is just one entry alongside.
+        a Space). Admins manage the global tree, so they see it
+        as their workspace.
 
     Regular users follow the strict grant-walking path below:
     only folders whose ``shared_with`` lists them get yielded.
@@ -205,7 +203,6 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
                     folder_id=folder_id,
                     abs_path=path,
                     role="rw",
-                    is_personal=False,  # auth-disabled has no concept of "personal"
                 )
             return
 
@@ -213,11 +210,10 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
 
         # Admin role bypass: admins manage the workspace, so they
         # see every non-system top-level folder as a Space — same
-        # shape as auth-disabled. NO personal Space concept for
-        # admins: their workspace IS the global tree, a "home"
-        # under /users/<admin> would just be one more thing to
-        # navigate around. ``/users/`` stays a system folder
-        # excluded from the admin's view.
+        # shape as auth-disabled. ``/users/`` stays a system folder
+        # excluded from the admin's view (legacy parent of any
+        # remaining personal-folder data; new accounts no longer
+        # auto-create entries under it).
         if user is not None and user.role == "admin":
             rows = sess.execute(
                 select(_F.folder_id, _F.path).where(
@@ -231,7 +227,6 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
                     folder_id=folder_id,
                     abs_path=path,
                     role="rw",
-                    is_personal=False,
                 )
             return
 
@@ -265,23 +260,11 @@ def _user_grant_roots(state, principal) -> Iterable[GrantRoot]:
             accepted_paths.append(path)
             accepted.append(entry)
 
-        # Compute the "is_personal" flag: this user's
-        # /users/<username> folder. We resolve via the AuthUser
-        # row instead of pattern-matching on path so the literal
-        # /users/ prefix isn't load-bearing — admins could
-        # rename the parent folder later without breaking this.
-        # ``user`` was already fetched at the top of this block
-        # for the role check.
-        personal_path = (
-            f"/users/{user.username}" if user and user.username else None
-        )
-
         for folder_id, path, role in accepted:
             yield GrantRoot(
                 folder_id=folder_id,
                 abs_path=path,
                 role=role,
-                is_personal=(personal_path is not None and path == personal_path),
             )
 
 
@@ -329,7 +312,6 @@ def _build_spaces(roots: Iterable[GrantRoot]) -> list[Space]:
                 name=basename,
                 abs_root=r.abs_path,
                 role=r.role,
-                is_personal=r.is_personal,
             ))
             continue
         # Collision — append parent-folder hint to each.
@@ -343,6 +325,5 @@ def _build_spaces(roots: Iterable[GrantRoot]) -> list[Space]:
                 name=f"{basename} ({disambiguator})",
                 abs_root=r.abs_path,
                 role=r.role,
-                is_personal=r.is_personal,
             ))
     return out
