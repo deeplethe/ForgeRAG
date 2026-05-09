@@ -57,7 +57,7 @@ OpenCraig is positioned as **the knowledge / context layer for enterprise agent 
 | You're using | What it gives you | What it doesn't |
 |---|---|---|
 | **Claude Code / Cursor / Cline alone** | Mature agent runtime + great built-in tools | Single-user; no team knowledge backend; no permission scoping when reading shared docs |
-| **Claude Agent SDK alone** | Self-hostable agent loop (the same one Claude Code uses), MIT-licensed | Same as above — runtime without a team-shared knowledge layer or sandbox infrastructure |
+| **Claude Agent SDK alone** | Self-hostable agent loop (the same one Claude Code uses) | Same as above — runtime without a team-shared knowledge layer or sandbox infrastructure |
 | **Notion AI / Glean / Mendable** | Polished search UX, SaaS-managed | Closed source; not MCP; agents can't plug in; corpus on someone else's servers |
 | **AnythingLLM / RAGFlow / GraphRAG** | OSS self-host RAG | Single-user (or shallow multi-user); no permission-scoped retrieval; not exposed as MCP tools that respect per-user authz |
 | **LangChain / LlamaIndex** | Building blocks | A library, not a knowledge backend. You'd need to build everything OpenCraig already shipped (folder authz, KG visibility, ingestion pipeline, MCP server) |
@@ -204,7 +204,7 @@ flowchart TB
     end
     subgraph "Backend (FastAPI · Python 3.13)"
         API[REST + SSE]
-        AGENT[Claude Agent SDK<br/>in-process or in-container, MIT]
+        AGENT[Claude Agent SDK<br/>in-process or in-container]
         MCP[MCP server<br/>domain tool surface]
         LLMP[LLM proxy<br/>OpenAI + Anthropic]
         ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
@@ -233,8 +233,8 @@ flowchart TB
     ING --> LLM
 ```
 
-The agent runtime is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)
-(Anthropic, MIT) — the same loop that powers Claude Code. It runs
+The agent runtime is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) —
+the same loop that powers Claude Code. It runs
 in-process for plain Q&A turns (built-in filesystem tools disabled
 so the loop only reaches our MCP-exposed retrieval surface) and
 inside the per-user sandbox container for turns that need bash,

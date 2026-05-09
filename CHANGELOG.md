@@ -24,7 +24,7 @@ boundary.
 
 ### Changed — major
 
-- **Agent runtime: Claude Agent SDK (Anthropic, MIT).** v1.0.0 ships
+- **Agent runtime: Claude Agent SDK.** v1.0.0 ships
   the same loop that powers Claude Code as the in-process and
   in-container agent driver. Wave 2.5b's earlier selection of
   `claude-agent-sdk>=0.1.80` was a non-existent PyPI package; tests
@@ -135,12 +135,12 @@ together.
 
 ### Dependencies
 
-- Added `claude-agent-sdk>=0.1.80` (MIT) — pulls
-  `firecrawl-py`, `parallel-web`, `fal-client`, `edge-tts`,
-  `exa-py` as transitive deps (~50–100 MB, none used by
-  OpenCraig). Acceptable cost for not maintaining our own loop.
-- Added `mcp>=1.27` (MIT) — Anthropic-maintained Python SDK
-  for the MCP server transport.
+- Added `claude-agent-sdk>=0.1.80` — wraps a self-contained
+  per-platform `claude` CLI binary (~200 MB) shipped in the wheel.
+  No Node.js runtime dep. The same loop that powers Claude Code,
+  programmable from Python.
+- Added `mcp>=1.27` — Anthropic-maintained Python SDK for the
+  MCP server transport.
 
 ### Fixed (May 2026 audit)
 

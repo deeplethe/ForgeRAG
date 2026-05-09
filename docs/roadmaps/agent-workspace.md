@@ -337,7 +337,7 @@ DataFrame rich rendering also don't survive subprocess.
 deploys; revisit if we ever offer a public free tier.
 
 **Reference implementation we adapt from**: AutoGen 0.4+'s
-`autogen-ext.code_executors.docker_jupyter` (~600 lines, MIT)
+`autogen-ext.code_executors.docker_jupyter` (~600 lines)
 is essentially this exact pattern. Phase 2 starts by porting
 its core into `api/agent/sandbox/` and stripping the AutoGen-
 specific abstractions we don't need (we keep our own agent
@@ -586,7 +586,7 @@ LLM call. Two additions for the agent era:
 | Layer | Tool | Why |
 |---|---|---|
 | **LLM-call instrumentation** | `traceloop/openllmetry` (Apache-2.0) | Drop-in OTel instrumentation for `litellm` — every LLM call automatically becomes a span with `model / tokens_in / tokens_out / cost / latency / prompt_hash` attributes. No new wire protocol; rides our existing OTel collector. |
-| **LLM-specific dashboard** | `langfuse/langfuse` self-host (MIT) | Accepts OTLP ingest natively; surfaces traces grouped by `agent_run_id`, token spend per user/project, prompt diffs across versions, eval queues. Replaces having to build all of this ourselves. |
+| **LLM-specific dashboard** | `langfuse/langfuse` self-host | Accepts OTLP ingest natively; surfaces traces grouped by `agent_run_id`, token spend per user/project, prompt diffs across versions, eval queues. Replaces having to build all of this ourselves. |
 | **Sandbox / kernel state** | JupyterHub-style admin panel — but built ourselves | One page in `/settings/agent-monitor` (admin only): active containers, kernels, CPU/RAM per user, active runs with current step + cost. Force-kill controls. Reads docker SDK + our `agent_runs` table. |
 | **Per-project run history** | OpenCraig's own `agent_runs` + `agent_run_steps` tables | User-facing view: history of agent runs in a project, click for plan + step timeline + per-step tokens/cost/wall-time. Failure resumes from step N. "Export trace JSON" for bug reports. |
 

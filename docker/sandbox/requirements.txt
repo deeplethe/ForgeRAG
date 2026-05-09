@@ -11,7 +11,7 @@
 # step; the base image stays small enough for fast cold start.
 #
 # Claude Agent SDK itself is installed separately via the Dockerfile
-# (pinned MIT-licensed package); it brings its own loop, tools,
+# (pinned package); it brings its own loop, tools,
 # and LLM client. We don't run an ipykernel inside the container —
 # code execution is subprocess-based via the SDK's built-in shell
 # tools, so jupyter_client / ipykernel / bash_kernel are NOT
@@ -52,7 +52,7 @@ requests==2.32.3
 httpx==0.28.1
 
 # ── Agent runtime ──
-# Claude Agent SDK (Anthropic, MIT) — runs in-container per turn,
+# Claude Agent SDK — runs in-container per turn,
 # launched via ``docker exec`` by the backend's ClaudeContainerRunner.
 # The wheel ships a self-contained ``claude`` binary in
 # ``_bundled/`` (no Node.js required); the SDK's Python API wraps

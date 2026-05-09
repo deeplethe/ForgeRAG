@@ -52,7 +52,7 @@ OpenCraig 的定位是**企业级 Agent runtime 的知识 / 上下文层**，不
 | 你正在用 | 它给你什么 | 它没有的 |
 |---|---|---|
 | **Claude Code / Cursor / Cline 单独用** | 成熟的 agent runtime + 优秀的内置工具 | 单用户；没有团队知识后端；读共享文档时不做权限收敛 |
-| **Claude Agent SDK 单独用** | 自托管的 agent loop（与 Claude Code 同款），MIT | 同上——只有 runtime，没有团队知识层和沙盒基础设施 |
+| **Claude Agent SDK 单独用** | 自托管的 agent loop（与 Claude Code 同款） | 同上——只有 runtime，没有团队知识层和沙盒基础设施 |
 | **Notion AI / Glean / Mendable** | 漂亮的搜索 UX，SaaS 托管 | 闭源；不是 MCP；agent 接不进；语料在别人服务器上 |
 | **AnythingLLM / RAGFlow / GraphRAG** | OSS 自托管 RAG | 单用户（或浅多用户）；没有权限收敛的检索；没有把工具 expose 成尊重每用户授权的 MCP |
 | **LangChain / LlamaIndex** | 积木 | 库不是后端。OpenCraig 已发布的（文件夹授权、KG 可见性、入库流水线、MCP server）你都得自己再造 |
@@ -181,7 +181,7 @@ flowchart TB
     end
     subgraph "后端 (FastAPI · Python 3.13)"
         API[REST + SSE]
-        AGENT[Claude Agent SDK<br/>in-process or in-container, MIT]
+        AGENT[Claude Agent SDK<br/>in-process or in-container]
         MCP[MCP server<br/>领域工具]
         LLMP[LLM proxy<br/>OpenAI 兼容]
         ING[Ingestion 流水线<br/>parse · tree · chunk · embed · KG]
@@ -210,7 +210,7 @@ flowchart TB
     ING --> LLM
 ```
 
-Agent 运行时是 [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)（Anthropic, MIT）—— 与 Claude Code 同款的 loop。普通 Q&A 走 in-process（自带文件系统工具禁用，agent 只能通过 MCP 触达检索面）；需要 bash、edit、grep 的回合走每用户独立的沙盒容器。Agent loop 本身刻意不是差异化所在 —— 差异化在**工具与外围基础设施**（多用户授权、沙盒容器、结构化检索、KG、bbox 引用）。
+Agent 运行时是 [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) —— 与 Claude Code 同款的 loop。普通 Q&A 走 in-process（自带文件系统工具禁用，agent 只能通过 MCP 触达检索面）；需要 bash、edit、grep 的回合走每用户独立的沙盒容器。Agent loop 本身刻意不是差异化所在 —— 差异化在**工具与外围基础设施**（多用户授权、沙盒容器、结构化检索、KG、bbox 引用）。
 
 每个组件都是 config 切换 —— 在向导里选你的栈，要换就改 `docker/config.yaml`。
 
