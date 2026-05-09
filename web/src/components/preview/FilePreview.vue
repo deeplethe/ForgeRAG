@@ -66,6 +66,11 @@
               :url="previewUrl"
               :download-url="downloadUrl"
             />
+            <CodePreview
+              v-else-if="kind === 'code'"
+              :url="previewUrl"
+              :filename="filename"
+            />
             <div v-else class="preview-modal__unsupported">
               <FileIcon
                 kind="file"
@@ -118,7 +123,7 @@
  *   handles click-to-close). Future viewers will own their own
  *   keyboard shortcuts inside the body — the modal only owns ESC.
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Download, X } from 'lucide-vue-next'
 
@@ -129,6 +134,12 @@ import ImagePreview from './ImagePreview.vue'
 import VideoPreview from './VideoPreview.vue'
 import AudioPreview from './AudioPreview.vue'
 import MarkdownPreview from './MarkdownPreview.vue'
+// Heavier viewers — pulled in only when the user opens that kind
+// of file. ``shiki`` (code), ``xlsx`` (spreadsheet), ``mammoth``
+// (docx), ``dompurify`` (html) each add hundreds of KB; lazy-loading
+// keeps them out of the main entry bundle for users who never
+// preview those types.
+const CodePreview = defineAsyncComponent(() => import('./CodePreview.vue'))
 
 const { t } = useI18n()
 
