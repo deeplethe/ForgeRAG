@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.6.0-brightgreen?style=for-the-badge" alt="Version"></a>
+  <a href="https://github.com/opencraig/opencraig/releases"><img src="https://img.shields.io/badge/version-0.6.0-blue?style=for-the-badge" alt="Version"></a>
   <a href="https://github.com/opencraig/opencraig/stargazers"><img src="https://img.shields.io/github/stars/opencraig/opencraig?style=for-the-badge&logo=github&color=gold" alt="Stars"></a>
-  <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge&color=ec407a" alt="Issues"></a>
+  <a href="https://github.com/opencraig/opencraig/issues"><img src="https://img.shields.io/github/issues/opencraig/opencraig?style=for-the-badge" alt="Issues"></a>
   <a href="https://discord.gg/XJadJHvxdQ"><img src="https://img.shields.io/badge/Discord-加入-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
 </p>
