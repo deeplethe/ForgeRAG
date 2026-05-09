@@ -64,6 +64,15 @@ export {
 // Agent chat (post-cutover replacement for /query)
 export { agentChatStream } from './agent'
 
+// Workdir — folder-as-cwd user-private file tree (the agent's workspace)
+export {
+  getWorkdirInfo,
+  listWorkdir,
+  makeWorkdirFolder,
+  uploadWorkdirFile,
+  workdirDownloadUrl,
+} from './workdir'
+
 // Search (检索本体, 无 LLM)
 export {
   search,
