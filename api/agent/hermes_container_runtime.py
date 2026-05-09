@@ -110,13 +110,19 @@ class HermesContainerRunner:
         *,
         config: HermesTurnConfig,
         principal_user_id: str,
-        owned_project_ids: tuple[str, ...] = (),
+        cwd_path: str | None = None,
         conversation_history: list[dict] | None = None,
         on_event: callable | None = None,
     ) -> HermesTurnResult:
         """Spawn the entrypoint inside ``principal_user_id``'s
         container, parse JSONL from stdout, fan events out via
         ``on_event``, return a HermesTurnResult.
+
+        ``cwd_path``: folder path WITHIN the user's workdir tree
+        (e.g. ``"/sales/2025"``) the agent should chdir into
+        before working. Mapped to the in-container path
+        ``/workdir<cwd_path>``. Empty / None → agent works at
+        ``/workdir`` root (no folder context — pure Q&A).
 
         Synchronous: blocks until the entrypoint exits. The chat
         route uses ``stream_turn_container`` instead so the SSE
@@ -128,7 +134,11 @@ class HermesContainerRunner:
         try:
             container = self.sandbox.ensure_container_for_user(
                 principal_user_id,
-                owned_project_ids=tuple(owned_project_ids or ()),
+                # Folder-as-cwd: no per-project mounts. The user's
+                # entire workdir tree is mounted at /workdir/ once;
+                # the entrypoint chdirs into the cwd_path subfolder
+                # before invoking AIAgent.
+                owned_project_ids=(),
             )
         except Exception as e:
             log.exception(
@@ -143,6 +153,7 @@ class HermesContainerRunner:
             user_message=user_message,
             config=config,
             conversation_history=conversation_history,
+            cwd_path=cwd_path,
         )
 
         final_text = ""
@@ -190,6 +201,7 @@ class HermesContainerRunner:
         user_message: str,
         config: HermesTurnConfig,
         conversation_history: list[dict] | None,
+        cwd_path: str | None = None,
     ) -> dict[str, str]:
         """Pack everything the entrypoint reads from environment.
 
@@ -215,6 +227,16 @@ class HermesContainerRunner:
             env["OPENAI_API_KEY"] = config.api_key
         if config.system_message:
             env["OPENCRAIG_SYSTEM_PROMPT"] = config.system_message
+        # Normalise cwd_path: leading "/", no trailing. Empty →
+        # don't pass the env var at all so the entrypoint stays
+        # at ``/workdir`` root.
+        if cwd_path:
+            normalised = cwd_path.strip()
+            if normalised and not normalised.startswith("/"):
+                normalised = "/" + normalised
+            normalised = normalised.rstrip("/")
+            if normalised:
+                env["OPENCRAIG_CWD"] = normalised
         return env
 
     def _iter_jsonl_events(
@@ -308,7 +330,7 @@ def stream_turn_container(
     *,
     config: HermesTurnConfig,
     principal_user_id: str,
-    owned_project_ids: tuple[str, ...] = (),
+    cwd_path: str | None = None,
     conversation_history: list[dict] | None = None,
 ) -> Iterator[dict]:
     """Sync generator the chat route iterates to push SSE events.
@@ -332,7 +354,7 @@ def stream_turn_container(
                 user_message,
                 config=config,
                 principal_user_id=principal_user_id,
-                owned_project_ids=owned_project_ids,
+                cwd_path=cwd_path,
                 conversation_history=conversation_history,
                 on_event=_on_event,
             )

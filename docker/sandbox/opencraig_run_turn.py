@@ -43,6 +43,13 @@ Env vars the backend sets per turn:
                               ``claude-3-5-sonnet-...``)
     OPENCRAIG_MAX_TURNS     — agent iteration cap (default 90)
     OPENCRAIG_SYSTEM_PROMPT — optional ephemeral system prompt
+    OPENCRAIG_CWD           — folder path INSIDE /workdir/ to chdir
+                              into before invoking the agent (e.g.
+                              ``/sales/2025``). Empty / unset = stay
+                              at /workdir root. The agent's bash /
+                              edit / grep tools then operate inside
+                              this folder, which is also the default
+                              destination for any artifacts it writes.
     OPENAI_BASE_URL         — points at backend's LLM proxy
     OPENAI_API_KEY          — session token (LLM proxy resolves
                               real provider key on the backend)
@@ -158,6 +165,46 @@ def _make_callbacks() -> dict:
     }
 
 
+def _chdir_to_cwd_or_workdir() -> None:
+    """Move into the agent's working directory before importing /
+    instantiating AIAgent. Hermes' built-in bash / edit / grep
+    tools use ``os.getcwd()`` as their starting point; setting it
+    here makes the cwd_path the agent's "current folder" without
+    any further wiring inside Hermes itself.
+
+    Order of preference:
+        1. ``/workdir`` + OPENCRAIG_CWD  (folder-as-cwd path)
+        2. ``/workdir``                  (no folder bound)
+        3. fall back to wherever we are  (dev / test outside container)
+    """
+    cwd_rel = (os.environ.get("OPENCRAIG_CWD") or "").strip()
+    # Normalise: ensure leading "/", drop trailing
+    if cwd_rel and not cwd_rel.startswith("/"):
+        cwd_rel = "/" + cwd_rel
+    cwd_rel = cwd_rel.rstrip("/")
+
+    base = "/workdir"
+    target = base + cwd_rel if cwd_rel else base
+
+    if not os.path.isdir(target):
+        # Auto-create the cwd folder if the user gave us one that
+        # doesn't yet exist on disk. Same affordance the Workspace
+        # UI's "create folder" gives, but here driven by the chat
+        # opening in a not-yet-materialised path. Falls back to
+        # base if even ``/workdir`` is missing (test / dev contexts).
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            target = base if os.path.isdir(base) else os.getcwd()
+
+    try:
+        os.chdir(target)
+    except OSError:
+        # Best-effort — log and continue at the original cwd. The
+        # agent will still work; just from the wrong directory.
+        traceback.print_exc(file=sys.stderr)
+
+
 def main() -> int:
     user_message = _read_str("OPENCRAIG_USER_MESSAGE")
     if not user_message:
@@ -167,6 +214,11 @@ def main() -> int:
             "message": "OPENCRAIG_USER_MESSAGE env var is required",
         })
         return 2
+
+    # Chdir BEFORE importing run_agent / AIAgent — the agent
+    # captures CWD at construction time for some of its built-in
+    # tool initialisers, so changing it later is too late.
+    _chdir_to_cwd_or_workdir()
 
     try:
         from run_agent import AIAgent

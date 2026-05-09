@@ -85,6 +85,20 @@ class HermesChatRequest(BaseModel):
     assistant messages are loaded as history and threaded into
     AIAgent.run_conversation(conversation_history=...)."""
 
+    cwd_path: str | None = None
+    """Folder path the agent should work in (e.g.
+    ``"/sales/2025"``). Maps to ``OPENCRAIG_CWD`` inside the
+    sandbox container; the agent chdirs there before reading /
+    writing files. Editable per-turn — the UI's "switch folder"
+    gesture sends a new cwd_path on the next message and the
+    Conversation row is updated to match. NULL or empty = pure
+    Q&A chat (agent works at /workdir root, no folder context).
+
+    Folder-as-cwd refactor (20260518) replaces the prior
+    project-id-based binding; conversations store the latest
+    cwd_path on the row, so a re-load of the chat resumes in
+    the right folder automatically."""
+
     model: str | None = None
     """Override the default model from cfg.answering.generator.model.
     Useful for per-conversation experimentation; the chat UI sets
@@ -184,6 +198,7 @@ def _persist_agent_run(
     run_id: str,
     conv_id: str | None,
     user_id: str,
+    cwd_path: str | None,
     final_text: str,
     iterations: int,
     error: str | None,
@@ -195,6 +210,11 @@ def _persist_agent_run(
     this run_id, and artifacts produced during the run will too. For
     B-MVP we only write the row; the lineage queries that consume it
     ship later.
+
+    ``cwd_path`` is the folder the run worked in — pinned to the row
+    even if the conversation later moves to a different folder, so
+    audit views ("what did this user's agent do in /sales/2025/?")
+    have a stable answer.
 
     Failures are logged + swallowed — a missing run row shouldn't
     fail the user-visible turn.
@@ -212,6 +232,7 @@ def _persist_agent_run(
                 "run_id": run_id,
                 "conversation_id": conv_id,
                 "user_id": user_id,
+                "cwd_path": cwd_path,
                 "status": "error" if error else "ok",
                 "final_text": final_text,
                 "iterations": iterations,
@@ -306,9 +327,18 @@ async def hermes_chat(
         log.exception("hermes_chat: model config resolution failed")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Load history + persist user message BEFORE the stream opens.
-    # Idempotent for new conversations (history empty).
+    # Load history + resolve cwd_path + persist user message BEFORE
+    # the stream opens. Idempotent for new conversations (history
+    # empty).
+    #
+    # cwd_path resolution order:
+    #   1. body.cwd_path  — explicit per-request override (UI's
+    #      "switch folder" gesture). Persisted to the conversation
+    #      so subsequent reloads resume in the new folder.
+    #   2. Conversation.cwd_path  — what the chat was opened in.
+    #   3. None  — plain Q&A, agent works at /workdir root.
     history: list[dict] = []
+    cwd_path: str | None = body.cwd_path
     if body.conversation_id:
         try:
             history = _load_conversation_history(state, body.conversation_id)
@@ -317,6 +347,34 @@ async def hermes_chat(
                 "hermes_chat: history load failed conv=%s", body.conversation_id
             )
             history = []
+
+        # Pull stored cwd_path off the conversation row if the
+        # request didn't override it; this is the path the chat
+        # was opened in (UI navigated from a folder).
+        try:
+            existing = state.store.get_conversation(body.conversation_id)
+            if existing is not None:
+                stored_cwd = existing.get("cwd_path") if isinstance(existing, dict) else None
+                if cwd_path is None and stored_cwd:
+                    cwd_path = stored_cwd
+                # If the request DID send a different cwd_path,
+                # write it back so the conversation row reflects
+                # the user's latest "switch folder" choice.
+                if body.cwd_path and body.cwd_path != stored_cwd:
+                    try:
+                        state.store.update_conversation(
+                            body.conversation_id, cwd_path=body.cwd_path,
+                        )
+                    except Exception:
+                        log.exception(
+                            "hermes_chat: cwd_path update failed conv=%s",
+                            body.conversation_id,
+                        )
+        except Exception:
+            log.exception(
+                "hermes_chat: cwd_path resolution failed conv=%s",
+                body.conversation_id,
+            )
 
         try:
             _persist_user_message(state, body.conversation_id, body.query)
@@ -378,7 +436,7 @@ async def hermes_chat(
                     body.query,
                     config=config,
                     principal_user_id=principal.user_id,
-                    owned_project_ids=(),
+                    cwd_path=cwd_path,
                     conversation_history=history,
                 )
             else:
@@ -402,6 +460,7 @@ async def hermes_chat(
                 run_id=run_id,
                 conv_id=body.conversation_id,
                 user_id=principal.user_id,
+                cwd_path=cwd_path,
                 final_text="",
                 iterations=0,
                 error=error_message,
@@ -480,6 +539,7 @@ async def hermes_chat(
             run_id=run_id,
             conv_id=body.conversation_id,
             user_id=principal.user_id,
+            cwd_path=cwd_path,
             final_text=final_text,
             iterations=iterations,
             error=error_message,

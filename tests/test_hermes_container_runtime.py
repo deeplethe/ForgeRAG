@@ -199,6 +199,44 @@ def test_history_default_is_empty_array():
     assert env["OPENCRAIG_HISTORY"] == "[]"
 
 
+def test_cwd_path_env_var_normalised():
+    """The agent's chdir target is OPENCRAIG_CWD; the runner is
+    the right place to enforce a normalised shape so the entrypoint
+    can blindly trust the value (one source of truth for path
+    handling)."""
+    cases = [
+        # input            expected env value (or absent)
+        ("/sales/2025",     "/sales/2025"),
+        ("sales/2025",      "/sales/2025"),     # auto-prefix slash
+        ("/sales/2025/",    "/sales/2025"),     # strip trailing
+        ("/",               None),              # collapses to empty → unset
+        ("",                None),              # explicitly empty → unset
+        (None,              None),              # not provided → unset
+    ]
+    for input_, expected in cases:
+        sb = _FakeSandbox(
+            stream_chunks=[
+                b'{"kind": "done", "final_text": "", "iterations": 0}\n'
+            ]
+        )
+        runner = HermesContainerRunner(sb)
+        runner.run_turn(
+            "x",
+            config=_config(),
+            principal_user_id="u_x",
+            cwd_path=input_,
+        )
+        env = sb.backend._client.api.exec_creates[0]["environment"]
+        if expected is None:
+            assert "OPENCRAIG_CWD" not in env, (
+                f"input={input_!r}: expected no OPENCRAIG_CWD, got {env.get('OPENCRAIG_CWD')!r}"
+            )
+        else:
+            assert env.get("OPENCRAIG_CWD") == expected, (
+                f"input={input_!r}: expected {expected!r}, got {env.get('OPENCRAIG_CWD')!r}"
+            )
+
+
 def test_uses_hardcoded_entrypoint_path():
     """The path matches what Day 1's Dockerfile COPY puts there.
     Drift would silently fail (``no such file``) at exec time, so
@@ -346,7 +384,12 @@ def test_non_dict_json_lines_skipped():
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_container_called_with_owned_projects():
+def test_ensure_container_passes_empty_owned_project_ids():
+    """Folder-as-cwd: container is per-USER, not per-project. The
+    runner always passes owned_project_ids=() — SandboxManager
+    mounts the user's whole workdir tree at /workdir/, the agent
+    chdirs inside via the cwd_path env var. Locks in that we don't
+    accidentally regress to per-project mounts."""
     sb = _FakeSandbox(
         stream_chunks=[b'{"kind": "done", "final_text": "", "iterations": 0}\n']
     )
@@ -355,10 +398,10 @@ def test_ensure_container_called_with_owned_projects():
         "x",
         config=_config(),
         principal_user_id="u_alice",
-        owned_project_ids=("p_a", "p_b"),
+        cwd_path="/sales/2025",
     )
     assert sb.ensure_calls == [
-        {"user_id": "u_alice", "owned_project_ids": ("p_a", "p_b")}
+        {"user_id": "u_alice", "owned_project_ids": ()}
     ]
 
 

@@ -131,7 +131,7 @@ def stub_stream(monkeypatch):
 
     def _stream_turn_container(
         runner, user_message, *, config, principal_user_id,
-        owned_project_ids=(), conversation_history=None,
+        cwd_path=None, conversation_history=None,
     ):
         holder["calls"].append(
             {
@@ -139,7 +139,7 @@ def stub_stream(monkeypatch):
                 "user_message": user_message,
                 "config": config,
                 "principal_user_id": principal_user_id,
-                "owned_project_ids": tuple(owned_project_ids),
+                "cwd_path": cwd_path,
                 "history": list(conversation_history or []),
             }
         )
@@ -533,3 +533,114 @@ def test_container_runtime_carries_history_and_config_too(
         {"role": "assistant", "content": "earlier-reply"},
     ]
     assert call["config"].model == "claude-3-5-sonnet"
+
+
+# ---------------------------------------------------------------------------
+# Folder-as-cwd: cwd_path resolution + persistence
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_cwd_path_in_body_passed_to_runtime(
+    client, stub_stream, state,
+):
+    """When the user opens a chat in a folder, the frontend sends
+    cwd_path in the body. Runtime should receive it verbatim."""
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post(
+        "/api/v1/agent/hermes-chat",
+        json={"query": "x", "cwd_path": "/data/sales/2025"},
+    )
+    call = stub_stream.calls[-1]
+    assert call["runtime_kind"] == "container"
+    assert call["cwd_path"] == "/data/sales/2025"
+
+
+def test_cwd_path_falls_back_to_conversation_row(
+    client, stub_stream, state,
+):
+    """If the body omits cwd_path, the route reads it off the
+    Conversation row (set when chat was first opened in a folder).
+    Reload-and-resume scenario: user closes the page, reopens it,
+    chat keeps working in the same folder."""
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    # Pre-store a conversation that was opened in a folder.
+    state.store.seed_history("conv_42", [])
+    state.store.messages.clear()
+    state.store._history_by_conv["conv_42"] = []
+    state.store.messages = []
+    # Inject the row so get_conversation returns it with cwd_path.
+    state.store._conversations = {
+        "conv_42": {
+            "conversation_id": "conv_42",
+            "cwd_path": "/legal/contracts/2025",
+        }
+    }
+
+    def _get_conversation(cid):
+        return state.store._conversations.get(cid)
+
+    state.store.get_conversation = _get_conversation
+    state.store.update_conversation = lambda *a, **kw: None
+
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post(
+        "/api/v1/agent/hermes-chat",
+        json={"query": "x", "conversation_id": "conv_42"},
+    )
+    call = stub_stream.calls[-1]
+    assert call["cwd_path"] == "/legal/contracts/2025"
+
+
+def test_cwd_path_override_writes_back_to_conversation(
+    client, stub_stream, state,
+):
+    """If the body sends a different cwd_path than the stored one,
+    the conversation row gets updated — that's how the UI's
+    "switch folder" gesture persists."""
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    state.store._history_by_conv["conv_77"] = []
+    state.store._conversations = {
+        "conv_77": {
+            "conversation_id": "conv_77",
+            "cwd_path": "/old/folder",
+        }
+    }
+    update_calls: list[dict] = []
+
+    def _get_conversation(cid):
+        return state.store._conversations.get(cid)
+
+    def _update_conversation(cid, **kw):
+        update_calls.append({"conv_id": cid, **kw})
+
+    state.store.get_conversation = _get_conversation
+    state.store.update_conversation = _update_conversation
+
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post(
+        "/api/v1/agent/hermes-chat",
+        json={
+            "query": "x",
+            "conversation_id": "conv_77",
+            "cwd_path": "/new/folder",
+        },
+    )
+    # Runtime got the new path
+    assert stub_stream.calls[-1]["cwd_path"] == "/new/folder"
+    # Conversation row updated to match
+    assert update_calls == [{"conv_id": "conv_77", "cwd_path": "/new/folder"}]
+
+
+def test_no_cwd_path_anywhere_is_pure_qa(client, stub_stream, state):
+    """No body cwd_path + no stored cwd_path on the conversation +
+    no conversation_id at all → runtime gets cwd_path=None,
+    which is the "agent works at /workdir root" plain-Q&A signal."""
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post("/api/v1/agent/hermes-chat", json={"query": "ephemeral"})
+    assert stub_stream.calls[-1]["cwd_path"] is None
