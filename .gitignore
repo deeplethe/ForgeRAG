@@ -54,3 +54,7 @@ Thumbs.db
 test_localsystem.txt
 *.pickle
 /cloc-2.08.exe
+
+# Smoke-test scratch (auto-minted token + sample request body)
+.smoke-token
+.smoke-body.json

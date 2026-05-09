@@ -189,12 +189,24 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
 
     from persistence.models import AuthSession, AuthToken, AuthUser
 
-    # (1) Bearer token
+    # (1) Bearer token. Two header conventions supported:
+    #   * ``Authorization: Bearer <sk>`` — OpenAI / OAuth standard
+    #   * ``x-api-key: <sk>`` — Anthropic Messages API standard
+    # The bundled ``claude`` CLI sends ``x-api-key`` when its
+    # ANTHROPIC_BASE_URL points at us; without this branch every
+    # in-container agent turn would 401. Same DB lookup either way.
     auth_header = request.headers.get("authorization") or ""
+    raw_token: str | None = None
     if auth_header.lower().startswith("bearer "):
-        raw = auth_header[7:].strip()
-        if not raw:
+        raw_token = auth_header[7:].strip()
+        if not raw_token:
             raise AuthError("empty bearer")
+    else:
+        x_api_key = request.headers.get("x-api-key") or ""
+        if x_api_key.strip():
+            raw_token = x_api_key.strip()
+    if raw_token:
+        raw = raw_token
         tid_hash = hash_sk(raw)
         with store.transaction() as sess:
             row = sess.execute(

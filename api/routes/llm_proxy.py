@@ -74,11 +74,46 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import AuthenticatedPrincipal
-from ..deps import get_principal
+from ..deps import get_principal, get_state
+from ..state import AppState
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/llm/v1", tags=["llm-proxy"])
+
+
+def _resolve_api_key(state: AppState | None, model: str) -> tuple[str | None, str | None]:
+    """Resolve (api_key, api_base) from configured generator.
+
+    The agent's bundled CLI doesn't know our provider keys — it speaks
+    the wire protocol of OpenAI / Anthropic and expects the proxy to
+    translate. litellm normally reads keys from env vars (``DEEPSEEK_
+    API_KEY`` / ``OPENAI_API_KEY`` / ...), but our deployment keeps
+    keys in the settings DB / yaml under ``answering.generator``.
+
+    Strategy: read the configured generator's api_key + api_base and
+    forward them on every call. The model name in the body chooses
+    the provider (litellm dispatches by prefix); the configured key
+    is what unlocks it. If the operator wants per-provider routing
+    they can set env vars and the configured key acts as the
+    fallback (litellm prefers explicit kwargs over env).
+
+    Returns (None, None) if state isn't ready or no generator is
+    configured — litellm's env-var path then takes over.
+    """
+    if state is None:
+        return (None, None)
+    gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
+    if gen is None:
+        return (None, None)
+    api_key: str | None = None
+    if getattr(gen, "api_key", None):
+        api_key = gen.api_key
+    elif getattr(gen, "api_key_env", None):
+        import os
+        api_key = os.environ.get(gen.api_key_env)
+    api_base = getattr(gen, "api_base", None) or None
+    return (api_key, api_base)
 
 
 class _ChatCompletionsBody(BaseModel):
@@ -100,6 +135,7 @@ class _ChatCompletionsBody(BaseModel):
 async def chat_completions(
     body: _ChatCompletionsBody,
     principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
 ) -> Any:
     try:
         import litellm
@@ -114,6 +150,14 @@ async def chat_completions(
     # accidentally pass ``temperature=None`` to a provider that
     # interprets None as 0.
     kwargs = body.model_dump(exclude_none=True)
+    # Inject configured api_key / api_base so litellm doesn't need
+    # provider-specific env vars (DEEPSEEK_API_KEY / OPENAI_API_KEY
+    # / etc.) — operator-supplied request fields still win.
+    cfg_key, cfg_base = _resolve_api_key(state, body.model)
+    if cfg_key and "api_key" not in kwargs:
+        kwargs["api_key"] = cfg_key
+    if cfg_base and "api_base" not in kwargs:
+        kwargs["api_base"] = cfg_base
 
     log.info(
         "llm_proxy: user=%s model=%s stream=%s msgs=%d",
@@ -260,6 +304,7 @@ class _AnthropicMessagesBody(BaseModel):
 async def anthropic_messages(
     body: _AnthropicMessagesBody,
     principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
 ) -> Any:
     try:
         import litellm
@@ -270,6 +315,11 @@ async def anthropic_messages(
         ) from e
 
     kwargs = body.model_dump(exclude_none=True)
+    cfg_key, cfg_base = _resolve_api_key(state, body.model)
+    if cfg_key and "api_key" not in kwargs:
+        kwargs["api_key"] = cfg_key
+    if cfg_base and "api_base" not in kwargs:
+        kwargs["api_base"] = cfg_base
 
     log.info(
         "llm_proxy.anthropic: user=%s model=%s stream=%s msgs=%d",

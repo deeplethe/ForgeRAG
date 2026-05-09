@@ -159,6 +159,22 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
             "headers": headers,
         }
 
+    # Thinking disabled by default. Non-Anthropic providers (DeepSeek
+    # / OpenAI / etc.) reached through our LiteLLM Anthropic-compat
+    # proxy don't emit ThinkingBlock with signatures, and the bundled
+    # claude CLI's strict Anthropic-API parser rejects unsigned
+    # thinking content with "Claude Code returned an error result:
+    # success". Disabling thinking at the SDK level avoids the round
+    # trip entirely. Operator can opt back in by setting
+    # OPENCRAIG_THINKING=enabled (only safe with native Anthropic).
+    #
+    # ThinkingConfigDisabled / Enabled are TypedDicts in the SDK —
+    # constructed as plain dicts with the ``type`` discriminator the
+    # subprocess_cli transport reads when assembling CLI args.
+    thinking_cfg: dict = {"type": "disabled"}
+    if _read_str("OPENCRAIG_THINKING").lower() in ("enabled", "on", "1", "true"):
+        thinking_cfg = {"type": "enabled", "budget_tokens": 1024}
+
     return sdk.ClaudeAgentOptions(
         model=_read_str("OPENCRAIG_MODEL") or None,
         system_prompt=_read_str("OPENCRAIG_SYSTEM_PROMPT") or None,
@@ -171,6 +187,7 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
         permission_mode="bypassPermissions",
         max_turns=_read_int("OPENCRAIG_MAX_TURNS", 90),
         include_partial_messages=True,
+        thinking=thinking_cfg,
         # Don't bleed the operator's filesystem skills / CLAUDE.md
         # into tenant chats (the container is per-user but the SDK's
         # default ``setting_sources`` would still load /root/.claude/

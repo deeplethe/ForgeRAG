@@ -29,8 +29,20 @@ pytest.importorskip("fastapi")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.deps import get_principal
+from api.deps import get_principal, get_state
 from api.routes import llm_proxy as llm_proxy_routes
+
+
+def _state_with_no_generator() -> SimpleNamespace:
+    """A bare AppState with no answering.generator configured. The
+    proxy's _resolve_api_key returns (None, None) for this and
+    falls through to litellm's env-var path — same behaviour as
+    before C-4's api_key injection landed."""
+    return SimpleNamespace(
+        cfg=SimpleNamespace(
+            answering=SimpleNamespace(generator=None),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +115,7 @@ def app():
     a = FastAPI()
     a.include_router(llm_proxy_routes.router)
     a.dependency_overrides[get_principal] = _principal
+    a.dependency_overrides[get_state] = _state_with_no_generator
     return a
 
 
@@ -366,6 +379,7 @@ def app_with_anthropic():
     a = FastAPI()
     a.include_router(llm_proxy_routes.anthropic_router)
     a.dependency_overrides[get_principal] = _principal
+    a.dependency_overrides[get_state] = _state_with_no_generator
     return a
 
 
@@ -523,6 +537,74 @@ def test_anthropic_messages_streaming_emits_anthropic_sse(anthropic_client, fake
     assert first["type"] == "message_start"
     last = json.loads(parts[-1][len("data: "):])
     assert last["type"] == "message_stop"
+
+
+def test_anthropic_messages_injects_configured_api_key_and_base(fake_anthropic):
+    """When state.cfg.answering.generator has api_key/api_base set,
+    the proxy forwards them to litellm so provider-specific env
+    vars (DEEPSEEK_API_KEY / OPENAI_API_KEY / ...) aren't required."""
+    a = FastAPI()
+    a.include_router(llm_proxy_routes.anthropic_router)
+    a.dependency_overrides[get_principal] = _principal
+    a.dependency_overrides[get_state] = lambda: SimpleNamespace(
+        cfg=SimpleNamespace(
+            answering=SimpleNamespace(
+                generator=SimpleNamespace(
+                    api_key="sk-from-yaml",
+                    api_key_env=None,
+                    api_base="https://api.deepseek.com/v1",
+                )
+            ),
+        ),
+    )
+    fake_anthropic.messages.configure(
+        lambda _kw: _FakeAnthropicResponse({"type": "message", "content": []})
+    )
+    with TestClient(a) as c:
+        r = c.post(
+            "/api/v1/llm/anthropic/v1/messages",
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 10,
+            },
+        )
+    assert r.status_code == 200
+    call = fake_anthropic.messages.calls[0]
+    assert call["api_key"] == "sk-from-yaml"
+    assert call["api_base"] == "https://api.deepseek.com/v1"
+
+
+def test_anthropic_messages_request_api_key_overrides_configured(fake_anthropic):
+    """If the request body explicitly includes api_key, that wins
+    over the configured one — so an operator can override per-call."""
+    a = FastAPI()
+    a.include_router(llm_proxy_routes.anthropic_router)
+    a.dependency_overrides[get_principal] = _principal
+    a.dependency_overrides[get_state] = lambda: SimpleNamespace(
+        cfg=SimpleNamespace(
+            answering=SimpleNamespace(
+                generator=SimpleNamespace(
+                    api_key="sk-from-yaml", api_key_env=None, api_base=None,
+                )
+            ),
+        ),
+    )
+    fake_anthropic.messages.configure(
+        lambda _kw: _FakeAnthropicResponse({"type": "message", "content": []})
+    )
+    with TestClient(a) as c:
+        r = c.post(
+            "/api/v1/llm/anthropic/v1/messages",
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 10,
+                "api_key": "sk-from-request",
+            },
+        )
+    assert r.status_code == 200
+    assert fake_anthropic.messages.calls[0]["api_key"] == "sk-from-request"
 
 
 def test_anthropic_messages_streaming_init_error_emits_error_event(anthropic_client, fake_anthropic):
