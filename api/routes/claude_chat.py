@@ -73,6 +73,29 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/agent", tags=["claude-chat"])
 
 
+# Used as the system prompt when the request doesn't override one.
+# The bundled CLI does not auto-discover what tools we've exposed via
+# MCP — the model needs an explicit nudge to call them. Without this,
+# the agent answers from parametric knowledge for every question and
+# the user (correctly) reports "the knowledge base isn't being used".
+_DEFAULT_AGENT_SYSTEM_PROMPT = """You are OpenCraig's assistant. The user's team has a Library indexed in a knowledge base, reachable via the ``opencraig`` MCP server with these tools:
+
+- ``mcp__opencraig__search_vector(query, top_k)`` — semantic search
+- ``mcp__opencraig__search_bm25(query, top_k)`` — keyword search
+- ``mcp__opencraig__read_chunk(chunk_id)`` — full text of a hit
+- ``mcp__opencraig__read_tree(doc_id, node_id)`` — document outline
+- ``mcp__opencraig__list_folders(parent_path)`` / ``list_docs(folder_path)`` — browse
+- ``mcp__opencraig__graph_explore(query, top_k)`` — knowledge-graph walk
+- ``mcp__opencraig__rerank(query, chunk_ids, top_k)`` — refine candidates
+- ``mcp__opencraig__import_from_library(...)`` — pull a doc into the workdir
+
+For substantive questions about a topic, entity, procedure, or anything domain-specific that may live in the team's documents, you MUST call ``search_vector`` (and optionally ``search_bm25``) first, then ``read_chunk`` on the most relevant hits, and ground your answer in the retrieved content. Cite chunks inline as ``[c_<chunk_id>]`` so the UI can resolve them.
+
+If a search returns nothing relevant, say so honestly — do not silently fall back to parametric knowledge without disclosing it.
+
+For conversational small talk (greetings, thanks, "who are you") you may answer directly with no tool calls."""
+
+
 # ---------------------------------------------------------------------------
 # Request body
 # ---------------------------------------------------------------------------
@@ -646,12 +669,31 @@ async def claude_chat(
                 body.conversation_id,
             )
 
+    # Wire the OpenCraig MCP server so the agent has real domain tools
+    # (search_vector, read_chunk, list_folders, graph_explore, etc.).
+    # Without this, the agent runs with zero tools and answers every
+    # question from parametric knowledge — no RAG, no library lookup.
+    # URL: same loopback the SDK uses for the LLM proxy, rerooted to
+    # ``/api/v1/mcp``. Auth: the per-user agent-loop bearer; the MCP
+    # principal-bridge middleware reads it and scopes tool calls to
+    # the right user (folder grants etc.).
+    proxy_root = _agent_loopback_url(request).rsplit(
+        "/api/v1/llm/anthropic", 1
+    )[0]
+    mcp_servers = {
+        "opencraig": {
+            "url": f"{proxy_root}/api/v1/mcp/",
+            "headers": {"Authorization": f"Bearer {api_key}"},
+        }
+    }
+
     config = ClaudeTurnConfig(
         model=model,
         base_url=base_url or "",  # empty = let openai SDK use its default
         api_key=api_key or "",
         max_iterations=90,
-        system_message=body.system_prompt_override,
+        system_message=body.system_prompt_override or _DEFAULT_AGENT_SYSTEM_PROMPT,
+        mcp_servers=mcp_servers,
     )
 
     run_id = uuid.uuid4().hex

@@ -270,11 +270,21 @@ def mount_mcp(app) -> None:
         the ContextVar → dispatch into ``api/agent/dispatch.dispatch``
         with a fresh ToolContext built for that user.
 
+    **Lifespan**: FastMCP's ``streamable_http_app()`` returns a Starlette
+    sub-app whose lifespan calls ``session_manager.run()`` to start the
+    background task group that handles per-request streams. ``app.mount``
+    does NOT propagate the sub-app's lifespan to the parent, so without
+    intervention every request raises ``RuntimeError: Task group is not
+    initialized``. Hijack the parent FastAPI app's existing lifespan and
+    wrap it so the session manager's context is entered alongside.
+
     Importing ``mcp_tools`` here triggers the ``@mcp_server.tool()``
     decorators that register every domain tool. Importing inside
     the function (not at module top) avoids a circular import:
     ``mcp_tools`` imports from ``mcp_server``.
     """
+    from contextlib import asynccontextmanager
+
     from . import mcp_tools  # registers tool decorators
 
     # Bind the AppState lookup so tool wrappers can build ToolContext.
@@ -283,3 +293,16 @@ def mount_mcp(app) -> None:
     inner = mcp_server.streamable_http_app()
     wrapped = _MCPPrincipalBridge(inner)
     app.mount("/api/v1/mcp", wrapped)
+
+    # Combine the FastMCP session manager's lifespan with the parent
+    # app's. Starlette stores the lifespan on ``router.lifespan_context``
+    # — wrap that callable so startup enters BOTH contexts in order.
+    parent_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _combined_lifespan(scope_app):
+        async with mcp_server.session_manager.run():
+            async with parent_lifespan(scope_app):
+                yield
+
+    app.router.lifespan_context = _combined_lifespan
