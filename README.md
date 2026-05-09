@@ -1,12 +1,13 @@
 <p align="center">
-  <img src="web/public/craig.png" alt="OpenCraig" width="96">
+  <img src="web/public/craig.png" alt="OpenCraig" width="160">
 </p>
 
 <h1 align="center">OpenCraig</h1>
-<h3 align="center">Permission-Aware Knowledge Context for Enterprise Agents</h3>
+<h2 align="center">Free your team from the laptop.</h2>
+<h4 align="center">Managed agentic workspaces — per-user sandbox containers, permission-aware retrieval, MCP-native, BYOK.</h4>
 
 <p align="center">
-  The knowledge backend your agents plug into. Path-scoped retrieval enforces your team's existing folder permissions on every search, KG walk, and citation — so an agent that calls our MCP tools can only see what its authenticated user can see. Self-hosted, MCP-native, multi-user from day one.
+  Each user gets a managed Linux sandbox where the agent does the work — reading PDFs, running code, drafting reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions; the agent only sees what its authenticated user can see. Self-hosted, MCP-native, multi-user.
 </p>
 
 <p align="center">
@@ -56,7 +57,7 @@ OpenCraig is positioned as **the knowledge / context layer for enterprise agent 
 | You're using | What it gives you | What it doesn't |
 |---|---|---|
 | **Claude Code / Cursor / Cline alone** | Mature agent runtime + great built-in tools | Single-user; no team knowledge backend; no permission scoping when reading shared docs |
-| **Hermes Agent / OpenClaw alone** | Self-hostable agent runtime, MIT-licensed | Same as above — runtime without a team-shared knowledge layer |
+| **Claude Agent SDK alone** | Self-hostable agent loop (the same one Claude Code uses), MIT-licensed | Same as above — runtime without a team-shared knowledge layer or sandbox infrastructure |
 | **Notion AI / Glean / Mendable** | Polished search UX, SaaS-managed | Closed source; not MCP; agents can't plug in; corpus on someone else's servers |
 | **AnythingLLM / RAGFlow / GraphRAG** | OSS self-host RAG | Single-user (or shallow multi-user); no permission-scoped retrieval; not exposed as MCP tools that respect per-user authz |
 | **LangChain / LlamaIndex** | Building blocks | A library, not a knowledge backend. You'd need to build everything OpenCraig already shipped (folder authz, KG visibility, ingestion pipeline, MCP server) |
@@ -65,7 +66,7 @@ OpenCraig is positioned as **the knowledge / context layer for enterprise agent 
 **The OpenCraig category is "permission-aware knowledge context for agents":**
 
 - **Path-as-authz** — folder grants are the only authorization primitive; every retrieval call resolves the principal's accessible-folder set BEFORE running the search (prefilter on vector / BM25 / tree-nav) and AFTER materialising KG entities (postfilter — entities whose source-doc set isn't fully covered by the user's grants are dropped, no description redaction)
-- **MCP-native** — `/api/v1/mcp` exposes search / KG / library tools to any compatible agent runtime (Hermes today, Claude Code / Cursor / Cline tomorrow). Per-connection auth scopes the ToolContext to the right user.
+- **MCP-native** — `/api/v1/mcp` exposes search / KG / library tools to any compatible agent runtime (Claude Agent SDK ships in the box; Cursor / Cline / others connect over the same protocol). Per-connection auth scopes the ToolContext to the right user.
 - **Structured retrieval, not text blob** — chunks know their bbox, tree position, source page; KG entities know their source chunks; citations open the PDF at the exact rectangle.
 
 ---
@@ -113,8 +114,8 @@ flowchart LR
     style AGENT fill:#1f1f1f,stroke:#fbbf24,color:#fbbf24
 ```
 
-**Agentic retrieval, not a fixed pipeline.** The agent (Hermes
-Agent runtime, in-process) decides per-question which tools to call
+**Agentic retrieval, not a fixed pipeline.** The agent (Claude
+Agent SDK, in-process or in-container) decides per-question which tools to call
 and in which order. For "what does section 3.2 say" it might just
 read_tree + read_chunk; for "how does X relate to Y across the
 corpus" it leads with graph_explore; for "what do we have on Q3
@@ -203,9 +204,9 @@ flowchart TB
     end
     subgraph "Backend (FastAPI · Python 3.13)"
         API[REST + SSE]
-        AGENT[Hermes Agent runtime<br/>in-process, MIT]
+        AGENT[Claude Agent SDK<br/>in-process or in-container, MIT]
         MCP[MCP server<br/>domain tool surface]
-        LLMP[LLM proxy<br/>OpenAI-compatible]
+        LLMP[LLM proxy<br/>OpenAI + Anthropic]
         ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
         TOOLS[Tools<br/>search_vector · graph_explore<br/>list_folders · list_docs<br/>read_chunk · read_tree · rerank<br/>import_from_library]
         AUTH[Auth + Spaces<br/>folder grants · audit log · per-user space]
@@ -232,13 +233,15 @@ flowchart TB
     ING --> LLM
 ```
 
-The agent runtime is [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-(NousResearch, MIT) running in-process with built-in filesystem
-tools hard-disabled — its tool surface is exclusively what
-OpenCraig exposes via MCP. This was the final architectural choice
-made before the OSS cut: the agent loop itself isn't where the
-differentiation lives, the **tools are** (multi-user authz +
-structured retrieval + KG + bbox citations).
+The agent runtime is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)
+(Anthropic, MIT) — the same loop that powers Claude Code. It runs
+in-process for plain Q&A turns (built-in filesystem tools disabled
+so the loop only reaches our MCP-exposed retrieval surface) and
+inside the per-user sandbox container for turns that need bash,
+edit, grep, and friends. The agent loop is intentionally not where
+our differentiation lives — that sits in the **tools and the
+infrastructure around them** (multi-user authz, sandbox containers,
+structured retrieval, KG, bbox citations).
 
 Every component is a config swap — pick your stack at the wizard, change later by editing `docker/config.yaml`.
 
@@ -246,19 +249,29 @@ Every component is a config swap — pick your stack at the wizard, change later
 
 ## ⚙️ Highlights
 
-- **🎯 Pixel-precise citations** — every `[c_N]` carries `doc_id + page + bbox`; click highlights in PDF viewer
-- **👥 Multi-user (NOT multi-tenant)** — one shared workspace, folder-level grants. Each user has a personal Space; admins manage. Path-as-authz primitive plumbed through every retrieval call
-- **🪪 Folder Members UI** — right-click any folder → invite teammates by email, set view/edit role, see inherited members from parent
-- **📜 Activity log** — every folder / document / share / role mutation surfaces in `/settings/audit` with actor + filter + pagination
-- **🔌 One-key model platforms** — SiliconFlow / OpenAI / DeepSeek / Anthropic / Ollama presets in the first-boot wizard. One API key → chat + embedding + reranker
-- **🤖 Agentic retrieval** — Hermes Agent runtime picks tools per question instead of running a fixed pipeline; trace UI shows every tool call live
-- **🔌 MCP tool surface** — domain tools (search / KG / read_chunk / etc.) exposed at `/api/v1/mcp` for any compatible agent runtime
-- **🧱 Tree-aware chunking** — chunk boundaries respect document structure (chapters, sections, tables/figures isolated)
-- **🌐 Knowledge graph w/ embeddings** — entity name embeddings for cross-lingual fuzzy match; relation-description embeddings for relation-semantic search
-- **🗑️ Recycle bin + Undo** — soft-delete, Windows-style restore (rebuilds missing parent folders), 30-day auto-purge
-- **⚡ SQLite single-process · PG multi-process** — startup checks prevent foot-guns; clamps workers automatically
-- **🌍 Multi-format** — PDF, DOCX, PPTX, HTML, Markdown, TXT, plus images (PNG/JPG/WEBP/GIF/BMP/TIFF) and spreadsheets (XLSX/CSV/TSV) as native one-block-per-page documents
-- **🔒 No phone home** — zero telemetry, zero analytics, zero error reporting back to OpenCraig itself. See [`PRIVACY.md`](PRIVACY.md)
+### 🎯 Retrieval and citations
+
+- Each `[c_N]` carries `doc_id + page + bbox`; clicking opens the PDF at the highlighted rectangle.
+- Tree-aware chunking respects document structure: chapters, sections, tables, and figures stay intact.
+- Knowledge graph with embeddings on entity names (cross-lingual fuzzy match) and relation descriptions (relation-semantic search).
+- The agent loop picks retrieval tools per question; every call is visible in the trace UI.
+- Native ingest for PDF, DOCX, PPTX, HTML, Markdown, TXT, common image formats, and spreadsheets (one-block-per-page for tabular).
+
+### 🤖 Sandboxed execution
+
+- Per-user Linux container with the Python data stack, LibreOffice, pandoc, and ~25 CLI tools (`jq`, `ripgrep`, `duckdb`, `xsv`, …). The agent's `bash`, `edit`, and `grep` run inside the container; the user's machine is not touched.
+- Each chat anchors to a folder under `<user_workdirs_root>/<user_id>/`. The agent `chdir`s there before running, and any files it writes land there.
+- `/api/v1/mcp` exposes domain tools (search, KG, read_chunk, library, workdir) to any MCP-compatible agent runtime.
+- LLM proxy supports both OpenAI and Anthropic wire formats; LiteLLM routes to Anthropic, OpenAI, DeepSeek, SiliconFlow, Bedrock, Vertex, Ollama, or any other configured provider.
+- First-boot wizard presets cover SiliconFlow, OpenAI, DeepSeek, Anthropic, and Ollama. One key wires chat, embedding, and reranker at once.
+
+### 👥 Multi-user authorization
+
+- Folder grants are the only authorization primitive. Every retrieval call resolves the principal's accessible-folder set before search.
+- Right-click any folder to invite teammates, set view or edit role, and see members inherited from parent folders.
+- Activity log at `/settings/audit` records every folder, document, share, and role change with actor, filter, and pagination.
+- Soft-delete with 30-day retention; restore rebuilds missing parent folders automatically.
+- Zero telemetry, analytics, or error reporting back to OpenCraig itself — see [`PRIVACY.md`](PRIVACY.md).
 
 ---
 
@@ -324,7 +337,7 @@ OpenCraig/
 
 - [x] **Pixel-precise citations** — `doc_id + page + bbox` on every claim
 - [x] **Structured retrieval tools** — vector / KG / tree-nav / read_chunk / rerank
-- [x] **Agentic retrieval** — Hermes Agent runtime in-process; multi-step tool selection per question
+- [x] **Agentic retrieval** — Claude Agent SDK in-process and in-container; multi-step tool selection per question
 - [x] **MCP tool surface** — `/api/v1/mcp` exposes domain tools to any MCP client
 - [x] **OpenAI-compatible LLM proxy** — `/api/v1/llm/v1/chat/completions` via litellm router
 - [x] **Web search tool** — Tavily / Brave / Bing with prompt-injection defenses

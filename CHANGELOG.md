@@ -24,18 +24,56 @@ boundary.
 
 ### Changed — major
 
-- **Agent runtime swapped to [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-  (NousResearch, MIT)**, running in-process with built-in
-  filesystem tools hard-disabled (`enabled_toolsets=[]`). The
-  prior handcrafted agent loop is gone. Hermes' tool surface is
-  exclusively what OpenCraig exposes via MCP. Per-event callbacks
-  (`tool_start_callback`, `stream_delta_callback`, etc.) bridge
-  cleanly into our SSE stream.
-- **Chat route is now `POST /api/v1/agent/hermes-chat`**.
-  Wire format unchanged from v0.x — same `data: {type, ...}`
-  SSE block envelope so existing frontend parsers keep working.
-  The legacy `/api/v1/agent/chat` route was deleted in this
-  release; rebind any external clients before upgrading.
+- **Agent runtime: Claude Agent SDK (Anthropic, MIT).** v1.0.0 ships
+  the same loop that powers Claude Code as the in-process and
+  in-container agent driver. Wave 2.5b's earlier selection of
+  `hermes-agent==0.10.0` was a non-existent PyPI package; tests
+  mocked the import and the gap was only caught when the sandbox
+  image actually tried to install it. The cutover keeps the same
+  SSE event vocabulary so frontend parsers don't change.
+- **In-container path uses the SDK's bundled CLI binary.** The wheel
+  ships a per-platform self-contained binary (no Node.js runtime
+  dep). `pip install claude-agent-sdk` in the sandbox image plus a
+  symlink to `/usr/local/bin/claude` is the entire installation. The
+  Python entrypoint at `/opt/opencraig/opencraig_run_turn.py` calls
+  `query()` and emits one JSONL event per stdout line for the
+  backend to translate into SSE.
+- **LLM proxy now serves both OpenAI and Anthropic wire formats.**
+  - `POST /api/v1/llm/v1/chat/completions` — OpenAI shape.
+  - `POST /api/v1/llm/anthropic/v1/messages` — Anthropic shape.
+  Configured `api_key` / `api_base` from `answering.generator` are
+  injected automatically; provider-specific env vars (`DEEPSEEK_
+  API_KEY`, `OPENAI_API_KEY`, …) are not required. The agent points
+  `ANTHROPIC_BASE_URL` at the proxy and any LiteLLM-supported
+  provider works behind it (Anthropic, OpenAI, DeepSeek,
+  SiliconFlow, Bedrock, Vertex, Ollama, …).
+- **Auth middleware accepts `x-api-key` alongside `Authorization:
+  Bearer`.** The bundled Claude CLI sends bearers as `x-api-key`
+  per Anthropic API convention; without this branch every
+  in-container turn 401'd. Same DB lookup either way; only the
+  header source differs.
+- **Chat route stays at `POST /api/v1/agent/hermes-chat`** for
+  backwards compat. Wire format unchanged. The legacy
+  `/api/v1/agent/chat` route from v0.x was deleted; rebind any
+  external clients before upgrading.
+
+### Verified end-to-end
+
+The full pipe was exercised against a real DeepSeek deployment via
+`docker run` against the sandbox image, with the agent reaching
+back through a reverse SSH tunnel to the backend. The sample turn
+"Reply with EXACTLY: pong" produced the JSONL events:
+
+```
+{"kind": "thinking", "text": "The user wants me to reply with exactly \"pong\"."}
+{"kind": "done", "final_text": "pong", "iterations": 1}
+```
+
+Confirms: SDK install, bundled binary execution, MCP HTTP transport,
+LiteLLM Anthropic ↔ DeepSeek wire-format translation, `api_key`
+injection from configured generator, `x-api-key` auth, and the
+JSONL event mapping that backends to our SSE protocol all work
+together.
 
 ### Added
 
