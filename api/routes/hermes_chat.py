@@ -53,6 +53,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..agent.hermes_container_runtime import (
+    HermesContainerRunner,
+    SandboxUnavailableError,
+    stream_turn_container,
+)
 from ..agent.hermes_runtime import (
     HermesRuntime,
     HermesTurnConfig,
@@ -332,30 +337,60 @@ async def hermes_chat(
     run_id = uuid.uuid4().hex
     started_at = time.time()
 
+    # Pick which Hermes runtime drives this turn.
+    #
+    # ``container`` (preferred when available): Hermes runs INSIDE
+    #   the user's sandbox container with full built-in toolsets
+    #   (Read / Edit / Bash / Glob / Grep) operating on the
+    #   bind-mounted workdir. This is the path that makes the
+    #   Workspace actually useful — agent can read project files,
+    #   write artifacts, run commands.
+    #
+    # ``in-process`` fallback: Hermes runs in this FastAPI worker
+    #   with built-in toolsets HARD-DISABLED (would touch our fs).
+    #   Only MCP-exposed domain tools (search / KG / library) are
+    #   reachable. Fine for pure Q&A; Workspace work is degraded.
+    #
+    # The route picks ``container`` whenever a SandboxManager is
+    # wired on AppState. Operators without Docker (dev / minimal
+    # deployments) get the in-process path automatically.
+    use_container = getattr(state, "sandbox", None) is not None
+
     async def _run_stream() -> AsyncIterator[bytes]:
         # Emit turn_start synchronously so the client sees activity
         # immediately even if Hermes' first network call is slow.
         yield _sse("agent.turn_start", {"turn": 1, "run_id": run_id}).encode("utf-8")
 
-        runtime = HermesRuntime()
         final_text = ""
         error_message: str | None = None
         iterations = 0
         delta_buf: list[str] = []
 
-        # ``stream_turn`` is a sync generator running on a worker
-        # thread (see hermes_runtime.stream_turn). We pump events
-        # through ``asyncio.to_thread`` to keep the FastAPI event
-        # loop free for SSE flushes + concurrent connections.
+        # Build the right iterator for this turn's runtime mode.
+        # Both stream sync generators on a worker thread; we pump
+        # via ``asyncio.run_in_executor`` so the FastAPI event loop
+        # stays free for SSE flushes + concurrent connections.
         try:
-            iter_ = stream_turn(
-                runtime,
-                body.query,
-                config=config,
-                conversation_history=history,
-            )
-        except HermesUnavailableError as e:
-            error_message = f"hermes-agent not installed: {e}"
+            if use_container:
+                container_runner = HermesContainerRunner(state.sandbox)
+                iter_ = stream_turn_container(
+                    container_runner,
+                    body.query,
+                    config=config,
+                    principal_user_id=principal.user_id,
+                    owned_project_ids=(),
+                    conversation_history=history,
+                )
+            else:
+                runtime = HermesRuntime()
+                iter_ = stream_turn(
+                    runtime,
+                    body.query,
+                    config=config,
+                    conversation_history=history,
+                )
+        except (HermesUnavailableError, SandboxUnavailableError) as e:
+            error_message = f"agent runtime unavailable: {e}"
             yield _emit_done(
                 error_message=error_message,
                 final_text="",

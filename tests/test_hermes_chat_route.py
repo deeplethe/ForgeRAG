@@ -109,12 +109,18 @@ def stub_stream(monkeypatch):
 
     The fixture returns a setter — call ``stub_stream([...events])``
     to install a script for the next request.
+
+    Patches BOTH the in-process ``stream_turn`` and the container
+    ``stream_turn_container`` so tests don't have to know which
+    runtime the route picked. ``calls`` distinguishes the two by
+    presence of ``runtime_kind`` ("inprocess" / "container").
     """
     holder: dict[str, Any] = {"events": [], "calls": []}
 
     def _stream_turn(runtime, user_message, *, config, conversation_history=None):
         holder["calls"].append(
             {
+                "runtime_kind": "inprocess",
                 "user_message": user_message,
                 "config": config,
                 "history": list(conversation_history or []),
@@ -123,7 +129,33 @@ def stub_stream(monkeypatch):
         for evt in holder["events"]:
             yield evt
 
+    def _stream_turn_container(
+        runner, user_message, *, config, principal_user_id,
+        owned_project_ids=(), conversation_history=None,
+    ):
+        holder["calls"].append(
+            {
+                "runtime_kind": "container",
+                "user_message": user_message,
+                "config": config,
+                "principal_user_id": principal_user_id,
+                "owned_project_ids": tuple(owned_project_ids),
+                "history": list(conversation_history or []),
+            }
+        )
+        for evt in holder["events"]:
+            yield evt
+
     monkeypatch.setattr(hermes_chat_module, "stream_turn", _stream_turn)
+    monkeypatch.setattr(
+        hermes_chat_module, "stream_turn_container", _stream_turn_container,
+    )
+
+    # Patch the runner constructor too so the route doesn't try to
+    # instantiate a real one (it'd reach into state.sandbox.backend).
+    monkeypatch.setattr(
+        hermes_chat_module, "HermesContainerRunner", lambda _sb: object(),
+    )
 
     def _set(events):
         holder["events"] = list(events)
@@ -293,7 +325,10 @@ def test_hermes_unavailable_returns_clean_done_error(client, monkeypatch):
     assert names[-1] == "done"
     done = events[-1][1]
     assert done["stop_reason"] == "error"
-    assert "hermes-agent not installed" in done["error"]
+    # Either runtime path can surface the unavailability; the route
+    # wraps it in a generic "agent runtime unavailable" prefix.
+    assert "runtime unavailable" in done["error"]
+    assert "not installed" in done["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +467,69 @@ def test_no_persistence_when_conversation_id_absent(client, stub_stream, state):
     # one-off queries
     assert len(state.store.agent_runs) == 1
     assert state.store.agent_runs[0]["conversation_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Runtime selector — container path when sandbox is wired,
+# in-process when not. Wave 2.5b key behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_no_sandbox_falls_back_to_in_process_runtime(client, stub_stream, state):
+    """Default test ``state`` has no ``sandbox`` attribute → in-process
+    runtime. Verifies the fallback path stays the dev-friendly default."""
+    state.sandbox = None  # explicit, makes the intent clear
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post("/api/v1/agent/hermes-chat", json={"query": "hi"})
+    assert stub_stream.calls, "no stream call recorded"
+    assert stub_stream.calls[-1]["runtime_kind"] == "inprocess"
+
+
+def test_sandbox_present_routes_to_container(client, stub_stream, state):
+    """When the deployment has Docker + a SandboxManager, the
+    container path becomes the default. This is the OSS path that
+    makes the Workspace actually useful (full Hermes built-in tools
+    operating on the bind-mounted workdir)."""
+    # A truthy stand-in is enough — the route only checks
+    # ``state.sandbox is not None``; the actual runner is stubbed.
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post("/api/v1/agent/hermes-chat", json={"query": "hi"})
+    assert stub_stream.calls[-1]["runtime_kind"] == "container"
+    # Container path threads the principal id through so the
+    # SandboxManager can resolve which user's container to exec into.
+    assert stub_stream.calls[-1]["principal_user_id"] == "u_alice"
+
+
+def test_container_runtime_carries_history_and_config_too(
+    client, stub_stream, state,
+):
+    """Sanity: switching runtimes shouldn't drop request data
+    on the floor. Both paths receive identical history + config."""
+    state.sandbox = SimpleNamespace(name="fake-sandbox")
+    state.store.seed_history(
+        "conv_42",
+        [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "earlier-reply"},
+        ],
+    )
+    stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
+
+    client.post(
+        "/api/v1/agent/hermes-chat",
+        json={
+            "query": "follow-up",
+            "conversation_id": "conv_42",
+            "model": "claude-3-5-sonnet",
+        },
+    )
+    call = stub_stream.calls[-1]
+    assert call["runtime_kind"] == "container"
+    assert call["history"] == [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "earlier-reply"},
+    ]
+    assert call["config"].model == "claude-3-5-sonnet"
