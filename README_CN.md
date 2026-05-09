@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
 </p>
 
-### OpenCraig —— 团队的 agentic 工作台
+## OpenCraig —— 团队的 agentic 工作台
 
 每个用户都有一个托管沙盒，agent 在沙盒里读 PDF、跑代码、写报告 —— 而不是让用户在自己机器上做这些事。检索遵循团队既有的文件夹权限，agent 只能看到所属用户有权访问的内容。
 

@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge" alt="License: AGPLv3"></a>
 </p>
 
-### OpenCraig — Your team's agentic workspace.
+## OpenCraig — Your team's agentic workspace.
 
 Each user gets a managed sandbox where the agent reads PDFs, runs code, and drafts reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions, so an agent only sees what its authenticated user can see.
 
