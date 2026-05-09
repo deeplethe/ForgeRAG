@@ -26,8 +26,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCKERFILE = REPO_ROOT / "docker" / "sandbox" / "Dockerfile"
-REQUIREMENTS = REPO_ROOT / "docker" / "sandbox" / "requirements.txt"
+DOCKER_DIR = REPO_ROOT / "docker" / "sandbox"
+DOCKERFILE = DOCKER_DIR / "Dockerfile"
+REQUIREMENTS = DOCKER_DIR / "requirements.txt"
 BUILD_SH = REPO_ROOT / "scripts" / "build-sandbox.sh"
 BUILD_PS1 = REPO_ROOT / "scripts" / "build-sandbox.ps1"
 
@@ -105,6 +106,11 @@ def test_requirements_pins_data_stack():
         "pdfplumber==",
         "openpyxl==",
         "pymupdf==",
+        # Hermes Agent itself — pin matches the host-side
+        # requirements.txt's hermes-agent pin so the in-process
+        # runtime wrapper and the in-container entrypoint speak
+        # the same AIAgent shape.
+        "hermes-agent==",
     ]
     missing = [p for p in must_pin if p not in text]
     assert not missing, f"requirements pins missing: {missing}"
@@ -121,6 +127,38 @@ def test_requirements_does_not_install_kernel_stack():
         f"sandbox image must not install kernel stack: {present} — "
         "Hermes Agent uses subprocess execution, not ipykernel"
     )
+
+
+def test_dockerfile_copies_run_turn_entrypoint():
+    """The backend's HermesContainerRunner invokes
+    ``/opt/opencraig/opencraig_run_turn.py`` via ``docker exec``.
+    The path is stable / hardcoded; if the Dockerfile stops
+    copying it, agent turns silently fail with ``no such file``."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "opencraig_run_turn.py" in text, (
+        "Dockerfile must COPY opencraig_run_turn.py into "
+        "/opt/opencraig/ for the backend's docker-exec spawn"
+    )
+    assert "/opt/opencraig/opencraig_run_turn.py" in text
+
+
+def test_run_turn_script_present_and_emits_jsonl_per_event():
+    """The entrypoint script in docker/sandbox/ is shipped as
+    source — verify it exists, imports clean, and follows the
+    JSONL-per-event contract the backend depends on."""
+    script = DOCKER_DIR / "opencraig_run_turn.py"
+    assert script.exists(), f"missing: {script}"
+    src = script.read_text(encoding="utf-8")
+    # Every emit() call must end with a JSONL line + flush, so the
+    # backend tail can render events live as the agent works.
+    assert "json.dumps" in src
+    assert "sys.stdout.flush()" in src
+    # Required event kinds (matches backend HermesContainerRunner
+    # expectations + the SSE event-translation table).
+    for kind in ("tool_start", "tool_end", "answer_delta", "done", "error"):
+        assert f'"kind": "{kind}"' in src or f"'kind': '{kind}'" in src, (
+            f"run_turn entrypoint must emit ``kind={kind}`` events"
+        )
 
 
 def test_build_scripts_present_and_executable_or_invocable():

@@ -50,3 +50,15 @@ beautifulsoup4==4.12.3
 lxml==5.3.0
 requests==2.32.3
 httpx==0.28.1
+
+# ── Agent runtime ──
+# Hermes Agent (NousResearch, MIT) — runs in-container per turn,
+# launched via ``docker exec`` by the backend's HermesContainerRunner.
+# Built-in tools (Read / Edit / Bash / Glob / Grep / etc.) operate
+# on /workdir/ which the backend bind-mounts to the user's project
+# folder. MCP-based domain tools (search / KG / library / artifacts)
+# are reached via HTTP back to the backend.
+#
+# Pin matches the version the backend's HermesRuntime tested
+# against; any bump should be coordinated with both sides.
+hermes-agent==0.10.0

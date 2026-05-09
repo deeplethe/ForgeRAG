@@ -142,6 +142,12 @@ COPY requirements.txt /tmp/sandbox-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/sandbox-requirements.txt \
     && rm /tmp/sandbox-requirements.txt
 
+# ── OpenCraig agent-turn entrypoint ─────────────────────────────
+# This script is what the backend's HermesContainerRunner invokes
+# via ``docker exec``. Lives at a stable path so the backend can
+# call it without consulting docker-image labels.
+COPY opencraig_run_turn.py /opt/opencraig/opencraig_run_turn.py
+
 # ── Non-root user ────────────────────────────────────────────────
 # uid 1000 to match the typical first user on the host (matters for
 # bind-mount ownership when userns-remap is OFF). Group 1000 too.
