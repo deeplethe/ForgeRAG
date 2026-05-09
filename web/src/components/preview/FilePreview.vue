@@ -61,6 +61,11 @@
               v-else-if="kind === 'markdown'"
               :url="previewUrl"
             />
+            <PdfViewer
+              v-else-if="kind === 'pdf'"
+              :url="previewUrl"
+              :download-url="downloadUrl"
+            />
             <div v-else class="preview-modal__unsupported">
               <FileIcon
                 kind="file"
@@ -118,6 +123,7 @@ import { useI18n } from 'vue-i18n'
 import { Download, X } from 'lucide-vue-next'
 
 import FileIcon from '@/components/workspace/FileIcon.vue'
+import PdfViewer from '@/components/PdfViewer.vue'
 import { previewKindFor } from './fileType'
 import ImagePreview from './ImagePreview.vue'
 import VideoPreview from './VideoPreview.vue'
