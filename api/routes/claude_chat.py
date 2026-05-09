@@ -78,22 +78,41 @@ router = APIRouter(prefix="/api/v1/agent", tags=["claude-chat"])
 # MCP — the model needs an explicit nudge to call them. Without this,
 # the agent answers from parametric knowledge for every question and
 # the user (correctly) reports "the knowledge base isn't being used".
-_DEFAULT_AGENT_SYSTEM_PROMPT = """You are OpenCraig's assistant. The user's team has a Library indexed in a knowledge base, reachable via the ``opencraig`` MCP server with these tools:
+#
+# Tone tuning notes baked in here:
+#   * No product / project branding in the prompt itself. Earlier
+#     wording ("you are OpenCraig's assistant") nudged the model to
+#     hallucinate the knowledge base's contents (it confidently
+#     declared "your knowledge base, ForgeRAG project repo, doesn't
+#     have this" before searching). Stay neutral about what the KB
+#     contains and let the search tool decide.
+#   * Don't preface with "let me check the knowledge base" or
+#     similar — just call the tool. The user sees the tool call
+#     in the trace; double-narration adds no signal.
+#   * Citation marker format ``[c_<id>]`` is what the UI's chip
+#     renderer matches against (Chat.vue::renderMsg). Each hit
+#     returned by ``search_vector`` carries a ``cite`` field like
+#     ``c_3`` — use that exact string inside the brackets.
+_DEFAULT_AGENT_SYSTEM_PROMPT = """You answer the user's questions, with access to a team knowledge base (a corpus of documents the user has access to) via these tools:
 
 - ``mcp__opencraig__search_vector(query, top_k)`` — semantic search
 - ``mcp__opencraig__search_bm25(query, top_k)`` — keyword search
-- ``mcp__opencraig__read_chunk(chunk_id)`` — full text of a hit
+- ``mcp__opencraig__read_chunk(chunk_id)`` — full text of a search hit
 - ``mcp__opencraig__read_tree(doc_id, node_id)`` — document outline
 - ``mcp__opencraig__list_folders(parent_path)`` / ``list_docs(folder_path)`` — browse
 - ``mcp__opencraig__graph_explore(query, top_k)`` — knowledge-graph walk
 - ``mcp__opencraig__rerank(query, chunk_ids, top_k)`` — refine candidates
 - ``mcp__opencraig__import_from_library(...)`` — pull a doc into the workdir
 
-For substantive questions about a topic, entity, procedure, or anything domain-specific that may live in the team's documents, you MUST call ``search_vector`` (and optionally ``search_bm25``) first, then ``read_chunk`` on the most relevant hits, and ground your answer in the retrieved content. Cite chunks inline as ``[c_<chunk_id>]`` so the UI can resolve them.
+Behaviour rules:
 
-If a search returns nothing relevant, say so honestly — do not silently fall back to parametric knowledge without disclosing it.
+1. For any substantive question — a topic, an entity, a procedure, a comparison, anything that could plausibly be answered from documents — call ``search_vector`` FIRST with a focused query in the user's language. Do NOT preface the search with statements about whether the answer is or isn't in the knowledge base; you don't know yet.
+2. Read the most relevant hits with ``read_chunk`` and ground your answer in their content.
+3. Cite each grounded claim inline as ``[c_<id>]`` using the exact ``cite`` value (e.g. ``c_1``) returned by the search hits. The UI turns these into clickable chips that resolve to the source chunk.
+4. If the search returns nothing useful, say so plainly and either offer your best general knowledge with that caveat or ask the user to refine the query — don't silently mix retrieved content with parametric knowledge.
+5. Do NOT speculate about what the knowledge base contains, what project it belongs to, or who owns it. The KB is whatever ``search_vector`` finds.
 
-For conversational small talk (greetings, thanks, "who are you") you may answer directly with no tool calls."""
+For conversational small talk (greetings, thanks, "who are you", "how does this work") you may answer directly with no tool calls."""
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +304,7 @@ def _persist_assistant_message(
     content: str,
     *,
     agent_trace: list | None = None,
+    citations: list | None = None,
 ) -> None:
     """Always writes a row, even when ``content`` is empty. Empty =
     failed turn (LLM error / aborted) — the row's PRESENCE is what
@@ -295,7 +315,12 @@ def _persist_assistant_message(
     what ``Chat.vue`` builds live as ``streamTrace`` so on conversation
     reload, ``AgentMessageBody`` rebuilds the same step-by-step view
     the user saw during streaming. ``None`` for failed turns / older
-    rows; the frontend renders just the answer body when absent."""
+    rows; the frontend renders just the answer body when absent.
+
+    ``citations`` carries the per-turn citation pool the model may
+    have quoted via ``[c_<id>]`` markers — landed in
+    ``Message.citations_json`` so reload turns the markers back into
+    clickable chips via ``Chat.vue::renderMsg``."""
     record: dict = {
         "message_id": uuid.uuid4().hex,
         "conversation_id": conv_id,
@@ -304,6 +329,8 @@ def _persist_assistant_message(
     }
     if agent_trace:
         record["agent_trace_json"] = agent_trace
+    if citations:
+        record["citations_json"] = citations
     state.store.add_message(record)
 
 
@@ -537,6 +564,13 @@ def _translate(evt: dict) -> str | None:
         return _sse("agent.thought", {"text": evt.get("text", "")})
     if kind == "answer_delta":
         return _sse("answer.delta", {"text": evt.get("text", "")})
+    if kind == "citations":
+        # Forward the running citation pool — the frontend folds these
+        # into its in-memory message so ``[c_<id>]`` markers in the
+        # answer body get rendered as clickable chips. Emitted on each
+        # post-tool tick + bundled into the terminal ``done`` event
+        # below as a fallback for clients that only consume ``done``.
+        return _sse("citations", {"items": evt.get("items") or []})
     if kind == "tool_start":
         return _sse(
             "tool.call_start",
@@ -791,6 +825,13 @@ async def claude_chat(
             except StopIteration:
                 return sentinel
 
+        # Per-turn citation pool. Mirrors the runtime's accumulator so
+        # the route can ship the snapshot via the terminal ``done``
+        # event (clients that drop the streamed ``citations`` ticks
+        # still get the final list) and persist it onto the assistant
+        # message row for reload.
+        citations_pool: list[dict] = []
+
         try:
             while True:
                 evt = await loop.run_in_executor(None, _next_or_sentinel, iter_)
@@ -818,6 +859,15 @@ async def claude_chat(
                         if isinstance(evt.get("result_summary"), dict)
                         else None,
                     )
+                elif kind == "citations":
+                    items = evt.get("items") or []
+                    # Each tick replaces the running pool with the
+                    # runtime's deduped snapshot — we trust the
+                    # runtime to handle dedup so the route's only
+                    # responsibility is to keep the latest list
+                    # around for the ``done`` event.
+                    if isinstance(items, list):
+                        citations_pool = items
                 elif kind == "error":
                     error_message = (
                         f"{evt.get('type', 'RuntimeError')}: "
@@ -850,6 +900,7 @@ async def claude_chat(
             final_text=final_text,
             started_at=started_at,
             run_id=run_id,
+            citations=citations_pool,
         )
 
         # Post-stream persistence — never block the response on this
@@ -860,6 +911,7 @@ async def claude_chat(
                     body.conversation_id,
                     final_text,
                     agent_trace=trace_acc.snapshot() if trace_acc.entries else None,
+                    citations=citations_pool,
                 )
             except Exception:
                 log.exception(
@@ -896,15 +948,21 @@ def _emit_done(
     final_text: str,
     started_at: float,
     run_id: str,
+    citations: list[dict] | None = None,
 ) -> bytes:
     """Single ``done`` SSE block — always the final event the client
-    sees, in success or error case."""
+    sees, in success or error case. ``citations`` carries the
+    accumulated per-turn pool the model may have referenced via
+    ``[c_<id>]`` markers; clients that drop the streamed
+    ``citations`` ticks can fall back to this."""
     payload: dict[str, Any] = {
         "stop_reason": "error" if error_message else "end_turn",
         "total_latency_ms": int((time.time() - started_at) * 1000),
         "final_text": final_text,
         "run_id": run_id,
     }
+    if citations:
+        payload["citations"] = citations
     if error_message:
         payload["error"] = error_message
     return _sse("done", payload).encode("utf-8")

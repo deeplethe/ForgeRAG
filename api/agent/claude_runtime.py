@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import queue
 import threading
@@ -105,8 +106,104 @@ def _evt_tool_end(
     }
 
 
+def _evt_citations(items: list[dict]) -> dict:
+    """Per-turn citation pool. Emitted after each search / read tool
+    finishes so the route can ship the running list to the frontend
+    in the terminal ``done`` event. Each entry mirrors the legacy
+    citation shape that ``Chat.vue::renderMsg`` matches against
+    (``citation_id`` / ``cite_id``, ``chunk_id``, ``doc_id``,
+    ``doc_name``, ``page_start``, ``page_end``)."""
+    return {"kind": "citations", "items": items}
+
+
 def _evt_done(final_text: str, **extras: Any) -> dict:
     return {"kind": "done", "final_text": final_text, **extras}
+
+
+def _extract_citations_from_tool_response(tool_name: str, tool_response: Any) -> list[dict]:
+    """Pull citation dicts out of an MCP tool response.
+
+    Search / read / graph tools return JSON whose hits / chunk records
+    carry ``cite``, ``chunk_id``, ``doc_id``, ``doc_name``, etc. The
+    MCP framework wraps the JSON inside a content-block envelope
+    (``[{"type": "text", "text": "<serialised json>"}]``); this
+    helper strips the wrapping and parses the inner records.
+
+    Returns an empty list for non-search tools or unparseable
+    responses; the caller folds the result into a per-turn pool
+    that's emitted with ``done``.
+    """
+    citation_tools = {
+        "mcp__opencraig__search_vector",
+        "mcp__opencraig__search_bm25",
+        "mcp__opencraig__read_chunk",
+        "mcp__opencraig__graph_explore",
+        "mcp__opencraig__rerank",
+    }
+    if tool_name not in citation_tools:
+        return []
+
+    # MCP returns content blocks in a few shapes depending on the
+    # SDK version: a dict with ``content`` list, a bare list of
+    # blocks, or already-parsed JSON. Normalise to a JSON-string we
+    # can json.loads.
+    raw = tool_response
+    if isinstance(raw, dict) and "content" in raw:
+        raw = raw["content"]
+    if isinstance(raw, list):
+        # Take the first text-typed block.
+        for blk in raw:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                raw = blk.get("text", "")
+                break
+
+    parsed: Any = None
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return []
+    else:
+        return []
+
+    items: list[dict] = []
+
+    def _absorb(record: dict) -> None:
+        # Both ``hits`` and a single ``read_chunk`` result share the
+        # same field names — keep the citation fields, drop the rest.
+        chunk_id = record.get("chunk_id")
+        cite = record.get("cite") or record.get("citation_id")
+        if not (chunk_id or cite):
+            return
+        items.append(
+            {
+                "citation_id": cite,
+                "cite_id": cite,
+                "chunk_id": chunk_id,
+                "doc_id": record.get("doc_id"),
+                "doc_name": record.get("doc_name"),
+                "path": record.get("path"),
+                "page_start": record.get("page_start"),
+                "page_end": record.get("page_end"),
+                "snippet": record.get("snippet"),
+                "score": record.get("score"),
+            }
+        )
+
+    if isinstance(parsed, dict):
+        # search_vector / search_bm25 → {"hits": [...]}
+        for hit in (parsed.get("hits") or []):
+            if isinstance(hit, dict):
+                _absorb(hit)
+        # read_chunk → flat record
+        if "chunk_id" in parsed:
+            _absorb(parsed)
+        # graph_explore → {entities: [...], relations: [...]} — these
+        # don't carry chunk-level cite ids today, so they contribute
+        # nothing to the citation list. Skip silently.
+    return items
 
 
 def _evt_error(message: str, *, type_: str = "RuntimeError") -> dict:
@@ -302,6 +399,12 @@ class ClaudeRuntime:
         # and diff at PostToolUse.
         tool_call_t0: dict[str, float] = {}
         tool_call_name: dict[str, str] = {}
+        # Per-run citation pool: accumulated dedup'd records the model
+        # may quote inline as ``[c_<id>]``. The post-tool hook appends
+        # to this and emits a snapshot via ``_evt_citations`` so the
+        # SSE route can ship the running list to the frontend.
+        _citations: list[dict] = []
+        _citation_keys: set[str] = set()
 
         def _on_pre_tool(input_data, tool_use_id, context):
             try:
@@ -333,6 +436,25 @@ class ClaudeRuntime:
                 else:
                     summary = {"text": str(tool_response)[:200]} if tool_response else {}
                 emit(_evt_tool_end(cid, str(tool_name), latency_ms, summary))
+
+                # Citation pool: search / read / rerank tools carry the
+                # records the model will quote inline as ``[c_<id>]``.
+                # Accumulate dedup'd by chunk_id (a follow-up
+                # ``read_chunk`` for an already-seen hit shouldn't
+                # dupe the rail). Emit AFTER tool_end so the
+                # frontend's running citation list is populated in
+                # arrival order.
+                new_cites = _extract_citations_from_tool_response(
+                    str(tool_name), tool_response,
+                )
+                if new_cites:
+                    for c in new_cites:
+                        key = c.get("chunk_id") or c.get("citation_id")
+                        if not key or key in _citation_keys:
+                            continue
+                        _citation_keys.add(key)
+                        _citations.append(c)
+                    emit(_evt_citations(list(_citations)))
             except Exception:
                 log.exception("claude_runtime: post-tool hook formatting")
             return {}
