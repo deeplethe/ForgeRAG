@@ -15,8 +15,8 @@
     "tabs": {
       "chat": "Chat",
       "search": "Search",
-      "library": "Library",
-      "workspace": "Workspace",
+      "library": "Knowledge Base",
+      "workspace": "Workbench",
       "knowledge_graph": "Knowledge Graph",
       "metrics": "Metrics"
     },
@@ -40,9 +40,9 @@
     "conv_action_failed": "Action failed: {msg}"
   },
   "workspace": {
-    "title": "Workspace",
+    "title": "Workbench",
     "subtitle": "Your private folder tree — where the agent reads, edits, and writes files.",
-    "root": "Workspace",
+    "root": "Workbench",
     "new_folder": "New folder",
     "upload": "Upload",
     "download": "Download",
@@ -74,7 +74,7 @@
       "never_active": "Created — no activity yet"
     },
     "detail": {
-      "back": "Back to Workspace",
+      "back": "Back to Workbench",
       "no_description": "No description yet.",
       "manage_members": "Members ({n})",
       "no_chats_title": "No chats here yet",
@@ -84,28 +84,28 @@
       "load_error": "Couldn't load this project: {msg}"
     },
     "picker": {
-      "title": "Import from Library",
+      "title": "Import from Knowledge Base",
       "subtitle": "Pick a document to copy into {name}'s workdir",
       "search_placeholder": "Search by filename…",
-      "empty": "Type to search the Library, or pick a recent document.",
+      "empty": "Type to search the Knowledge Base, or pick a recent document.",
       "no_results": "No documents matching \"{q}\"",
       "imported": "Imported \"{name}\" to {path}",
       "imported_reused": "\"{name}\" is already in this project ({path}); reusing existing copy.",
-      "footnote": "You can only see documents you have read access to in the Library. The agent will be able to import from here automatically once Phase 2 ships."
+      "footnote": "You can only see documents you have read access to in the Knowledge Base. The agent will be able to import from here automatically once Phase 2 ships."
     },
     "files": {
       "root": "workdir",
       "new_folder": "New folder",
       "new_folder_placeholder": "Folder name",
       "upload": "Upload",
-      "import_from_library": "Import from Library",
+      "import_from_library": "Import from Knowledge Base",
       "show_trash": "Trash ({n})",
       "exit_trash": "Back to files",
       "empty_trash": "Empty trash",
       "drop_to_upload": "Drop files to upload to {path}",
       "load_error": "Couldn't load files: {msg}",
       "empty": "{path} is empty",
-      "empty_hint": "Upload files or import from the Library to get started. Files here are NOT auto-indexed.",
+      "empty_hint": "Upload files or import from the Knowledge Base to get started. Files here are NOT auto-indexed.",
       "trash_empty": "Trash is empty.",
       "download": "Download",
       "rename": "Rename",
@@ -152,7 +152,7 @@
     "back": "Back",
     "section": {
       "account": "Account",
-      "workspace": "Workspace"
+      "workspace": "Workbench"
     },
     "nav": {
       "profile": "Profile",
@@ -342,7 +342,7 @@
       "working_in": "Working in:",
       "switch": "Switch",
       "clear": "Leave folder context",
-      "open_in_workspace": "Open in Workspace",
+      "open_in_workspace": "Open in Workbench",
       "switch_dialog": {
         "title": "Switch folder",
         "description": "Enter a folder path inside your workdir (e.g. /sales/2025). The agent's next turn runs in this folder; missing folders are created on the fly. Leave empty to clear.",

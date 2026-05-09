@@ -15,8 +15,8 @@
     "tabs": {
       "chat": "对话",
       "search": "搜索",
-      "library": "资料库",
-      "workspace": "工作区",
+      "library": "知识库",
+      "workspace": "工作台",
       "knowledge_graph": "知识图谱",
       "metrics": "指标"
     },
@@ -40,15 +40,15 @@
     "conv_action_failed": "操作失败：{msg}"
   },
   "workspace": {
-    "title": "工作区",
+    "title": "工作台",
     "subtitle": "你的私有文件夹树——agent 在这里读、编辑、写文件。",
-    "root": "工作区",
+    "root": "工作台",
     "new_folder": "新建文件夹",
     "upload": "上传",
     "download": "下载",
     "open_chat_here": "在此开聊",
     "open_chat_in": "在 {path} 开聊",
-    "load_error": "加载工作区失败：{msg}",
+    "load_error": "加载工作台失败：{msg}",
     "empty_title": "这个文件夹是空的",
     "empty_subtitle": "创建子文件夹或上传文件。在这个文件夹里开聊时,agent 会在此读写文件。",
     "new_folder_dialog": {
@@ -74,7 +74,7 @@
       "never_active": "刚创建 · 暂无活动"
     },
     "detail": {
-      "back": "返回工作区",
+      "back": "返回工作台",
       "no_description": "暂无描述。",
       "manage_members": "成员（{n}）",
       "no_chats_title": "还没有对话",
@@ -84,28 +84,28 @@
       "load_error": "项目加载失败：{msg}"
     },
     "picker": {
-      "title": "从资料库导入",
+      "title": "从知识库导入",
       "subtitle": "选择一份文档复制到「{name}」的工作目录",
       "search_placeholder": "按文件名搜索…",
-      "empty": "输入关键词搜索资料库，或从最近的文档中选择。",
+      "empty": "输入关键词搜索知识库，或从最近的文档中选择。",
       "no_results": "没有匹配「{q}」的文档",
       "imported": "已将「{name}」导入到 {path}",
       "imported_reused": "「{name}」已在该项目中（{path}），复用现有副本。",
-      "footnote": "你只能看到自己在资料库中有读权限的文档。Phase 2 上线后，智能体可自行从此处导入。"
+      "footnote": "你只能看到自己在知识库中有读权限的文档。Phase 2 上线后，智能体可自行从此处导入。"
     },
     "files": {
       "root": "工作目录",
       "new_folder": "新建文件夹",
       "new_folder_placeholder": "文件夹名称",
       "upload": "上传",
-      "import_from_library": "从资料库导入",
+      "import_from_library": "从知识库导入",
       "show_trash": "回收站（{n}）",
       "exit_trash": "返回文件",
       "empty_trash": "清空回收站",
       "drop_to_upload": "拖放文件以上传到 {path}",
       "load_error": "加载失败：{msg}",
       "empty": "{path} 为空",
-      "empty_hint": "上传文件或从资料库导入以开始工作。这里的文件不会自动进入资料库索引。",
+      "empty_hint": "上传文件或从知识库导入以开始工作。这里的文件不会自动进入知识库索引。",
       "trash_empty": "回收站为空。",
       "download": "下载",
       "rename": "重命名",
@@ -152,7 +152,7 @@
     "back": "返回",
     "section": {
       "account": "账户",
-      "workspace": "工作区"
+      "workspace": "工作台"
     },
     "nav": {
       "profile": "个人资料",
@@ -258,7 +258,7 @@
     },
     "users": {
       "title": "用户管理",
-      "subtitle": "管理谁可以访问这个工作区，以及他们能做什么。",
+      "subtitle": "管理谁可以访问这个工作台，以及他们能做什么。",
       "filter_all": "全部",
       "filter_active": "活跃",
       "filter_pending": "待审批",
@@ -342,7 +342,7 @@
       "working_in": "工作目录：",
       "switch": "切换",
       "clear": "退出目录上下文",
-      "open_in_workspace": "在工作区中打开",
+      "open_in_workspace": "在工作台中打开",
       "switch_dialog": {
         "title": "切换工作目录",
         "description": "输入工作目录中的路径（例如 /sales/2025）。Agent 下一轮会切到这个目录；不存在的目录会自动创建。留空则清除。",
