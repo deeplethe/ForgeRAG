@@ -96,36 +96,56 @@ def test_requirements_pins_data_stack():
     """Version pinning catches drift between the image and any
     code (host-side or in-container) that imports these packages.
     Surprise major-version bumps are the kind of silent breakage
-    that's hard to debug after-the-fact."""
+    that's hard to debug after-the-fact.
+
+    pdfplumber uses a floor pin (``>=0.11.7``) instead of exact ==
+    because 0.11.4 deadlocks with camelot-py over pdfminer.six;
+    bumping to a range that allows newer pdfminer-six is cheaper
+    than pinning a fragile exact version."""
     assert REQUIREMENTS.exists(), f"missing: {REQUIREMENTS}"
     text = REQUIREMENTS.read_text(encoding="utf-8")
+    # Substring tokens — any pin format containing the token counts
+    # (so ``pdfplumber>=0.11.7`` matches ``pdfplumber>``).
     must_pin = [
         "pandas==",
         "numpy==",
         "matplotlib==",
-        "pdfplumber==",
+        "pdfplumber>",
         "openpyxl==",
         "pymupdf==",
-        # Hermes Agent itself — pin matches the host-side
-        # requirements.txt's hermes-agent pin so the in-process
-        # runtime wrapper and the in-container entrypoint speak
-        # the same AIAgent shape.
-        "hermes-agent==",
+        # Claude Agent SDK — the in-container runtime (post-C-3
+        # cutover from hermes-agent). Floor pin so security
+        # patch releases land on rebuild without a manual bump,
+        # version-locked to the host-side requirements.txt's pin.
+        "claude-agent-sdk>",
     ]
     missing = [p for p in must_pin if p not in text]
     assert not missing, f"requirements pins missing: {missing}"
 
 
 def test_requirements_does_not_install_kernel_stack():
-    """Hermes Agent (the in-container runtime) is subprocess-based;
-    we don't run an ipykernel inside the container. Re-introducing
-    these would silently revert the model."""
+    """The in-container runtime (Claude Agent SDK) is subprocess-
+    based; we don't run an ipykernel inside the container. Re-
+    introducing these would silently revert the model."""
     text = REQUIREMENTS.read_text(encoding="utf-8")
     forbidden = ["ipykernel==", "jupyter_client==", "bash_kernel==", "ipywidgets=="]
     present = [f for f in forbidden if f in text]
     assert not present, (
         f"sandbox image must not install kernel stack: {present} — "
-        "Hermes Agent uses subprocess execution, not ipykernel"
+        "Claude Agent SDK uses subprocess execution, not ipykernel"
+    )
+
+
+def test_requirements_does_not_install_dead_hermes_pin():
+    """Wave 2.5b shipped with ``hermes-agent==0.10.0`` in the
+    sandbox requirements but that PyPI package never existed under
+    that name — every container build failed pip-resolve. C-3
+    cutover removes the pin entirely; this test guards against
+    accidental re-introduction during merges."""
+    text = REQUIREMENTS.read_text(encoding="utf-8")
+    assert "hermes-agent" not in text, (
+        "hermes-agent must not appear in sandbox requirements — "
+        "the PyPI package never existed; use claude-agent-sdk instead"
     )
 
 

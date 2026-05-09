@@ -34,7 +34,7 @@ from api.agent.hermes_container_runtime import (
     SandboxUnavailableError,
     stream_turn_container,
 )
-from api.agent.hermes_runtime import HermesTurnConfig
+from api.agent.claude_runtime import HermesTurnConfig
 
 
 # ---------------------------------------------------------------------------

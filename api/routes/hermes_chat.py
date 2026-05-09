@@ -58,7 +58,7 @@ from ..agent.hermes_container_runtime import (
     SandboxUnavailableError,
     stream_turn_container,
 )
-from ..agent.hermes_runtime import (
+from ..agent.claude_runtime import (
     HermesRuntime,
     HermesTurnConfig,
     HermesUnavailableError,

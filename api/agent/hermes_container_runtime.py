@@ -58,7 +58,7 @@ import threading
 from collections.abc import Iterator
 from typing import Any
 
-from .hermes_runtime import (
+from .claude_runtime import (
     HermesTurnConfig,
     HermesTurnResult,
     _evt_done,

@@ -306,7 +306,7 @@ def test_hermes_unavailable_returns_clean_done_error(client, monkeypatch):
     """run_agent module not installed → HermesUnavailableError;
     the route catches it and emits ``done { stop_reason: "error" }``
     instead of crashing or 500'ing."""
-    from api.agent.hermes_runtime import HermesUnavailableError
+    from api.agent.claude_runtime import HermesUnavailableError
 
     def _raises(*_a, **_kw):
         raise HermesUnavailableError("not installed (test)")
