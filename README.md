@@ -1,12 +1,15 @@
 <p align="center">
-  <img src="web/public/open_craig.png" alt="OpenCraig" width="320">
+  <img src="web/public/open_craig.png" alt="OpenCraig" width="400">
 </p>
 
-<h2 align="center">Free your team from the laptop.</h2>
-<h4 align="center">Managed agentic workspaces — per-user sandbox containers, permission-aware retrieval, MCP-native, BYOK.</h4>
+<h2 align="center">Your team's agentic workspace.</h2>
 
 <p align="center">
-  Each user gets a managed Linux sandbox where the agent does the work — reading PDFs, running code, drafting reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions; the agent only sees what its authenticated user can see. Self-hosted, MCP-native, multi-user.
+  Each user gets a managed sandbox where the agent reads PDFs, runs code, and drafts reports — instead of asking them to do it on their own machine. Retrieval over your team's knowledge base respects existing folder permissions, so an agent only sees what its authenticated user can see.
+</p>
+
+<p align="center">
+  <em>Per-user sandbox containers · permission-aware retrieval · MCP-native · BYOK · self-hosted.</em>
 </p>
 
 <p align="center">
