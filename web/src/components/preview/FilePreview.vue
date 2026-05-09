@@ -57,6 +57,10 @@
               :url="previewUrl"
               :filename="filename"
             />
+            <MarkdownPreview
+              v-else-if="kind === 'markdown'"
+              :url="previewUrl"
+            />
             <div v-else class="preview-modal__unsupported">
               <FileIcon
                 kind="file"
@@ -118,6 +122,7 @@ import { previewKindFor } from './fileType'
 import ImagePreview from './ImagePreview.vue'
 import VideoPreview from './VideoPreview.vue'
 import AudioPreview from './AudioPreview.vue'
+import MarkdownPreview from './MarkdownPreview.vue'
 
 const { t } = useI18n()
 
@@ -136,7 +141,10 @@ const emit = defineEmits(['update:open'])
 const modalEl = ref(null)
 
 const kind = computed(() => previewKindFor(props.filename))
-const isMedia = computed(() => ['image', 'video', 'audio', 'pdf'].includes(kind.value))
+// Wide canvas for any kind that benefits — visual media + long-form
+// text. The 'unsupported' fallback stays compact (it's just a hint
+// + download button; full bleed feels heavy).
+const isMedia = computed(() => kind.value !== 'unsupported')
 
 function close() {
   emit('update:open', false)
