@@ -581,3 +581,137 @@ def test_dispatch_error_shape():
     e = DispatchError(error="oops", tool="search_bm25")
     out = e.to_result()
     assert out == {"error": "oops", "tool": "search_bm25"}
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 polish: search hits expose folder ``path`` so the agent can
+# use directory hierarchy as a semantic signal
+# ---------------------------------------------------------------------------
+
+
+class TestSearchHitsCarryPath:
+    """Hits returned by search_vector / search_bm25 + payload from
+    read_chunk should include the document's folder path. Folder
+    naming carries time / domain / scope information the agent
+    can't otherwise see at chunk level."""
+
+    def test_search_hits_include_path(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("search_bm25", {"query": "research"}, ctx)
+        assert out["hits"], "alice should have a research hit"
+        h = next(x for x in out["hits"] if x["doc_id"] == "d_research")
+        assert h["path"] == "/research/r.pdf", (
+            "search hit must surface the doc's folder path so the agent "
+            "can use directory hierarchy as semantic signal"
+        )
+
+    def test_read_chunk_includes_path(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("read_chunk", {"chunk_id": "d_research:1:c1"}, ctx)
+        assert out["path"] == "/research/r.pdf"
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 polish: list_folders + list_docs progressive-browse tools
+# ---------------------------------------------------------------------------
+
+
+class TestListFoldersAuthzScoped:
+    """list_folders must only return folders the user has at least
+    'r' access to — same path-as-authz rule as every other tool."""
+
+    def test_alice_sees_research_only(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("list_folders", {}, ctx)
+        paths = {f["path"] for f in out["folders"]}
+        assert "/research" in paths
+        assert "/scratch" not in paths, (
+            "bob's scratch folder must NOT appear in alice's listing"
+        )
+
+    def test_bob_sees_scratch_only(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "bob"))
+        out = dispatch("list_folders", {}, ctx)
+        paths = {f["path"] for f in out["folders"]}
+        assert "/scratch" in paths
+        assert "/research" not in paths
+
+    def test_admin_sees_both(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(
+            state, _principal(seeded, "admin", role="admin")
+        )
+        out = dispatch("list_folders", {}, ctx)
+        paths = {f["path"] for f in out["folders"]}
+        assert {"/research", "/scratch"} <= paths
+
+    def test_doc_count_per_folder(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(
+            state, _principal(seeded, "admin", role="admin")
+        )
+        out = dispatch("list_folders", {}, ctx)
+        by_path = {f["path"]: f for f in out["folders"]}
+        # /research has 1 non-trashed doc (d_trashed lives under
+        # /__trash__/old/ on disk path, but its folder_id is f_research
+        # — both rows therefore count to f_research's doc_count IF we
+        # don't filter trashed. The handler filters trashed_metadata
+        # is None; since neither d_research nor d_trashed has a
+        # trashed_metadata set in the fixture, both appear. Pin
+        # whichever is true and adjust if the seed changes.
+        assert by_path["/research"]["doc_count"] >= 1
+        assert by_path["/scratch"]["doc_count"] == 1
+
+
+class TestListDocsAuthzScoped:
+    """list_docs must refuse 404 for folders outside the user's
+    access set — same treatment as the per-resource read routes
+    ('never confirm out-of-scope existence')."""
+
+    def test_alice_sees_research_docs(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("list_docs", {"folder_path": "/research"}, ctx)
+        assert "error" not in out
+        ids = {d["doc_id"] for d in out["docs"]}
+        assert "d_research" in ids
+        assert out["folder_path"] == "/research"
+
+    def test_alice_cannot_list_bobs_folder(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("list_docs", {"folder_path": "/scratch"}, ctx)
+        # 404-equivalent — never confirm existence
+        assert "error" in out
+        assert "not found or not accessible" in out["error"].lower()
+
+    def test_missing_folder_path_returns_error(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch("list_docs", {}, ctx)
+        assert "error" in out
+
+    def test_pagination_args_threaded(self, store, seeded):
+        state = _build_state(store)
+        ctx = build_tool_context(state, _principal(seeded, "alice"))
+        out = dispatch(
+            "list_docs",
+            {"folder_path": "/research", "limit": 1, "offset": 0},
+            ctx,
+        )
+        assert out["limit"] == 1
+        assert out["offset"] == 0
+        # ``has_more`` is True iff offset+returned < total; with one
+        # /research doc and limit=1, has_more should be False.
+        assert isinstance(out["has_more"], bool)
+
+
+def test_list_folders_and_list_docs_in_registry():
+    """Make sure the new browsing tools made it into TOOL_REGISTRY
+    so MCP exposure auto-picks them up."""
+    assert "list_folders" in TOOL_REGISTRY
+    assert "list_docs" in TOOL_REGISTRY

@@ -237,6 +237,22 @@ def _handle_read_chunk(params: dict, ctx: ToolContext) -> dict:
             error=f"chunk not found: {chunk_id!r}", tool="read_chunk"
         ).to_result()
 
+    # Look up the document's folder path. ``row`` is a chunk record;
+    # the chunk doesn't carry the doc's folder path (only its
+    # internal ``section_path`` within the doc). Folder topology is a
+    # useful semantic signal for the agent — e.g.
+    # ``/data/sales/2025/`` encodes domain + year — so we expose it.
+    doc_folder_path = ""
+    try:
+        docs = ctx.state.store.get_documents_by_ids([row["doc_id"]])
+        if docs:
+            doc_folder_path = docs[0].get("path") or ""
+    except Exception:
+        # Defensive: a doc-lookup failure shouldn't break the
+        # chunk read. Fall back to empty path; the agent already
+        # has doc_id + page to anchor the citation.
+        pass
+
     register_chunk(
         ctx,
         chunk_id,
@@ -244,7 +260,7 @@ def _handle_read_chunk(params: dict, ctx: ToolContext) -> dict:
         content=row.get("content") or "",
         page_start=row.get("page_start"),
         page_end=row.get("page_end"),
-        path=row.get("path"),
+        path=doc_folder_path,
         block_ids=row.get("block_ids") or [],
         source="read_chunk",
     )
@@ -253,7 +269,7 @@ def _handle_read_chunk(params: dict, ctx: ToolContext) -> dict:
         "chunk_id": chunk_id,
         "cite": cite_id,
         "doc_id": row["doc_id"],
-        "path": row.get("path"),
+        "path": doc_folder_path,
         "page_start": row.get("page_start"),
         "page_end": row.get("page_end"),
         "content": row.get("content") or "",
@@ -295,6 +311,12 @@ def _hydrate_hits(
     doc_ids = {r["doc_id"] for r in rows}
     docs = ctx.state.store.get_documents_by_ids(list(doc_ids)) if doc_ids else []
     doc_name_by_id = {d["doc_id"]: d.get("filename") or d.get("path") or "" for d in docs}
+    # Folder path of each doc — exposed in hits so the agent can
+    # use directory hierarchy as a semantic signal (e.g.
+    # ``/data/sales/2025/`` encodes domain + year). Folder
+    # naming choices in real teams carry a lot of meta-information
+    # that isn't otherwise visible to a chunk-level search.
+    doc_path_by_id = {d["doc_id"]: d.get("path") or "" for d in docs}
 
     hits: list[dict] = []
     for cid, _sc in raw:
@@ -330,6 +352,7 @@ def _hydrate_hits(
                 "cite": cite_id,
                 "doc_id": row["doc_id"],
                 "doc_name": doc_name_by_id.get(row["doc_id"], ""),
+                "path": doc_path_by_id.get(row["doc_id"], ""),
                 "page": row.get("page_start"),
                 "score": round(score_by_id[cid], 4),
                 "snippet": snippet,
@@ -379,9 +402,12 @@ _VECTOR_SPEC = ToolSpec(
         "Semantic / dense-embedding search over the corpus. Best for "
         "paraphrased questions, cross-lingual lookup, and conceptual "
         "queries where the user's wording differs from the source. "
-        "Returns the top hits as {chunk_id, doc_id, doc_name, page, "
-        "score, snippet}. Call read_chunk(chunk_id) for full content. "
-        "Default top_k=20."
+        "Returns the top hits as {chunk_id, doc_id, doc_name, path, "
+        "page, score, snippet}. The ``path`` is the document's folder "
+        "location (e.g. ``/data/sales/2025/``); folder hierarchy "
+        "often encodes domain + time + scope, use it as a semantic "
+        "signal when ranking which hits to read first. Call "
+        "read_chunk(chunk_id) for full content. Default top_k=20."
     ),
     params_schema={
         "type": "object",
@@ -703,6 +729,292 @@ def _handle_read_tree(params: dict, ctx: ToolContext) -> dict:
         "children": children_preview,
         "is_root": target_id == tree.get("root_id"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Tools: list_folders + list_docs  (progressive corpus browsing)
+# ---------------------------------------------------------------------------
+#
+# These are the agent's "open the file cabinet and look around"
+# tools — complements to search_vector / graph_explore, which both
+# require a query. With list_folders + list_docs the agent can:
+#
+#   * answer "what do we have on X?" by walking from a root path
+#     down to where X lives, instead of guessing search terms
+#   * orient on a new corpus before forming retrieval strategies
+#   * scope-narrow ahead of search: list_folders /data → see that
+#     ``sales/`` exists → search_vector with the user's question
+#     and a mental model that "sales" is a real organisational unit
+#
+# Both are gated by the user's accessible-folder set — the agent
+# only sees what its principal can see, full-stop. Path-as-authz
+# applies to browsing the same way it applies to search.
+
+
+def _handle_list_folders(params: dict, ctx: ToolContext) -> dict:
+    """Return immediate child folders of ``parent_path`` that the
+    user has at least 'r' access to. Empty parent_path = top level.
+
+    Each entry: ``{path, name, doc_count, child_folder_count}`` so
+    the agent can decide whether to descend or list_docs at this
+    level.
+    """
+    parent_path = (params.get("parent_path") or "").strip()
+    if parent_path and not parent_path.startswith("/"):
+        parent_path = "/" + parent_path
+    parent_path = parent_path.rstrip("/")  # normalise; "/" → ""
+
+    try:
+        from sqlalchemy import select
+
+        from persistence.models import Document, Folder
+    except Exception:
+        return DispatchError(
+            error="list_folders: persistence layer not importable",
+            tool="list_folders",
+        ).to_result()
+
+    user_id = ctx.principal.user_id
+    accessible_folders = ctx.state.authz.list_accessible_folders(user_id)
+
+    # Filter to immediate children of parent_path. A folder F is an
+    # immediate child of P iff F.path startswith P + "/" AND F.path
+    # has exactly one more segment than P. Empty parent = top level
+    # = depth-1 folders ("/foo", "/bar", not "/foo/bar").
+    parent_depth = parent_path.count("/")
+    children: list = []
+    for f in accessible_folders:
+        if not f.path.startswith(parent_path + "/" if parent_path else "/"):
+            continue
+        if f.path == parent_path:
+            continue
+        if f.path.count("/") != parent_depth + 1:
+            continue
+        children.append(f)
+
+    if not children:
+        return {"parent_path": parent_path or "/", "folders": []}
+
+    # Look up doc counts + child-folder presence per child folder.
+    # Cheap: one query for documents grouped by folder_id, plus the
+    # already-loaded accessible_folders for descendant detection.
+    child_folder_ids = [f.folder_id for f in children]
+    doc_counts: dict[str, int] = dict.fromkeys(child_folder_ids, 0)
+    try:
+        with ctx.state.store.transaction() as sess:
+            from sqlalchemy import func as _func
+
+            stmt = (
+                select(Document.folder_id, _func.count(Document.doc_id))
+                .where(
+                    Document.folder_id.in_(child_folder_ids),
+                    Document.trashed_metadata.is_(None),
+                )
+                .group_by(Document.folder_id)
+            )
+            for fid, n in sess.execute(stmt):
+                doc_counts[fid] = int(n)
+    except Exception:
+        log.exception("list_folders: doc-count query failed")
+
+    accessible_paths = {f.path for f in accessible_folders}
+
+    out = []
+    for f in sorted(children, key=lambda x: x.path):
+        # Has subfolders the user can see? Cheap: check if any
+        # accessible folder's path starts with this folder's path + "/"
+        prefix = f.path + "/"
+        has_children = any(
+            p.startswith(prefix) for p in accessible_paths if p != f.path
+        )
+        out.append(
+            {
+                "path": f.path,
+                "name": f.name,
+                "doc_count": doc_counts.get(f.folder_id, 0),
+                "has_subfolders": has_children,
+            }
+        )
+    return {"parent_path": parent_path or "/", "folders": out}
+
+
+def _handle_list_docs(params: dict, ctx: ToolContext) -> dict:
+    """Return documents directly inside ``folder_path`` that the
+    user can read. Pagination via ``limit`` + ``offset``; default
+    limit=50, max 200.
+
+    Each entry: ``{doc_id, filename, path, page_count, ingested_at}``.
+    Subfolder docs are NOT included — descend via list_folders +
+    list_docs again.
+    """
+    folder_path = (params.get("folder_path") or "").strip()
+    if not folder_path:
+        return DispatchError(
+            error="list_docs: folder_path is required (use '/' for root)",
+            tool="list_docs",
+        ).to_result()
+    if not folder_path.startswith("/"):
+        folder_path = "/" + folder_path
+
+    try:
+        limit = int(params.get("limit", 50))
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    try:
+        offset = max(0, int(params.get("offset", 0)))
+    except Exception:
+        offset = 0
+
+    try:
+        from sqlalchemy import select
+
+        from persistence.models import Document, Folder
+    except Exception:
+        return DispatchError(
+            error="list_docs: persistence layer not importable",
+            tool="list_docs",
+        ).to_result()
+
+    # Verify the user has access to the requested folder. Same
+    # treatment as the per-resource read routes — never confirm
+    # existence of out-of-scope folders.
+    user_id = ctx.principal.user_id
+    accessible = ctx.state.authz.list_accessible_folders(user_id)
+    target = next((f for f in accessible if f.path == folder_path), None)
+    if target is None:
+        return DispatchError(
+            error=f"folder not found or not accessible: {folder_path!r}",
+            tool="list_docs",
+        ).to_result()
+
+    out: list[dict] = []
+    total = 0
+    try:
+        with ctx.state.store.transaction() as sess:
+            from sqlalchemy import func as _func
+
+            count_stmt = (
+                select(_func.count(Document.doc_id))
+                .where(
+                    Document.folder_id == target.folder_id,
+                    Document.trashed_metadata.is_(None),
+                )
+            )
+            total = int(sess.execute(count_stmt).scalar() or 0)
+
+            stmt = (
+                select(Document)
+                .where(
+                    Document.folder_id == target.folder_id,
+                    Document.trashed_metadata.is_(None),
+                )
+                .order_by(Document.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            rows = sess.execute(stmt).scalars().all()
+            for d in rows:
+                out.append(
+                    {
+                        "doc_id": d.doc_id,
+                        "filename": d.filename or "",
+                        "path": d.path or folder_path,
+                        "page_count": getattr(d, "page_count", None),
+                        "format": d.format or "",
+                        "ingested_at": d.created_at.isoformat() if d.created_at else None,
+                    }
+                )
+    except Exception:
+        log.exception("list_docs: query failed")
+
+    return {
+        "folder_path": folder_path,
+        "docs": out,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(out) < total,
+    }
+
+
+_LIST_FOLDERS_SPEC = ToolSpec(
+    name="list_folders",
+    description=(
+        "Browse the corpus folder tree progressively — list immediate "
+        "child folders under ``parent_path``. Empty parent_path = "
+        "top-level accessible folders.\n\n"
+        "Use this BEFORE search when:\n"
+        "  - the user asks open-ended questions about what's "
+        "available ('what do we have on Q3 sales?')\n"
+        "  - you need to orient on a new corpus before forming "
+        "retrieval strategies\n"
+        "  - the user references a topic by organizational name "
+        "('the legal team's contracts') and you want to find that "
+        "team's folder before searching\n\n"
+        "Returns ``{parent_path, folders: [{path, name, doc_count, "
+        "has_subfolders}]}``. Authz: only folders the user has at "
+        "least read access to are returned — the agent never sees "
+        "folders outside the user's grant set."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "parent_path": {
+                "type": "string",
+                "description": (
+                    "Folder path to list children of (e.g. '/data', "
+                    "'/legal/contracts'). Empty or missing = top-level."
+                ),
+            },
+        },
+        "required": [],
+    },
+    handler=_handle_list_folders,
+)
+
+
+_LIST_DOCS_SPEC = ToolSpec(
+    name="list_docs",
+    description=(
+        "List documents directly inside a folder. Subfolder docs are "
+        "NOT included — descend via list_folders + list_docs.\n\n"
+        "Use this AFTER list_folders when you've found the folder "
+        "the user is asking about and want to enumerate its contents "
+        "instead of running search_vector. Common pattern:\n"
+        "  list_folders('/data') → '/data/sales/' is interesting\n"
+        "  list_folders('/data/sales') → '/data/sales/2025/' too\n"
+        "  list_docs('/data/sales/2025') → enumerate all 2025 sales docs\n"
+        "  read_tree(<doc_id>) → outline a specific one\n\n"
+        "Each entry: {doc_id, filename, path, page_count, format, "
+        "ingested_at}. Pagination via limit (default 50, max 200) + "
+        "offset; ``has_more=true`` in the response means call again "
+        "with offset += limit. Authz refuses (404-equivalent) for "
+        "folders the user can't access."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "folder_path": {
+                "type": "string",
+                "description": (
+                    "Folder path to list documents in (e.g. "
+                    "'/data/sales/2025'). '/' for root."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max docs to return (default 50, max 200).",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Pagination offset (default 0).",
+            },
+        },
+        "required": ["folder_path"],
+    },
+    handler=_handle_list_docs,
+)
 
 
 _READ_TREE_SPEC = ToolSpec(
@@ -1402,6 +1714,8 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     _VECTOR_SPEC.name: _VECTOR_SPEC,
     _READ_CHUNK_SPEC.name: _READ_CHUNK_SPEC,
     _READ_TREE_SPEC.name: _READ_TREE_SPEC,
+    _LIST_FOLDERS_SPEC.name: _LIST_FOLDERS_SPEC,
+    _LIST_DOCS_SPEC.name: _LIST_DOCS_SPEC,
     _GRAPH_EXPLORE_SPEC.name: _GRAPH_EXPLORE_SPEC,
     _WEB_SEARCH_SPEC.name: _WEB_SEARCH_SPEC,
     _RERANK_SPEC.name: _RERANK_SPEC,

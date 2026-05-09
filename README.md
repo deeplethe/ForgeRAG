@@ -89,19 +89,21 @@ It's **not** built for: customer-support chatbots, public knowledge bases, marke
 
 ```mermaid
 flowchart LR
-    Q([❓ Question]) --> AGENT[🤖 Agent Loop<br/>Hermes Agent runtime]
+    Q([❓ Question]) --> AGENT[🤖 Agent Loop<br/>any MCP-compatible runtime]
     AGENT -->|MCP| TOOLS{Tool selection}
+    TOOLS --> LF[📁 list_folders<br/>browse tree]
+    TOOLS --> LD[📃 list_docs<br/>list in folder]
     TOOLS --> VEC[📐 search_vector<br/>semantic recall]
     TOOLS --> KG[🕸️ graph_explore<br/>entities + relations]
-    TOOLS --> CHUNK[📄 read_chunk<br/>full passage]
     TOOLS --> TREE[🌳 read_tree<br/>section nav]
-    TOOLS --> WEB[🌐 web_search<br/>off-corpus]
+    TOOLS --> CHUNK[📄 read_chunk<br/>full passage]
     TOOLS --> RR[🔁 rerank<br/>cross-encoder]
+    LF --> AGENT
+    LD --> AGENT
     VEC --> AGENT
     KG --> AGENT
-    CHUNK --> AGENT
     TREE --> AGENT
-    WEB --> AGENT
+    CHUNK --> AGENT
     RR --> AGENT
     AGENT --> ANS[💬 Answer<br/>+ pixel-precise citations]
     ANS --> A([📝 Page + bbox])
@@ -115,8 +117,20 @@ flowchart LR
 Agent runtime, in-process) decides per-question which tools to call
 and in which order. For "what does section 3.2 say" it might just
 read_tree + read_chunk; for "how does X relate to Y across the
-corpus" it leads with graph_explore. Multi-hop questions chain
-several tools across iterations.
+corpus" it leads with graph_explore; for "what do we have on Q3
+sales?" it browses with list_folders + list_docs before searching.
+Multi-hop questions chain several tools across iterations.
+
+**Search ⇄ browse ⇄ read.** Three orthogonal access patterns the
+agent picks between:
+
+* **Search** — `search_vector` / `graph_explore` — best when the
+  agent has a query and wants relevant passages
+* **Browse** — `list_folders` / `list_docs` — best when the user
+  asks open-ended ("what do we have on X?") and the agent should
+  walk the corpus tree first
+* **Read** — `read_chunk` / `read_tree` — pull the full text of a
+  specific passage / outline a specific document
 
 Each tool enforces multi-user authz at the dispatch boundary — the
 search hits the agent sees are already scoped to the user's
@@ -193,7 +207,7 @@ flowchart TB
         MCP[MCP server<br/>domain tool surface]
         LLMP[LLM proxy<br/>OpenAI-compatible]
         ING[Ingestion Pipeline<br/>parse · tree · chunk · embed · KG]
-        TOOLS[Tools<br/>search_vector · graph_explore<br/>read_chunk · read_tree · web_search<br/>rerank · import_from_library]
+        TOOLS[Tools<br/>search_vector · graph_explore<br/>list_folders · list_docs<br/>read_chunk · read_tree · rerank<br/>import_from_library]
         AUTH[Auth + Spaces<br/>folder grants · audit log · per-user space]
     end
     subgraph "Pluggable Backends"

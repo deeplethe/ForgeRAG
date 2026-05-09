@@ -122,9 +122,11 @@ def with_principal():
 # ---------------------------------------------------------------------------
 
 
-def test_all_seven_domain_tools_registered():
+def test_mcp_tool_catalog_is_exact():
     """Make sure importing ``mcp_tools`` results in exactly the
-    expected catalog being published."""
+    expected catalog being published — locks in the v1.0.0 surface
+    (no web_search; list_folders + list_docs added for progressive
+    corpus browsing)."""
     tools = asyncio.run(mcp_server.list_tools())
     names = {t.name for t in tools}
     expected = {
@@ -132,12 +134,22 @@ def test_all_seven_domain_tools_registered():
         "search_vector",
         "read_chunk",
         "read_tree",
+        "list_folders",
+        "list_docs",
         "graph_explore",
-        "web_search",
         "rerank",
         "import_from_library",
     }
     assert names == expected, f"unexpected MCP tool catalog: {names ^ expected}"
+
+
+def test_web_search_is_NOT_exposed_via_mcp():
+    """Hermes ships its own WebFetch / WebSearch built-in tools; we
+    deliberately don't double-expose ours via MCP. Locking this in
+    so a future re-add doesn't sneak through."""
+    tools = asyncio.run(mcp_server.list_tools())
+    names = {t.name for t in tools}
+    assert "web_search" not in names
 
 
 def test_search_vector_input_schema():
@@ -289,23 +301,39 @@ def test_read_tree_omits_empty_node_id(
     assert fake_dispatch.calls[-1]["params"] == {"doc_id": "d_abc", "node_id": "n1"}
 
 
-def test_web_search_omits_empty_optional_args(
+def test_list_folders_omits_empty_parent_path(
     with_principal, fake_state, fake_dispatch
 ):
-    fake_dispatch.return_value = {"hits": []}
+    """Default parent_path '' (top-level) is not sent — handler
+    treats omission as 'top level'. Sending an empty string would
+    bypass that intent."""
+    fake_dispatch.return_value = {"folders": []}
     with_principal(_principal())
-    _mcp_tools_module.web_search("AI news")
-    params = fake_dispatch.calls[-1]["params"]
-    assert params == {"query": "AI news", "top_k": 5}
-    assert "time_filter" not in params
-    assert "domains" not in params
+    _mcp_tools_module.list_folders()
+    assert fake_dispatch.calls[-1]["params"] == {}
 
-    _mcp_tools_module.web_search(
-        "AI news", time_filter="week", domains=["arxiv.org"]
-    )
-    params = fake_dispatch.calls[-1]["params"]
-    assert params["time_filter"] == "week"
-    assert params["domains"] == ["arxiv.org"]
+    _mcp_tools_module.list_folders(parent_path="/data")
+    assert fake_dispatch.calls[-1]["params"] == {"parent_path": "/data"}
+
+
+def test_list_docs_threads_pagination_args(
+    with_principal, fake_state, fake_dispatch
+):
+    fake_dispatch.return_value = {"docs": []}
+    with_principal(_principal())
+    _mcp_tools_module.list_docs("/data/sales/2025")
+    assert fake_dispatch.calls[-1]["params"] == {
+        "folder_path": "/data/sales/2025",
+        "limit": 50,
+        "offset": 0,
+    }
+
+    _mcp_tools_module.list_docs("/foo", limit=10, offset=20)
+    assert fake_dispatch.calls[-1]["params"] == {
+        "folder_path": "/foo",
+        "limit": 10,
+        "offset": 20,
+    }
 
 
 def test_rerank_passes_chunk_ids_as_list(

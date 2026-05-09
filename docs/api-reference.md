@@ -137,13 +137,22 @@ SSE for streaming responses).
 | Name | Purpose |
 |------|---------|
 | `ping` | Diagnostic — confirms reachability + reports authenticated user_id |
-| `search_vector` | Semantic / dense-embedding search over the corpus, scoped to the user's accessible folders |
-| `read_chunk` | Fetch a single chunk's full content by chunk_id |
-| `read_tree` | Navigate a document's section tree |
+| `search_vector` | Semantic / dense-embedding search over the corpus, scoped to the user's accessible folders. Hits include the doc's folder `path` so the agent can use directory hierarchy as semantic signal |
+| `read_chunk` | Fetch a single chunk's full content by chunk_id; payload includes the doc's folder path |
+| `read_tree` | Navigate a document's section tree (root → child outline → drill-down summary + entities) |
+| `list_folders` | Browse — list immediate child folders under a parent path. Authz-scoped: only folders the user has access to are returned |
+| `list_docs` | Browse — list documents directly inside a folder (paginated). Authz-scoped: 404-equivalent for inaccessible folders |
 | `graph_explore` | Look up an entity / topic in the knowledge graph (with source-doc-coverage postfilter) |
-| `web_search` | Search the public web; results are flagged untrusted (no instruction-following from titles/snippets) |
 | `rerank` | Cross-encoder rerank a candidate chunk set |
 | `import_from_library` | Copy a Library document into a project workdir (project-scoped) |
+
+> **Web search** is intentionally NOT exposed via MCP. Hermes Agent
+> (and most other MCP-compatible runtimes) ship their own
+> `WebFetch` / `WebSearch` built-in tools; double-exposing ours
+> would put two `web_search` candidates in front of the agent
+> with no way to disambiguate. The underlying
+> `retrieval/web_search.py` module remains for fallback / future
+> re-wiring.
 
 **Authz:** the principal-bridge ASGI middleware reads
 `request.state.principal` (set by the standard `AuthMiddleware`)
