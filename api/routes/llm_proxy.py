@@ -1,8 +1,8 @@
 """
-OpenAI-compatible LLM proxy.
+LLM proxy — OpenAI-compat + Anthropic-compat surfaces.
 
-The in-container Hermes Agent runtime calls THIS endpoint instead
-of OpenAI / Anthropic / etc. directly. Three reasons:
+The in-container agent runtime calls THIS backend instead of
+OpenAI / Anthropic / etc. directly. Three reasons:
 
   1. *Server-side keys.* Provider API keys live in our process
      environment (litellm reads ``OPENAI_API_KEY`` /
@@ -11,39 +11,55 @@ of OpenAI / Anthropic / etc. directly. Three reasons:
      knows about a session token to OUR backend.
 
   2. *Multi-provider routing.* litellm dispatches by model name —
-     Hermes can request ``gpt-4o``, ``claude-3-5-sonnet-...``,
-     ``gemini-pro``, a local OpenAI-compatible endpoint, etc.
-     and each lands at the right provider with the right key.
+     the agent can request ``gpt-4o``, ``claude-sonnet-4-...``,
+     ``gemini-pro``, ``deepseek/...``, a local OpenAI-compatible
+     endpoint, etc. — each lands at the right provider with the
+     right key.
 
   3. *Usage attribution.* Every call carries an authenticated
-     ``user_id`` (via the standard auth dep). A follow-up commit
-     wires this to a usage table; today we just log.
+     ``user_id`` (via the standard auth dep).
 
-Endpoint:
+Two endpoint families:
 
-    POST /api/v1/llm/v1/chat/completions
+    POST /api/v1/llm/v1/chat/completions       (OpenAI shape)
+    POST /api/v1/llm/anthropic/v1/messages     (Anthropic shape)
 
-The trailing ``/v1`` matches the OpenAI URL convention so a vanilla
-OpenAI-compatible client can be pointed at us with just an env-var
-flip — Hermes (or any other client) sets
+The OpenAI surface is the legacy path used by every OpenAI-SDK
+client. The Anthropic surface lands in v1.0.0 to support the
+Claude Agent SDK — it sets ``ANTHROPIC_BASE_URL`` and POSTs
+``/v1/messages`` per Anthropic convention. Internally both routes
+funnel into ``litellm`` which translates wire format ↔ provider
+SDK ↔ wire format, so a request shaped as Anthropic Messages can
+end up calling DeepSeek / OpenAI / SiliconFlow without the agent
+knowing or caring.
 
+Client config:
+
+    # OpenAI-SDK clients
     OPENAI_BASE_URL=http://backend:8000/api/v1/llm/v1
     OPENAI_API_KEY=<our-session-bearer>
 
-and ``client.chat.completions.create(...)`` Just Works because the
-client appends ``/chat/completions`` itself.
+    # Claude Agent SDK / anthropic-python clients
+    ANTHROPIC_BASE_URL=http://backend:8000/api/v1/llm/anthropic
+    ANTHROPIC_API_KEY=<our-session-bearer>
+
+Both endpoints append ``/v1/<resource>`` themselves on the client
+side; the URL prefixes above are the bare proxy roots.
 
 Streaming:
 
     {"stream": true} → SSE (``text/event-stream``) with one
-    ``data: {chunk-json}\\n\\n`` per delta and a final
-    ``data: [DONE]\\n\\n``. Same wire format OpenAI emits, so
-    standard clients consume it without special-casing.
+    ``data: {chunk-json}\\n\\n`` per delta. The OpenAI route
+    terminates with ``data: [DONE]\\n\\n`` per OpenAI convention;
+    the Anthropic route emits ``message_stop`` events per
+    Anthropic Messages SSE convention. Same wire format the
+    upstream provider emits, so standard clients consume it
+    without special-casing.
 
-Errors are translated to HTTP:
+Errors translate to HTTP:
     * litellm-side raises (rate limit / auth / provider down) →
       ``502 Upstream LLM provider error: <Type>`` (non-stream) or
-      ``data: {"error": ...}`` followed by ``data: [DONE]`` (stream).
+      an inline ``error`` SSE event followed by stream close.
     * litellm not installed → ``503``.
 """
 
@@ -206,3 +222,156 @@ def _stream_chunks(litellm_mod, kwargs: dict[str, Any]):
         # Always emit DONE so the client closes cleanly even after
         # mid-stream failures.
         yield "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-compatible surface — POST /api/v1/llm/anthropic/v1/messages
+# ---------------------------------------------------------------------------
+#
+# The Claude Agent SDK reads ``ANTHROPIC_BASE_URL`` and sends a
+# canonical Anthropic Messages API request to ``<base>/v1/messages``.
+# This route accepts that shape and funnels it through litellm so
+# the request lands at WHATEVER provider OpenCraig is configured for
+# — Anthropic itself, OpenAI, DeepSeek, SiliconFlow, Bedrock,
+# Vertex, Ollama, etc. The agent stays "Claude-native" on the wire
+# while OpenCraig's BYOK story stays multi-provider.
+
+anthropic_router = APIRouter(
+    prefix="/api/v1/llm/anthropic/v1", tags=["llm-proxy-anthropic"]
+)
+
+
+class _AnthropicMessagesBody(BaseModel):
+    """Anthropic Messages API request body. Same forward-compat
+    posture as the OpenAI route — strict on the small set of
+    fields we explicitly handle, ``extra=allow`` on everything
+    else so newer Claude / litellm parameters flow through
+    untouched."""
+
+    model_config = ConfigDict(extra="allow")
+
+    model: str = Field(..., min_length=1)
+    messages: list[dict] = Field(..., min_length=1)
+    max_tokens: int = Field(..., ge=1)
+    stream: bool = False
+
+
+@anthropic_router.post("/messages")
+async def anthropic_messages(
+    body: _AnthropicMessagesBody,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+) -> Any:
+    try:
+        import litellm
+    except ImportError as e:  # pragma: no cover
+        raise HTTPException(
+            status_code=503,
+            detail="LLM proxy unavailable: litellm not installed",
+        ) from e
+
+    kwargs = body.model_dump(exclude_none=True)
+
+    log.info(
+        "llm_proxy.anthropic: user=%s model=%s stream=%s msgs=%d",
+        principal.user_id,
+        body.model,
+        body.stream,
+        len(body.messages),
+    )
+
+    # litellm.anthropic.messages.acreate is the official adapter
+    # that accepts Anthropic Messages format and routes to any
+    # provider via the model prefix. For native Anthropic models
+    # (e.g. ``claude-sonnet-4-...``) this is essentially a
+    # passthrough; for ``openai/gpt-4o`` / ``deepseek/...`` /
+    # ``bedrock/...`` it translates wire formats transparently.
+    if body.stream:
+        return StreamingResponse(
+            _stream_anthropic_chunks(litellm, kwargs),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    try:
+        resp = await litellm.anthropic.messages.acreate(**kwargs)
+    except Exception as e:
+        log.exception(
+            "llm_proxy.anthropic: messages.acreate failed user=%s model=%s",
+            principal.user_id,
+            body.model,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream LLM provider error: {type(e).__name__}",
+        ) from e
+
+    if hasattr(resp, "model_dump"):
+        return resp.model_dump()
+    if isinstance(resp, dict):
+        return resp
+    return getattr(resp, "__dict__", {"raw": str(resp)})
+
+
+async def _stream_anthropic_chunks(litellm_mod, kwargs: dict[str, Any]):
+    """SSE generator for the Anthropic Messages streaming format.
+
+    Anthropic SSE wire shape (one event per ``data:`` block):
+        event: message_start
+        data: {...}
+
+        event: content_block_start
+        data: {...}
+
+        event: content_block_delta
+        data: {...}
+
+        event: message_stop
+        data: {...}
+
+    litellm's anthropic.messages.acreate(stream=True) yields chunks
+    that are already in this shape — we just relay them with the
+    ``data:`` envelope so a standard Anthropic SSE consumer (which
+    is what the Claude Agent SDK's bundled CLI is) consumes them
+    without special-casing.
+
+    On init failure we emit one inline ``error`` event then close
+    so the client knows the stream ended unsuccessfully.
+    """
+    kwargs = dict(kwargs)
+    kwargs["stream"] = True
+    try:
+        stream = await litellm_mod.anthropic.messages.acreate(**kwargs)
+    except Exception as e:
+        log.exception("llm_proxy.anthropic: stream init failed")
+        err_payload = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": type(e).__name__,
+                    "message": (
+                        f"Upstream LLM provider error: {type(e).__name__}"
+                    ),
+                },
+            }
+        )
+        yield f"event: error\ndata: {err_payload}\n\n"
+        return
+
+    try:
+        async for chunk in stream:
+            try:
+                if hasattr(chunk, "model_dump_json"):
+                    payload = chunk.model_dump_json()
+                elif isinstance(chunk, dict):
+                    payload = json.dumps(chunk)
+                else:
+                    payload = json.dumps(getattr(chunk, "__dict__", {}))
+            except Exception:
+                log.exception("llm_proxy.anthropic: chunk serialise failed")
+                continue
+            yield f"data: {payload}\n\n"
+    except Exception:
+        log.exception("llm_proxy.anthropic: stream iteration failed")

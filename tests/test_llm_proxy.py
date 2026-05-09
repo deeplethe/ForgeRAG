@@ -317,3 +317,233 @@ def test_chat_completions_empty_model_returns_422(client):
         json={"model": "", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-compat surface — /api/v1/llm/anthropic/v1/messages
+# ---------------------------------------------------------------------------
+
+
+class _FakeAnthropicResponse:
+    """Mimics litellm's Anthropic Messages response shape."""
+
+    def __init__(self, payload: dict[str, Any]):
+        self._payload = payload
+
+    def model_dump(self) -> dict[str, Any]:
+        return dict(self._payload)
+
+
+class _FakeAnthropicMessages:
+    """Stub for litellm.anthropic.messages — its acreate is async."""
+
+    def __init__(self):
+        self.calls: list[dict[str, Any]] = []
+        self._script = None
+
+    def configure(self, script):
+        """``script`` returns either a fake response (non-stream) or
+        an async iterable of fake chunks (stream). May also raise."""
+        self._script = script
+
+    async def acreate(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._script(kwargs)
+
+
+class _FakeLiteLLMAnthropic:
+    """Stub for the ``litellm`` module exposing only the Anthropic
+    surface. The route does ``import litellm`` then calls
+    ``litellm.anthropic.messages.acreate(...)``."""
+
+    def __init__(self):
+        self.messages = _FakeAnthropicMessages()
+        self.anthropic = SimpleNamespace(messages=self.messages)
+
+
+@pytest.fixture
+def app_with_anthropic():
+    a = FastAPI()
+    a.include_router(llm_proxy_routes.anthropic_router)
+    a.dependency_overrides[get_principal] = _principal
+    return a
+
+
+@pytest.fixture
+def anthropic_client(app_with_anthropic):
+    with TestClient(app_with_anthropic) as c:
+        yield c
+
+
+@pytest.fixture
+def fake_anthropic(monkeypatch):
+    fake = _FakeLiteLLMAnthropic()
+    monkeypatch.setitem(sys.modules, "litellm", fake)
+    return fake
+
+
+def test_anthropic_messages_non_streaming_passes_through(anthropic_client, fake_anthropic):
+    payload = {
+        "id": "msg_test_001",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-20250514",
+        "content": [{"type": "text", "text": "Hello back"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 3},
+    }
+    fake_anthropic.messages.configure(
+        lambda _kw: _FakeAnthropicResponse(payload)
+    )
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 1024,
+        "temperature": 0.4,
+    }
+    r = anthropic_client.post(
+        "/api/v1/llm/anthropic/v1/messages", json=body,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == payload
+
+    # Forward-compat: extra fields (temperature) thread through
+    assert len(fake_anthropic.messages.calls) == 1
+    call = fake_anthropic.messages.calls[0]
+    assert call["model"] == "claude-sonnet-4-20250514"
+    assert call["temperature"] == 0.4
+    assert call["max_tokens"] == 1024
+
+
+def test_anthropic_messages_routes_to_non_anthropic_provider(anthropic_client, fake_anthropic):
+    """The whole point of the Anthropic-compat surface: an SDK
+    request shaped as Anthropic Messages can route to ANY model
+    via the litellm prefix syntax. Confirms the kwargs make it to
+    litellm unchanged."""
+    fake_anthropic.messages.configure(
+        lambda _kw: _FakeAnthropicResponse({"type": "message", "content": []})
+    )
+    body = {
+        "model": "deepseek/deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 512,
+    }
+    r = anthropic_client.post(
+        "/api/v1/llm/anthropic/v1/messages", json=body,
+    )
+    assert r.status_code == 200
+    assert fake_anthropic.messages.calls[0]["model"] == "deepseek/deepseek-chat"
+
+
+def test_anthropic_messages_provider_error_returns_502(anthropic_client, fake_anthropic):
+    def raises(_kw):
+        raise RuntimeError("upstream secret detail")
+    fake_anthropic.messages.configure(raises)
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 512,
+    }
+    r = anthropic_client.post(
+        "/api/v1/llm/anthropic/v1/messages", json=body,
+    )
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "RuntimeError" in detail
+    # Provider raw message NOT leaked
+    assert "secret detail" not in detail
+
+
+def test_anthropic_messages_missing_max_tokens_returns_422(anthropic_client):
+    """Anthropic API requires max_tokens — ours mirrors that."""
+    r = anthropic_client.post(
+        "/api/v1/llm/anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_anthropic_messages_empty_messages_returns_422(anthropic_client):
+    r = anthropic_client.post(
+        "/api/v1/llm/anthropic/v1/messages",
+        json={
+            "model": "claude-sonnet-4-20250514",
+            "messages": [],
+            "max_tokens": 100,
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_anthropic_messages_streaming_emits_anthropic_sse(anthropic_client, fake_anthropic):
+    """Anthropic SSE wire format: each chunk gets ``data: {...}\\n\\n``.
+    No ``data: [DONE]`` terminator (Anthropic's protocol uses
+    explicit ``message_stop`` events as the close signal)."""
+    chunk_payloads = [
+        {"type": "message_start",
+         "message": {"id": "msg_x", "type": "message", "role": "assistant"}},
+        {"type": "content_block_delta",
+         "delta": {"type": "text_delta", "text": "Hel"}},
+        {"type": "content_block_delta",
+         "delta": {"type": "text_delta", "text": "lo"}},
+        {"type": "message_stop"},
+    ]
+
+    class _AsyncIter:
+        def __init__(self, items):
+            self._items = list(items)
+        def __aiter__(self): return self
+        async def __anext__(self):
+            if not self._items:
+                raise StopAsyncIteration
+            return _FakeChunk(self._items.pop(0))
+
+    fake_anthropic.messages.configure(lambda _kw: _AsyncIter(chunk_payloads))
+
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 512,
+        "stream": True,
+    }
+    with anthropic_client.stream(
+        "POST", "/api/v1/llm/anthropic/v1/messages", json=body,
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert r.headers.get("cache-control") == "no-cache"
+        full = b"".join(r.iter_bytes()).decode("utf-8")
+
+    parts = [p for p in full.split("\n\n") if p.startswith("data:")]
+    assert len(parts) == 4
+    first = json.loads(parts[0][len("data: "):])
+    assert first["type"] == "message_start"
+    last = json.loads(parts[-1][len("data: "):])
+    assert last["type"] == "message_stop"
+
+
+def test_anthropic_messages_streaming_init_error_emits_error_event(anthropic_client, fake_anthropic):
+    def raises(_kw):
+        raise ConnectionError("dial tcp: connection refused")
+    fake_anthropic.messages.configure(raises)
+
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 512,
+        "stream": True,
+    }
+    with anthropic_client.stream(
+        "POST", "/api/v1/llm/anthropic/v1/messages", json=body,
+    ) as r:
+        assert r.status_code == 200
+        full = b"".join(r.iter_bytes()).decode("utf-8")
+
+    # An ``event: error`` block precedes the data line on init failure
+    assert "event: error" in full
+    assert "ConnectionError" in full
+    # Provider raw message NOT leaked
+    assert "connection refused" not in full

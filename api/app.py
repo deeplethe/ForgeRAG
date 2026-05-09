@@ -260,6 +260,7 @@ def create_app(
     app.include_router(trash_routes.router)
     app.include_router(metrics_routes.router)
     app.include_router(llm_proxy_routes.router)
+    app.include_router(llm_proxy_routes.anthropic_router)
     app.include_router(hermes_chat_routes.router)
 
     # MCP server (Hermes-Agent-in-container reaches our domain tools
