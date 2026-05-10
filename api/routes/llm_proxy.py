@@ -315,6 +315,40 @@ async def anthropic_messages(
         ) from e
 
     kwargs = body.model_dump(exclude_none=True)
+
+    # Agent SDK loopback rewrites: the bundled Claude Agent SDK
+    # hard-codes ``claude-<family>-...`` as ``model`` regardless of
+    # which upstream provider this deployment actually has credentials
+    # for. When ``answering.generator.model`` points at a non-Anthropic
+    # provider (``deepseek/...``, ``openai/...``, ``bedrock/...``), let
+    # that win — otherwise every agent turn pays a 5s round-trip to
+    # the real Anthropic API only to come back 401 / "invalid
+    # x-api-key" before LiteLLM falls back.
+    #
+    # Detection is intentionally narrow: a bare ``claude-*`` model
+    # name (no ``provider/`` prefix) is the SDK's signature; anything
+    # explicitly prefixed (``anthropic/claude-...``) is a deliberate
+    # caller choice and we leave it alone. A generator that's also
+    # claude-shaped means the deployment really does have an
+    # Anthropic key and shouldn't be rerouted.
+    body_model_lower = (body.model or "").lower()
+    if body_model_lower.startswith("claude") and "/" not in body.model:
+        gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
+        cfg_model = getattr(gen, "model", "") if gen is not None else ""
+        cfg_model_lower = (cfg_model or "").lower()
+        cfg_is_anthropic = (
+            cfg_model_lower.startswith("claude")
+            or cfg_model_lower.startswith("anthropic/")
+        )
+        if cfg_model and "/" in cfg_model and not cfg_is_anthropic:
+            log.info(
+                "llm_proxy.anthropic: rewriting SDK loopback model %s → %s",
+                body.model,
+                cfg_model,
+            )
+            body.model = cfg_model
+            kwargs["model"] = cfg_model
+
     cfg_key, cfg_base = _resolve_api_key(state, body.model)
     if cfg_key and "api_key" not in kwargs:
         kwargs["api_key"] = cfg_key
