@@ -66,9 +66,14 @@ import { useI18n } from 'vue-i18n'
 import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace } from '@/api'
 import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, X as XIcon } from 'lucide-vue-next'
 import { useDialog } from '@/composables/useDialog'
+import { useTheme } from '@/composables/useTheme'
+import { useChatStreamState } from '@/composables/useChatStreamState'
+import { markConversationRead } from '@/api'
 
 const { t } = useI18n()
 const dialog = useDialog()
+const { isDark } = useTheme()
+const { setStreamingConv } = useChatStreamState()
 import { renderMarkdown } from '@/utils/renderMarkdown'
 import { useDocCache } from '@/composables/useDocCache'
 // Lazy-loaded so pdfjs-dist (~MB) is only fetched when the user actually
@@ -81,6 +86,7 @@ import Spinner from '@/components/Spinner.vue'
 import ThinkingPulse from '@/components/ThinkingPulse.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
+import WorkdirFolderPicker from '@/components/WorkdirFolderPicker.vue'
 import AgentMessageBody from '@/components/AgentMessageBody.vue'
 // ThinkingPicker removed post-cutover (provider CoT permanently
 // disabled; see commit d07f673). Component file kept for now —
@@ -163,27 +169,22 @@ function clearCwdBinding() {
   router.replace({ query: q })
 }
 
-async function switchCwdFolder() {
-  // v1.0 minimal: prompt for a path. v1.1 will swap this for a
-  // proper folder-picker dialog showing the user's workdir tree.
-  // Backend creates the folder if it doesn't exist (mkdir
-  // semantics in workdir route + entrypoint chdir auto-create).
-  const next = await dialog.prompt({
-    title: t('chat.cwd_banner.switch_dialog.title'),
-    description: t('chat.cwd_banner.switch_dialog.description'),
-    placeholder: '/sales/2025',
-    initialValue: boundCwdPath.value || '',
-    confirmText: t('chat.cwd_banner.switch_dialog.confirm'),
-  })
-  if (next == null) return
-  const trimmed = String(next).trim()
-  // Empty input → clear binding (root chat).
-  if (!trimmed) {
+// Folder-picker modal state. Opening the workdir chip shows the
+// picker rooted at the currently bound path (or root if none) — the
+// user clicks down through the workdir tree and hits Select. The
+// "Use workdir root" shortcut maps to a clear, so an explicit "no
+// cwd" is one click away from any depth.
+const cwdPickerOpen = ref(false)
+function switchCwdFolder() {
+  cwdPickerOpen.value = true
+}
+function onCwdPicked(path) {
+  let normalized = path && path.startsWith('/') ? path : '/' + (path || '')
+  normalized = normalized.replace(/\/+$/, '') || '/'
+  if (normalized === '/') {
     clearCwdBinding()
     return
   }
-  let normalized = trimmed.startsWith('/') ? trimmed : '/' + trimmed
-  normalized = normalized.replace(/\/+$/, '') || '/'
   const q = { ...route.query, cwd: normalized }
   router.replace({ query: q })
 }
@@ -254,6 +255,36 @@ onMounted(() => {
     _loadAndPoll(convId.value)
   }
   nextTick(() => chatEl.value && (chatEl.value.scrollTop = chatEl.value.scrollHeight))
+})
+
+// Cross-view streaming-state mirror — keeps ``useChatStreamState``'s
+// ``streamingConvId`` in sync so the sidebar's spinner can light up
+// for the active conversation while a turn is in flight, even when
+// the chat view is the only thing that knows about the stream.
+watch([streaming, convId], ([isStreaming, cid]) => {
+  setStreamingConv(isStreaming ? cid : null)
+}, { immediate: true })
+
+// Mark-as-read: whenever the user lands on a conversation, clear the
+// sidebar's blue dot for it. Fires on initial mount AND whenever
+// ``convId`` changes (sidebar click, conversation switch). The
+// backend writes ``last_read_at = now()``; the next sidebar list
+// refresh will compute ``unread = false`` and the dot disappears.
+async function _markRead(cid) {
+  if (!cid) return
+  try { await markConversationRead(cid) }
+  catch { /* non-fatal — read state is best-effort */ }
+  // Refresh the sidebar's list so the unread flag updates without
+  // waiting for the next periodic refetch. Inject hook from App.vue.
+  if (typeof loadConvs === 'function') loadConvs()
+}
+watch(convId, (cid) => { _markRead(cid) }, { immediate: true })
+
+// Also mark read when a stream ends — the user is clearly looking at
+// the conversation when the agent finishes replying, so the dot
+// shouldn't linger.
+watch(streaming, (isStreaming, was) => {
+  if (was && !isStreaming) _markRead(convId.value)
 })
 
 // Module-level aliases for closures
@@ -1128,54 +1159,34 @@ function onTraceClick(m) {
         </button>
       </div>
 
-      <!-- cwd-binding banner — visible whenever ?cwd=<path> is in the
-           URL. Tells the user the agent is anchored to <path> inside
-           their workdir; tool calls that read/write files land there.
-           "Switch" prompts for a new path (v1.0 minimal — v1.1 will
-           swap this for a folder picker). The × clears the binding
-           for THIS view; the next send will run at /workdir root.
-           Backend writes the chosen path back onto the Conversation
-           row, so reload + sidebar return arrive in the same folder. -->
-      <div
-        v-if="boundCwdPath && !boundProject"
-        class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[11.5px] text-t2"
-      >
-        <div class="flex items-center gap-2 min-w-0">
-          <FolderOpenIcon :size="13" :stroke-width="1.75" class="text-t3 shrink-0" />
-          <span class="text-t3 shrink-0">{{ t('chat.cwd_banner.working_in') }}</span>
-          <button
-            class="font-mono text-t1 truncate hover:underline"
-            :title="t('chat.cwd_banner.open_in_workspace')"
-            @click="router.push({ path: '/workspace', query: { path: boundCwdPath } })"
-          >
-            {{ boundCwdPath }}
-          </button>
-        </div>
-        <div class="flex items-center gap-1 shrink-0">
-          <button
-            class="px-1.5 py-0.5 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors"
-            :title="t('chat.cwd_banner.switch')"
-            @click="switchCwdFolder"
-          >
-            {{ t('chat.cwd_banner.switch') }}
-          </button>
-          <button
-            class="p-0.5 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors"
-            :title="t('chat.cwd_banner.clear')"
-            @click="clearCwdBinding"
-          >
-            <XIcon :size="13" :stroke-width="1.75" />
-          </button>
-        </div>
-      </div>
+      <!-- cwd-binding banner removed — the workdir is now picked via
+           the chip rail above the input box (next to PathScopePicker).
+           See ``WorkdirPickerChip`` below. The chat reads/writes the
+           ``?cwd=`` URL param the same way; the chip is the new
+           surface for setting/clearing it. -->
 
       <!-- EMPTY STATE -->
       <div v-if="empty" class="flex-1 flex flex-col">
         <div class="flex-[3]"></div>
         <div class="pl-8 pr-16">
           <div class="max-w-2xl mx-auto text-center">
-            <img src="/craig.png" alt="" class="w-20 h-20 rounded-full mx-auto mb-3" />
-            <h1 class="wordmark text-[32px] mb-2">OpenCraig</h1>
+            <!-- The brand mark already includes the wordmark, so the
+                 separate ``<h1>OpenCraig</h1>`` was retired. Two
+                 images, one per theme — the inactive one is hidden
+                 with ``v-show`` (rather than v-if) so the next theme
+                 swap is instant (no decode flicker). -->
+            <img
+              v-show="!isDark"
+              src="/opencraig_light.png"
+              alt="OpenCraig"
+              class="h-12 mx-auto mb-6"
+            />
+            <img
+              v-show="isDark"
+              src="/opencraig_dark.png"
+              alt="OpenCraig"
+              class="h-12 mx-auto mb-6"
+            />
             <p class="text-sm text-t3 mb-8 max-w-md mx-auto leading-relaxed">{{ t('chat.tagline') }}</p>
             <div class="flex flex-wrap justify-center gap-2 mb-10">
               <button v-for="key in presetChipKeys" :key="key" @click="send(t('chat.preset.' + key))"
@@ -1193,26 +1204,34 @@ function onTraceClick(m) {
                  belonging to the input card below. -->
             <div class="mb-1.5 pl-1 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <!-- ThinkingPicker removed post-cutover. Provider CoT
-                   is permanently disabled (the agent loop is the
-                   thinking layer); users see the agent's reasoning
-                   inline as "🧠 审视检索结果中…" between tool rounds.
-                   See commit d07f673. -->
-              <!-- Web search placeholder. Disabled chip until a
-                   real retriever (Tavily / SearXNG / etc.) lands. -->
-              <span
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
-                :title="t('tools.web_search_coming_soon')"
+              <!-- Workdir picker chip — replaces the (disabled) web-search
+                   chip + the old top banner. The cwd is now a flexible
+                   "guidance" hint: pick any workdir folder to anchor the
+                   agent's tools there for this turn. ``boundCwdPath`` is
+                   driven by ``?cwd=`` in the URL the same as before; this
+                   chip is just the UI surface. -->
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-[11px] transition-colors"
+                :class="boundCwdPath ? 'text-brand' : 'text-t2'"
+                :title="boundCwdPath
+                  ? t('chat.workdir_chip.tooltip_set', { path: boundCwdPath })
+                  : t('chat.workdir_chip.tooltip_idle')"
+                @click="switchCwdFolder"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
-                </svg>
-                <span>{{ t('tools.web_search') }}</span>
-                <span class="text-t3/60">·</span>
-                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
-              </span>
+                <FolderOpenIcon :size="12" :stroke-width="1.75" />
+                <span class="truncate max-w-[200px] font-mono">{{
+                  boundCwdPath || t('chat.workdir_chip.label_idle')
+                }}</span>
+                <span
+                  v-if="boundCwdPath"
+                  class="text-t3 hover:text-t1 -mr-1 ml-0.5"
+                  :title="t('chat.workdir_chip.clear')"
+                  @click.stop="clearCwdBinding"
+                >
+                  <XIcon :size="11" :stroke-width="1.75" />
+                </span>
+              </button>
             </div>
             <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
@@ -1358,26 +1377,28 @@ function onTraceClick(m) {
                  with the rounded input box below. -->
             <div class="mb-1.5 flex items-center gap-1.5">
               <PathScopePicker v-model="pathFilter" />
-              <!-- ThinkingPicker removed post-cutover. Provider CoT
-                   is permanently disabled (the agent loop is the
-                   thinking layer); users see the agent's reasoning
-                   inline as "🧠 审视检索结果中…" between tool rounds.
-                   See commit d07f673. -->
-              <!-- Web search placeholder. Disabled chip until a
-                   real retriever (Tavily / SearXNG / etc.) lands. -->
-              <span
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/40 text-[11px] text-t3 cursor-not-allowed opacity-60"
-                :title="t('tools.web_search_coming_soon')"
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-[11px] transition-colors"
+                :class="boundCwdPath ? 'text-brand' : 'text-t2'"
+                :title="boundCwdPath
+                  ? t('chat.workdir_chip.tooltip_set', { path: boundCwdPath })
+                  : t('chat.workdir_chip.tooltip_idle')"
+                @click="switchCwdFolder"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
-                </svg>
-                <span>{{ t('tools.web_search') }}</span>
-                <span class="text-t3/60">·</span>
-                <span class="italic">{{ t('tools.web_search_coming_soon') }}</span>
-              </span>
+                <FolderOpenIcon :size="12" :stroke-width="1.75" />
+                <span class="truncate max-w-[200px] font-mono">{{
+                  boundCwdPath || t('chat.workdir_chip.label_idle')
+                }}</span>
+                <span
+                  v-if="boundCwdPath"
+                  class="text-t3 hover:text-t1 -mr-1 ml-0.5"
+                  :title="t('chat.workdir_chip.clear')"
+                  @click.stop="clearCwdBinding"
+                >
+                  <XIcon :size="11" :stroke-width="1.75" />
+                </span>
+              </button>
             </div>
             <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
@@ -1421,6 +1442,20 @@ function onTraceClick(m) {
         <div v-else class="flex-1 flex items-center justify-center"><Spinner /></div>
       </div>
     </Transition>
+
+    <!-- Workdir folder picker — modal, mounted once. Driven by the
+         workdir chip in the chip rail. Confirms with the chosen path
+         (or "Use workdir root" → clear). -->
+    <WorkdirFolderPicker
+      v-model:open="cwdPickerOpen"
+      :title="t('chat.cwd_banner.switch_dialog.title')"
+      :description="t('chat.cwd_banner.switch_dialog.description')"
+      :confirm-text="t('chat.cwd_banner.switch_dialog.confirm')"
+      :initial-path="boundCwdPath || '/'"
+      :allow-clear="!!boundCwdPath"
+      @select="onCwdPicked"
+      @clear="clearCwdBinding"
+    />
   </div>
 </template>
 
