@@ -392,6 +392,14 @@
       "new_folder_error_title": "新建文件夹失败",
       "new_folder_error_invalid": "名称不能包含 '/'、'\\\\' 或以 '.' 开头。"
     },
+    "attachments": {
+      "upload": "上传文件",
+      "remove": "移除",
+      "paste_filename": "粘贴的文本",
+      "upload_failed": "上传失败：{msg}",
+      "size_too_large": "文件超过 {limit}",
+      "unsupported_kind": "当前模型不接受这种文件"
+    },
     "may_make_mistakes": "OpenCraig 可能出错。引用都附原文出处 —— 引用前请核对。",
     "preset": {
       "whats_here": "这里有些什么文档？",

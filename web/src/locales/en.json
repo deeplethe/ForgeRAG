@@ -392,6 +392,14 @@
       "new_folder_error_title": "Couldn't create folder",
       "new_folder_error_invalid": "Name can't contain '/', '\\\\', or start with '.'."
     },
+    "attachments": {
+      "upload": "Attach file",
+      "remove": "Remove",
+      "paste_filename": "Pasted text",
+      "upload_failed": "Upload failed: {msg}",
+      "size_too_large": "File exceeds {limit}",
+      "unsupported_kind": "The configured model doesn't accept this kind of file"
+    },
     "may_make_mistakes": "OpenCraig may make mistakes. Citations link to the source — verify before quoting.",
     "preset": {
       "whats_here": "What's in this workspace?",

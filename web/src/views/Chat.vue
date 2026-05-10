@@ -68,8 +68,8 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace } from '@/api'
-import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, X as XIcon } from 'lucide-vue-next'
+import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
+import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, Paperclip as PaperclipIcon, X as XIcon } from 'lucide-vue-next'
 import { useDialog } from '@/composables/useDialog'
 import { useTheme } from '@/composables/useTheme'
 import { useChatStreamState } from '@/composables/useChatStreamState'
@@ -93,6 +93,7 @@ import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
 import PathScopePicker from '@/components/PathScopePicker.vue'
 import WorkdirFolderPicker from '@/components/WorkdirFolderPicker.vue'
 import AgentMessageBody from '@/components/AgentMessageBody.vue'
+import AttachmentChip from '@/components/AttachmentChip.vue'
 // ThinkingPicker removed post-cutover (provider CoT permanently
 // disabled; see commit d07f673). Component file kept for now —
 // settings UI may reuse it as an advanced/debug toggle later.
@@ -203,6 +204,27 @@ const retInfo = _retInfo
 const abortCtrl = _abortCtrl
 const genTools = _genTools
 const streamTrace = _streamTrace
+
+// ── Chat attachments (chip rail above the input box) ─────────────
+// Draft attachments staged for the next ``send()``. Populated from
+// the server on conv-load (via ``listAttachments(only_drafts:true)``)
+// so a page refresh mid-compose keeps the user's pinned files —
+// they live in the DB the moment the upload completes, not in
+// browser memory. After ``send()`` the backend binds them to the
+// just-persisted message and the next refresh returns ``[]``.
+const attachments = ref([])
+// Hidden ``<input type="file">`` for the upload button — refs
+// per input row (empty-state and active-state both render their
+// own button, both fire into the same upload handler).
+const fileInputEmpty = ref(null)
+const fileInputActive = ref(null)
+// Auto-convert long pasted text into a ``.txt`` attachment so it
+// doesn't drown the textarea. Threshold: ChatGPT/Claude.ai both
+// use ~2000 chars or ~30 lines — beyond that the textarea becomes
+// hard to scroll past, and a chip with the same content is more
+// useful (the user can reorder, remove, re-read).
+const _PASTE_AS_FILE_CHARS = 2000
+const _PASTE_AS_FILE_LINES = 30
 
 // (Pre-agent-cutover this section adapted ``genTools.thinking``
 // for the ThinkingPicker chip. The chip was removed when the
@@ -326,10 +348,90 @@ watch(convId, async (id) => {
   streaming.value = false; streamText.value = ''; stopTimer(); stopPoll()
   streamTrace.value = []
   msgs.value = []; pdf.show = false; activeCiteId.value = null; trace.show = false
+  // Refresh the staged-attachments list for the new conversation —
+  // drafts persist on the server, so a refresh / conv switch picks
+  // them back up rather than losing them.
+  attachments.value = []
   if (id) {
+    try { attachments.value = await listAttachments(id, { only_drafts: true }) }
+    catch { /* non-fatal */ }
     await _loadAndPoll(id)
   }
 })
+
+// ── Attachment upload handlers ────────────────────────────────────
+// All entry points (file picker, paste-as-file, future drag-drop)
+// funnel through ``_uploadFile`` so the error path + chip-rail
+// update is one place. Returns the AttachmentOut on success or
+// ``null`` after a handled error.
+async function _uploadFile(file) {
+  // Brand-new chat without a conv id → create one upfront so the
+  // attachment has a home. Same trick as ``send()`` uses for the
+  // very first message.
+  let cid = convId.value
+  if (!cid) {
+    try {
+      const created = await createConversation(null, boundProjectId.value || null)
+      cid = created.conversation_id
+      _skipNextWatch = true
+      convId.value = cid
+      setActiveConvIdNoHistory(cid)
+      loadConvs()
+    } catch (e) {
+      dialog.alert({ title: t('chat.attachments.upload_failed', { msg: e?.message || '' }) })
+      return null
+    }
+  }
+  try {
+    const a = await uploadAttachment(cid, file)
+    attachments.value = [...attachments.value, a]
+    return a
+  } catch (e) {
+    dialog.alert({ title: t('chat.attachments.upload_failed', { msg: e?.message || String(e) }) })
+    return null
+  }
+}
+
+function onPickFile(event) {
+  const files = Array.from(event?.target?.files || [])
+  for (const f of files) _uploadFile(f)
+  if (event?.target) event.target.value = ''  // reset so the same file can be re-picked
+}
+
+async function onRemoveAttachment(att) {
+  // Optimistic — the backend always succeeds (attachment exists or
+  // returns 404 which the user already considers "gone"). On error
+  // refresh the list to recover.
+  attachments.value = attachments.value.filter(a => a.attachment_id !== att.attachment_id)
+  try { await deleteAttachment(att.attachment_id) }
+  catch {
+    if (convId.value) {
+      try { attachments.value = await listAttachments(convId.value, { only_drafts: true }) } catch {}
+    }
+  }
+}
+
+// Paste handler attached to the textarea. Plain-text paste over the
+// thresholds (chars or lines) gets converted to a ``.txt`` File and
+// uploaded as an attachment instead of landing in the textarea —
+// keeps the input box readable when the user dumps a long log.
+function onTextareaPaste(event) {
+  const cd = event.clipboardData
+  if (!cd) return
+  // Only intercept plain text. If there's a richer payload (file,
+  // image, html), let the browser default fire and our drop / file
+  // picker handle it.
+  if (cd.types && Array.from(cd.types).some(t => t.startsWith('Files'))) return
+  const text = cd.getData('text/plain') || ''
+  if (!text) return
+  const lineCount = text.split('\n').length
+  if (text.length < _PASTE_AS_FILE_CHARS && lineCount < _PASTE_AS_FILE_LINES) return
+  event.preventDefault()
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const filename = `${t('chat.attachments.paste_filename')}-${stamp}.txt`
+  const file = new File([text], filename, { type: 'text/plain' })
+  _uploadFile(file)
+}
 
 /** Load messages from DB; if last msg is user (answer pending), poll until done */
 async function _loadAndPoll(id) {
@@ -1259,13 +1361,40 @@ function onTraceClick(m) {
                 </span>
               </button>
             </div>
-            <div class="flex items-end gap-3 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
-              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_a_question')" rows="2"
+            <!-- Attachment chip rail — only renders when the user
+                 has actually pinned files. Sits flush above the
+                 input box so the chips read as "stuck to" the
+                 message that's about to send. -->
+            <div v-if="attachments.length" class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <AttachmentChip
+                v-for="a in attachments"
+                :key="a.attachment_id"
+                :attachment="a"
+                @remove="onRemoveAttachment"
+              />
+            </div>
+            <div class="flex items-end gap-2 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
+              <button
+                type="button"
+                class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-t3 hover:text-t1 hover:bg-bg3 transition-colors"
+                :title="t('chat.attachments.upload')"
+                @click="fileInputEmpty?.click()"
+              >
+                <PaperclipIcon :size="16" :stroke-width="1.75" />
+              </button>
+              <input
+                ref="fileInputEmpty"
+                type="file"
+                multiple
+                class="hidden"
+                @change="onPickFile"
+              />
+              <textarea v-model="input" @keydown="onKey" @paste="onTextareaPaste" :placeholder="t('chat.ask_a_question')" rows="2"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 40px; max-height: 120px" autofocus />
-              <button @click="send()" :disabled="!input.trim()"
+              <button @click="send()" :disabled="!input.trim() && !attachments.length"
                 class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
+                :class="(input.trim() || attachments.length) ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>
@@ -1447,6 +1576,15 @@ function onTraceClick(m) {
                 </span>
               </button>
             </div>
+            <!-- Attachment chip rail — same component as empty-state. -->
+            <div v-if="attachments.length" class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <AttachmentChip
+                v-for="a in attachments"
+                :key="a.attachment_id"
+                :attachment="a"
+                @remove="onRemoveAttachment"
+              />
+            </div>
             <!-- ``items-center`` so the textarea's single-line text sits
                  vertically centred with the send button. ``items-end``
                  (the previous default) made the placeholder look "stuck
@@ -1454,8 +1592,23 @@ function onTraceClick(m) {
                  line of text. In multi-line mode the button rides the
                  vertical centre of the textarea, which is acceptable —
                  ChatGPT does the same. -->
-            <div class="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
-              <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
+            <div class="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-line bg-bg">
+              <button
+                type="button"
+                class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-t3 hover:text-t1 hover:bg-bg3 transition-colors"
+                :title="t('chat.attachments.upload')"
+                @click="fileInputActive?.click()"
+              >
+                <PaperclipIcon :size="14" :stroke-width="1.75" />
+              </button>
+              <input
+                ref="fileInputActive"
+                type="file"
+                multiple
+                class="hidden"
+                @change="onPickFile"
+              />
+              <textarea v-model="input" @keydown="onKey" @paste="onTextareaPaste" :placeholder="t('chat.ask_followup')" rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
                 @input="$event.target.style.height='auto';$event.target.style.height=$event.target.scrollHeight+'px'" />
@@ -1466,9 +1619,9 @@ function onTraceClick(m) {
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
               </button>
               <!-- Send button -->
-              <button v-else @click="send()" :disabled="!input.trim()"
+              <button v-else @click="send()" :disabled="!input.trim() && !attachments.length"
                 class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                :class="input.trim() ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
+                :class="(input.trim() || attachments.length) ? 'bg-brand text-white' : 'bg-bg3 text-t3'">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>

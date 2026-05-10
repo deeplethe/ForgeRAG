@@ -94,6 +94,14 @@ export {
   markConversationRead,
 } from './conversations'
 
+// Chat attachments (chip rail above the input box)
+export {
+  uploadAttachment,
+  listAttachments,
+  deleteAttachment,
+  attachmentBlobUrl,
+} from './attachments'
+
 // Traces (查询审计)
 export {
   listTraces,
