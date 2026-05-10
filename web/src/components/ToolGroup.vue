@@ -69,10 +69,11 @@ const headline = computed(() => {
   return phrases.join(' · ') || `${props.tools.length} tool${props.tools.length > 1 ? 's' : ''}`
 })
 
-// Default to expanded when there's only one call — the outer fold
-// is information-free at N=1 (it would just say "Ran 1 command")
-// and forcing the user to click twice to see the diff is noise.
-const expanded = ref(props.tools.length === 1)
+// N=1 batches don't render a ToolGroup at all — the parent
+// (``AgentMessageBody``) drops the outer fold and renders the
+// single ToolChip flush in the message body. So everything that
+// reaches this component is N≥2 and starts collapsed.
+const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
 </script>
 
@@ -95,23 +96,26 @@ function toggle() { expanded.value = !expanded.value }
   margin: 8px 0;
   font-size: 0.75rem;
 }
+
+/* Folded headline — Claude.ai style: chevron + grey text, NO
+   border, NO background-fill. Hover lights the underline only. */
 .group-head {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px 4px 6px;
+  padding: 2px 0;
   background: transparent;
-  border: 1px solid var(--color-line);
-  border-radius: 6px;
+  border: none;
   color: var(--color-t2);
   cursor: pointer;
-  transition: background-color .15s, border-color .15s;
   text-align: left;
   max-width: 100%;
 }
-.group-head:hover {
-  background: var(--color-bg3);
-  border-color: var(--color-line2);
+.group-head:hover .head-text {
+  color: var(--color-t1);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-t3);
 }
 .head-icon {
   flex-shrink: 0;
@@ -122,15 +126,23 @@ function toggle() { expanded.value = !expanded.value }
 .head-text {
   font-feature-settings: "tnum";
   letter-spacing: -0.005em;
-  color: var(--color-t1);
   font-weight: 500;
+  transition: color .15s;
 }
 
-/* Indented rail under the group head — matches the Claude-Code
-   look where each batch reads as one "ledge" of activity. */
+/* Expanded body — single rounded panel that holds every step. The
+   chip rows inside lose their individual borders so the panel reads
+   as one block of activity rather than a stack of nested cards. */
+/* Outline-only panel: a thin border + rounded corner is enough
+   to read as one block of activity. Filling the bg with ``bg3``
+   conflicted with chip-block__pre (also bg3) — the inner code
+   blocks would disappear. Leaving the panel transparent lets the
+   ``bg3`` of the inner blocks pop out as actual content. */
 .group-body {
-  margin: 6px 0 0 18px;
-  padding: 0 0 0 12px;
-  border-left: 1px solid var(--color-line);
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
 }
 </style>

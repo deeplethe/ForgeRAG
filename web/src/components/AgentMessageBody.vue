@@ -24,6 +24,7 @@ import { computed } from 'vue'
 import { renderMarkdown } from '@/utils/renderMarkdown'
 import MarkdownBody from './MarkdownBody.vue'
 import ToolGroup from './ToolGroup.vue'
+import ToolChip from './ToolChip.vue'
 
 const props = defineProps({
   trace: { type: Array, default: () => [] },
@@ -104,6 +105,14 @@ function renderPart(text) {
         class="text-part text-sm leading-7 text-t1"
         :html="renderPart(part.content)"
         @click="onCiteClick && onCiteClick($event)"
+      />
+      <!-- Single-tool batches skip the outer fold entirely — there's
+           no information in "Used 1 tool" that you wouldn't already
+           see one click deeper. The chip renders flush in the
+           message body just like a paragraph would. -->
+      <ToolChip
+        v-else-if="part.kind === 'tools' && part.tools.length === 1"
+        :tool="part.tools[0]"
       />
       <ToolGroup v-else-if="part.kind === 'tools'" :tools="part.tools" />
     </template>

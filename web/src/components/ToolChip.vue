@@ -381,26 +381,30 @@ const hasAnyDetail = computed(() => Boolean(
 
 <style scoped>
 .tool-chip {
-  margin: 6px 0;
+  margin: 2px 0;
   font-size: 0.75rem;
 }
+/* Row-style head: no border, no background-fill. Hover lights the
+   row to signal "clickable". Reads cleanly inside the ToolGroup
+   panel where these chips stack as one continuous block; also
+   reads cleanly standing alone when the parent skipped the outer
+   group (single-tool batch). */
 .chip-head {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px 4px 6px;
+  width: 100%;
+  padding: 3px 6px;
   background: transparent;
-  border: 1px solid var(--color-line);
-  border-radius: 6px;
+  border: none;
+  border-radius: 4px;
   color: var(--color-t2);
   cursor: pointer;
-  transition: background-color .15s, border-color .15s;
+  transition: background-color .12s;
   text-align: left;
-  max-width: 100%;
 }
 .chip-head:hover {
   background: var(--color-bg3);
-  border-color: var(--color-line2);
 }
 .head-icon {
   flex-shrink: 0;
@@ -440,10 +444,14 @@ const hasAnyDetail = computed(() => Boolean(
   color: var(--color-t3);
 }
 
+/* Expanded body sits flush under the row head. The ToolGroup panel
+   already provides the surrounding box; an additional left rail
+   inside would over-decorate. When the chip is rendered on its own
+   (N=1, no panel), the left padding still gives an indented feel
+   without a visible line. */
 .chip-body {
-  margin: 6px 0 0 18px;
-  padding: 0 0 0 12px;
-  border-left: 1px solid var(--color-line);
+  margin: 4px 0 8px 0;
+  padding: 0 6px 0 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
