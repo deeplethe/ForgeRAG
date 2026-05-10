@@ -19,10 +19,10 @@
       <div v-else-if="error" class="md-preview__hint md-preview__hint--err">
         Couldn't load file: {{ error }}
       </div>
-      <div
+      <MarkdownBody
         v-else-if="mode === 'rendered'"
-        class="md-preview__rendered msg-body"
-        v-html="rendered"
+        class="md-preview__rendered"
+        :source="source"
       />
       <pre v-else class="md-preview__raw">{{ source }}</pre>
     </div>
@@ -33,11 +33,10 @@
 /**
  * Markdown preview with rendered ↔ raw toggle.
  *
- * Re-uses ``utils/renderMarkdown`` so the output matches what the
- * chat view shows for assistant messages — same marked + katex
- * pipeline. The .msg-body class hooks into the global markdown
- * styling already defined in style.css (headings, lists, tables,
- * code blocks) so we don't have to re-skin everything.
+ * Defers the actual markdown rendering + typography to the shared
+ * ``<MarkdownBody>`` component, so the ``.md`` file viewer always
+ * looks identical to the chat agent reply (same marked + katex
+ * pipeline, same h1-h4 / list / code / table styling).
  *
  * The file body is fetched once on mount via the inline preview URL.
  * Auth flows through cookies / Authorization headers the same way
@@ -45,8 +44,8 @@
  * file's text" endpoint, just the inline-disposition variant of
  * the workdir download endpoint.
  */
-import { computed, onMounted, ref, watch } from 'vue'
-import { renderMarkdown } from '@/utils/renderMarkdown'
+import { onMounted, ref, watch } from 'vue'
+import MarkdownBody from '@/components/MarkdownBody.vue'
 
 const props = defineProps({
   url: { type: String, required: true },
@@ -56,8 +55,6 @@ const mode = ref('rendered')
 const source = ref('')
 const loading = ref(true)
 const error = ref('')
-
-const rendered = computed(() => renderMarkdown(source.value))
 
 async function load() {
   loading.value = true

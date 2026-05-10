@@ -22,6 +22,7 @@
  */
 import { computed } from 'vue'
 import { renderMarkdown } from '@/utils/renderMarkdown'
+import MarkdownBody from './MarkdownBody.vue'
 import ToolChip from './ToolChip.vue'
 
 const props = defineProps({
@@ -93,10 +94,10 @@ function renderPart(text) {
 <template>
   <div class="agent-msg-body">
     <template v-for="(part, i) in parts" :key="i">
-      <div
+      <MarkdownBody
         v-if="part.kind === 'text'"
-        class="text-part msg-body text-sm leading-7 text-t1"
-        v-html="renderPart(part.content)"
+        class="text-part text-sm leading-7 text-t1"
+        :html="renderPart(part.content)"
         @click="onCiteClick && onCiteClick($event)"
       />
       <ToolChip v-else-if="part.kind === 'tools'" :tools="part.tools" />
@@ -107,7 +108,7 @@ function renderPart(text) {
 <style scoped>
 .agent-msg-body {
   /* Spacing between parts is handled per-part: text parts use
-     internal margin from .msg-body markdown rules, tool chips
+     internal margin from MarkdownBody's typography, tool chips
      have their own top/bottom margin. */
 }
 .text-part {
@@ -116,20 +117,15 @@ function renderPart(text) {
 .text-part:first-child { margin-top: 0; }
 .text-part:last-child { margin-bottom: 0; }
 
-/* Markdown body hooks for v-html content. The text content
-   produced by the model is rendered into ``.text-part .msg-body``
-   by ``renderText`` (parent's renderMsg) — same selectors the
-   global ``.msg-body :deep(*)`` rules in Chat.vue target. We
-   only override what the parent's scoped styles can't reach
-   because v-html output here is a child of THIS component, not
-   Chat.vue.
-
-   Horizontal rules: render essentially invisible (margin only,
-   no line). The model occasionally writes ``---`` between
-   sections even though the prompt asks it not to; without this
-   override every section break shows as a full-width grey bar
-   that fragments the answer visually. We keep the spacing so
-   the section break is felt, just without the ruler. */
+/* Horizontal-rule override scoped to text parts inside this
+   component: render essentially invisible (margin only, no line).
+   The model occasionally writes ``---`` between sections even
+   though the prompt asks it not to; without this override every
+   section break shows as a full-width grey bar that fragments
+   the answer visually. We keep the spacing so the section break
+   is felt, just without the ruler. The base ``.msg-body :deep(hr)``
+   in MarkdownBody draws a ruler — fine for file previews but
+   noisy in chat answers. */
 .text-part :deep(hr) {
   border: none;
   margin: 0.5em 0;
