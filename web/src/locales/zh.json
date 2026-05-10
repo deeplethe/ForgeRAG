@@ -9,7 +9,8 @@
     "edit": "编辑",
     "loading": "加载中...",
     "retry": "重试",
-    "github": "GitHub"
+    "github": "GitHub",
+    "recycle_bin": "回收站"
   },
   "sidebar": {
     "tabs": {
@@ -48,6 +49,28 @@
     "download": "下载",
     "open_chat_here": "在此开聊",
     "open_chat_in": "在 {path} 开聊",
+    "search_placeholder": "搜索当前文件夹…",
+    "search_clear": "清除",
+    "grid_view": "网格视图",
+    "list_view": "列表视图",
+    "menu": {
+      "open": "打开",
+      "preview": "预览",
+      "new_subfolder": "新建子文件夹",
+      "rename": "重命名",
+      "copy_path": "复制路径",
+      "delete": "删除",
+      "refresh": "刷新",
+      "open_chat_parent": "在父文件夹里开聊"
+    },
+    "rename_failed": "重命名失败",
+    "delete_failed": "删除失败",
+    "move_failed": "移动失败",
+    "delete_folder_title": "删除文件夹？",
+    "delete_file_title": "删除文件？",
+    "delete_folder_desc": "{path} 及其包含的所有内容将被永久删除，此操作不可撤销。",
+    "delete_file_desc": "{path} 将被永久删除，此操作不可撤销。",
+    "delete_confirm": "删除",
     "load_error": "加载工作台失败：{msg}",
     "empty_title": "这个文件夹是空的",
     "empty_subtitle": "创建子文件夹或上传文件。在这个文件夹里开聊时,agent 会在此读写文件。",
@@ -335,7 +358,7 @@
     "no_match": "没有匹配 \"{query}\" 的结果"
   },
   "chat": {
-    "tagline": "每一句话都能指回原文。在你的文档里问任何问题 —— 答案会附上页码。",
+    "tagline": "改变规则的团队的智能体工作台。",
     "ask_a_question": "在你的文档里问任何问题...",
     "ask_followup": "继续追问...",
     "project_banner": {
@@ -348,10 +371,26 @@
       "clear": "退出目录上下文",
       "open_in_workspace": "在工作台中打开",
       "switch_dialog": {
-        "title": "切换工作目录",
-        "description": "输入工作目录中的路径（例如 /sales/2025）。Agent 下一轮会切到这个目录；不存在的目录会自动创建。留空则清除。",
-        "confirm": "切换"
+        "title": "选择工作目录",
+        "description": "浏览你的工作目录，选一个文件夹作为 Agent 下一轮的读写位置。可点击「新建文件夹」即时创建子目录。",
+        "confirm": "选择"
       }
+    },
+    "workdir_chip": {
+      "label_idle": "工作目录",
+      "tooltip_idle": "选择一个工作目录引导 Agent 在此读写文件",
+      "tooltip_set": "Agent 将在 {path} 内读写；点击切换",
+      "clear": "清除工作目录"
+    },
+    "workdir_picker": {
+      "root": "工作目录",
+      "selected": "已选：",
+      "no_subfolders": "{path} 没有子文件夹。点击选择即把 Agent 锚定到此处。",
+      "use_root": "使用工作目录根",
+      "new_folder": "新建文件夹",
+      "new_folder_placeholder": "文件夹名称",
+      "new_folder_error_title": "新建文件夹失败",
+      "new_folder_error_invalid": "名称不能包含 '/'、'\\\\' 或以 '.' 开头。"
     },
     "may_make_mistakes": "OpenCraig 可能出错。引用都附原文出处 —— 引用前请核对。",
     "preset": {

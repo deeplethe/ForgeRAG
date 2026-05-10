@@ -17,10 +17,14 @@ import {
 } from 'lucide-vue-next'
 import UserMenu from './UserMenu.vue'
 import Skeleton from './Skeleton.vue'
+import { useLastTabRoute } from '@/composables/useLastTabRoute'
+import { useChatStreamState } from '@/composables/useChatStreamState'
 
 const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
+const lastTabRoute = useLastTabRoute()
+const { streamingConvId } = useChatStreamState()
 
 // Pinned next to the wordmark so version + repo link are discoverable
 // without cluttering the user-settings menu.
@@ -119,7 +123,10 @@ function onTabClick(tab) {
       router.push('/chat')
     }
   } else {
-    router.push(tab.path)
+    // Use the last fullPath the user was on for this tab (folder/query
+    // included) so the cached view doesn't reset to root on click.
+    // Falls back to the bare tab path on first visit.
+    router.push(lastTabRoute.get(tab.path))
   }
 }
 
@@ -320,9 +327,21 @@ onBeforeUnmount(() => {
             class="conv-title-zone"
             @click="onSelectConv(c.conversation_id)"
           >
-            <!-- No per-row star marker — the section header
-                 ("Starred") already conveys the state. A second
-                 indicator on every row was redundant. -->
+            <!-- Per-row status dot. Three states (mutually exclusive,
+                 streaming wins over unread):
+                   * spinner — this conv has an in-flight stream
+                   * blue dot — fresh agent reply the user hasn't read
+                   * empty 12px slot otherwise so titles align across
+                     rows regardless of dot presence -->
+            <span class="conv-status">
+              <Loader2
+                v-if="streamingConvId === c.conversation_id"
+                :size="11"
+                :stroke-width="2.25"
+                class="conv-status__spinner"
+              />
+              <span v-else-if="c.unread" class="conv-status__dot" />
+            </span>
             <span class="flex-1 truncate text-left">{{ c.title || t('sidebar.untitled') }}</span>
           </button>
 
@@ -494,12 +513,37 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   align-items: center;
+  gap: 6px;
   padding: 8px 4px 8px 12px;
   background: transparent;
   border: none;
   color: inherit;
   cursor: pointer;
   text-align: left;
+}
+
+/* Status slot — fixed-width so titles align regardless of dot
+   presence. 12px is wide enough for the 11px Loader2 / blue dot. */
+.conv-status {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.conv-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+.conv-status__spinner {
+  color: var(--color-t3);
+  animation: conv-spinner-rotate 0.9s linear infinite;
+}
+@keyframes conv-spinner-rotate {
+  to { transform: rotate(360deg); }
 }
 
 /* Trigger wrapper — flex stretches across the row's full

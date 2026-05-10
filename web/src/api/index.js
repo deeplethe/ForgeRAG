@@ -70,6 +70,9 @@ export {
   listWorkdir,
   makeWorkdirFolder,
   uploadWorkdirFile,
+  renameWorkdirEntry,
+  moveWorkdirEntry,
+  deleteWorkdirEntry,
   workdirDownloadUrl,
   workdirPreviewUrl,
 } from './workdir'
@@ -88,6 +91,7 @@ export {
   deleteConversation,
   getMessages,
   addMessage,
+  markConversationRead,
 } from './conversations'
 
 // Traces (查询审计)

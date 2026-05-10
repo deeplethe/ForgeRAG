@@ -27,7 +27,7 @@ export function getWorkdirInfo() {
  * List the contents of a folder. Empty path = root.
  *
  * @param {string} [path='']
- * @returns {Promise<Array<{ path: string, name: string, is_dir: boolean, size_bytes: number, modified_at: string }>>}
+ * @returns {Promise<Array<{ path: string, name: string, is_dir: boolean, size_bytes: number, modified_at: string, created_at: string }>>}
  */
 export function listWorkdir(path = '') {
   const qs = path ? `?path=${encodeURIComponent(path)}` : ''
@@ -58,6 +58,33 @@ export async function uploadWorkdirFile(path, file) {
   // FormData we use request() with FormData, which the client.js
   // detects and sends as multipart.
   return request('/api/v1/workdir/upload', { method: 'POST', body: fd })
+}
+
+/**
+ * Rename a file or folder in place. Same-folder rename only — to
+ * relocate, use ``moveWorkdirEntry``. ``new_name`` is the new
+ * basename (no slashes).
+ */
+export function renameWorkdirEntry(path, newName) {
+  return post('/api/v1/workdir/rename', { path, new_name: newName })
+}
+
+/**
+ * Move a file or folder into ``dst_folder``. ``dst_folder`` is the
+ * destination folder's path (auto-created if missing).
+ */
+export function moveWorkdirEntry(src, dstFolder) {
+  return post('/api/v1/workdir/move', { src, dst_folder: dstFolder })
+}
+
+/**
+ * Permanently delete a file or folder (recursive for folders). No
+ * trash / soft-delete — the UI must confirm before calling.
+ */
+export function deleteWorkdirEntry(path) {
+  return request(`/api/v1/workdir/files?path=${encodeURIComponent(path)}`, {
+    method: 'DELETE',
+  })
 }
 
 /**

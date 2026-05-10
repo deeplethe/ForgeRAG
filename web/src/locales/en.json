@@ -9,7 +9,8 @@
     "edit": "Edit",
     "loading": "Loading...",
     "retry": "Retry",
-    "github": "GitHub"
+    "github": "GitHub",
+    "recycle_bin": "Recycle bin"
   },
   "sidebar": {
     "tabs": {
@@ -48,6 +49,28 @@
     "download": "Download",
     "open_chat_here": "Open chat here",
     "open_chat_in": "Open chat in {path}",
+    "search_placeholder": "Search this folder…",
+    "search_clear": "Clear",
+    "grid_view": "Grid view",
+    "list_view": "List view",
+    "menu": {
+      "open": "Open",
+      "preview": "Preview",
+      "new_subfolder": "New subfolder",
+      "rename": "Rename",
+      "copy_path": "Copy path",
+      "delete": "Delete",
+      "refresh": "Refresh",
+      "open_chat_parent": "Open chat in parent folder"
+    },
+    "rename_failed": "Rename failed",
+    "delete_failed": "Delete failed",
+    "move_failed": "Move failed",
+    "delete_folder_title": "Delete folder?",
+    "delete_file_title": "Delete file?",
+    "delete_folder_desc": "{path} and everything inside it will be permanently deleted. This cannot be undone.",
+    "delete_file_desc": "{path} will be permanently deleted. This cannot be undone.",
+    "delete_confirm": "Delete",
     "load_error": "Couldn't load workdir: {msg}",
     "empty_title": "This folder is empty",
     "empty_subtitle": "Create a subfolder or upload files. The agent reads + writes here when you open a chat in this folder.",
@@ -335,7 +358,7 @@
     "no_match": "No matches for \"{query}\""
   },
   "chat": {
-    "tagline": "Every claim has a coordinate. Ask anything in your documents — we show you the page.",
+    "tagline": "The agent workspace for teams who change the rules.",
     "ask_a_question": "Ask anything about your documents...",
     "ask_followup": "Ask a follow-up...",
     "project_banner": {
@@ -348,10 +371,26 @@
       "clear": "Leave folder context",
       "open_in_workspace": "Open in Workbench",
       "switch_dialog": {
-        "title": "Switch folder",
-        "description": "Enter a folder path inside your workdir (e.g. /sales/2025). The agent's next turn runs in this folder; missing folders are created on the fly. Leave empty to clear.",
-        "confirm": "Switch"
+        "title": "Pick a workdir folder",
+        "description": "Browse your workdir and pick a folder for the agent's next turn to read and write in. Use \"New folder\" to create a subfolder on the fly.",
+        "confirm": "Select"
       }
+    },
+    "workdir_chip": {
+      "label_idle": "Workdir",
+      "tooltip_idle": "Pick a workdir folder to guide the agent's reads/writes",
+      "tooltip_set": "Agent will read/write inside {path}; click to switch",
+      "clear": "Clear workdir"
+    },
+    "workdir_picker": {
+      "root": "Workdir",
+      "selected": "Selected:",
+      "no_subfolders": "{path} has no subfolders. Click Select to anchor the agent here.",
+      "use_root": "Use workdir root",
+      "new_folder": "New folder",
+      "new_folder_placeholder": "Folder name",
+      "new_folder_error_title": "Couldn't create folder",
+      "new_folder_error_invalid": "Name can't contain '/', '\\\\', or start with '.'."
     },
     "may_make_mistakes": "OpenCraig may make mistakes. Citations link to the source — verify before quoting.",
     "preset": {

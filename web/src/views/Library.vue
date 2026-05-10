@@ -52,7 +52,7 @@
     >
       <template #lead>
         <Breadcrumb
-          :crumbs="viewingTrash ? trashCrumbs : ws.breadcrumbs.value"
+          :crumbs="viewingTrash ? trashCrumbs : displayedCrumbs"
           @navigate="onCrumbNavigate"
         />
       </template>
@@ -161,8 +161,10 @@
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { emptyTrash, getTrashStats, listTrash, purgeTrashItems, restoreFromTrash } from '@/api'
 import { useLibrary } from '@/composables/useLibrary'
+import { useLastTabRoute } from '@/composables/useLastTabRoute'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useUploadsStore } from '@/stores/uploads'
 import { useDialog } from '@/composables/useDialog'
@@ -203,6 +205,30 @@ const router = useRouter()
 const route = useRoute()
 const ws = useLibrary()
 const { confirm, toast, dismissToast } = useDialog()
+const { t } = useI18n()
+
+// Record where the user is in the Library so the sidebar's "Library"
+// tab can bring them back to the same folder on the next click.
+const lastTabRoute = useLastTabRoute()
+watch(
+  () => route.fullPath,
+  (fp) => {
+    if (route.path === '/library') lastTabRoute.set('/library', fp)
+  },
+  { immediate: true },
+)
+
+// Wrapper around the composable's breadcrumbs that translates the
+// synthetic root crumb (``{name: '/', path: '/'}``) to the localized
+// "Knowledge Base" label. The path stays ``/`` so click-to-root
+// navigation keeps working unchanged.
+const displayedCrumbs = computed(() =>
+  ws.breadcrumbs.value.map(c =>
+    c.path === '/' && c.name === '/'
+      ? { ...c, name: t('sidebar.tabs.library') }
+      : c,
+  ),
+)
 
 // ── OS drag-and-drop file upload ─────────────────────────────────
 // Counter pattern: dragenter/leave fire for every child element nested
@@ -374,10 +400,10 @@ const fileInput = ref(null)
 // Synthetic breadcrumb for trash mode. Clicking ``/`` exits the trash
 // (handled by ``onCrumbNavigate`` below); the second crumb is the
 // current location and is a no-op.
-const trashCrumbs = [
-  { name: '/', path: '/' },
-  { name: 'Recycle bin', path: '/__trash__' },
-]
+const trashCrumbs = computed(() => [
+  { name: t('sidebar.tabs.library'), path: '/' },
+  { name: t('common.recycle_bin'), path: '/__trash__' },
+])
 function onCrumbNavigate(path) {
   // Self-clicks on the trash crumb are no-op — the user is already here.
   if (path === '/__trash__') return

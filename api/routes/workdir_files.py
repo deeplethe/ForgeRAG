@@ -47,6 +47,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Response,
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
@@ -72,10 +73,24 @@ class FileEntryOut(BaseModel):
     is_dir: bool
     size_bytes: int
     modified_at: str
+    # POSIX ``st_ctime`` is the inode-change time on Linux (not creation),
+    # but on Windows it IS creation time. Good enough for the UI's
+    # "created" column — we don't promise this is birth-time on Linux.
+    created_at: str
 
 
 class MkdirRequest(BaseModel):
     path: str = Field(..., min_length=1, description="Folder path to create (relative to workdir root)")
+
+
+class RenameRequest(BaseModel):
+    path: str = Field(..., min_length=1, description="Existing entry to rename")
+    new_name: str = Field(..., min_length=1, description="New basename — no slashes, no leading dot")
+
+
+class MoveRequest(BaseModel):
+    src: str = Field(..., min_length=1, description="Source entry to move")
+    dst_folder: str = Field(..., min_length=1, description="Destination FOLDER (created if missing)")
 
 
 class WorkdirInfo(BaseModel):
@@ -162,12 +177,18 @@ def _to_workdir_relative(workdir_root: Path, abs_path: Path) -> str:
 
 def _entry_out(workdir_root: Path, entry: Path) -> FileEntryOut:
     stat = entry.stat()
+    # ``st_birthtime`` exists on macOS and recent Linux/glibc — prefer it
+    # when available so the "created" column actually shows creation time;
+    # otherwise fall back to ``st_ctime`` (inode change on Linux,
+    # creation on Windows).
+    created_ts = getattr(stat, "st_birthtime", None) or stat.st_ctime
     return FileEntryOut(
         path=_to_workdir_relative(workdir_root, entry),
         name=entry.name,
         is_dir=entry.is_dir(),
         size_bytes=int(stat.st_size) if entry.is_file() else 0,
         modified_at=datetime.utcfromtimestamp(stat.st_mtime).isoformat(),
+        created_at=datetime.utcfromtimestamp(created_ts).isoformat(),
     )
 
 
@@ -278,6 +299,109 @@ async def upload_file(
         log.exception("workdir upload: write failed path=%s", dest)
         raise HTTPException(status_code=500, detail=f"write failed: {type(e).__name__}")
     return _entry_out(root, dest)
+
+
+@router.post("/rename", response_model=FileEntryOut)
+def rename_entry(
+    body: RenameRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
+) -> FileEntryOut:
+    """Rename a file or folder in place (basename change only).
+
+    Same-folder rename — to move a thing to a different folder use
+    ``POST /move``. Refuses names with path separators or a leading
+    dot (the latter would hide the entry from the listing).
+    """
+    name = body.new_name.strip()
+    if "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="name must not contain '/' or '\\'")
+    if name.startswith("."):
+        raise HTTPException(status_code=400, detail="name must not start with '.'")
+    root = _user_workdir_root(state, principal.user_id)
+    src = _resolve_safe(root, body.path, allow_root=False)
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="source not found")
+    dst = src.parent / name
+    if dst == src:
+        return _entry_out(root, src)
+    if dst.exists():
+        raise HTTPException(status_code=409, detail="an entry with that name already exists")
+    try:
+        src.rename(dst)
+    except OSError as e:
+        log.exception("workdir rename: %s -> %s failed", src, dst)
+        raise HTTPException(status_code=500, detail=f"rename failed: {type(e).__name__}")
+    return _entry_out(root, dst)
+
+
+@router.post("/move", response_model=FileEntryOut)
+def move_entry(
+    body: MoveRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
+) -> FileEntryOut:
+    """Move a file or folder into ``dst_folder`` (auto-creates the folder).
+
+    Refuses moving a folder into itself or any descendant — that would
+    either no-op (self) or detach the subtree (descendant).
+    """
+    root = _user_workdir_root(state, principal.user_id)
+    src = _resolve_safe(root, body.src, allow_root=False)
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="source not found")
+    dst_folder = _resolve_safe(root, body.dst_folder, allow_root=True)
+    dst_folder.mkdir(parents=True, exist_ok=True)
+    if not dst_folder.is_dir():
+        raise HTTPException(status_code=400, detail="destination must be a folder")
+
+    if src.is_dir():
+        # Moving a folder into itself or its own subtree would either
+        # no-op (self) or sever the subtree from the user's view.
+        try:
+            dst_folder.resolve().relative_to(src.resolve())
+            raise HTTPException(status_code=400, detail="cannot move folder into itself or a descendant")
+        except ValueError:
+            pass
+
+    dst = dst_folder / src.name
+    if dst.resolve() == src.resolve():
+        return _entry_out(root, src)
+    if dst.exists():
+        raise HTTPException(status_code=409, detail="destination already has an entry with this name")
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError as e:
+        log.exception("workdir move: %s -> %s failed", src, dst)
+        raise HTTPException(status_code=500, detail=f"move failed: {type(e).__name__}")
+    return _entry_out(root, dst)
+
+
+@router.delete("/files", status_code=204)
+def delete_entry(
+    path: str = Query(..., description="File or folder path to delete"),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
+) -> Response:
+    """Delete a file or folder. Folders are removed recursively.
+
+    No soft-delete / trash for v1.0 — this is permanent. The UI
+    confirms before calling. Refuses to operate on the workdir root
+    itself (``allow_root=False`` on the resolver).
+    """
+    root = _user_workdir_root(state, principal.user_id)
+    target = _resolve_safe(root, path, allow_root=False)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="path not found")
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except OSError as e:
+        log.exception("workdir delete: %s failed", target)
+        raise HTTPException(status_code=500, detail=f"delete failed: {type(e).__name__}")
+    return Response(status_code=204)
 
 
 @router.get("/download")
