@@ -352,7 +352,7 @@ def import_from_library(
     Library UI.
 
     v1.0 folder-as-cwd: pass ``target_subpath`` (path relative to
-    ``/workdir/`` inside your sandbox). With cwd ``/sales/2025``,
+    ``/workspace/`` inside your sandbox). With cwd ``/sales/2025``,
     use ``target_subpath="sales/2025/inputs"`` to land the file at
     ``./inputs/<filename>`` from your pwd. Folders auto-created.
 

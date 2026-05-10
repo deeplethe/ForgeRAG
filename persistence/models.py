@@ -320,6 +320,16 @@ class Conversation(Base):
     last_assistant_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # User-pinned knowledge scopes for this chat. Each entry is a
+    # path prefix (folder) or a full doc path; the chat route forwards
+    # them to the agent as a "preferred search scope" hint, and the
+    # agent fans out search_vector calls per path as needed. List
+    # is sticky across turns within the conversation — the user
+    # builds up a knowledge selection in the chip rail, and every
+    # subsequent send carries the same pinned set until they ×
+    # remove a chip.
+    path_filters_json: Mapped[list] = mapped_column(JSON, default=list)
+
 
 class Message(Base):
     __tablename__ = "messages"

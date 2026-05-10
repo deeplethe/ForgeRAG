@@ -346,7 +346,7 @@
     "role_user": "用户"
   },
   "scope": {
-    "all_documents": "全部文档",
+    "all_documents": "知识库",
     "search_placeholder": "搜索文件夹 / 文件...",
     "select_this_folder": "选中此目录",
     "tooltip_pick_and_dive": "选中并进入 {path}",
@@ -392,8 +392,26 @@
       "new_folder_error_title": "新建文件夹失败",
       "new_folder_error_invalid": "名称不能包含 '/'、'\\\\' 或以 '.' 开头。"
     },
+    "knowledge_picker": {
+      "title": "添加知识",
+      "description": "浏览你的知识库。点击文件夹钻入，点击文件即固定。使用底部按钮可整个固定当前文件夹。",
+      "search_placeholder": "搜索文档...",
+      "root": "知识库",
+      "tooltip_drill": "进入 {path}",
+      "tooltip_pick_in": "请先进入一个文件夹再固定",
+      "pin_folder": "固定 {path}",
+      "pin_folder_disabled": "固定文件夹"
+    },
+    "add_menu": {
+      "knowledge": "知识",
+      "knowledge_desc": "从知识库选一个文件夹或文件",
+      "file": "文件",
+      "file_desc": "从电脑上传",
+      "trigger_label": "添加"
+    },
     "attachments": {
       "upload": "上传文件",
+      "label_add": "附件",
       "remove": "移除",
       "paste_filename": "粘贴的文本",
       "upload_failed": "上传失败：{msg}",

@@ -346,7 +346,7 @@
     "role_user": "user"
   },
   "scope": {
-    "all_documents": "All documents",
+    "all_documents": "Knowledge",
     "search_placeholder": "Search folders / files...",
     "select_this_folder": "Use this folder",
     "tooltip_pick_and_dive": "Scope and drill into {path}",
@@ -377,10 +377,10 @@
       }
     },
     "workdir_chip": {
-      "label_idle": "Workdir",
-      "tooltip_idle": "Pick a workdir folder to guide the agent's reads/writes",
+      "label_idle": "Folder",
+      "tooltip_idle": "Pick a folder to guide the agent's reads/writes",
       "tooltip_set": "Agent will read/write inside {path}; click to switch",
-      "clear": "Clear workdir"
+      "clear": "Clear folder"
     },
     "workdir_picker": {
       "root": "Workdir",
@@ -392,8 +392,26 @@
       "new_folder_error_title": "Couldn't create folder",
       "new_folder_error_invalid": "Name can't contain '/', '\\\\', or start with '.'."
     },
+    "knowledge_picker": {
+      "title": "Add knowledge",
+      "description": "Browse your knowledge base. Click a folder to drill in, click a file to pin it. Use the footer button to pin the current folder as a whole.",
+      "search_placeholder": "Search documents...",
+      "root": "Knowledge",
+      "tooltip_drill": "Drill into {path}",
+      "tooltip_pick_in": "Drill into a folder before pinning",
+      "pin_folder": "Pin {path}",
+      "pin_folder_disabled": "Pin folder"
+    },
+    "add_menu": {
+      "knowledge": "Knowledge",
+      "knowledge_desc": "Pin a folder or file from your knowledge base",
+      "file": "File",
+      "file_desc": "Upload from your computer",
+      "trigger_label": "Add"
+    },
     "attachments": {
       "upload": "Attach file",
+      "label_add": "Attach",
       "remove": "Remove",
       "paste_filename": "Pasted text",
       "upload_failed": "Upload failed: {msg}",

@@ -63,6 +63,10 @@ class UpdateConversationRequest(BaseModel):
     # different project. ``""`` is the explicit "unbind" signal so
     # the field's None value can keep meaning "no change."
     project_id: str | None = None
+    # User-pinned knowledge scopes (chip-rail entries). ``None`` =
+    # no change; ``[]`` = explicit clear; non-empty list = replace.
+    # Each entry is a Library path (folder or full doc path).
+    path_filters: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +249,14 @@ def update_conversation(
             updates["project_id"] = new_pid
         else:
             updates["project_id"] = None
+    if req.path_filters is not None:
+        # API uses ``path_filters`` (plural, list[str]); the storage
+        # column is ``path_filters_json``. Translate at the boundary
+        # so callers don't see the json suffix. Path validation
+        # (must start with ``/``, no traversal) deferred to retrieval
+        # / authz components — they're already authoritative.
+        clean = [p.strip() for p in req.path_filters if isinstance(p, str) and p.strip()]
+        updates["path_filters_json"] = clean
     if updates:
         state.store.update_conversation(conversation_id, **updates)
     return get_conversation(conversation_id, state, principal)
@@ -303,7 +315,39 @@ def list_messages(
     if not row or not _owns_conversation(row, _effective_owner(state, principal)):
         raise HTTPException(404, "conversation not found")
     msgs = state.store.get_messages(conversation_id, limit=limit)
-    return [MessageOut(**{k: m[k] for k in MessageOut.model_fields if k in m}) for m in msgs]
+
+    # Hydrate per-message attachments so the chip rail under reloaded
+    # user messages matches what the user saw at compose time. Done
+    # here (route layer) rather than inside ``get_messages`` because
+    # the store stays single-table; we keep cross-table joins at the
+    # route boundary. One query per message is acceptable for the
+    # ≤500-row limit we cap at — a join could be added if reload
+    # latency becomes user-visible.
+    out: list[MessageOut] = []
+    for m in msgs:
+        base = {k: m[k] for k in MessageOut.model_fields if k in m}
+        try:
+            atts = state.store.list_attachments_for_message(m["message_id"])
+        except Exception:
+            atts = []
+        # Strip blob_path / sha256 / user_id before shipping — the
+        # frontend only needs the public-facing chip fields. Mirrors
+        # what ``AttachmentOut`` exposes from the upload route.
+        base["attachments"] = [
+            {
+                "attachment_id": a["attachment_id"],
+                "conversation_id": a["conversation_id"],
+                "message_id": a.get("message_id"),
+                "filename": a["filename"],
+                "mime": a["mime"],
+                "size_bytes": a["size_bytes"],
+                "kind": a["kind"],
+                "created_at": a.get("created_at"),
+            }
+            for a in atts
+        ] or None
+        out.append(MessageOut(**base))
+    return out
 
 
 class AddMessageRequest(BaseModel):

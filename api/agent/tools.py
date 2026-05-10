@@ -1465,7 +1465,7 @@ def _list_owned_project_ids(
 # Two modes, chosen by which target param the agent supplies:
 #
 # v1.0 — folder-as-cwd (preferred). Agent passes ``target_subpath``,
-#   interpreted relative to the user's workdir root (i.e. ``/workdir/``
+#   interpreted relative to the user's workdir root (i.e. ``/workspace/``
 #   inside the sandbox). The library blob lands at
 #   ``<user_workdirs_root>/<user_id>/<target_subpath>/<filename>``.
 #   No Project / Artifact rows; the file simply appears in the user's
@@ -1840,7 +1840,7 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
         "  - Docs OUTSIDE the user's Library access — the tool refuses "
         "(404) for any doc the user can't read in the Library UI.\n\n"
         "Pass `target_subpath` as a path relative to your workdir root "
-        "(`/workdir/` inside the sandbox). If your chat is bound to a "
+        "(`/workspace/` inside the sandbox). If your chat is bound to a "
         "cwd folder (see `OPENCRAIG_CWD` env var), prepend it: e.g. "
         "with cwd `/sales/2025`, pass `target_subpath='sales/2025/inputs'` "
         "to land the file at `./inputs/<filename>` from your pwd.\n\n"
@@ -1862,7 +1862,7 @@ _IMPORT_FROM_LIBRARY_SPEC = ToolSpec(
             "target_subpath": {
                 "type": "string",
                 "description": (
-                    "Path relative to your workdir root (`/workdir/`) "
+                    "Path relative to your workdir root (`/workspace/`) "
                     "where the file should land. Folders are auto-"
                     "created. Defaults to landing the file directly in "
                     "the workdir root if omitted. With cwd `/sales/2025`, "

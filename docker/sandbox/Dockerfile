@@ -4,8 +4,8 @@
 # SandboxManager (Phase 2.2) does:
 #
 #   docker run -d --name <user>-sandbox \
-#       -v <host>/storage/projects/<pid>:/workdir/<pid> \
-#       -v <host>/storage/user-envs/<uid>:/workspace/.envs \
+#       -v <host>/storage/user-workdirs/<uid>:/workspace \
+#       -v <host>/storage/user-envs/<uid>:/opt/runtime-envs \
 #       opencraig/sandbox:py3.13
 #
 # Container's PID 1 just keeps the box alive; the in-container
@@ -13,6 +13,21 @@
 # ``docker exec`` per chat turn and reaches back to the backend's
 # MCP server + LLM proxy over loopback. The container never opens
 # a public port — outbound HTTP only, no inbound listeners.
+#
+# Filesystem layout — two top-level mount points the SandboxManager
+# bind-mounts at ``docker run`` time:
+#
+#   /workspace               <-  user's private files (chat-attached
+#                                 uploads, agent-written artifacts,
+#                                 imported library docs). The agent's
+#                                 default cwd. This is what the user
+#                                 sees in the Workspace UI.
+#   /opt/runtime-envs         <- per-user lazy-installed language
+#                                 runtimes (R / Julia / Node / …),
+#                                 one volume per user. Lives outside
+#                                 /workspace so the agent doesn't
+#                                 trip over its own toolchain when
+#                                 listing the workspace root.
 #
 # Design notes:
 # - Non-root ``runner`` user (uid 1000) inside. With Linux daemon-
@@ -22,7 +37,7 @@
 #   running as root for defense-in-depth.
 # - micromamba pre-installed at /opt/conda so Phase 2.8's
 #   install_runtime("r"/"julia"/"node"/...) can lazy-install
-#   non-Python toolchains into /workspace/.envs/<lang>/ without
+#   non-Python toolchains into /opt/runtime-envs/<lang>/ without
 #   needing apt root.
 # - Python data stack via pip (faster + more deterministic than
 #   conda for the base; conda kicks in only for non-Python lazy
@@ -175,11 +190,11 @@ RUN groupadd -g 1000 runner \
 
 # Mount points get pre-created with runner ownership so bind-mounts
 # inherit a sane mode if the host dir is fresh.
-RUN mkdir -p /workdir /workspace/.envs \
-    && chown -R runner:runner /workdir /workspace ${MAMBA_ROOT_PREFIX}
+RUN mkdir -p /workspace /opt/runtime-envs \
+    && chown -R runner:runner /workspace /opt/runtime-envs ${MAMBA_ROOT_PREFIX}
 
 USER runner
-WORKDIR /workdir
+WORKDIR /workspace
 
 # Container's PID 1 is just a keeper-alive — the SandboxManager
 # launches kernels via ``docker exec``. ``tail -f /dev/null`` is the

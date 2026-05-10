@@ -138,7 +138,7 @@ class ChatRequest(BaseModel):
     writing files. Editable per-turn — the UI's "switch folder"
     gesture sends a new cwd_path on the next message and the
     Conversation row is updated to match. NULL or empty = pure
-    Q&A chat (agent works at /workdir root, no folder context).
+    Q&A chat (agent works at /workspace root, no folder context).
 
     Folder-as-cwd refactor (20260518) replaces the prior
     project-id-based binding; conversations store the latest
@@ -153,6 +153,40 @@ class ChatRequest(BaseModel):
     system_prompt_override: str | None = None
     """Per-turn system prompt override. Same knob the legacy route
     has; passed straight to AIAgent as ``ephemeral_system_prompt``."""
+
+    path_filters: list[str] | None = None
+    """User-pinned knowledge scopes for this turn (chip-rail entries).
+
+    Forwarded to the agent as a "preferred search scope" hint —
+    the chat route prepends a one-line note to the user message
+    naming each pinned path, and the agent fans out
+    ``mcp__opencraig__search_vector(query, path_filter=…)`` calls
+    once per path as needed. The hint is non-binding: the agent may
+    search outside if the answer clearly isn't in any pinned scope.
+
+    Sticky across turns: when ``None`` is sent, the chat route falls
+    back to whatever's stored on the Conversation row (so a
+    refresh / reopen replays the same pins). When a non-None list
+    is sent, the route updates the Conversation row to match — the
+    chip rail is the source of truth.
+    """
+
+    attachment_ids: list[str] = Field(default_factory=list)
+    """Draft attachments the user pinned to this turn before sending.
+    The route binds them to the persisted user message (so they
+    survive conv reloads) and feeds their content to the agent:
+
+      * ``kind=text``  — decoded UTF-8 inlined into the user's prompt
+        as a labelled block (file name / mime header for context).
+      * ``kind=image`` — Anthropic-format image content block (base64),
+        gated by ``cfg.answering.generator.capabilities.vision``.
+      * ``kind=pdf``   — Anthropic-format document content block,
+        gated by ``cfg.answering.generator.capabilities.pdf``.
+
+    Capability gating already runs at upload time (415 if the model
+    can't handle the kind), so by the time we see ``attachment_ids``
+    here every entry is admissible. We re-check at feed time anyway
+    in case the configured model changed mid-conversation."""
 
 
 # ---------------------------------------------------------------------------
@@ -288,18 +322,180 @@ def _load_conversation_history(state: AppState, conv_id: str) -> list[dict]:
     return msgs
 
 
-def _persist_user_message(state: AppState, conv_id: str, content: str) -> None:
+def _persist_user_message(state: AppState, conv_id: str, content: str) -> str:
     """Store the user turn before the SSE stream opens. Same rationale
     as legacy ``_persist_user_message``: a mid-stream refresh always
-    recovers the question even if the answer never lands."""
+    recovers the question even if the answer never lands. Returns the
+    generated ``message_id`` so the caller can bind draft attachments
+    onto this row."""
+    message_id = uuid.uuid4().hex
     state.store.add_message(
         {
-            "message_id": uuid.uuid4().hex,
+            "message_id": message_id,
             "conversation_id": conv_id,
             "role": "user",
             "content": content,
         }
     )
+    return message_id
+
+
+# ---------------------------------------------------------------------------
+# Attachment feed — turn draft uploads into agent-visible content
+# ---------------------------------------------------------------------------
+
+
+def _read_capabilities(state: AppState) -> tuple[bool, bool]:
+    """Mirror of attachments.py::_capabilities — kept as a private
+    copy so the chat route doesn't take a dep on the attachments
+    router module."""
+    gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
+    caps = getattr(gen, "capabilities", None)
+    if caps is None:
+        return False, False
+    return (
+        bool(getattr(caps, "vision", False)),
+        bool(getattr(caps, "pdf", False)),
+    )
+
+
+# Cap the inlined text content per attachment so a 25 MiB textfile
+# upload doesn't blow the model's context window in one go. The agent
+# can still ``Read`` the file from the workdir (when a sandbox is
+# wired) for the full content; this prefix is just enough for the
+# model to see what was attached and answer questions about it.
+_INLINE_TEXT_CAP = 64 * 1024  # 64 KiB
+
+
+def _build_attachment_feed(
+    state: AppState,
+    *,
+    user_id: str,
+    conv_id: str,
+    attachment_ids: list[str],
+) -> tuple[str, list[dict], list[str]]:
+    """Read each attachment + classify into the right feed channel.
+
+    Returns ``(text_prefix, extra_blocks, skipped)``:
+
+      * ``text_prefix`` — concatenated UTF-8 of all ``kind=text``
+        attachments, wrapped in ``--- attachment: <name> ---`` /
+        ``--- end attachment ---`` markers. The route prepends this
+        to the user's typed query so the agent sees the file content
+        as part of the prompt.
+
+      * ``extra_blocks`` — Anthropic-format content blocks for image
+        / pdf attachments. The runtime appends these to the user's
+        message ``content`` array so the model receives them as
+        native multimodal input.
+
+      * ``skipped`` — filenames that couldn't be fed (capability
+        flag flipped off after upload, blob missing, decode error,
+        ...). The caller doesn't surface these today; they're
+        returned so future debug paths can log them.
+    """
+    if not attachment_ids:
+        return "", [], []
+
+    import base64
+    from pathlib import Path
+
+    cap_vision, cap_pdf = _read_capabilities(state)
+
+    # ``Attachment.blob_path`` is stored RELATIVE to the configured
+    # ``user_uploads_root`` so admin can re-point the storage tree
+    # without rewriting DB rows (see attachments.py upload-route's
+    # comment). Resolve against the live cfg root here, mirroring
+    # how the blob-download route opens the file.
+    uploads_root_cfg = (
+        getattr(state.cfg.agent, "user_uploads_root", None)
+        or "./storage/user-uploads"
+    )
+    uploads_root = Path(uploads_root_cfg).resolve()
+
+    text_lines: list[str] = []
+    extra_blocks: list[dict] = []
+    skipped: list[str] = []
+
+    for aid in attachment_ids:
+        meta = state.store.get_attachment(aid)
+        if not meta:
+            continue
+        # Belt-and-braces ownership check: the upload route already
+        # gates by user, but a tampered request could pass another
+        # user's attachment id. Refuse silently — the agent simply
+        # doesn't see it.
+        if meta.get("user_id") != user_id:
+            continue
+        if meta.get("conversation_id") != conv_id:
+            continue
+
+        kind = meta.get("kind") or "other"
+        filename = meta.get("filename") or "attachment"
+        mime = meta.get("mime") or "application/octet-stream"
+        blob_path = meta.get("blob_path") or ""
+
+        # Resolve against the uploads root + verify the resolved
+        # absolute path stays UNDER the root. The stored value comes
+        # from a uuid-prefixed component we control, so a traversal
+        # is unlikely, but defending in depth is cheap.
+        try:
+            full = (uploads_root / blob_path).resolve()
+            full.relative_to(uploads_root)
+            data = full.read_bytes()
+        except (OSError, ValueError):
+            log.warning(
+                "attachment feed: blob unreadable aid=%s path=%s",
+                aid, blob_path,
+            )
+            skipped.append(filename)
+            continue
+
+        if kind == "text":
+            try:
+                text = data.decode("utf-8", errors="replace")
+            except Exception:
+                skipped.append(filename)
+                continue
+            if len(text) > _INLINE_TEXT_CAP:
+                truncated = len(text) - _INLINE_TEXT_CAP
+                text = (
+                    text[:_INLINE_TEXT_CAP]
+                    + f"\n…[+{truncated} chars truncated for prompt]"
+                )
+            text_lines.append(f"--- attachment: {filename} ({mime}) ---")
+            text_lines.append(text)
+            text_lines.append("--- end attachment ---")
+            text_lines.append("")
+        elif kind == "image":
+            if not cap_vision:
+                skipped.append(filename)
+                continue
+            extra_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+            })
+        elif kind == "pdf":
+            if not cap_pdf:
+                skipped.append(filename)
+                continue
+            extra_blocks.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+            })
+        else:
+            skipped.append(filename)
+
+    text_prefix = "\n".join(text_lines) if text_lines else ""
+    return text_prefix, extra_blocks, skipped
 
 
 def _persist_assistant_message(
@@ -475,10 +671,11 @@ class _TraceAccumulator:
         latency_ms: int,
         result_summary: dict | None,
         output: str = "",
+        is_error: bool = False,
     ) -> None:
         for e in reversed(self.entries):
             if e.get("kind") == "tool" and e.get("call_id") == call_id:
-                e["status"] = "done"
+                e["status"] = "error" if is_error else "done"
                 e["elapsedMs"] = int(latency_ms or 0)
                 summary = result_summary or {}
                 if summary.get("hit_count") is not None:
@@ -487,7 +684,7 @@ class _TraceAccumulator:
                     e["summary"] = f"{summary['entity_count']} entities"
                 elif summary.get("chunk_count") is not None:
                     e["summary"] = f"{summary['chunk_count']} chunks"
-                elif summary.get("error"):
+                elif summary.get("error") or is_error:
                     e["summary"] = "error"
                 # Capped tool response stringified by the runtime.
                 # The frontend renders this verbatim inside the
@@ -496,6 +693,10 @@ class _TraceAccumulator:
                 # anything, which is fine.
                 if output:
                     e["output"] = output
+                # Persist the failure flag separately so the frontend
+                # has a single boolean check instead of pattern-
+                # matching on summary contents.
+                e["isError"] = bool(is_error)
                 break
         self._tool_t0.pop(call_id, None)
 
@@ -608,6 +809,7 @@ def _translate(evt: dict) -> str | None:
                 "latency_ms": evt.get("latency_ms", 0),
                 "result_summary": evt.get("result_summary", {}),
                 "output": evt.get("output", ""),
+                "is_error": bool(evt.get("is_error")),
             },
         )
     if kind == "error":
@@ -675,9 +877,16 @@ async def claude_chat(
     #      "switch folder" gesture). Persisted to the conversation
     #      so subsequent reloads resume in the new folder.
     #   2. Conversation.cwd_path  — what the chat was opened in.
-    #   3. None  — plain Q&A, agent works at /workdir root.
+    #   3. None  — plain Q&A, agent works at /workspace root.
     history: list[dict] = []
     cwd_path: str | None = body.cwd_path
+    # Knowledge-scope chips effective for THIS turn. Populated from
+    # body.path_filters (explicit) or the stored Conversation row
+    # (sticky). For ad-hoc chats with no conversation_id we just use
+    # whatever the request carries.
+    effective_path_filters: list[str] = [
+        p for p in (body.path_filters or []) if isinstance(p, str) and p.strip()
+    ]
     if body.conversation_id:
         try:
             history = _load_conversation_history(state, body.conversation_id)
@@ -709,6 +918,29 @@ async def claude_chat(
                             "claude_chat: cwd_path update failed conv=%s",
                             body.conversation_id,
                         )
+                # Knowledge-scope chip rail. The frontend ships the
+                # current pinned set on every send; ``None`` means
+                # "no change, use stored". Persist when the request
+                # carries a list (even an empty one — explicit clear).
+                stored_pf = (
+                    existing.get("path_filters") if isinstance(existing, dict) else []
+                ) or []
+                if body.path_filters is not None:
+                    cleaned_pf = [p for p in body.path_filters if isinstance(p, str) and p.strip()]
+                    if cleaned_pf != stored_pf:
+                        try:
+                            state.store.update_conversation(
+                                body.conversation_id,
+                                path_filters_json=cleaned_pf,
+                            )
+                        except Exception:
+                            log.exception(
+                                "claude_chat: path_filters update failed conv=%s",
+                                body.conversation_id,
+                            )
+                    effective_path_filters = cleaned_pf
+                else:
+                    effective_path_filters = list(stored_pf)
         except Exception:
             log.exception(
                 "claude_chat: cwd_path resolution failed conv=%s",
@@ -716,12 +948,91 @@ async def claude_chat(
             )
 
         try:
-            _persist_user_message(state, body.conversation_id, body.query)
+            user_message_id = _persist_user_message(
+                state, body.conversation_id, body.query,
+            )
         except Exception:
             log.exception(
                 "claude_chat: user-message persist failed conv=%s",
                 body.conversation_id,
             )
+            user_message_id = None
+
+        # Bind draft attachments to the freshly-persisted user message
+        # so a conversation reload still sees the chip rail under the
+        # user's bubble. Best-effort — a failure here doesn't block
+        # the turn (the attachments stay as drafts and the user can
+        # retry / clear them).
+        if user_message_id and body.attachment_ids:
+            try:
+                state.store.bind_attachments_to_message(
+                    user_message_id, list(body.attachment_ids),
+                )
+            except Exception:
+                log.exception(
+                    "claude_chat: bind_attachments failed conv=%s msg=%s",
+                    body.conversation_id, user_message_id,
+                )
+
+    # Build the agent-visible attachment feed BEFORE the runtime call
+    # so we can inline text content into ``user_message`` and pass the
+    # image/pdf blocks alongside. We do this even for ad-hoc (no conv
+    # id) chats — the upload route already requires a conv, but if a
+    # client manages to send attachment_ids without conversation_id,
+    # the per-conv ownership check inside _build_attachment_feed
+    # rejects them and we fall through with an empty feed.
+    attachment_text_prefix = ""
+    extra_user_blocks: list[dict] = []
+    if body.attachment_ids and body.conversation_id:
+        try:
+            attachment_text_prefix, extra_user_blocks, _skipped = (
+                _build_attachment_feed(
+                    state,
+                    user_id=principal.user_id,
+                    conv_id=body.conversation_id,
+                    attachment_ids=list(body.attachment_ids),
+                )
+            )
+        except Exception:
+            log.exception(
+                "claude_chat: attachment feed build failed conv=%s",
+                body.conversation_id,
+            )
+
+    # Knowledge-scope hint: turn the chip-rail entries into a one-shot
+    # note the agent reads at the top of the user message. The hint
+    # is non-binding — the agent may search outside if the answer
+    # clearly isn't in any pinned scope. We list paths verbatim so
+    # the agent can copy them straight into ``search_vector(query,
+    # path_filter=…)`` calls without further parsing.
+    knowledge_scope_hint = ""
+    if effective_path_filters:
+        path_lines = "\n".join(f"  - {p}" for p in effective_path_filters)
+        knowledge_scope_hint = (
+            "[knowledge scope]\n"
+            "The user has pinned the following knowledge paths for this "
+            "turn — prefer searching within these scopes. Call "
+            "``search_vector`` once per path if you need broad coverage; "
+            "you may search outside if the answer clearly isn't in any "
+            "of them.\n"
+            f"{path_lines}\n"
+            "[end knowledge scope]\n"
+        )
+
+    # Compose the prompt the agent actually sees: knowledge-scope
+    # hint first (so the agent commits to the right tool calls before
+    # processing context), then text-attachment bodies (so the model
+    # has the file context before the question), then the user's
+    # typed query. Mirrors the "drag a file into ChatGPT, then ask
+    # about it" UX shape with an extra "by the way these folders are
+    # relevant" prelude.
+    parts: list[str] = []
+    if knowledge_scope_hint:
+        parts.append(knowledge_scope_hint)
+    if attachment_text_prefix:
+        parts.append(attachment_text_prefix)
+    parts.append(body.query)
+    composed_query = "\n".join(parts)
 
     # Wire the OpenCraig MCP server so the agent has real domain tools
     # (search_vector, read_chunk, list_folders, graph_explore, etc.).
@@ -798,19 +1109,21 @@ async def claude_chat(
                 container_runner = ClaudeContainerRunner(state.sandbox)
                 iter_ = stream_turn_container(
                     container_runner,
-                    body.query,
+                    composed_query,
                     config=config,
                     principal_user_id=principal.user_id,
                     cwd_path=cwd_path,
                     conversation_history=history,
+                    extra_user_content_blocks=extra_user_blocks,
                 )
             else:
                 runtime = ClaudeRuntime()
                 iter_ = stream_turn(
                     runtime,
-                    body.query,
+                    composed_query,
                     config=config,
                     conversation_history=history,
+                    extra_user_content_blocks=extra_user_blocks,
                 )
         except (ClaudeUnavailableError, SandboxUnavailableError) as e:
             error_message = f"agent runtime unavailable: {e}"
@@ -879,6 +1192,7 @@ async def claude_chat(
                         if isinstance(evt.get("result_summary"), dict)
                         else None,
                         str(evt.get("output") or ""),
+                        is_error=bool(evt.get("is_error")),
                     )
                 elif kind == "citations":
                     items = evt.get("items") or []

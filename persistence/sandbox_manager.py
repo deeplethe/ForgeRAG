@@ -111,7 +111,7 @@ class ExecResult:
     """Result of a one-shot ``exec`` against a running container.
 
     Used for setup-style commands (``micromamba install ...``,
-    ``cat /workspace/.envs/r/.ready``, etc.) where one-shot
+    ``cat /opt/runtime-envs/r/.ready``, etc.) where one-shot
     stdout/stderr capture is enough — the agent's Bash tool runs
     via the SDK's own subprocess transport, not through this path.
     """
@@ -252,11 +252,11 @@ class SandboxManager:
         self.user_envs_root = Path(user_envs_root)
         # Per-user workdir tree (folder-as-cwd). Each user gets a
         # private filesystem at ``<user_workdirs_root>/<user_id>/``
-        # that's bind-mounted to ``/workdir/`` in their container.
+        # that's bind-mounted to ``/workspace/`` in their container.
         # Chat ``cwd_path`` is interpreted RELATIVE to this mount
         # — UI shows ``/sales/2025/``, host has
         # ``<root>/<user_id>/sales/2025/``, container sees
-        # ``/workdir/sales/2025/``.
+        # ``/workspace/sales/2025/``.
         #
         # ``None`` keeps the legacy per-project mount behaviour (for
         # the rare deployment that hasn't migrated to folder-as-cwd
@@ -303,12 +303,12 @@ class SandboxManager:
         none is alive.
 
         ``owned_project_ids`` controls which project workdirs get
-        bind-mounted into ``/workdir/<project_id>``. New projects
+        bind-mounted into ``/workspace/<project_id>``. New projects
         created during a session won't be visible until the next
         container restart — that's a deliberate trade-off; live
         mount-add isn't supported by docker and reshaping the user
-        view of /workdir would invalidate any in-flight kernel state
-        for OTHER projects. Phase 2.9 may add explicit
+        view of /workspace would invalidate any in-flight kernel
+        state for OTHER projects. Phase 2.9 may add explicit
         "restart-with-new-projects" once usage data shows it.
         """
         self._adopt_orphans_once()
@@ -474,17 +474,25 @@ class SandboxManager:
 
             user_workdirs_root SET (folder-as-cwd, the v0.6.0 OSS
             path):
-                <user_workdirs_root>/<user_id>  → /workdir
-                <user_envs_root>/<user_id>      → /workspace/.envs
+                <user_workdirs_root>/<user_id>  → /workspace
+                <user_envs_root>/<user_id>      → /opt/runtime-envs
 
             user_workdirs_root NOT SET (legacy per-project, kept for
             deployments still on the project-bound model):
-                <projects_root>/<pid>           → /workdir/<pid>     (per owned project)
-                <user_envs_root>/<user_id>      → /workspace/.envs
+                <projects_root>/<pid>           → /workspace/<pid>      (per owned project)
+                <user_envs_root>/<user_id>      → /opt/runtime-envs
 
         The folder-as-cwd path is the future; ClaudeContainerRunner
         always passes ``owned_project_ids=()`` so the per-project
         branch is dead code under the new chat route.
+
+        Mount-point naming: ``/workspace`` for the user's files
+        (Linux ``/workspace`` is the VSCode / GitPod / Codespaces
+        convention; readable in chip output without leaking the
+        sandbox-implementation detail that ``/workdir`` did) and
+        ``/opt/runtime-envs`` for lazy-installed language toolchains
+        (kept OUTSIDE ``/workspace`` so the agent doesn't see its own
+        toolchain when listing the workspace root).
         """
         mounts: list[Mount] = []
 
@@ -498,7 +506,7 @@ class SandboxManager:
             mounts.append(
                 Mount(
                     host_path=str(user_workdir.resolve()),
-                    container_path="/workdir",
+                    container_path="/workspace",
                 )
             )
         else:
@@ -521,19 +529,21 @@ class SandboxManager:
                 mounts.append(
                     Mount(
                         host_path=str(host.resolve()),
-                        container_path=f"/workdir/{pid}",
+                        container_path=f"/workspace/{pid}",
                     )
                 )
 
         # Per-user envs volume. Auto-created if missing; this is the
         # single source of truth for install_runtime caches and
-        # outlives container restarts.
+        # outlives container restarts. Lives at ``/opt/runtime-envs``
+        # so the user's ``ls /workspace`` doesn't show a stray
+        # ``.envs/`` toolchain folder.
         user_env = self.user_envs_root / user_id
         user_env.mkdir(parents=True, exist_ok=True)
         mounts.append(
             Mount(
                 host_path=str(user_env.resolve()),
-                container_path="/workspace/.envs",
+                container_path="/opt/runtime-envs",
             )
         )
         return tuple(mounts)

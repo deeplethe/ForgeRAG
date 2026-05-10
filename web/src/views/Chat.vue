@@ -65,11 +65,11 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 </script>
 
 <script setup>
-import { ref, reactive, nextTick, computed, inject, watch, onMounted, defineAsyncComponent } from 'vue'
+import { ref, reactive, nextTick, computed, inject, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { agentChatStream, createConversation, getMessages, filePreviewUrl, fileDownloadUrl, getProject, getTrace, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
-import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, Paperclip as PaperclipIcon, X as XIcon } from 'lucide-vue-next'
+import { agentChatStream, createConversation, getMessages, getConversation, updateConversation, filePreviewUrl, fileDownloadUrl, getProject, getTrace, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
+import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, Paperclip as PaperclipIcon, X as XIcon, Plus as PlusIcon, Library as LibraryIcon, FileUp as FileUpIcon } from 'lucide-vue-next'
 import { useDialog } from '@/composables/useDialog'
 import { useTheme } from '@/composables/useTheme'
 import { useChatStreamState } from '@/composables/useChatStreamState'
@@ -90,8 +90,8 @@ const PdfViewer = defineAsyncComponent(() => import('@/components/PdfViewer.vue'
 import Spinner from '@/components/Spinner.vue'
 import ThinkingPulse from '@/components/ThinkingPulse.vue'
 import OtelTraceViewer from '@/components/OtelTraceViewer.vue'
-import PathScopePicker from '@/components/PathScopePicker.vue'
 import WorkdirFolderPicker from '@/components/WorkdirFolderPicker.vue'
+import KnowledgeFolderPicker from '@/components/KnowledgeFolderPicker.vue'
 import AgentMessageBody from '@/components/AgentMessageBody.vue'
 import AttachmentChip from '@/components/AttachmentChip.vue'
 // ThinkingPicker removed post-cutover (provider CoT permanently
@@ -126,19 +126,19 @@ function docNameFor(c) {
   ensureDocName(c.doc_id)
   return docName(c.doc_id)
 }
-const pathFilter = ref(route.query.path_filter || '')
-// URL → local: keep in sync when user navigates to /chat?path_filter=...
-watch(() => route.query.path_filter, v => { pathFilter.value = v || '' })
-// Local → URL: when the user picks a different scope via PathScopePicker,
-// reflect it in the URL so refresh / share / browser-back still works.
-watch(pathFilter, v => {
-  const cur = route.query.path_filter || ''
-  if (v === cur) return
-  const q = { ...route.query }
-  if (v) q.path_filter = v
-  else delete q.path_filter
-  router.replace({ query: q })
-})
+// Pinned knowledge scopes (chip rail). Each entry is a Library
+// path — folder ("/sales/2025") or full doc ("/sales/2025/Q3.pdf").
+// Sticky across turns: the chat route persists the array on
+// Conversation.path_filters_json, and we hydrate from there on
+// reload. The agent gets this list as a "preferred scope" hint and
+// fans out search_vector calls per path.
+const knowledgePaths = ref([])
+// Add-context popover (paperclip + chips replacement). One small
+// menu with "Knowledge" / "File" entries, future-extensible.
+const addMenuOpen = ref(false)
+// Knowledge picker modal state — opens when user clicks the
+// "Knowledge" entry in the add-menu.
+const knowledgePicker = reactive({ open: false })
 
 // Project binding via ?project=<id>. **Legacy** — pre-folder-as-cwd.
 // New chats use ``?cwd=`` (boundCwdPath below). Kept rendering for
@@ -286,11 +286,26 @@ const empty = computed(() => !convId.value && !msgs.value.length && !streaming.v
 // On remount: reload messages from DB to ensure trace_id / citations are fresh.
 // The watch(convId) only fires on *change* — if convId is the same (e.g. user
 // clicked Chat tab to come back), the watch doesn't fire and we'd show stale data.
-onMounted(() => {
+onMounted(async () => {
   if (convId.value && !streaming.value) {
+    // Load draft attachments + pinned knowledge paths on mount so a
+    // refresh / direct URL nav restores the chip rail. The convId
+    // watcher only fires on CHANGES; initial value isn't a change.
+    try { attachments.value = await listAttachments(convId.value, { only_drafts: true }) }
+    catch { /* non-fatal */ }
+    try {
+      const c = await getConversation(convId.value)
+      knowledgePaths.value = Array.isArray(c?.path_filters) ? c.path_filters : []
+    } catch { /* non-fatal */ }
     _loadAndPoll(convId.value)
   }
   nextTick(() => chatEl.value && (chatEl.value.scrollTop = chatEl.value.scrollHeight))
+  // Global click-outside for the + Add popover.
+  document.addEventListener('mousedown', _addMenuOutsideClick)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', _addMenuOutsideClick)
 })
 
 // Cross-view streaming-state mirror — keeps ``useChatStreamState``'s
@@ -352,12 +367,17 @@ watch(convId, async (id) => {
   // drafts persist on the server, so a refresh / conv switch picks
   // them back up rather than losing them.
   attachments.value = []
+  knowledgePaths.value = []
   if (id) {
     try { attachments.value = await listAttachments(id, { only_drafts: true }) }
     catch { /* non-fatal */ }
+    try {
+      const c = await getConversation(id)
+      knowledgePaths.value = Array.isArray(c?.path_filters) ? c.path_filters : []
+    } catch { /* non-fatal */ }
     await _loadAndPoll(id)
   }
-})
+}, { immediate: true })
 
 // ── Attachment upload handlers ────────────────────────────────────
 // All entry points (file picker, paste-as-file, future drag-drop)
@@ -411,6 +431,58 @@ async function onRemoveAttachment(att) {
   }
 }
 
+// ── Knowledge picker handlers ────────────────────────────────────
+// Add-context menu has two entries today: Knowledge (opens the
+// modal picker) and File (kicks the OS file picker). Future
+// additions (URL, MCP, web search) plug in here.
+function openAddMenu() { addMenuOpen.value = !addMenuOpen.value }
+function closeAddMenu() { addMenuOpen.value = false }
+// Close the popover on any outside-click. Global mousedown listener;
+// ignores clicks on the trigger / menu itself (matched via class
+// closest()). Registered in the main onMounted hook below.
+function _addMenuOutsideClick(e) {
+  if (!addMenuOpen.value) return
+  const t = e.target
+  if (t?.closest && (t.closest('.add-trigger') || t.closest('.add-menu'))) return
+  closeAddMenu()
+}
+function onAddMenuKnowledge() {
+  closeAddMenu()
+  knowledgePicker.open = true
+}
+function onAddMenuFile() {
+  closeAddMenu()
+  // Either compose block has a hidden ``<input type="file">`` — use
+  // whichever one is currently in the DOM (empty vs active state
+  // mounts only one).
+  const fi = fileInputEmpty.value || fileInputActive.value
+  fi?.click()
+}
+async function onKnowledgeSelect(path) {
+  // Add to chip rail (dedupe), then persist immediately so a
+  // refresh / browser-back keeps the pin even before the user sends
+  // their first message. The chat route will also persist on send,
+  // but doing it eagerly here means the chip is "real" right away.
+  if (!path) return
+  if (knowledgePaths.value.includes(path)) return
+  knowledgePaths.value = [...knowledgePaths.value, path]
+  if (convId.value) {
+    try { await updateConversation(convId.value, { path_filters: knowledgePaths.value }) }
+    catch { /* non-fatal — the next chat-send will re-attempt persist */ }
+  }
+}
+async function onKnowledgeRemove(path) {
+  knowledgePaths.value = knowledgePaths.value.filter(p => p !== path)
+  if (convId.value) {
+    try { await updateConversation(convId.value, { path_filters: knowledgePaths.value }) }
+    catch { /* non-fatal */ }
+  }
+}
+function leafName(path) {
+  if (!path || path === '/') return '/'
+  return path.split('/').filter(Boolean).pop() || path
+}
+
 // Paste handler attached to the textarea. Plain-text paste over the
 // thresholds (chars or lines) gets converted to a ``.txt`` File and
 // uploaded as an attachment instead of landing in the textarea —
@@ -448,6 +520,11 @@ async function _loadAndPoll(id) {
       // column populated → undefined → AgentMessageBody renders
       // just the answer body with no inline tool chips.
       agentTrace: Array.isArray(m.agent_trace_json) ? m.agent_trace_json : null,
+      // Attachments bound to this message — backend joins them in
+      // at list_messages so a refresh shows the same chip rail
+      // under the user bubble that appeared above the input box
+      // at compose time.
+      attachments: Array.isArray(m.attachments) ? m.attachments : null,
       traceId: m.trace_id || null,
     }))
   }
@@ -674,7 +751,16 @@ async function send(text) {
   // blocked everything below, including ``streaming.value=true``
   // and the user-bubble push. The user clicked send and stared at
   // a still UI for ~1-3s.
-  msgs.value.push({ role: 'user', content: q })
+  // Snapshot attachments INTO the message bubble so the chip rail
+  // shows under the user's text immediately (without waiting for the
+  // server to re-echo them on reload).
+  msgs.value.push({
+    role: 'user',
+    content: q,
+    attachments: attachments.value.length
+      ? attachments.value.map(a => ({ ...a }))
+      : null,
+  })
   streaming.value = true; streamText.value = ''; retInfo.value = null
   streamTrace.value = []
   startTimer(); scroll()
@@ -741,10 +827,23 @@ async function send(text) {
     // (see api/routes/agent.py `_persist_turn`); the trace itself
     // is session-only — we attach it to the in-memory message
     // below but it isn't written to the DB.
+    // Snapshot draft attachment ids for this turn — backend will bind
+    // them to the user message it persists. Capture BEFORE the stream
+    // opens so a quick second send doesn't re-bind these to a later
+    // turn. The chip rail clears immediately after capture (in
+    // composeAndSend's optimistic-UI block) so the user can see the
+    // attachments cleared from the input as their message goes out.
+    const turnAttachmentIds = attachments.value.map((a) => a.attachment_id)
+    attachments.value = []
+    // Knowledge chips DON'T clear on send — they're sticky scope
+    // pins; user removes them explicitly via the chip × button.
+    const turnPathFilters = [...knowledgePaths.value]
     for await (const evt of agentChatStream({
       message: q,
       conversationId: convId.value,
       cwdPath: boundCwdPath.value || null,
+      attachmentIds: turnAttachmentIds,
+      pathFilters: turnPathFilters,
       signal: abortCtrl.value.signal,
     })) {
       // If conversation switched away, stop updating UI (but don't
@@ -812,11 +911,23 @@ async function send(text) {
           }
           last.status = 'done'
         }
-        const detail = evt.params?.query || evt.params?.chunk_id || evt.params?.doc_id || ''
+        // Legacy short headline — kept as a fallback for the chip's
+        // ``head-detail`` line on tool families that ToolChip doesn't
+        // family-classify (it derives a richer headline from ``input``
+        // for Bash/Write/Edit/Read/Glob/etc).
+        const detail = evt.params?.query || evt.params?.command || evt.params?.file_path
+          || evt.params?.path || evt.params?.pattern || evt.params?.chunk_id || evt.params?.doc_id || ''
         streamTrace.value.push({
           kind: 'tool',
           call_id: evt.id,
           name: evt.tool,
+          // Full params dict — ToolChip switches on this to render
+          // the right headline ($ <command> for Bash, file path for
+          // Edit/Read/Write, pattern for Glob/Grep, etc.) and the
+          // expanded body's input block. Without this the chip
+          // showed just the tool name and an empty expansion.
+          input: evt.params && typeof evt.params === 'object' ? evt.params : {},
+          output: '',
           detail: typeof detail === 'string' ? detail.slice(0, 64) : '',
           t0: Date.now(),
           t1: null,
@@ -827,18 +938,26 @@ async function send(text) {
         scroll()
       } else if (t === 'tool.call_end') {
         const summary = evt.result_summary || {}
+        const isError = !!evt.is_error || !!summary.error
         const sumText = summary.hit_count != null ? `${summary.hit_count} hits`
           : summary.entity_count != null ? `${summary.entity_count} entities`
           : summary.chunk_count != null ? `${summary.chunk_count} chunks`
-          : summary.error ? 'error'
+          : isError ? 'error'
           : ''
         const entry = streamTrace.value.find(
           (e) => e.kind === 'tool' && e.call_id === evt.id,
         )
         if (entry) {
-          entry.status = 'done'
+          // ``status='error'`` doubles as the failure flag for
+          // ToolChip's red-headline state; persisted trace rebuilds
+          // the same view on conversation reload (server writes
+          // ``status='error'`` + ``isError=true`` from the same
+          // signal).
+          entry.status = isError ? 'error' : 'done'
+          entry.isError = isError
           entry.t1 = (entry.t0 || Date.now()) + (evt.latency_ms || 0)
           entry.elapsedMs = evt.latency_ms || 0
+          if (evt.output) entry.output = evt.output
           if (sumText) entry.summary = sumText
         }
       } else if (t === 'answer.delta') {
@@ -1325,14 +1444,58 @@ function onTraceClick(m) {
                  input. Use ``flex gap`` so they sit side-by-side; both
                  share the borderless-fill chip styling so they read as
                  belonging to the input card below. -->
-            <div class="mb-1.5 pl-1 flex items-center gap-1.5">
-              <PathScopePicker v-model="pathFilter" />
-              <!-- Workdir picker chip — replaces the (disabled) web-search
-                   chip + the old top banner. The cwd is now a flexible
-                   "guidance" hint: pick any workdir folder to anchor the
-                   agent's tools there for this turn. ``boundCwdPath`` is
-                   driven by ``?cwd=`` in the URL the same as before; this
-                   chip is just the UI surface. -->
+            <!-- Controls row: ``+ Add`` triggers a small popover with
+                 entries to add knowledge / files / future things; the
+                 cwd Folder chip stays as a separate concern (output
+                 location, not "what context"). Knowledge chips and
+                 file-attachment chips render right after the ``+`` so
+                 the eye reads "[+] [knowledge] [knowledge] [file]". -->
+            <div class="mb-1.5 pl-1 flex flex-wrap items-center gap-1.5">
+              <!-- + Add button + popover menu -->
+              <div class="relative">
+                <button
+                  type="button"
+                  class="add-trigger flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-t2 text-2xs transition-colors"
+                  :class="{ 'add-trigger--open': addMenuOpen }"
+                  :title="t('chat.add_menu.trigger_label')"
+                  @click="openAddMenu"
+                >
+                  <PlusIcon :size="13" :stroke-width="2" />
+                  <span>{{ t('chat.add_menu.trigger_label') }}</span>
+                </button>
+                <Transition name="popup">
+                  <div
+                    v-if="addMenuOpen"
+                    class="add-menu"
+                    @click.stop
+                  >
+                    <button class="add-menu__item" @click="onAddMenuKnowledge">
+                      <LibraryIcon :size="14" :stroke-width="1.75" class="add-menu__icon" />
+                      <div class="add-menu__text">
+                        <div class="add-menu__title">{{ t('chat.add_menu.knowledge') }}</div>
+                        <div class="add-menu__desc">{{ t('chat.add_menu.knowledge_desc') }}</div>
+                      </div>
+                    </button>
+                    <button class="add-menu__item" @click="onAddMenuFile">
+                      <FileUpIcon :size="14" :stroke-width="1.75" class="add-menu__icon" />
+                      <div class="add-menu__text">
+                        <div class="add-menu__title">{{ t('chat.add_menu.file') }}</div>
+                        <div class="add-menu__desc">{{ t('chat.add_menu.file_desc') }}</div>
+                      </div>
+                    </button>
+                  </div>
+                </Transition>
+              </div>
+              <input
+                ref="fileInputEmpty"
+                type="file"
+                multiple
+                class="hidden"
+                @change="onPickFile"
+              />
+              <!-- Folder (cwd) chip — output location for agent writes.
+                   Distinct concern from "+ Add context"; lives next to
+                   it so all chat-level controls cluster on one row. -->
               <button
                 type="button"
                 class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs transition-colors"
@@ -1343,10 +1506,6 @@ function onTraceClick(m) {
                 @click="switchCwdFolder"
               >
                 <FolderOpenIcon :size="12" :stroke-width="1.75" />
-                <!-- ``font-mono`` only when a real path is shown —
-                     it makes folder strings legible. Idle label stays
-                     in the body sans font so the chip reads "Workdir"
-                     in plain weight, not in monospace. -->
                 <span
                   class="truncate max-w-[200px]"
                   :class="boundCwdPath ? 'font-mono' : ''"
@@ -1360,12 +1519,26 @@ function onTraceClick(m) {
                   <XIcon :size="11" :stroke-width="1.75" />
                 </span>
               </button>
-            </div>
-            <!-- Attachment chip rail — only renders when the user
-                 has actually pinned files. Sits flush above the
-                 input box so the chips read as "stuck to" the
-                 message that's about to send. -->
-            <div v-if="attachments.length" class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <!-- Knowledge chips — pinned scopes, removable. Brand
+                   blue tint so the eye distinguishes knowledge from
+                   the neutral file attachment chips below. -->
+              <div
+                v-for="p in knowledgePaths"
+                :key="'k:' + p"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs text-t2"
+                :title="p"
+              >
+                <LibraryIcon :size="12" :stroke-width="1.75" class="text-brand" />
+                <span class="truncate max-w-[160px]">{{ leafName(p) }}</span>
+                <button
+                  class="text-t3 hover:text-t1 -mr-1"
+                  :title="t('chat.workdir_chip.clear')"
+                  @click.stop="onKnowledgeRemove(p)"
+                >
+                  <XIcon :size="11" :stroke-width="1.75" />
+                </button>
+              </div>
+              <!-- File attachment chips — same component as before. -->
               <AttachmentChip
                 v-for="a in attachments"
                 :key="a.attachment_id"
@@ -1374,21 +1547,6 @@ function onTraceClick(m) {
               />
             </div>
             <div class="flex items-end gap-2 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
-              <button
-                type="button"
-                class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-t3 hover:text-t1 hover:bg-bg3 transition-colors"
-                :title="t('chat.attachments.upload')"
-                @click="fileInputEmpty?.click()"
-              >
-                <PaperclipIcon :size="16" :stroke-width="1.75" />
-              </button>
-              <input
-                ref="fileInputEmpty"
-                type="file"
-                multiple
-                class="hidden"
-                @change="onPickFile"
-              />
               <textarea v-model="input" @keydown="onKey" @paste="onTextareaPaste" :placeholder="t('chat.ask_a_question')" rows="2"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 40px; max-height: 120px" autofocus />
@@ -1441,8 +1599,22 @@ function onTraceClick(m) {
 
             <div v-for="(m, i) in msgs" :key="i" class="fadein">
               <!-- User -->
-              <div v-if="m.role === 'user'" class="flex justify-end mb-2">
-                <div class="px-4 py-2.5 rounded-2xl text-sm bg-bg3 text-t1 max-w-[75%]">{{ m.content }}</div>
+              <div v-if="m.role === 'user'" class="mb-2">
+                <div class="flex justify-end">
+                  <div class="px-4 py-2.5 rounded-2xl text-sm bg-bg3 text-t1 max-w-[75%] whitespace-pre-wrap">{{ m.content }}</div>
+                </div>
+                <!-- Bound attachments — same chip shape as the
+                     pre-send compose rail, but right-aligned under
+                     the message bubble and non-removable. Clicking
+                     a chip still opens the blob in a new tab. -->
+                <div v-if="m.attachments?.length" class="flex flex-wrap gap-1.5 mt-1.5 justify-end">
+                  <AttachmentChip
+                    v-for="a in m.attachments"
+                    :key="a.attachment_id"
+                    :attachment="a"
+                    :removable="false"
+                  />
+                </div>
               </div>
               <!-- Assistant — Claude-Code-style interleaved body:
                    the model's narration text, tool-chip groups,
@@ -1546,8 +1718,51 @@ function onTraceClick(m) {
                  input box's outer left edge (no leading padding) so
                  the chip cards form a single straight visual rail
                  with the rounded input box below. -->
-            <div class="mb-1.5 flex items-center gap-1.5">
-              <PathScopePicker v-model="pathFilter" />
+            <!-- Controls row (active state) — mirrors the empty-state
+                 layout: + Add popover, folder chip, knowledge chips,
+                 file chips. -->
+            <div class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <div class="relative">
+                <button
+                  type="button"
+                  class="add-trigger flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-t2 text-2xs transition-colors"
+                  :class="{ 'add-trigger--open': addMenuOpen }"
+                  :title="t('chat.add_menu.trigger_label')"
+                  @click="openAddMenu"
+                >
+                  <PlusIcon :size="13" :stroke-width="2" />
+                  <span>{{ t('chat.add_menu.trigger_label') }}</span>
+                </button>
+                <Transition name="popup">
+                  <div
+                    v-if="addMenuOpen"
+                    class="add-menu"
+                    @click.stop
+                  >
+                    <button class="add-menu__item" @click="onAddMenuKnowledge">
+                      <LibraryIcon :size="14" :stroke-width="1.75" class="add-menu__icon" />
+                      <div class="add-menu__text">
+                        <div class="add-menu__title">{{ t('chat.add_menu.knowledge') }}</div>
+                        <div class="add-menu__desc">{{ t('chat.add_menu.knowledge_desc') }}</div>
+                      </div>
+                    </button>
+                    <button class="add-menu__item" @click="onAddMenuFile">
+                      <FileUpIcon :size="14" :stroke-width="1.75" class="add-menu__icon" />
+                      <div class="add-menu__text">
+                        <div class="add-menu__title">{{ t('chat.add_menu.file') }}</div>
+                        <div class="add-menu__desc">{{ t('chat.add_menu.file_desc') }}</div>
+                      </div>
+                    </button>
+                  </div>
+                </Transition>
+              </div>
+              <input
+                ref="fileInputActive"
+                type="file"
+                multiple
+                class="hidden"
+                @change="onPickFile"
+              />
               <button
                 type="button"
                 class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs transition-colors"
@@ -1558,10 +1773,6 @@ function onTraceClick(m) {
                 @click="switchCwdFolder"
               >
                 <FolderOpenIcon :size="12" :stroke-width="1.75" />
-                <!-- ``font-mono`` only when a real path is shown —
-                     it makes folder strings legible. Idle label stays
-                     in the body sans font so the chip reads "Workdir"
-                     in plain weight, not in monospace. -->
                 <span
                   class="truncate max-w-[200px]"
                   :class="boundCwdPath ? 'font-mono' : ''"
@@ -1575,9 +1786,22 @@ function onTraceClick(m) {
                   <XIcon :size="11" :stroke-width="1.75" />
                 </span>
               </button>
-            </div>
-            <!-- Attachment chip rail — same component as empty-state. -->
-            <div v-if="attachments.length" class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <div
+                v-for="p in knowledgePaths"
+                :key="'k:' + p"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs text-t2"
+                :title="p"
+              >
+                <LibraryIcon :size="12" :stroke-width="1.75" class="text-brand" />
+                <span class="truncate max-w-[160px]">{{ leafName(p) }}</span>
+                <button
+                  class="text-t3 hover:text-t1 -mr-1"
+                  :title="t('chat.workdir_chip.clear')"
+                  @click.stop="onKnowledgeRemove(p)"
+                >
+                  <XIcon :size="11" :stroke-width="1.75" />
+                </button>
+              </div>
               <AttachmentChip
                 v-for="a in attachments"
                 :key="a.attachment_id"
@@ -1593,21 +1817,6 @@ function onTraceClick(m) {
                  vertical centre of the textarea, which is acceptable —
                  ChatGPT does the same. -->
             <div class="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-line bg-bg">
-              <button
-                type="button"
-                class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-t3 hover:text-t1 hover:bg-bg3 transition-colors"
-                :title="t('chat.attachments.upload')"
-                @click="fileInputActive?.click()"
-              >
-                <PaperclipIcon :size="14" :stroke-width="1.75" />
-              </button>
-              <input
-                ref="fileInputActive"
-                type="file"
-                multiple
-                class="hidden"
-                @change="onPickFile"
-              />
               <textarea v-model="input" @keydown="onKey" @paste="onTextareaPaste" :placeholder="t('chat.ask_followup')" rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
@@ -1663,6 +1872,14 @@ function onTraceClick(m) {
       @select="onCwdPicked"
       @clear="clearCwdBinding"
     />
+    <!-- Knowledge picker — opens from the + Add menu's "Knowledge"
+         entry. Each pick pushes a chip to ``knowledgePaths``;
+         reopening the modal lets the user add another. -->
+    <KnowledgeFolderPicker
+      v-model:open="knowledgePicker.open"
+      :already-pinned="knowledgePaths"
+      @select="onKnowledgeSelect"
+    />
   </div>
 </template>
 
@@ -1685,6 +1902,56 @@ function onTraceClick(m) {
   margin-top: 10px;
   color: var(--color-t3);
 }
+
+/* + Add popover — opens above the trigger (compose row sits at the
+   bottom of the viewport, popover up) and lists the addable types.
+   Each row is icon + title + one-line description so the user
+   understands what each entry does without hover. The trigger
+   button gets a subtle "open" state so it reads as latched while
+   the menu is shown. */
+.add-trigger--open {
+  background: var(--color-bg3) !important;
+  color: var(--color-t1) !important;
+}
+.add-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.add-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--color-t1);
+  transition: background-color .12s;
+}
+.add-menu__item:hover { background: var(--color-bg-soft); }
+.add-menu__icon { color: var(--color-t2); flex-shrink: 0; }
+.add-menu__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.add-menu__title { font-size: 0.75rem; font-weight: 500; }
+.add-menu__desc { font-size: 0.625rem; color: var(--color-t3); line-height: 1.35; }
+
+/* Popover entrance/exit. Mirror PathScopePicker's old animation so
+   the muscle memory of "small panel pops above the trigger" carries
+   over. */
+.popup-enter-active, .popup-leave-active { transition: opacity .14s ease, transform .14s ease; }
+.popup-enter-from, .popup-leave-to { opacity: 0; transform: translateY(4px); }
 
 /* History-loading skeleton — three stacked rows in alternating user
    (right-aligned) / agent (full-width) shapes, animating an opacity

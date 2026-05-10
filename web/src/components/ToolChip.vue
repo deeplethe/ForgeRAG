@@ -15,15 +15,17 @@
  *   search_*   headline `` <query>`` · expand → query + hits dump
  *   anything   else falls back to raw JSON input + text output blocks
  *
- * Filesystem-shaped paths (``/workdir/...`` plus the explicit
+ * Filesystem-shaped paths (``/workspace/...`` plus the explicit
  * ``file_path`` / ``path`` props) render as clickable links that open
  * the workdir preview modal — the user's "interim artifact path
- * should be clickable" requirement.
+ * should be clickable" requirement. Legacy ``/workdir/...`` paths
+ * (older trace rows from before the rename) are accepted for
+ * back-compat.
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { ChevronRight } from 'lucide-vue-next'
+import { ChevronRight, ChevronDown } from 'lucide-vue-next'
 import { structuredPatch } from 'diff'
 import ThinkingPulse from './ThinkingPulse.vue'
 
@@ -82,7 +84,11 @@ const headline = computed(() => {
     case 'write':
     case 'edit':
     case 'read':
-      fromInput = i.file_path || i.path || ''
+      // File-path families: strip the sandbox-mount prefix so the
+      // headline reads ``foo.md`` instead of ``/workspace/foo.md``.
+      // The full path is still passed to ``openInWorkspace`` via
+      // ``normaliseWorkdirPath`` for click-to-open routing.
+      fromInput = displayPath(i.file_path || i.path || '')
       break
     case 'pattern':
       fromInput = i.pattern || ''
@@ -91,10 +97,10 @@ const headline = computed(() => {
       fromInput = i.query || ''
       break
     case 'rag-read':
-      fromInput = i.chunk_id || i.doc_id || i.path || ''
+      fromInput = i.chunk_id || i.doc_id || displayPath(i.path || '')
       break
   }
-  return fromInput || props.tool.detail || ''
+  return fromInput || displayPath(props.tool.detail || '') || ''
 })
 
 const headlineMono = computed(() =>
@@ -104,17 +110,34 @@ const headlineMono = computed(() =>
 )
 
 // ── Path detection + click handler ───────────────────────────────
-// Workdir paths come in two flavours: backend-side ``/workdir/foo``
-// (the sandbox-internal absolute), or frontend-side ``/foo`` which
-// is what the workspace UI talks. Strip the ``/workdir`` prefix
-// when present so the workspace view's ``?path=`` query lands on
-// the right folder.
+// Workdir paths come in two flavours: backend-side ``/workspace/foo``
+// (the sandbox-internal absolute, since the v0.6.x rename — older
+// trace rows still carry ``/workdir/foo``), or frontend-side
+// ``/foo`` which is what the workspace UI talks. Strip whichever
+// container-mount prefix is present so the workspace view's
+// ``?path=`` query lands on the right folder.
 function normaliseWorkdirPath(p) {
   if (typeof p !== 'string') return ''
   let s = p.trim()
   if (!s) return ''
-  if (s.startsWith('/workdir')) s = s.slice('/workdir'.length) || '/'
+  if (s.startsWith('/workspace')) s = s.slice('/workspace'.length) || '/'
+  else if (s.startsWith('/workdir')) s = s.slice('/workdir'.length) || '/'
   return s.startsWith('/') ? s : '/' + s
+}
+
+// What the user SEES as a path label — strips the sandbox-mount
+// prefix (current ``/workspace`` and legacy ``/workdir``) so the
+// chip head reads ``foo.md`` / ``scripts/bar.sh`` instead of leaking
+// the implementation detail. Bare ``/`` collapses to just ``/`` so
+// "Read /" stays meaningful instead of becoming the empty string.
+function displayPath(p) {
+  if (typeof p !== 'string') return ''
+  const s = p.trim()
+  if (!s) return ''
+  if (s === '/workspace' || s === '/workspace/' || s === '/workdir' || s === '/workdir/') return '/'
+  if (s.startsWith('/workspace/')) return s.slice('/workspace/'.length)
+  if (s.startsWith('/workdir/')) return s.slice('/workdir/'.length)
+  return s
 }
 function openInWorkspace(p) {
   const n = normaliseWorkdirPath(p)
@@ -207,6 +230,15 @@ const inputJson = computed(() => {
 })
 
 const running = computed(() => props.tool.status === 'running')
+// Failure state — backend stamps ``isError`` + ``status='error'``
+// when the tool's result block carries an error (non-zero Bash exit,
+// MCP tool that raised, missing-file Read, etc.). Either signal is
+// enough; live-stream entries set both.
+const failed = computed(() => Boolean(
+  props.tool.isError
+    || props.tool.status === 'error'
+    || props.tool.summary === 'error',
+))
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
 
@@ -225,7 +257,7 @@ const hasAnyDetail = computed(() => Boolean(
 </script>
 
 <template>
-  <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': running }">
+  <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': running, 'is-failed': failed }">
     <button class="chip-head" @click="toggle">
       <span class="head-name">{{ toolLabel }}</span>
       <span
@@ -239,8 +271,13 @@ const hasAnyDetail = computed(() => Boolean(
            without the disclosure widget interrupting the verb-then-
            object scan. macOS finder-style. -->
       <ThinkingPulse v-if="running" :size="14" class="head-icon head-icon--end" />
-      <ChevronRight v-else :size="12" :stroke-width="1.75"
-        class="head-icon head-icon--end chev" :class="{ 'rotate-90': expanded }" />
+      <component
+        v-else
+        :is="expanded ? ChevronDown : ChevronRight"
+        :size="12"
+        :stroke-width="1.75"
+        class="head-icon head-icon--end chev"
+      />
     </button>
 
     <div v-if="expanded" class="chip-body">
@@ -251,7 +288,7 @@ const hasAnyDetail = computed(() => Boolean(
       <template v-if="family === 'bash'">
         <div v-if="inp.command || tool.detail" class="chip-block">
           <div class="chip-block__label">Command</div>
-          <pre class="chip-block__pre"><code><span class="prompt">$ </span>{{ inp.command || tool.detail }}</code></pre>
+          <pre class="chip-block__pre chip-block__pre--cmd"><code><span class="prompt">$ </span>{{ inp.command || tool.detail }}</code></pre>
         </div>
         <div v-if="out" class="chip-block">
           <div class="chip-block__label">Output</div>
@@ -263,7 +300,7 @@ const hasAnyDetail = computed(() => Boolean(
       <template v-else-if="family === 'write'">
         <div v-if="inp.file_path" class="chip-block">
           <div class="chip-block__label">File</div>
-          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ inp.file_path }}</button>
+          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ displayPath(inp.file_path) }}</button>
         </div>
         <div v-if="inp.content" class="chip-block">
           <div class="chip-block__label">Content</div>
@@ -280,7 +317,7 @@ const hasAnyDetail = computed(() => Boolean(
       <template v-else-if="family === 'edit'">
         <div v-if="inp.file_path" class="chip-block">
           <div class="chip-block__label">File</div>
-          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ inp.file_path }}</button>
+          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ displayPath(inp.file_path) }}</button>
         </div>
         <div v-if="diffHunks.length" class="chip-block">
           <div class="chip-block__label">Diff</div>
@@ -310,7 +347,7 @@ const hasAnyDetail = computed(() => Boolean(
           <button
             class="chip-path"
             @click="openInWorkspace(inp.file_path || inp.path)"
-          >{{ inp.file_path || inp.path }}</button>
+          >{{ displayPath(inp.file_path || inp.path) }}</button>
         </div>
         <div v-if="out" class="chip-block">
           <div class="chip-block__label">Body</div>
@@ -326,7 +363,7 @@ const hasAnyDetail = computed(() => Boolean(
         </div>
         <div v-if="inp.path" class="chip-block">
           <div class="chip-block__label">In</div>
-          <button class="chip-path" @click="openInWorkspace(inp.path)">{{ inp.path }}</button>
+          <button class="chip-path" @click="openInWorkspace(inp.path)">{{ displayPath(inp.path) }}</button>
         </div>
         <div v-if="out" class="chip-block">
           <div class="chip-block__label">Matches</div>
@@ -412,21 +449,41 @@ const hasAnyDetail = computed(() => Boolean(
    nudges the head text/icon to full-strength colour. */
 .chip-head:hover .head-name { color: var(--color-t1); }
 .chip-head:hover .head-icon { color: var(--color-t2); }
+
+/* Failure state — entire row reads in the error palette so failed
+   calls are scan-pickable in a long batch. The summary chip ("·
+   error") already carried the signal but blended in too well with
+   the other neutral-grey "· N hits" siblings; pulling the verb +
+   detail text into red is what makes failed calls stand out at a
+   glance, like Claude.ai's own UI. */
+.tool-chip.is-failed .head-name,
+.tool-chip.is-failed .head-detail,
+.tool-chip.is-failed .head-summary,
+.tool-chip.is-failed .head-icon {
+  color: var(--color-err-fg);
+}
+.tool-chip.is-failed:hover .head-name { color: var(--color-err-fg); }
 .head-icon {
   flex-shrink: 0;
   color: var(--color-t3);
   transition: transform .15s;
 }
 /* (chevron sits inline immediately after the headline content,
-   not pinned to the row's far right.) */
-.head-icon.rotate-90 { transform: rotate(90deg); }
+   not pinned to the row's far right. The expanded state uses
+   ``ChevronDown`` directly — no rotation, so no specificity wars
+   with Tailwind's own ``.rotate-90`` utility.) */
 .head-name {
   font-weight: 500;
   color: var(--color-t1);
   white-space: nowrap;
 }
 .head-detail {
-  color: var(--color-t3);
+  /* B4: bumped one notch from t3 (the lightest grey) to t2 so the
+     verb-and-object reading rhythm — Bash <command>, Read <path>,
+     Edit <file> — has more "object" presence next to the t1 tool
+     name. Previously the path / command faded too far to be the
+     thing the eye lands on. */
+  color: var(--color-t2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -452,17 +509,18 @@ const hasAnyDetail = computed(() => Boolean(
   color: var(--color-t3);
 }
 
-/* Expanded body sits flush under the row head. The ToolGroup panel
-   already provides the surrounding box; an additional left rail
-   inside would over-decorate. When the chip is rendered on its own
-   (N=1, no panel), the left padding still gives an indented feel
-   without a visible line. */
+/* Expanded body sits flush under the row head. Indent matches the
+   second-to-third level step inside a ToolGroup — small + uniform
+   so the visual hierarchy is "panel → row → row's detail" with
+   each level only a few pixels deeper than the last. The previous
+   24 px left pad jumped the inner block far away from its parent
+   row and broke the "consistent step" rhythm in screenshots. */
 .chip-body {
-  margin: 4px 0 8px 0;
-  padding: 0 6px 0 24px;
+  margin: 2px 0 6px 0;
+  padding: 0 4px 0 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .chip-block__label {
   font-size: 0.625rem;
@@ -479,7 +537,12 @@ const hasAnyDetail = computed(() => Boolean(
   font-size: 0.6875rem;
   line-height: 1.5;
   color: var(--color-t1);
-  background: var(--color-bg3);
+  /* ``bg-soft`` is one notch lighter than ``bg3`` so when the chip
+     sits inside a ToolGroup (whose body is bg3) the inner code
+     panel reads as a lighter card lifted out of the outer gray.
+     For standalone chips (N=1, no group) bg-soft sits on the page
+     canvas as a subtle gray — still distinct from body text. */
+  background: var(--color-bg-soft);
   border-radius: 6px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -493,10 +556,20 @@ const hasAnyDetail = computed(() => Boolean(
   font-style: italic;
 }
 
-/* Bash command prompt — subtle ``$`` prefix */
+/* Bash command prompt — subtle ``$`` prefix sits in the dimmest
+   grey so the command itself reads as the foreground content. */
 .prompt {
   color: var(--color-t3);
   user-select: none;
+}
+/* B1: Bash command body — pre already sits at t1, this modifier
+   just nudges the weight so the command POPS as the focal point
+   inside the dim panel, matching the "subtle ``$`` prompt → bright
+   bold command" rhythm a real terminal has. Output / Body /
+   Matches blocks (model output, not user-typed command) keep the
+   standard regular weight. */
+.chip-block__pre--cmd {
+  font-weight: 500;
 }
 
 /* Path button — looks like a link, opens the workspace at that path */
@@ -527,7 +600,10 @@ const hasAnyDetail = computed(() => Boolean(
   font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
   font-size: 0.6875rem;
   line-height: 1.55;
-  background: var(--color-bg3);
+  /* Same two-level rationale as ``.chip-block__pre`` — bg-soft sits
+     one notch lighter than bg3 so a diff inside a ToolGroup reads
+     as a lifted inner card. */
+  background: var(--color-bg-soft);
   border-radius: 6px;
   overflow-x: auto;
   max-height: 480px;

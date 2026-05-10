@@ -387,7 +387,7 @@ def test_non_dict_json_lines_skipped():
 def test_ensure_container_passes_empty_owned_project_ids():
     """Folder-as-cwd: container is per-USER, not per-project. The
     runner always passes owned_project_ids=() — SandboxManager
-    mounts the user's whole workdir tree at /workdir/, the agent
+    mounts the user's whole workdir tree at /workspace/, the agent
     chdirs inside via the cwd_path env var. Locks in that we don't
     accidentally regress to per-project mounts."""
     sb = _FakeSandbox(

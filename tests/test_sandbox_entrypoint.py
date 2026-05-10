@@ -363,28 +363,28 @@ def test_build_options_mcp_without_token_omits_authorization(monkeypatch, tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def test_chdir_falls_back_to_current_when_no_workdir(monkeypatch, tmp_path):
-    """Outside the container /workdir doesn't exist; the function
+def test_chdir_falls_back_to_current_when_no_workspace(monkeypatch, tmp_path):
+    """Outside the container /workspace doesn't exist; the function
     should fall back gracefully without raising."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENCRAIG_CWD", raising=False)
-    # Make sure /workdir doesn't exist on the host
-    if Path("/workdir").exists():
-        pytest.skip("/workdir exists locally; can't exercise fallback path")
+    # Make sure /workspace doesn't exist on the host
+    if Path("/workspace").exists():
+        pytest.skip("/workspace exists locally; can't exercise fallback path")
     entrypoint._chdir_to_cwd_or_workdir()
     # Didn't raise, didn't change cwd to nowhere
     assert Path.cwd().exists()
 
 
 def test_chdir_normalises_cwd_path(monkeypatch, tmp_path):
-    """Even on hosts without /workdir, the function should accept
+    """Even on hosts without /workspace, the function should accept
     user-supplied cwd values without crashing — it auto-creates,
     then chdirs (or falls back if even creation fails)."""
-    fake_workdir = tmp_path / "workdir"
-    fake_workdir.mkdir()
+    fake_workspace = tmp_path / "workspace"
+    fake_workspace.mkdir()
     monkeypatch.setattr(entrypoint.os.path, "isdir", lambda p: (
-        p == str(fake_workdir)
-        or p == str(fake_workdir / "sales/2025")
+        p == str(fake_workspace)
+        or p == str(fake_workspace / "sales/2025")
     ))
     monkeypatch.setattr(entrypoint.os, "chdir", lambda p: None)
     monkeypatch.setattr(entrypoint.os, "makedirs", lambda p, **kw: None)

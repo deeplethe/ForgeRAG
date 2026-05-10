@@ -389,6 +389,7 @@ class ConversationOut(BaseModel):
     conversation_id: str
     title: str | None = None
     project_id: str | None = None  # nullable; set when chat is bound to a project
+    cwd_path: str | None = None
     created_at: Any = None
     updated_at: Any = None
     message_count: int | None = None
@@ -402,6 +403,10 @@ class ConversationOut(BaseModel):
     last_assistant_at: Any = None
     last_read_at: Any = None
     unread: bool = False
+    # User-pinned knowledge scope paths (chip-rail entries). Empty
+    # list when nothing pinned. The chat route forwards these to the
+    # agent as a "preferred search scope" hint each turn.
+    path_filters: list[str] = Field(default_factory=list)
 
 
 class MessageOut(BaseModel):
@@ -420,6 +425,13 @@ class MessageOut(BaseModel):
     # ``agent_trace_json`` from message-list responses, so reload
     # showed only the answer body — no chips, no chain.
     agent_trace_json: list | None = None
+    # Attachments bound to this message (chat-composer file uploads).
+    # Each entry mirrors the shape of ``AttachmentOut`` so the chat
+    # UI can render the same chip rail under a reloaded message that
+    # appeared above the input box at compose time. ``None`` /
+    # ``[]`` for messages without attachments — the UI hides the
+    # rail in that case.
+    attachments: list[dict] | None = None
     created_at: Any = None
 
 

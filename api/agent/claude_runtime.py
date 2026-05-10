@@ -100,6 +100,7 @@ def _evt_tool_end(
     latency_ms: int,
     result_summary: dict | None,
     output: str = "",
+    is_error: bool = False,
 ) -> dict:
     return {
         "kind": "tool_end",
@@ -114,6 +115,12 @@ def _evt_tool_end(
         # enough for a typical Bash run / file read; larger payloads
         # truncate with a marker so the trace JSON stays bounded.
         "output": output or "",
+        # Whether the tool failed (non-zero exit / raised / returned
+        # an error blob). Drives the red-headline state on the
+        # frontend ToolChip. Surfaced here as a dedicated field so
+        # the trace-row check is "did this tool fail?" instead of
+        # parsing summary contents.
+        "is_error": bool(is_error),
     }
 
 
@@ -283,7 +290,7 @@ class ClaudeTurnConfig:
     """Working directory the agent's built-in shell tools see. For
     the in-process backend path this is unused (we disable built-in
     tools); for the container path the container entrypoint sets
-    this to ``/workdir/<conversation cwd>/`` before spawning the
+    this to ``/workspace/<conversation cwd>/`` before spawning the
     SDK."""
 
     allowed_tools: list[str] | None = None
@@ -353,6 +360,7 @@ class ClaudeRuntime:
         *,
         config: ClaudeTurnConfig,
         conversation_history: list[dict] | None = None,
+        extra_user_content_blocks: list[dict] | None = None,
         on_event=None,
     ) -> ClaudeTurnResult:
         """Run one chat turn synchronously.
@@ -360,6 +368,14 @@ class ClaudeRuntime:
         ``on_event`` fires from a worker-thread asyncio loop; the
         chat route bridges those events into its SSE async generator
         via ``stream_turn`` (queue-based handoff).
+
+        ``extra_user_content_blocks`` carries pre-built Anthropic
+        content blocks the user message should include alongside the
+        text body — image / document blocks built from the user's
+        attached files. The runtime appends them to the user message's
+        ``content`` array; the bundled CLI / model receives them as
+        native multimodal input. Pass ``None`` (or empty list) for
+        text-only turns.
         """
         sdk = self._resolve_sdk()
         emit = on_event or (lambda _evt: None)
@@ -398,11 +414,19 @@ class ClaudeRuntime:
                 composed = "\n".join(lines)
             else:
                 composed = user_message
+            # Multimodal content blocks come FIRST in the user message
+            # body — Anthropic's docs recommend image/document blocks
+            # before the related question text so the model has the
+            # visual context loaded before it reads what to do with it.
+            content_blocks: list[dict] = []
+            if extra_user_content_blocks:
+                content_blocks.extend(extra_user_content_blocks)
+            content_blocks.append({"type": "text", "text": composed})
             yield {
                 "type": "user",
                 "message": {
                     "role": "user",
-                    "content": [{"type": "text", "text": composed}],
+                    "content": content_blocks,
                 },
                 "parent_tool_use_id": None,
                 "session_id": "",
@@ -479,7 +503,24 @@ class ClaudeRuntime:
                 # chip. ``result_summary`` keeps its narrow,
                 # backwards-compatible shape for the chip headline.
                 output = _stringify_tool_output(tool_response)
-                emit(_evt_tool_end(cid, str(tool_name), latency_ms, summary, output))
+                # Failure detection: SDK PostToolUse fires with
+                # ``tool_response.is_error=True`` when the tool ran
+                # but its result block is an error (non-zero Bash
+                # exit, MCP tool that raised, Read of a missing
+                # file, etc.). The MCP-side ``error`` summary key is
+                # a separate signal; OR them together so a tool that
+                # surfaces failure either way still flips the red
+                # state on the frontend.
+                is_error = False
+                if isinstance(tool_response, dict):
+                    if bool(tool_response.get("is_error")):
+                        is_error = True
+                    elif tool_response.get("error"):
+                        is_error = True
+                emit(_evt_tool_end(
+                    cid, str(tool_name), latency_ms, summary, output,
+                    is_error=is_error,
+                ))
 
                 # Citation pool: search / read / rerank tools carry the
                 # records the model will quote inline as ``[c_<id>]``.
@@ -655,6 +696,7 @@ def stream_turn(
     *,
     config: ClaudeTurnConfig,
     conversation_history: list[dict] | None = None,
+    extra_user_content_blocks: list[dict] | None = None,
 ) -> Iterator[dict]:
     """Run a turn in a worker thread, yield events as they arrive.
 
@@ -677,6 +719,7 @@ def stream_turn(
                 user_message,
                 config=config,
                 conversation_history=conversation_history,
+                extra_user_content_blocks=extra_user_content_blocks,
                 on_event=_on_event,
             )
         except Exception as e:

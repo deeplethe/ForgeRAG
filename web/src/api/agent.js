@@ -30,6 +30,8 @@
  * @param {object}        params
  * @param {string}        params.message
  * @param {string|null}   [params.conversationId]
+ * @param {string[]}      [params.attachmentIds]  draft attachments to bind
+ * @param {string[]}      [params.pathFilters]    pinned knowledge scopes
  * @param {AbortSignal}   [params.signal]
  * @yields {{ type: string, [k: string]: any }}
  */
@@ -37,6 +39,8 @@ export async function* agentChatStream({
   message,
   conversationId = null,
   cwdPath = null,
+  attachmentIds = null,
+  pathFilters = null,
   signal,
 }) {
   const BASE = import.meta.env.VITE_API_BASE || ''
@@ -50,6 +54,23 @@ export async function* agentChatStream({
   // also handles the "switch folder" gesture — backend updates
   // the Conversation row when this differs from what's stored.
   if (cwdPath) body.cwd_path = cwdPath
+  // Draft attachment ids — backend binds them to this turn's user
+  // message after persistence and feeds their content to the agent
+  // (text inlined into the prompt; image/pdf as native multimodal
+  // content blocks if the configured model supports them).
+  if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+    body.attachment_ids = attachmentIds
+  }
+  // Pinned knowledge scopes (chip-rail entries). The backend
+  // persists this on the Conversation row and prepends a hint to
+  // the user message naming each path so the agent fans out
+  // ``search_vector(query, path_filter=…)`` calls per pin.
+  // ``null`` means "no change"; the backend falls back to whatever
+  // it stored on the Conversation. Send only when the local rail
+  // is the truth (i.e. user just sent / reopened the chat).
+  if (Array.isArray(pathFilters)) {
+    body.path_filters = pathFilters
+  }
 
   const res = await fetch(`${BASE}/api/v1/agent/chat`, {
     method: 'POST',

@@ -410,8 +410,8 @@ def test_system_message_threaded_to_system_prompt():
 
 def test_cwd_threaded_to_options_cwd():
     sdk, captured = _make_fake_sdk(yields=[_FakeResultMessage(result="ok")])
-    _drive(sdk, config=_config(cwd="/workdir/sales/2025"))
-    assert captured["options"].cwd == "/workdir/sales/2025"
+    _drive(sdk, config=_config(cwd="/workspace/sales/2025"))
+    assert captured["options"].cwd == "/workspace/sales/2025"
 
 
 # ---------------------------------------------------------------------------

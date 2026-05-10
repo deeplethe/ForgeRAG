@@ -658,7 +658,7 @@ def test_cwd_path_override_writes_back_to_conversation(
 def test_no_cwd_path_anywhere_is_pure_qa(client, stub_stream, state):
     """No body cwd_path + no stored cwd_path on the conversation +
     no conversation_id at all → runtime gets cwd_path=None,
-    which is the "agent works at /workdir root" plain-Q&A signal."""
+    which is the "agent works at /workspace root" plain-Q&A signal."""
     state.sandbox = SimpleNamespace(name="fake-sandbox")
     stub_stream([{"kind": "done", "iterations": 0, "final_text": "ok"}])
 

@@ -175,7 +175,7 @@ def test_ensure_starts_on_first_call(make_manager, backend):
     assert len(backend.start_calls) == 1
     # User-envs mount always present (auto-created)
     container_paths = {m.container_path for m in h.mounts}
-    assert "/workspace/.envs" in container_paths
+    assert "/opt/runtime-envs" in container_paths
 
 
 def test_ensure_returns_same_handle_when_already_running(make_manager, backend):
@@ -203,10 +203,10 @@ def test_owned_project_mounts_composed(make_manager, projects_root, backend):
         "u_alice", owned_project_ids=["p1", "p2", "p_missing"]
     )
     paths = {m.container_path: m.host_path for m in h.mounts}
-    assert "/workdir/p1" in paths
-    assert "/workdir/p2" in paths
+    assert "/workspace/p1" in paths
+    assert "/workspace/p2" in paths
     # Missing project workdir is silently skipped (logged warning)
-    assert "/workdir/p_missing" not in paths
+    assert "/workspace/p_missing" not in paths
 
 
 def test_user_envs_dir_auto_created(make_manager, envs_root):
@@ -224,15 +224,15 @@ def test_start_failure_wraps_in_sandbox_start_error(make_manager, backend):
 
 
 # ---------------------------------------------------------------------------
-# Folder-as-cwd: per-user workdir mount at /workdir/
+# Folder-as-cwd: per-user workdir mount at /workspace/
 # ---------------------------------------------------------------------------
 
 
-def test_user_workdirs_root_mounts_at_slash_workdir(
+def test_user_workdirs_root_mounts_at_slash_workspace(
     make_manager, tmp_path, backend
 ):
     """When ``user_workdirs_root`` is set, the user's private
-    workdir tree gets mounted at ``/workdir/`` (single mount,
+    workdir tree gets mounted at ``/workspace/`` (single mount,
     not per-project). This is the v0.6.0 OSS folder-as-cwd path
     — chat ``cwd_path`` is interpreted as a subpath of this mount.
     """
@@ -241,13 +241,13 @@ def test_user_workdirs_root_mounts_at_slash_workdir(
     mgr = make_manager(user_workdirs_root=workdirs)
     h = mgr.ensure_container_for_user("u_alice")
     paths = {m.container_path: m.host_path for m in h.mounts}
-    assert "/workdir" in paths
+    assert "/workspace" in paths
     # Auto-created on first ensure
     assert (workdirs / "u_alice").exists()
     # Hosts the user's private subtree
-    assert paths["/workdir"].endswith("u_alice") or \
-        paths["/workdir"].endswith("u_alice/") or \
-        "u_alice" in paths["/workdir"]
+    assert paths["/workspace"].endswith("u_alice") or \
+        paths["/workspace"].endswith("u_alice/") or \
+        "u_alice" in paths["/workspace"]
 
 
 def test_user_workdirs_root_displaces_per_project_mounts(
@@ -255,7 +255,7 @@ def test_user_workdirs_root_displaces_per_project_mounts(
 ):
     """When user_workdirs_root is set, owned_project_ids is
     intentionally ignored. The two mount layouts don't coexist —
-    /workdir/ either IS the user's tree or has per-project subdirs,
+    /workspace/ either IS the user's tree or has per-project subdirs,
     never both."""
     workdirs = tmp_path / "user-workdirs"
     workdirs.mkdir()
@@ -266,10 +266,10 @@ def test_user_workdirs_root_displaces_per_project_mounts(
         "u_alice", owned_project_ids=["p1", "p2"]
     )
     container_paths = {m.container_path for m in h.mounts}
-    assert "/workdir" in container_paths
+    assert "/workspace" in container_paths
     # Per-project subdirs NOT mounted under the new model
-    assert "/workdir/p1" not in container_paths
-    assert "/workdir/p2" not in container_paths
+    assert "/workspace/p1" not in container_paths
+    assert "/workspace/p2" not in container_paths
 
 
 def test_legacy_per_project_path_when_user_workdirs_root_unset(
@@ -284,9 +284,9 @@ def test_legacy_per_project_path_when_user_workdirs_root_unset(
         "u_alice", owned_project_ids=["p1"]
     )
     container_paths = {m.container_path for m in h.mounts}
-    assert "/workdir/p1" in container_paths
-    # The single-mount /workdir is NOT used in legacy mode
-    assert "/workdir" not in container_paths
+    assert "/workspace/p1" in container_paths
+    # The single-mount /workspace is NOT used in legacy mode
+    assert "/workspace" not in container_paths
 
 
 # ---------------------------------------------------------------------------

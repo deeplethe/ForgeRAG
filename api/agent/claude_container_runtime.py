@@ -20,7 +20,7 @@ Why a container-side runner exists at all:
   files there.
 
   In-container the Claude Agent SDK runs with full toolsets ENABLED — its bash /
-  edit / grep operate on ``/workdir/`` which the SandboxManager
+  edit / grep operate on ``/workspace/`` which the SandboxManager
   bind-mounts to the user's project folder. That's the sandbox.
   The cost is per-turn ``docker exec`` overhead (~50–200 ms on a
   warm container) and a network hop for MCP calls; the win is a
@@ -152,6 +152,7 @@ class ClaudeContainerRunner:
         principal_user_id: str,
         cwd_path: str | None = None,
         conversation_history: list[dict] | None = None,
+        extra_user_content_blocks: list[dict] | None = None,
         on_event: callable | None = None,
     ) -> ClaudeTurnResult:
         """Spawn the entrypoint inside ``principal_user_id``'s
@@ -161,8 +162,8 @@ class ClaudeContainerRunner:
         ``cwd_path``: folder path WITHIN the user's workdir tree
         (e.g. ``"/sales/2025"``) the agent should chdir into
         before working. Mapped to the in-container path
-        ``/workdir<cwd_path>``. Empty / None → agent works at
-        ``/workdir`` root (no folder context — pure Q&A).
+        ``/workspace<cwd_path>``. Empty / None → agent works at
+        ``/workspace`` root (no folder context — pure Q&A).
 
         Synchronous: blocks until the entrypoint exits. The chat
         route uses ``stream_turn_container`` instead so the SSE
@@ -175,7 +176,7 @@ class ClaudeContainerRunner:
             container = self.sandbox.ensure_container_for_user(
                 principal_user_id,
                 # Folder-as-cwd: no per-project mounts. The user's
-                # entire workdir tree is mounted at /workdir/ once;
+                # entire workdir tree is mounted at /workspace/ once;
                 # the entrypoint chdirs into the cwd_path subfolder
                 # before invoking AIAgent.
                 owned_project_ids=(),
@@ -194,6 +195,7 @@ class ClaudeContainerRunner:
             config=config,
             conversation_history=conversation_history,
             cwd_path=cwd_path,
+            extra_user_content_blocks=extra_user_content_blocks,
         )
 
         final_text = ""
@@ -242,6 +244,7 @@ class ClaudeContainerRunner:
         config: ClaudeTurnConfig,
         conversation_history: list[dict] | None,
         cwd_path: str | None = None,
+        extra_user_content_blocks: list[dict] | None = None,
     ) -> dict[str, str]:
         """Pack everything the entrypoint reads from environment.
 
@@ -306,9 +309,39 @@ class ClaudeContainerRunner:
             elif auth:
                 env["OPENCRAIG_MCP_TOKEN"] = auth
 
+        # Multimodal content blocks (image / pdf the user attached
+        # this turn). Ship as JSON via env var so the entrypoint can
+        # deserialize and append them to the user message body. Linux
+        # caps each env var at MAX_ARG_STRLEN (typically 128 KiB) —
+        # base64-encoded images / PDFs grow ~33% over their byte size,
+        # so a 90 KiB original is the realistic upper bound for the
+        # env-var path. Larger blocks are dropped here with a warning;
+        # the user sees the agent ignore the attachment rather than
+        # the route 5xx-ing. Long-term fix is a scratch-file mount
+        # the entrypoint reads — deferred until someone actually hits
+        # the limit (DeepSeek / OpenAI typical chat doesn't need
+        # more than a small image).
+        if extra_user_content_blocks:
+            try:
+                payload = json.dumps(
+                    extra_user_content_blocks, ensure_ascii=False,
+                )
+                if len(payload.encode("utf-8")) <= 100_000:
+                    env["OPENCRAIG_EXTRA_USER_BLOCKS"] = payload
+                else:
+                    log.warning(
+                        "claude_container: extra user blocks too large "
+                        "for env-var path (%d bytes); dropping. n=%d",
+                        len(payload), len(extra_user_content_blocks),
+                    )
+            except Exception:
+                log.exception(
+                    "claude_container: extra user blocks serialise failed"
+                )
+
         # Normalise cwd_path: leading "/", no trailing. Empty →
         # don't pass the env var at all so the entrypoint stays
-        # at ``/workdir`` root.
+        # at ``/workspace`` root.
         if cwd_path:
             normalised = cwd_path.strip()
             if normalised and not normalised.startswith("/"):
@@ -411,6 +444,7 @@ def stream_turn_container(
     principal_user_id: str,
     cwd_path: str | None = None,
     conversation_history: list[dict] | None = None,
+    extra_user_content_blocks: list[dict] | None = None,
 ) -> Iterator[dict]:
     """Sync generator the chat route iterates to push SSE events.
 
@@ -435,6 +469,7 @@ def stream_turn_container(
                 principal_user_id=principal_user_id,
                 cwd_path=cwd_path,
                 conversation_history=conversation_history,
+                extra_user_content_blocks=extra_user_content_blocks,
                 on_event=_on_event,
             )
         except Exception as e:

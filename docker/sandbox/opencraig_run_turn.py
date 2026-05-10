@@ -7,12 +7,12 @@ once per chat turn. The script:
 
   1. Reads the user message + conversation history + agent config
      from environment variables.
-  2. Chdirs into the cwd_path subfolder of /workdir before importing
+  2. Chdirs into the cwd_path subfolder of /workspace before importing
      the SDK so the agent's Read / Edit / Bash / Glob / Grep tools
      start at the right place (they capture os.getcwd() at startup).
   3. Drives one turn of the Claude Agent SDK loop. Built-in tools
      are ENABLED here because this IS the sandbox — the bind-mount
-     limits filesystem reach to /workdir = the user's private
+     limits filesystem reach to /workspace = the user's private
      workspace.
   4. Translates each SDK message into a single JSONL line on stdout.
      The backend reads stdout line-by-line and converts to SSE
@@ -48,16 +48,23 @@ Env vars the backend sets per turn:
                               ``claude-sonnet-4-5-20250929``)
     OPENCRAIG_MAX_TURNS     — agent iteration cap (default 90)
     OPENCRAIG_SYSTEM_PROMPT — optional ephemeral system prompt
-    OPENCRAIG_CWD           — folder path INSIDE /workdir/ to chdir
+    OPENCRAIG_CWD           — folder path INSIDE /workspace/ to chdir
                               into before invoking the agent (e.g.
                               ``/sales/2025``). Empty / unset = stay
-                              at /workdir root.
+                              at /workspace root.
     OPENCRAIG_MCP_URL       — backend MCP server URL (e.g.
                               ``http://backend:8000/api/v1/mcp``).
                               Optional; if absent the agent runs
                               without MCP tools (built-ins still
                               available).
     OPENCRAIG_MCP_TOKEN     — bearer token for the MCP server.
+    OPENCRAIG_EXTRA_USER_BLOCKS
+                            — JSON array of Anthropic content blocks
+                              (image / document) the user attached this
+                              turn. Prepended to the user message body
+                              ahead of the text block so the model
+                              sees the visual context first. Optional;
+                              omit for text-only turns.
     ANTHROPIC_BASE_URL      — points at backend's LiteLLM proxy
                               Anthropic-compat surface.
     ANTHROPIC_API_KEY       — session token (LiteLLM resolves real
@@ -108,6 +115,24 @@ def _read_history() -> list[dict]:
     return [m for m in parsed if isinstance(m, dict)]
 
 
+def _read_extra_user_blocks() -> list[dict]:
+    """Decode the multimodal content blocks the backend stuffed into
+    ``OPENCRAIG_EXTRA_USER_BLOCKS`` for this turn. Returns an empty
+    list when the env var is missing or unparseable so a malformed
+    payload silently falls back to text-only — the agent still gets
+    the user's typed query, just without the attached media."""
+    raw = os.environ.get("OPENCRAIG_EXTRA_USER_BLOCKS")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [b for b in parsed if isinstance(b, dict) and b.get("type")]
+
+
 def _chdir_to_cwd_or_workdir() -> None:
     """Move into the agent's working directory before importing the
     SDK. The bundled CLI captures os.getcwd() for its built-in shell
@@ -116,8 +141,8 @@ def _chdir_to_cwd_or_workdir() -> None:
     SDK itself.
 
     Order of preference:
-        1. ``/workdir`` + OPENCRAIG_CWD  (folder-as-cwd path)
-        2. ``/workdir``                  (no folder bound)
+        1. ``/workspace`` + OPENCRAIG_CWD  (folder-as-cwd path)
+        2. ``/workspace``                  (no folder bound)
         3. fall back to wherever we are  (dev / test outside container)
     """
     cwd_rel = (os.environ.get("OPENCRAIG_CWD") or "").strip()
@@ -125,7 +150,7 @@ def _chdir_to_cwd_or_workdir() -> None:
         cwd_rel = "/" + cwd_rel
     cwd_rel = cwd_rel.rstrip("/")
 
-    base = "/workdir"
+    base = "/workspace"
     target = base + cwd_rel if cwd_rel else base
 
     if not os.path.isdir(target):
@@ -133,7 +158,7 @@ def _chdir_to_cwd_or_workdir() -> None:
         # doesn't yet exist on disk. Same affordance the Workspace
         # UI's "create folder" gives, but here driven by the chat
         # opening in a not-yet-materialised path. Falls back to
-        # base if even ``/workdir`` is missing (test / dev contexts).
+        # base if even ``/workspace`` is missing (test / dev contexts).
         try:
             os.makedirs(target, exist_ok=True)
         except OSError:
@@ -180,7 +205,7 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
         system_prompt=_read_str("OPENCRAIG_SYSTEM_PROMPT") or None,
         mcp_servers=mcp_servers,
         # Inside the sandbox we WANT Read / Edit / Bash / Glob / Grep —
-        # they operate on /workdir which is the bind-mounted user
+        # they operate on /workspace which is the bind-mounted user
         # workspace. ``allowed_tools`` left default so the SDK's full
         # built-in set is available; MCP tools fan in as ``mcp__name__*``.
         cwd=os.getcwd(),
@@ -257,12 +282,30 @@ def _emit_message_events(
                     )
                     name = tool_name.pop(cid, "") or ""
                     summary = _summarise_tool_result(block.content)
+                    # Full stringified output (capped) — without it the
+                    # frontend's expandable ToolChip shows the input
+                    # parameters but no Output / Matches / Body block,
+                    # which made tool calls feel useless to expand.
+                    # Mirror of api/agent/claude_runtime.py's
+                    # PostToolUse hook so both runtime paths ship the
+                    # same wire shape.
+                    output = _stringify_tool_result(block.content)
+                    # Failure flag — SDK populates ``is_error`` on
+                    # ToolResultBlock when the tool's result block
+                    # represents a failure (non-zero Bash exit, file
+                    # not found, MCP tool raised, …). Drives the
+                    # red-headline state on the frontend ToolChip.
+                    is_error = bool(getattr(block, "is_error", False))
+                    if not is_error and isinstance(summary, dict) and summary.get("error"):
+                        is_error = True
                     emit({
                         "kind": "tool_end",
                         "id": cid,
                         "tool": name,
                         "latency_ms": latency_ms,
                         "result_summary": summary,
+                        "output": output,
+                        "is_error": is_error,
                     })
     elif isinstance(msg, sdk.StreamEvent):
         ev = msg.event or {}
@@ -286,6 +329,55 @@ def _emit_message_events(
         final_text = msg.result or ""
 
     return final_text
+
+
+# Per-call tool-output cap. Keeps the JSONL line + downstream SSE
+# event small enough to land in DB without bloating ``agent_trace_json``.
+# Mirror of api/agent/claude_runtime.py::_TOOL_OUTPUT_MAX.
+_TOOL_OUTPUT_MAX = 8192
+
+
+def _stringify_tool_result(content) -> str:
+    """Coerce a ToolResultBlock.content (str | list[ContentBlock] | None)
+    into a length-capped string the frontend ToolChip can render
+    verbatim (Bash stdout, Glob match list, search hit JSON, …).
+
+    Lists of content-blocks (the MCP shape: ``[{type:"text", text:"..."}]``)
+    get their text concatenated; dicts go through ``json.dumps``;
+    everything longer than ``_TOOL_OUTPUT_MAX`` truncates with a
+    chars-truncated marker so the frontend can display a useful
+    preview without exceeding the trace JSON's practical ceiling.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        s = content
+    elif isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                else:
+                    # Non-text blocks (image / json) — stringify the
+                    # whole block so the user can see what came back.
+                    try:
+                        parts.append(json.dumps(block, ensure_ascii=False))
+                    except Exception:
+                        parts.append(str(block))
+            else:
+                parts.append(str(block))
+        s = "\n".join(parts)
+    elif isinstance(content, dict):
+        try:
+            s = json.dumps(content, ensure_ascii=False, default=str, indent=2)
+        except Exception:
+            s = str(content)
+    else:
+        s = str(content)
+    if len(s) > _TOOL_OUTPUT_MAX:
+        s = s[:_TOOL_OUTPUT_MAX] + f"\n…[+{len(s) - _TOOL_OUTPUT_MAX} chars truncated]"
+    return s
 
 
 def _summarise_tool_result(content) -> dict:
@@ -329,9 +421,19 @@ def _summarise_tool_result(content) -> dict:
     return {"text": str(content)[:200]}
 
 
-async def _drive(user_message: str, history: list[dict], sdk) -> tuple[str, int]:
+async def _drive(
+    user_message: str,
+    history: list[dict],
+    sdk,
+    extra_user_blocks: list[dict] | None = None,
+) -> tuple[str, int]:
     """Run one turn through the SDK's async generator, emitting
-    JSONL events. Returns (final_text, num_turns)."""
+    JSONL events. Returns (final_text, num_turns).
+
+    ``extra_user_blocks`` carries pre-built Anthropic content blocks
+    (image / document) the user attached this turn; the prompt
+    builder prepends them to the user message body so the model
+    sees the visual context before the text question."""
     options = _build_options(
         sdk,
         mcp_url=_read_str("OPENCRAIG_MCP_URL"),
@@ -369,11 +471,18 @@ async def _drive(user_message: str, history: list[dict], sdk) -> tuple[str, int]
             composed = "\n".join(lines)
         else:
             composed = user_message
+        # Multimodal blocks come BEFORE the text — Anthropic's docs
+        # recommend image/document content live above the question
+        # the model is supposed to answer with them as context.
+        content_blocks: list[dict] = []
+        if extra_user_blocks:
+            content_blocks.extend(extra_user_blocks)
+        content_blocks.append({"type": "text", "text": composed})
         yield {
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [{"type": "text", "text": composed}],
+                "content": content_blocks,
             },
             "parent_tool_use_id": None,
             "session_id": "",
@@ -421,9 +530,12 @@ def main() -> int:
         return 3
 
     history = _read_history()
+    extra_user_blocks = _read_extra_user_blocks()
 
     try:
-        final_text, iterations = asyncio.run(_drive(user_message, history, sdk))
+        final_text, iterations = asyncio.run(
+            _drive(user_message, history, sdk, extra_user_blocks)
+        )
     except sdk.CLINotFoundError as e:
         traceback.print_exc(file=sys.stderr)
         emit({

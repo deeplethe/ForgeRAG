@@ -1400,6 +1400,10 @@ def _conversation_to_dict(row: Conversation) -> dict:
         # legacy / unbound rows. See models.Conversation docstring
         # + 20260518_add_conversation_cwd_path migration.
         "cwd_path": getattr(row, "cwd_path", None),
+        # User-pinned knowledge scope paths (chip-rail entries).
+        # Empty list when the user hasn't pinned any — agent then
+        # searches the user's full grant set with no scope hint.
+        "path_filters": list(getattr(row, "path_filters_json", []) or []),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},

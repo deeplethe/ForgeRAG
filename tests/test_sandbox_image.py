@@ -47,13 +47,13 @@ def test_dockerfile_exists_and_has_expected_sections():
     assert "FROM python:3.13-slim" in text, "base image must be python:3.13-slim"
     assert "useradd" in text and "runner" in text, "must create non-root runner user"
     assert "USER runner" in text, "must drop privileges via USER directive"
-    assert "WORKDIR /workdir" in text, "workdir mount point missing"
+    assert "WORKDIR /workspace" in text, "workspace mount point missing"
     assert '"tail", "-f", "/dev/null"' in text, (
         "PID 1 must be a no-op keepalive — kernels are launched via "
         "docker exec by the SandboxManager"
     )
-    assert "/workspace/.envs" in text, (
-        "must pre-create /workspace/.envs/ for Phase 2.8 install_runtime"
+    assert "/opt/runtime-envs" in text, (
+        "must pre-create /opt/runtime-envs/ for Phase 2.8 install_runtime"
     )
     assert "micromamba" in text, "micromamba required for install_runtime"
 

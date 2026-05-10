@@ -19,7 +19,7 @@
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronRight } from 'lucide-vue-next'
+import { ChevronRight, ChevronDown } from 'lucide-vue-next'
 import ThinkingPulse from './ThinkingPulse.vue'
 import ToolChip from './ToolChip.vue'
 
@@ -30,6 +30,18 @@ const props = defineProps({
 const { t } = useI18n()
 
 const anyRunning = computed(() => props.tools.some((x) => x.status === 'running'))
+// Failure detection — same triple-source check as ToolChip so the
+// summary stays consistent across the two components.
+function isFailed(t) {
+  return Boolean(
+    t?.isError
+      || t?.status === 'error'
+      || t?.summary === 'error',
+  )
+}
+const failedCount = computed(() =>
+  props.tools.reduce((n, t) => n + (isFailed(t) ? 1 : 0), 0),
+)
 
 // Family classifier kept in sync with ToolChip's so the headline's
 // verb count matches what the user sees once they expand. Distinct
@@ -78,16 +90,25 @@ function toggle() { expanded.value = !expanded.value }
 </script>
 
 <template>
-  <div class="tool-group" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
+  <div class="tool-group" :class="{ 'is-expanded': expanded, 'is-running': anyRunning, 'has-failed': failedCount > 0 }">
     <button class="group-head" @click="toggle">
       <span class="head-text">{{ headline }}</span>
+      <!-- Failure tally — small red badge appended to the headline
+           ("Used 5 tools  · 1 failed") so the user sees the failure
+           count BEFORE expanding the group. Plural-aware label. -->
+      <span v-if="failedCount > 0" class="head-failed">· {{ failedCount }} failed</span>
       <!-- Chevron sits trailing — content reads "Edited 2 files…" on the
            left, the disclosure widget hangs on the right (macOS-style)
            so the eye lands on what was done before noticing it can be
            expanded. -->
       <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon head-icon--end" />
-      <ChevronRight v-else :size="12" :stroke-width="1.75"
-        class="head-icon head-icon--end chev" :class="{ 'rotate-90': expanded }" />
+      <component
+        v-else
+        :is="expanded ? ChevronDown : ChevronRight"
+        :size="12"
+        :stroke-width="1.75"
+        class="head-icon head-icon--end chev"
+      />
     </button>
     <div v-if="expanded" class="group-body">
       <ToolChip v-for="(tc, i) in tools" :key="tc.call_id || i" :tool="tc" />
@@ -127,28 +148,36 @@ function toggle() { expanded.value = !expanded.value }
 }
 /* (chevron sits inline immediately after the headline, NOT pinned
    to the row's far right — the latter felt detached from the
-   content it controls.) */
-.head-icon.rotate-90 { transform: rotate(90deg); }
+   content it controls. Expanded state swaps to ``ChevronDown``
+   directly instead of rotating ``ChevronRight``, dodging any
+   Tailwind ``.rotate-90`` utility specificity weirdness.) */
 .head-text {
   font-feature-settings: "tnum";
   letter-spacing: -0.005em;
   font-weight: 500;
   transition: color .15s;
 }
+/* Failure tally — small red badge on the headline so a batch with
+   any failed tools is scan-pickable without expanding. Stays subtle
+   (no background fill) — paired with the in-row red headlines on
+   the actual failed chips below. */
+.head-failed {
+  margin-left: 4px;
+  color: var(--color-err-fg);
+  font-size: 0.6875rem;
+  font-feature-settings: "tnum";
+  white-space: nowrap;
+}
 
-/* Expanded body — single rounded panel that holds every step. The
-   chip rows inside lose their individual borders so the panel reads
-   as one block of activity rather than a stack of nested cards. */
-/* Outline-only panel: a thin border + rounded corner is enough
-   to read as one block of activity. Filling the bg with ``bg3``
-   conflicted with chip-block__pre (also bg3) — the inner code
-   blocks would disappear. Leaving the panel transparent lets the
-   ``bg3`` of the inner blocks pop out as actual content. */
+/* Expanded body — single rounded gray panel holding every step.
+   Hierarchy reads through INDENTATION, not chunky color jumps:
+   chip rows inside align flush-left with this panel's padding,
+   chip-expansion content nudges in just slightly more so the
+   second-vs-third level relationship is a small, even step. */
 .group-body {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: transparent;
-  border: 1px solid var(--color-line);
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: var(--color-bg3);
   border-radius: 8px;
 }
 </style>

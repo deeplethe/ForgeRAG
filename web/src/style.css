@@ -60,6 +60,11 @@
   --color-bg2: #fafafa;           /* page canvas / sidebar */
   --color-bg3: #f4f4f5;           /* hover */
   --color-bg-hover: #f4f4f5;      /* bwd-compat alias for bg3 */
+  /* "Soft" gray — a SUBTLE notch lighter than bg3, just enough to
+     read as a separate inner layer when nested. Claude.ai-style
+     hierarchy where layers are distinguished by indentation, not
+     by chunky color jumps. Mirrors the dark-mode override below. */
+  --color-bg-soft: #ededee;
   /* Selected row — one notch darker than bg3 so "active" reads as
      stronger than "hovering". Only used where contrast between hover
      and selected was previously too subtle (sidebar tabs, etc.). */
@@ -165,6 +170,9 @@
   --color-bg2: #000000;           /* page canvas (pure black) */
   --color-bg3: #1f1f1f;           /* hover */
   --color-bg-hover: #1f1f1f;
+  /* "Soft" gray — a SUBTLE notch lighter than bg3 (toward white).
+     Layer hierarchy reads via indentation; color is just a hint. */
+  --color-bg-soft: #242424;
   /* Dark-mode "selected" lifts even higher than hover (lighter shade)
      so the active row pops out of the dark canvas. */
   --color-bg-selected: #2a2a2a;
