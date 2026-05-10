@@ -10,6 +10,11 @@ export default { name: 'ChatView' }
 const _msgs = ref([])
 const _streaming = ref(false)
 const _streamText = ref('')
+// True while ``_loadAndPoll`` is fetching this conversation's
+// history. Drives a loading skeleton in the message column so a
+// keyed conv (``/chat/<id>``) doesn't flash the empty-home layout
+// (logo + presets) for the few hundred ms the GET /messages takes.
+const _loadingHistory = ref(false)
 const _retInfo = ref(null)
 const _abortCtrl = ref(null)
 // Chronological trace of the in-flight turn — the "chain" the user
@@ -193,6 +198,7 @@ function onCwdPicked(path) {
 const msgs = _msgs
 const streaming = _streaming
 const streamText = _streamText
+const loadingHistory = _loadingHistory
 const retInfo = _retInfo
 const abortCtrl = _abortCtrl
 const genTools = _genTools
@@ -245,7 +251,15 @@ function onPdfAfterLeave() {
   pdfMounted.value = false
 }
 const trace = reactive({ show: false, data: null })
-const empty = computed(() => !msgs.value.length && !streaming.value)
+// "Empty" = the home / fresh-chat layout (centered logo + presets +
+// input). Only true when there's NO bound conversation. Once the URL
+// carries ``?c=<id>`` we're entering an existing conversation — show
+// the active-chat shell (bottom-anchored input + message column with
+// a loading skeleton) regardless of whether messages have come back
+// yet. Without the convId guard, a sidebar click would briefly flash
+// the home state for the few hundred ms while ``GET /messages``
+// resolves.
+const empty = computed(() => !convId.value && !msgs.value.length && !streaming.value)
 
 // On remount: reload messages from DB to ensure trace_id / citations are fresh.
 // The watch(convId) only fires on *change* — if convId is the same (e.g. user
@@ -335,11 +349,14 @@ async function _loadAndPoll(id) {
       traceId: m.trace_id || null,
     }))
   }
+  _loadingHistory.value = true
   try {
     const raw = await getMessages(id)
     msgs.value = _parseRaw(raw)
     enrichHistoricalCitations()
-  } catch {}
+  } catch {} finally {
+    _loadingHistory.value = false
+  }
   scroll()
 
   // If the last message is from the user, the backend is still processing.
@@ -570,9 +587,9 @@ async function send(text) {
       await createConversation(q.slice(0, 60), boundProjectId.value || null)
     ).conversation_id
     convId.value = newId
-    // Sync the URL → ``/chat?c=<id>``. Without this, a refresh
+    // Sync the URL → ``/chat/<id>``. Without this, a refresh
     // mid-stream loses the conversation entirely (App.vue's
-    // convId boots from route.query.c, which would still be
+    // convId boots from route.params.id, which would still be
     // empty). Uses replace so the address bar mutation doesn't
     // add a history step the user has to back-button through.
     setActiveConvIdNoHistory(newId)
@@ -1268,6 +1285,22 @@ function onTraceClick(m) {
                so the input box visually frames the conversation —
                ChatGPT-style. -->
           <div class="max-w-[720px] mx-auto space-y-4">
+            <!-- History-loading skeleton — three stacked translucent
+                 message-shaped placeholders that fade-pulse while
+                 ``GET /messages`` is in flight. Only renders when the
+                 conversation is bound but messages haven't come back
+                 yet, AND nothing is streaming (mid-stream the live
+                 stream view takes over instead). -->
+            <div
+              v-if="loadingHistory && !msgs.length && !streaming"
+              class="chat-skeleton"
+              aria-busy="true"
+            >
+              <div class="chat-skel-row chat-skel-row--user" />
+              <div class="chat-skel-row chat-skel-row--agent" />
+              <div class="chat-skel-row chat-skel-row--user chat-skel-row--short" />
+            </div>
+
             <div v-for="(m, i) in msgs" :key="i" class="fadein">
               <!-- User -->
               <div v-if="m.role === 'user'" class="flex justify-end mb-2">
@@ -1477,6 +1510,40 @@ function onTraceClick(m) {
   align-items: center;
   margin-top: 10px;
   color: var(--color-t3);
+}
+
+/* History-loading skeleton — three stacked rows in alternating user
+   (right-aligned) / agent (full-width) shapes, animating an opacity
+   pulse so it reads as "loading" without spinner noise. The shapes
+   roughly mirror the real bubble metrics so when the real messages
+   land the layout doesn't jump. */
+.chat-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0;
+}
+.chat-skel-row {
+  height: 32px;
+  border-radius: 14px;
+  background: var(--color-bg3);
+  animation: chat-skel-pulse 1.4s ease-in-out infinite;
+}
+.chat-skel-row--user {
+  align-self: flex-end;
+  width: 60%;
+}
+.chat-skel-row--user.chat-skel-row--short {
+  width: 35%;
+}
+.chat-skel-row--agent {
+  align-self: stretch;
+  height: 80px;
+  border-radius: 8px;
+}
+@keyframes chat-skel-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.85; }
 }
 
 /* Markdown body rules (h1/ul/code/etc.) live in

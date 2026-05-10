@@ -8,7 +8,14 @@ const router = createRouter({
     { path: '/login', component: () => import('@/views/Login.vue'), meta: { public: true } },
     { path: '/register', component: () => import('@/views/Register.vue'), meta: { public: true } },
     { path: '/setup', component: () => import('@/views/Setup.vue'), meta: { public: true } },
-    { path: '/chat', component: () => import('@/views/Chat.vue') },
+    // Chat route uses an OPTIONAL path param for the conversation id.
+    //   /chat            → fresh chat (empty home / new conversation)
+    //   /chat/<id>       → resume a specific conversation
+    // Keeps query strings free for orthogonal state (cwd, path_filter,
+    // etc.); the conv id was a stable resource identifier so it
+    // earned the path slot. Deeper folder/doc/chunk state stays in
+    // query for the same multi-key flexibility reason.
+    { path: '/chat/:id?', component: () => import('@/views/Chat.vue') },
     { path: '/search', component: () => import('@/views/Search.vue') },
     // Library = the indexed knowledge base (formerly "Workspace"); the
     // file manager UI lives at /library. /workspace is now the agent-

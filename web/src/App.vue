@@ -21,16 +21,16 @@ const convsLoaded = ref(false)
 const convsLoadingMore = ref(false)    // append-load in flight; sidebar shows tail spinner
 const convsHasMore = ref(true)         // false once an empty page comes back
 const deletingConvs = ref(new Set())   // optimistic-delete in-flight set
-// Active conversation id is mirrored in the URL as ``?c=<id>`` so
-// page refresh, browser back/forward, and shareable links all
-// recover the conversation. The ref + the route stay in sync via
-// the two watchers below: any setter on either side flows through
-// to the other. Sidebar clicks call ``selectConv`` (push, gives a
-// history entry); ``send()`` in Chat.vue calls
-// ``setActiveConvIdNoHistory`` after creating a new conversation
-// so URL reflects reality without polluting history with a
-// /chat → /chat?c=X step.
-const convId = ref(route.query.c || null)
+// Active conversation id lives in the URL as the ``:id`` path
+// param of ``/chat/:id?`` (e.g. ``/chat/abc123``). Page refresh,
+// browser back/forward, and shareable links all recover the
+// conversation. The ref + the route stay in sync via the two
+// watchers below: any setter on either side flows through to the
+// other. Sidebar clicks call ``selectConv`` (push, gives a history
+// entry); ``send()`` in Chat.vue calls ``setActiveConvIdNoHistory``
+// after creating a new conversation so URL reflects reality
+// without polluting history with a /chat → /chat/X step.
+const convId = ref(route.params.id || null)
 const me = ref(null)
 const showForcedPwd = ref(false)
 
@@ -153,7 +153,7 @@ provide('me', me)
 // first wins; the other side syncs. The ``cur === id`` guards
 // stop the watch loops from ping-ponging when both already
 // agree.
-watch(() => route.query.c, (id) => {
+watch(() => route.params.id, (id) => {
   const next = id || null
   if (convId.value !== next) convId.value = next
 })
@@ -163,28 +163,34 @@ watch(convId, (id) => {
   // shouldn't kick the user off /workspace etc. The ``selectConv``
   // helper handles cross-route nav explicitly.
   if (!route.path.startsWith('/chat')) return
-  const cur = route.query.c || null
+  const cur = route.params.id || null
   if (cur === id) return
   // ``replace`` instead of ``push``: convId edits triggered by
   // Chat.vue creating a new conversation don't deserve a history
-  // entry between /chat and /chat?c=X. Sidebar clicks go through
+  // entry between /chat and /chat/X. Sidebar clicks go through
   // selectConv (below) which uses push for a real history entry.
-  router.replace({ path: '/chat', query: id ? { c: id } : {} })
+  // Preserve ``route.query`` so orthogonal state (e.g. ``?cwd=…``)
+  // survives the conv-id flip.
+  router.replace({ path: id ? `/chat/${id}` : '/chat', query: route.query })
 })
 
 function selectConv(id) {
   // Sidebar click → real history entry so back button returns to
-  // the previous conversation.
-  router.push({ path: '/chat', query: id ? { c: id } : {} })
+  // the previous conversation. Drops ``route.query`` because each
+  // conversation has its own persisted cwd_path; carrying the
+  // outgoing conv's cwd into the incoming one would be wrong.
+  router.push({ path: id ? `/chat/${id}` : '/chat' })
 }
 function newChat() {
   router.push({ path: '/chat' })
 }
 
 // Public API for non-sidebar callsites (Chat.vue's send() after
-// createConversation) — replace, not push.
+// createConversation) — replace, not push. Preserve query so a
+// fresh chat that started with ``?cwd=/x`` keeps the cwd binding
+// when the URL gains the new conv id.
 function setActiveConvIdNoHistory(id) {
-  router.replace({ path: '/chat', query: id ? { c: id } : {} })
+  router.replace({ path: id ? `/chat/${id}` : '/chat', query: route.query })
 }
 
 const { confirm: dialogConfirm, prompt: dialogPrompt, toast } = useDialog()
