@@ -9,7 +9,7 @@
          ``rename`` controls inline-rename; the create flow uses its
          own ``creating`` toggle since there's no "old name" yet. -->
     <div v-if="creating" class="file-card file-card--creating">
-      <div class="file-card__icon"><FileIcon kind="folder" :size="36" /></div>
+      <div class="file-card__icon"><FileIcon kind="folder" variant="jumbo" :size="36" /></div>
       <input
         ref="newNameInput"
         type="text"
@@ -46,6 +46,7 @@
         <FileIcon
           :kind="row.kind"
           :name="row.kind === 'file' ? row.name : null"
+          variant="jumbo"
           :size="36"
         />
         <slot name="row-status" :row="row" />

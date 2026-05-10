@@ -1,153 +1,115 @@
 <template>
-  <!-- Folder: keep emoji 📁. Cross-platform inconsistency is real but the
-       glyph is universally read; users vetoed every SVG attempt. -->
-  <span v-if="kind === 'folder'" class="file-icon-emoji" :style="{ fontSize: emojiSize }">📁</span>
-
-  <!-- File: inline-rendered Phosphor duotone SVG. ``v-html`` so the SVG
-       inherits ``color`` from this span. We deliberately keep all file
-       icons monochromatic (Vercel-style) — type information is carried
-       by the icon *shape*, not colour. Saturated per-type tints felt
-       like noise against the otherwise grayscale workspace. -->
-  <span
-    v-else
+  <img
+    :src="iconUrl"
+    :alt="alt"
+    :width="size"
+    :height="size"
     class="file-icon"
-    :style="{ width: pxSize, height: pxSize }"
-    v-html="svgMarkup"
+    draggable="false"
   />
 </template>
 
 <script setup>
 /**
- * FileIcon — Phosphor duotone file icons, monochromatic.
+ * FileIcon — coloured PNG icons sourced from ``public/file_icons/``.
  *
- * Vercel-style: type information is carried by icon *shape* alone, not
- * colour. We tried per-type tints (PDF red, DOC blue, etc.) but they
- * read as visual noise against the otherwise grayscale workspace.
+ * Two variants per type, selected via the ``variant`` prop:
+ *   * ``normal`` (default) — used in list-view rows where the icon
+ *     sits next to text; renders well at 16-32 px.
+ *   * ``jumbo``  — used in tile / grid rows where the icon is the
+ *     focal element; renders well at 36-64 px.
  *
- * Format detection runs off the **filename extension**, not the
- * ``Document.format`` field — that field used to get clobbered by
- * the parser's post-conversion view (a ``.md`` document parsed via
- * markdown→PDF would land in DB as ``format='pdf'``). Filename is
- * the user-facing truth; format is parser bookkeeping.
+ * Filename → typeKey resolves the extension against the icon set we
+ * actually ship in ``public/file_icons/``. Unknown extensions
+ * (and folders that somehow miss the ``kind === 'folder'`` short
+ * circuit) fall back to ``unknown(_jumbo).png``.
  *
- * Folders intentionally use the ``📁`` emoji — every SVG attempt got
- * rejected and the emoji is universally legible.
+ * Why ``<img>`` and not the previous inline SVG: these icons are
+ * full-colour bitmaps; ``currentColor`` doesn't apply, and the
+ * <img> tag is the simplest path that lets the browser cache + scale
+ * + alt-text the asset for free. The Phosphor monochrome SVGs that
+ * lived in ``src/assets/file-icons/`` are no longer referenced and
+ * can be deleted in a follow-up.
  *
  * Props:
- *   kind   — 'folder' | 'file'  (default 'file')
- *   name   — filename (extension extracted internally)
- *   size   — px (default 24)
- *
- * Source SVGs live under ``web/src/assets/file-icons/`` and are pulled
- * in as raw strings via vite's ``?raw`` query so we can inline them
- * (which lets ``currentColor`` inherit from the parent span — ``<img>``
- * tags can't do that, leaving them locked at black).
- *
- * Source: https://phosphoricons.com (MIT). Files are vendored verbatim
- * under ``web/src/assets/file-icons/file-*.svg``.
+ *   kind     — 'folder' | 'file'         (default 'file')
+ *   name     — filename (extension extracted internally; ignored if folder)
+ *   size     — px, drives both width & height (default 24)
+ *   variant  — 'normal' | 'jumbo'        (default 'normal')
  */
 import { computed } from 'vue'
-
-import filePdf from '@/assets/file-icons/file-pdf.svg?raw'
-import fileDoc from '@/assets/file-icons/file-doc.svg?raw'
-import fileXls from '@/assets/file-icons/file-xls.svg?raw'
-import filePpt from '@/assets/file-icons/file-ppt.svg?raw'
-import fileMd from '@/assets/file-icons/file-md.svg?raw'
-import fileImage from '@/assets/file-icons/file-image.svg?raw'
-import fileCode from '@/assets/file-icons/file-code.svg?raw'
-import fileAudio from '@/assets/file-icons/file-audio.svg?raw'
-import fileVideo from '@/assets/file-icons/file-video.svg?raw'
-import fileArchive from '@/assets/file-icons/file-archive.svg?raw'
-import fileHtml from '@/assets/file-icons/file-html.svg?raw'
-import fileCss from '@/assets/file-icons/file-css.svg?raw'
-import fileJs from '@/assets/file-icons/file-js.svg?raw'
-import filePy from '@/assets/file-icons/file-py.svg?raw'
-import fileCsv from '@/assets/file-icons/file-csv.svg?raw'
-import fileSvg from '@/assets/file-icons/file-svg.svg?raw'
-import fileText from '@/assets/file-icons/file-text.svg?raw'
-import fileGeneric from '@/assets/file-icons/file.svg?raw'
 
 const props = defineProps({
   kind: { type: String, default: 'file' },
   name: { type: String, default: '' },
   size: { type: [Number, String], default: 24 },
+  variant: { type: String, default: 'normal' },
 })
 
-// Filename → typeKey, used to look up the right SVG. Order matters
-// within a category — explicit extensions win over catch-alls
-// (``js`` before ``code``, ``html`` before ``code``).
+// Filename extension → icon key in ``public/file_icons/``. Names are
+// generic on purpose so each glyph covers a family (the ``text`` icon
+// is the catch-all for plain-text-y files, ``archive`` for any
+// compressed bundle, etc.). Anything not mapped falls through to
+// ``unknown``.
 const _EXT_TO_TYPE = {
-  pdf: 'pdf',
-  doc: 'doc', docx: 'doc', rtf: 'doc', odt: 'doc', pages: 'doc',
-  xls: 'xls', xlsx: 'xls', ods: 'xls', numbers: 'xls',
+  // Spreadsheets
   csv: 'csv', tsv: 'csv',
-  ppt: 'ppt', pptx: 'ppt', key: 'ppt',
-  md: 'md', markdown: 'md', mdown: 'md', mkdn: 'md',
-  txt: 'text',
-  png: 'image', jpg: 'image', jpeg: 'image', gif: 'image',
-  webp: 'image', bmp: 'image', tiff: 'image', tif: 'image',
-  svg: 'svg',
-  mp3: 'audio', wav: 'audio', ogg: 'audio', m4a: 'audio', flac: 'audio',
-  mp4: 'video', avi: 'video', mov: 'video', mkv: 'video', webm: 'video',
-  zip: 'archive', tar: 'archive', gz: 'archive', '7z': 'archive', rar: 'archive',
-  html: 'html', htm: 'html',
-  css: 'css',
-  js: 'js', mjs: 'js', cjs: 'js',
-  ts: 'js', tsx: 'js', jsx: 'js',
+  xls: 'xlsx', xlsx: 'xlsx', ods: 'xlsx', numbers: 'xlsx',
+  // Word docs
+  doc: 'doc',
+  docx: 'docx', rtf: 'docx', odt: 'docx', pages: 'docx',
+  // Slides
+  ppt: 'pptx', pptx: 'pptx', key: 'pptx',
+  // Microsoft Publisher
+  pub: 'pub',
+  // PDFs
+  pdf: 'pdf',
+  // Python
   py: 'py',
-  json: 'code', yaml: 'code', yml: 'code', xml: 'code',
-  go: 'code', rs: 'code', java: 'code', c: 'code', cpp: 'code', h: 'code', sh: 'code', sql: 'code',
-}
-
-const _TYPE_TO_SVG = {
-  pdf: filePdf,
-  doc: fileDoc,
-  xls: fileXls,
-  csv: fileCsv,
-  ppt: filePpt,
-  md: fileMd,
-  text: fileText,
-  image: fileImage,
-  svg: fileSvg,
-  audio: fileAudio,
-  video: fileVideo,
-  archive: fileArchive,
-  html: fileHtml,
-  css: fileCss,
-  js: fileJs,
-  py: filePy,
-  code: fileCode,
-  generic: fileGeneric,
+  // Plain-text family — markdown, plain, log, rst, source code with
+  // no dedicated icon, etc. Loose definition on purpose: the icon
+  // reads as "human-readable text", so anything text-shaped falls
+  // here unless a more specific icon exists.
+  txt: 'text', log: 'text', rst: 'text',
+  md: 'text', markdown: 'text', mdown: 'text', mkdn: 'text',
+  // Source code without a per-language icon → text icon.
+  // (py keeps its own icon; everything else collapses.)
+  js: 'text', mjs: 'text', cjs: 'text', ts: 'text', tsx: 'text', jsx: 'text',
+  go: 'text', rs: 'text', java: 'text', c: 'text', cpp: 'text', h: 'text',
+  sh: 'text', bash: 'text', zsh: 'text', sql: 'text',
+  html: 'text', htm: 'text', css: 'text', scss: 'text', less: 'text',
+  vue: 'text',
+  // Structured data — JSON / YAML / XML share the json glyph.
+  json: 'json', yaml: 'json', yml: 'json', xml: 'json',
+  // Configuration — INI / TOML / .env / dotfile-style configs.
+  ini: 'config', conf: 'config', cfg: 'config', toml: 'config', env: 'config',
+  // Databases
+  accdb: 'database', mdb: 'database',
+  db: 'database', sqlite: 'database', sqlite3: 'database',
+  // Archives — every compressed bundle collapses onto the archive icon.
+  tar: 'archive', gz: 'archive', tgz: 'archive', zip: 'archive',
+  '7z': 'archive', rar: 'archive', bz2: 'archive', xz: 'archive',
 }
 
 const typeKey = computed(() => {
+  if (props.kind === 'folder') return 'folder'
   const ext = (props.name || '').toLowerCase().replace(/^.*\./, '')
-  return _EXT_TO_TYPE[ext] || 'generic'
+  return _EXT_TO_TYPE[ext] || 'unknown'
 })
 
-const svgMarkup = computed(() => _TYPE_TO_SVG[typeKey.value] || _TYPE_TO_SVG.generic)
-const pxSize = computed(() => `${props.size}px`)
-const emojiSize = computed(() => `${Number(props.size) * 0.85}px`)
+const iconUrl = computed(() => {
+  const suffix = props.variant === 'jumbo' ? '_jumbo' : ''
+  return `/file_icons/${typeKey.value}${suffix}.png`
+})
+
+const alt = computed(() => (props.kind === 'folder' ? 'Folder' : typeKey.value))
 </script>
 
 <style scoped>
-.file-icon-emoji {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
 .file-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
   flex-shrink: 0;
-  color: var(--color-t2);   /* monochrome — shape carries the type signal */
-}
-.file-icon :deep(svg) {
-  width: 100%;
-  height: 100%;
-  display: block;
+  object-fit: contain;
+  user-select: none;
 }
 </style>

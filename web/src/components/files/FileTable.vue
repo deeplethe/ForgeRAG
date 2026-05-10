@@ -4,7 +4,7 @@
       v-if="loading && !rows.length"
       class="file-list__loading"
     >Loading…</div>
-    <table class="w-full text-[11px]">
+    <table class="w-full text-[12px]">
       <colgroup>
         <col class="col-name" />
         <col v-if="cols.has('type')" class="col-type" />
@@ -46,7 +46,7 @@
         <tr v-if="creating" class="list-row list-row--creating">
           <td>
             <div class="name-cell">
-              <FileIcon kind="folder" :size="16" class="row-icon" />
+              <FileIcon kind="folder" variant="normal" :size="16" class="row-icon" />
               <input
                 ref="newNameInput"
                 type="text"
@@ -90,6 +90,7 @@
               <FileIcon
                 :kind="row.kind"
                 :name="row.kind === 'file' ? row.name : null"
+                variant="normal"
                 :size="16"
                 class="row-icon"
               />
@@ -429,11 +430,12 @@ function formatType(row) {
 
 .list-row { cursor: pointer; color: var(--color-t2); }
 .list-row td {
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-top: 1px solid var(--color-line);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.5;
 }
 .list-row:hover { background: var(--color-bg3); color: var(--color-t1); }
 .list-row--selected {
