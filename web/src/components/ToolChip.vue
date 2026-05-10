@@ -156,6 +156,19 @@ const inputJson = computed(() => {
 const running = computed(() => props.tool.status === 'running')
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
+
+// "Anything to render?" — the family-specific blocks each handle
+// their own ``v-if`` so absent fields are silently skipped. When
+// none of them have content (and the legacy ``detail`` is also
+// empty) we fall through to the "no captured payload" hint. Used
+// from the template to gate that hint so it doesn't co-render with
+// e.g. a Bash command line that came from the ``detail`` fallback.
+const hasAnyDetail = computed(() => Boolean(
+  inputJson.value
+    || out.value
+    || props.tool.detail
+    || diffLines.value.length,
+))
 </script>
 
 <template>
@@ -286,7 +299,12 @@ function toggle() { expanded.value = !expanded.value }
         </div>
       </template>
 
-      <div v-if="!inputJson && !out && !inp.command && !inp.file_path && !inp.query && !inp.pattern" class="chip-block__empty">
+      <!-- "no payload" hint only when EVERY potential render path
+           comes up empty — including the legacy ``tool.detail``
+           snippet that the Bash branch falls back to. Without this
+           the chip showed "$ pwd" alongside "(no captured payload)"
+           on old trace rows, which read as a contradiction. -->
+      <div v-if="!hasAnyDetail" class="chip-block__empty">
         (no captured payload)
       </div>
     </div>
