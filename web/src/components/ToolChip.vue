@@ -388,16 +388,17 @@ const hasAnyDetail = computed(() => Boolean(
   font-size: 0.75rem;
 }
 /* Row-style head: no border, no background-fill. Hover lights the
-   row to signal "clickable". Reads cleanly inside the ToolGroup
-   panel where these chips stack as one continuous block; also
-   reads cleanly standing alone when the parent skipped the outer
-   group (single-tool batch). */
+   row to signal "clickable". Padding is zero on the left so the
+   tool name lines up with the surrounding message-body text — both
+   when the chip stands alone (N=1) AND when it sits inside the
+   ``ToolGroup`` panel (the panel's own padding handles spacing
+   from its border, so adding more here just doubles up). */
 .chip-head {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 3px 6px;
+  padding: 3px 0;
   background: transparent;
   border: none;
   border-radius: 4px;
