@@ -1,0 +1,136 @@
+<script setup>
+/**
+ * Outer-fold container for a batch of consecutive tool calls. Two
+ * levels of disclosure, Claude-Code style:
+ *
+ *   ┃ ▶ Used 5 tools                              ← this component
+ *
+ *   ┃ ▼ Used 5 tools                              (expanded)
+ *   ┃   ▶ Edit ToolChip.vue +6 -1                ← <ToolChip>
+ *   ┃   ▶ Bash $ pwd
+ *   ┃   ...
+ *   ┃   ▼ Edit ToolChip.vue +6 -1                (chip expanded)
+ *   ┃     <input / output / diff>
+ *
+ * Folded headline is a verb summary derived from the tool family
+ * mix ("Edited 2 files, ran 3 commands"). Expanded body lists each
+ * call's ToolChip; the chip itself owns the inner fold (input /
+ * output / diff).
+ */
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { ChevronRight } from 'lucide-vue-next'
+import ThinkingPulse from './ThinkingPulse.vue'
+import ToolChip from './ToolChip.vue'
+
+const props = defineProps({
+  tools: { type: Array, required: true },
+})
+
+const { t } = useI18n()
+
+const anyRunning = computed(() => props.tools.some((x) => x.status === 'running'))
+
+// Family classifier kept in sync with ToolChip's so the headline's
+// verb count matches what the user sees once they expand. Distinct
+// families let us write "Edited 2 files, ran 3 commands" instead of
+// the flatter "Used 5 tools".
+function family(name) {
+  if (name === 'Bash') return 'bash'
+  if (name === 'Write') return 'write'
+  if (name === 'Edit') return 'edit'
+  if (name === 'Read') return 'read'
+  if (name === 'Glob' || name === 'Grep') return 'pattern'
+  if ((name || '').startsWith('search_') || name === 'graph_explore'
+      || name === 'web_search' || name === 'rerank') return 'search'
+  if (name === 'read_chunk' || name === 'read_tree'
+      || name === 'list_folders' || name === 'list_docs') return 'rag-read'
+  return 'other'
+}
+
+const headline = computed(() => {
+  const counts = {}
+  for (const x of props.tools) {
+    const f = family(x.name)
+    counts[f] = (counts[f] || 0) + 1
+  }
+  // Pretty phrases per family. Pluralisation is fine to be naive
+  // here — Chinese is invariant; English just gets ``s`` for the
+  // few human-facing labels.
+  const phrases = []
+  if (counts.edit)    phrases.push(`Edited ${counts.edit} file${counts.edit > 1 ? 's' : ''}`)
+  if (counts.write)   phrases.push(`Wrote ${counts.write} file${counts.write > 1 ? 's' : ''}`)
+  if (counts.read)    phrases.push(`Read ${counts.read} file${counts.read > 1 ? 's' : ''}`)
+  if (counts.bash)    phrases.push(`Ran ${counts.bash} command${counts.bash > 1 ? 's' : ''}`)
+  if (counts.pattern) phrases.push(`Searched ${counts.pattern} pattern${counts.pattern > 1 ? 's' : ''}`)
+  if (counts.search)  phrases.push(`Queried ${counts.search} time${counts.search > 1 ? 's' : ''}`)
+  if (counts['rag-read']) phrases.push(`Read ${counts['rag-read']} passage${counts['rag-read'] > 1 ? 's' : ''}`)
+  if (counts.other)   phrases.push(`Used ${counts.other} other tool${counts.other > 1 ? 's' : ''}`)
+  return phrases.join(' · ') || `${props.tools.length} tool${props.tools.length > 1 ? 's' : ''}`
+})
+
+// Default to expanded when there's only one call — the outer fold
+// is information-free at N=1 (it would just say "Ran 1 command")
+// and forcing the user to click twice to see the diff is noise.
+const expanded = ref(props.tools.length === 1)
+function toggle() { expanded.value = !expanded.value }
+</script>
+
+<template>
+  <div class="tool-group" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
+    <button class="group-head" @click="toggle">
+      <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon" />
+      <ChevronRight v-else :size="12" :stroke-width="1.75"
+        class="head-icon chev" :class="{ 'rotate-90': expanded }" />
+      <span class="head-text">{{ headline }}</span>
+    </button>
+    <div v-if="expanded" class="group-body">
+      <ToolChip v-for="(tc, i) in tools" :key="tc.call_id || i" :tool="tc" />
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.tool-group {
+  margin: 8px 0;
+  font-size: 0.75rem;
+}
+.group-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 6px;
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  color: var(--color-t2);
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+  text-align: left;
+  max-width: 100%;
+}
+.group-head:hover {
+  background: var(--color-bg3);
+  border-color: var(--color-line2);
+}
+.head-icon {
+  flex-shrink: 0;
+  color: var(--color-t3);
+  transition: transform .15s;
+}
+.head-icon.rotate-90 { transform: rotate(90deg); }
+.head-text {
+  font-feature-settings: "tnum";
+  letter-spacing: -0.005em;
+  color: var(--color-t1);
+  font-weight: 500;
+}
+
+/* Indented rail under the group head — matches the Claude-Code
+   look where each batch reads as one "ledge" of activity. */
+.group-body {
+  margin: 6px 0 0 18px;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--color-line);
+}
+</style>

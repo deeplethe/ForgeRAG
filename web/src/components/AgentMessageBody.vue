@@ -23,7 +23,7 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '@/utils/renderMarkdown'
 import MarkdownBody from './MarkdownBody.vue'
-import ToolChip from './ToolChip.vue'
+import ToolGroup from './ToolGroup.vue'
 
 const props = defineProps({
   trace: { type: Array, default: () => [] },
@@ -40,10 +40,12 @@ const props = defineProps({
 
 // Turn the (raw) trace into render parts:
 //   * 'text' parts come from phase/thought entries with non-empty text
-//   * 'tool' parts come from each individual tool entry — Claude-Code
-//     style is one chip per call rather than the prior summarised
-//     "Searched 3 times, read 8 passages" group, so the user can
-//     click any single chip to inspect that call's input + output
+//   * 'tools' parts group consecutive tool entries between text
+//     stretches into a single batch — Claude Code-style two-level
+//     fold: the outer ToolGroup chip says "Used N tools", expanding
+//     it lists each tool's chip, and any single chip then expands
+//     its own input/output. Keeps the chain readable when the agent
+//     fires off 5+ calls without narrating between.
 // Final answer (props.content) lands as the trailing text part.
 const parts = computed(() => {
   const out = []
@@ -59,12 +61,21 @@ const parts = computed(() => {
       out.push({ kind: 'text', content: txt.trim() })
     }
   }
+  // Helper to start / extend a tool batch.
+  const pushTool = (entry) => {
+    const last = out[out.length - 1]
+    if (last && last.kind === 'tools') {
+      last.tools.push(entry)
+    } else {
+      out.push({ kind: 'tools', tools: [entry] })
+    }
+  }
 
   for (const entry of trace) {
     if (entry.kind === 'phase' || entry.kind === 'thought') {
       if (entry.text) pushText(entry.text)
     } else if (entry.kind === 'tool') {
-      out.push({ kind: 'tool', tool: entry })
+      pushTool(entry)
     }
   }
 
@@ -94,7 +105,7 @@ function renderPart(text) {
         :html="renderPart(part.content)"
         @click="onCiteClick && onCiteClick($event)"
       />
-      <ToolChip v-else-if="part.kind === 'tool'" :tool="part.tool" />
+      <ToolGroup v-else-if="part.kind === 'tools'" :tools="part.tools" />
     </template>
   </div>
 </template>

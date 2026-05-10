@@ -102,6 +102,20 @@ const headlineMono = computed(() =>
   family.value === 'pattern' || family.value === 'rag-read',
 )
 
+// Edit's ``+N -M`` line stat — cheap newline-count for now
+// (a follow-up patch swaps in a real Myers diff for accuracy on
+// shared lines). Headline shows it next to the file path so the
+// user can see "scope" without having to open the chip.
+const editStat = computed(() => {
+  if (family.value !== 'edit') return ''
+  const o = String(inp.value.old_string || '')
+  const n = String(inp.value.new_string || '')
+  if (!o && !n) return ''
+  const oLines = o ? o.split('\n').length : 0
+  const nLines = n ? n.split('\n').length : 0
+  return `+${nLines} -${oLines}`
+})
+
 // ── Path detection + click handler ───────────────────────────────
 // Workdir paths come in two flavours: backend-side ``/workdir/foo``
 // (the sandbox-internal absolute), or frontend-side ``/foo`` which
@@ -183,6 +197,7 @@ const hasAnyDetail = computed(() => Boolean(
         class="head-detail"
         :class="{ 'head-detail--mono': headlineMono }"
       >{{ headline }}</span>
+      <span v-if="editStat" class="head-stat">{{ editStat }}</span>
       <span v-if="tool.summary" class="head-summary">· {{ tool.summary }}</span>
     </button>
 
@@ -360,6 +375,16 @@ const hasAnyDetail = computed(() => Boolean(
   color: var(--color-t3);
   font-size: 0.6875rem;
   white-space: nowrap;
+}
+/* Edit chip's "+N -M" line stat. Coloured like a git diff header
+   summary so the additions/removals signal stays even at the chip
+   level without making the user expand. */
+.head-stat {
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.6875rem;
+  font-feature-settings: "tnum";
+  white-space: nowrap;
+  color: var(--color-t3);
 }
 
 .chip-body {
