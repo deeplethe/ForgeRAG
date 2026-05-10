@@ -24,6 +24,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ChevronRight } from 'lucide-vue-next'
+import { structuredPatch } from 'diff'
 import ThinkingPulse from './ThinkingPulse.vue'
 
 const props = defineProps({
@@ -102,20 +103,6 @@ const headlineMono = computed(() =>
   family.value === 'pattern' || family.value === 'rag-read',
 )
 
-// Edit's ``+N -M`` line stat — cheap newline-count for now
-// (a follow-up patch swaps in a real Myers diff for accuracy on
-// shared lines). Headline shows it next to the file path so the
-// user can see "scope" without having to open the chip.
-const editStat = computed(() => {
-  if (family.value !== 'edit') return ''
-  const o = String(inp.value.old_string || '')
-  const n = String(inp.value.new_string || '')
-  if (!o && !n) return ''
-  const oLines = o ? o.split('\n').length : 0
-  const nLines = n ? n.split('\n').length : 0
-  return `+${nLines} -${oLines}`
-})
-
 // ── Path detection + click handler ───────────────────────────────
 // Workdir paths come in two flavours: backend-side ``/workdir/foo``
 // (the sandbox-internal absolute), or frontend-side ``/foo`` which
@@ -141,19 +128,71 @@ function openInWorkspace(p) {
 }
 
 // ── Diff builder for Edit ────────────────────────────────────────
-// We don't have the actual unified diff, just old + new strings.
-// Render line-prefixed +/- side-by-side so the user can see what
-// changed. Simple enough; for a real full-file diff (git-blame
-// quality) we'd reach for ``diff`` (npm) but the agent's edits are
-// usually small enough that the eyeball comparison works.
-const diffLines = computed(() => {
+// Real Myers diff via the ``diff`` package — gives us a unified-style
+// hunk list with shared ``context`` lines properly identified, so
+// the rendered diff looks like the GitHub PR view (gutter line
+// numbers, ``@@ ... @@`` hunk headers, only changed regions
+// shown).
+//
+// ``old_string`` / ``new_string`` are the two strings the model
+// passed to the Edit tool. They're not full files — the SDK passes
+// only the targeted snippet — so the line numbers in the hunk
+// headers are local to that snippet (start at 1), which is the
+// honest thing to show: we don't have the surrounding file
+// context, so showing absolute line numbers would lie.
+const diffHunks = computed(() => {
   if (family.value !== 'edit') return []
-  const o = String(inp.value.old_string || '').split('\n')
-  const n = String(inp.value.new_string || '').split('\n')
-  const out = []
-  for (const line of o) out.push({ kind: 'remove', text: line })
-  for (const line of n) out.push({ kind: 'add', text: line })
-  return out
+  const o = String(inp.value.old_string || '')
+  const n = String(inp.value.new_string || '')
+  if (!o && !n) return []
+  let patch
+  try {
+    patch = structuredPatch('a', 'b', o, n, '', '', { context: 3 })
+  } catch {
+    return []
+  }
+  const hunks = patch?.hunks || []
+  // Pre-compute the (oldNum, newNum, sign, content) tuple per row
+  // so the template can render each row without an inline counter.
+  return hunks.map((h) => {
+    let oldN = h.oldStart
+    let newN = h.newStart
+    const rows = []
+    for (const line of (h.lines || [])) {
+      const sign = line[0]
+      const content = line.slice(1)
+      if (sign === '+') {
+        rows.push({ sign, content, oldNum: '', newNum: String(newN) })
+        newN++
+      } else if (sign === '-') {
+        rows.push({ sign, content, oldNum: String(oldN), newNum: '' })
+        oldN++
+      } else {
+        // ' ' context (or '\\' for "no newline at end of file" — treat as context)
+        rows.push({ sign, content, oldNum: String(oldN), newNum: String(newN) })
+        oldN++
+        newN++
+      }
+    }
+    return { ...h, rows }
+  })
+})
+
+// Precise +N -M stat from the diff hunks — counts actual added /
+// removed lines (skips the ``context`` lines that are unchanged
+// on both sides). Falls back to "" when the entry isn't an Edit.
+const editStat = computed(() => {
+  if (family.value !== 'edit') return ''
+  let plus = 0
+  let minus = 0
+  for (const h of diffHunks.value) {
+    for (const line of h.lines || []) {
+      if (line.startsWith('+')) plus++
+      else if (line.startsWith('-')) minus++
+    }
+  }
+  if (!plus && !minus) return ''
+  return `+${plus} -${minus}`
 })
 
 // ── Pretty input JSON for the generic fallback path ──────────────
@@ -181,7 +220,7 @@ const hasAnyDetail = computed(() => Boolean(
   inputJson.value
     || out.value
     || props.tool.detail
-    || diffLines.value.length,
+    || diffHunks.value.length,
 ))
 </script>
 
@@ -229,21 +268,35 @@ const hasAnyDetail = computed(() => Boolean(
         </div>
       </template>
 
-      <!-- Edit: clickable path + unified-ish diff -->
+      <!-- Edit: clickable path + GitHub-style unified diff. Each
+           hunk gets its own ``@@ ... @@`` header, two gutter columns
+           with old/new line numbers, and ``+`` / ``-`` / context
+           rendering. ``old_string`` / ``new_string`` are snippets
+           (not whole files) so the line numbers are local — they
+           start at 1 in the snippet's coordinate space. -->
       <template v-else-if="family === 'edit'">
         <div v-if="inp.file_path" class="chip-block">
           <div class="chip-block__label">File</div>
           <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ inp.file_path }}</button>
         </div>
-        <div v-if="diffLines.length" class="chip-block">
+        <div v-if="diffHunks.length" class="chip-block">
           <div class="chip-block__label">Diff</div>
-          <pre class="chip-block__pre chip-diff"><code><span
-              v-for="(l, i) in diffLines"
-              :key="i"
-              class="diff-line"
-              :class="'diff-line--' + l.kind"
-            >{{ l.kind === 'add' ? '+ ' : '- ' }}{{ l.text }}
-</span></code></pre>
+          <div class="diff-table">
+            <template v-for="(h, hi) in diffHunks" :key="hi">
+              <div class="diff-hunk-header">@@ -{{ h.oldStart }},{{ h.oldLines }} +{{ h.newStart }},{{ h.newLines }} @@</div>
+              <div
+                v-for="(r, ri) in h.rows"
+                :key="hi + ':' + ri"
+                class="diff-row"
+                :class="'diff-row--' + (r.sign === '+' ? 'add' : r.sign === '-' ? 'remove' : 'context')"
+              >
+                <span class="diff-num">{{ r.oldNum }}</span>
+                <span class="diff-num">{{ r.newNum }}</span>
+                <span class="diff-sign">{{ r.sign === ' ' ? ' ' : r.sign }}</span>
+                <span class="diff-content">{{ r.content }}</span>
+              </div>
+            </template>
+          </div>
         </div>
       </template>
 
@@ -449,18 +502,57 @@ const hasAnyDetail = computed(() => Boolean(
   text-decoration-color: var(--color-brand);
 }
 
-/* Diff coloring */
-.chip-diff { padding: 4px 8px; }
-.diff-line {
+/* GitHub-style unified diff. Two gutter columns (old line / new
+   line), one sign column, one content column. Hunk header sits on
+   its own row with a tinted background — same as the @@ header
+   you'd see in a GitHub PR diff. Coloured backgrounds for added /
+   removed lines stay subtle; context rows are uncoloured. */
+.diff-table {
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  background: var(--color-bg3);
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.diff-hunk-header {
   display: block;
+  padding: 4px 10px;
+  color: var(--color-t3);
+  background: color-mix(in srgb, var(--color-t3) 10%, transparent);
+  font-feature-settings: "tnum";
   white-space: pre;
 }
-.diff-line--add {
+.diff-row {
+  display: grid;
+  grid-template-columns: 36px 36px 14px 1fr;
+  white-space: pre;
+}
+.diff-num {
+  color: var(--color-t3);
+  font-feature-settings: "tnum";
+  text-align: right;
+  padding: 0 6px;
+  user-select: none;
+  border-right: 1px solid color-mix(in srgb, var(--color-t3) 18%, transparent);
+}
+.diff-sign {
+  text-align: center;
+  user-select: none;
+  color: var(--color-t3);
+}
+.diff-content { padding-right: 8px; }
+.diff-row--add {
   background: color-mix(in srgb, var(--color-ok-fg) 12%, transparent);
-  color: var(--color-ok-fg);
 }
-.diff-line--remove {
+.diff-row--add .diff-sign,
+.diff-row--add .diff-content { color: var(--color-ok-fg); }
+.diff-row--remove {
   background: color-mix(in srgb, var(--color-err-fg) 12%, transparent);
-  color: var(--color-err-fg);
 }
+.diff-row--remove .diff-sign,
+.diff-row--remove .diff-content { color: var(--color-err-fg); }
+.diff-row--context .diff-content { color: var(--color-t1); }
 </style>
