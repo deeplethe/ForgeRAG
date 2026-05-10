@@ -83,6 +83,13 @@ claude-agent-sdk>=0.1.80
 #    (no need for the daemon to expose a TCP port).
 docker[ssh]>=7.1
 
+# Reads ``.env`` (gitignored) at boot so dev / self-host operators
+# can pin ``DOCKER_HOST=ssh://...``, datastore passwords, and LLM
+# provider keys in one file rather than baking them into the system
+# environment. ``main.py`` calls ``load_dotenv`` with
+# ``override=False`` so explicit shell exports still beat the file.
+python-dotenv>=1.0
+
 # ── Observability (OpenTelemetry) ────────────────────────────────────────────
 # SDK + OTLP HTTP exporter (so users can point at Langfuse / Jaeger / etc.)
 # + auto-instrumentation for FastAPI, SQLAlchemy, and outbound httpx (used by

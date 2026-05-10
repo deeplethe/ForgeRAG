@@ -48,6 +48,24 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# Load ``.env`` (gitignored) before any module reads ``os.environ`` —
+# values like ``DOCKER_HOST`` (sandbox daemon location),
+# ``POSTGRES_PASSWORD`` / ``NEO4J_PASSWORD`` (datastore creds), and
+# the LLM-provider API keys live in ``.env`` so the operator doesn't
+# have to bake them into the system-wide environment or pass them on
+# every launch. The file is OPTIONAL: ``override=False`` means
+# explicit shell exports still win, and the loader silently no-ops
+# when ``.env`` isn't present (the function takes a default path of
+# ``.env`` in the cwd, which is the repo root by the time this
+# runs). ``python-dotenv`` is in requirements.txt; if it's somehow
+# missing the bootstrap continues without env-file support.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_ROOT / ".env", override=False)
+except ImportError:
+    pass
+
 
 log = logging.getLogger("opencraig.main")
 
