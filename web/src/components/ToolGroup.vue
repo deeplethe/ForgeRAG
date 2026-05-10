@@ -111,12 +111,8 @@ function toggle() { expanded.value = !expanded.value }
   text-align: left;
   max-width: 100%;
 }
-.group-head:hover .head-text {
-  color: var(--color-t1);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: var(--color-t3);
-}
+.group-head:hover .head-text { color: var(--color-t1); }
+.group-head:hover .head-icon { color: var(--color-t2); }
 .head-icon {
   flex-shrink: 0;
   color: var(--color-t3);

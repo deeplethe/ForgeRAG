@@ -403,9 +403,11 @@ const hasAnyDetail = computed(() => Boolean(
   transition: background-color .12s;
   text-align: left;
 }
-.chip-head:hover {
-  background: var(--color-bg3);
-}
+/* No hover-bg fill — that read as "this is interactive" too loudly
+   and the chevron + chip already says "expandable". Hover just
+   nudges the head text/icon to full-strength colour. */
+.chip-head:hover .head-name { color: var(--color-t1); }
+.chip-head:hover .head-icon { color: var(--color-t2); }
 .head-icon {
   flex-shrink: 0;
   color: var(--color-t3);
