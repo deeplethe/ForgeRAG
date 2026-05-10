@@ -416,11 +416,8 @@ const hasAnyDetail = computed(() => Boolean(
   color: var(--color-t3);
   transition: transform .15s;
 }
-.head-icon--end {
-  /* Trailing-edge chevron: pin to the right of the row regardless
-     of how much content sits before it. */
-  margin-left: auto;
-}
+/* (chevron sits inline immediately after the headline content,
+   not pinned to the row's far right.) */
 .head-icon.rotate-90 { transform: rotate(90deg); }
 .head-name {
   font-weight: 500;

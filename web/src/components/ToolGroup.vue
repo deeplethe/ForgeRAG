@@ -104,15 +104,14 @@ function toggle() { expanded.value = !expanded.value }
 /* Folded headline — Claude.ai style: chevron + grey text, NO
    border, NO background-fill. Hover lights the underline only. */
 .group-head {
-  /* Full-width row so the trailing chevron pins to the right edge
-     (lined up with the panel border below it). ``inline-flex``
-     before this would shrink-to-text, leaving the chevron snugged
-     against the headline instead of at the row's far right. */
-  display: flex;
+  /* Shrink-to-content so the chevron hugs the headline text
+     instead of detaching to the row's far right. Zero left
+     padding lines the headline up flush with the surrounding
+     message-body text — no inset, no inherited indent. */
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  padding: 2px 4px;
+  padding: 2px 0;
   background: transparent;
   border: none;
   color: var(--color-t2);
@@ -126,11 +125,9 @@ function toggle() { expanded.value = !expanded.value }
   color: var(--color-t3);
   transition: transform .15s;
 }
-.head-icon--end {
-  /* Trailing-edge chevron: pin to the right of the row regardless
-     of how much content sits before it. */
-  margin-left: auto;
-}
+/* (chevron sits inline immediately after the headline, NOT pinned
+   to the row's far right — the latter felt detached from the
+   content it controls.) */
 .head-icon.rotate-90 { transform: rotate(90deg); }
 .head-text {
   font-feature-settings: "tnum";
