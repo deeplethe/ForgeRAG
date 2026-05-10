@@ -1,10 +1,8 @@
 <template>
-  <div class="workbench">
-    <!-- Toolbar — visually identical to Library's. Same height (min-h-[52px]),
-         padding (px-5 py-3), border, surface — so navigating between Library
-         and Workbench feels like a continuous page-header line. The buttons
-         use the shared ``.toolbar-btn`` look (defined locally to avoid a
-         cross-component scoped-style import). -->
+  <div class="workbench" tabindex="0" @click="onWorkbenchClick">
+    <!-- Toolbar — same vertical metrics as Library's. The
+         ``.toolbar-btn`` look is duplicated locally rather than
+         imported because Library's Toolbar.vue scopes the rule. -->
     <div class="wb-toolbar">
       <Breadcrumb :crumbs="crumbs" @navigate="open" />
 
@@ -42,11 +40,29 @@
           @change="onUpload"
         />
       </label>
+
+      <!-- View mode toggle — list vs grid. Persisted to localStorage so
+           the user's preference survives a refresh. Library has the same
+           knob; both views read/write the same key (``workspace.viewMode``)
+           so the user's choice carries between Knowledge Base and Workbench. -->
+      <div class="view-toggle">
+        <button
+          class="view-btn"
+          :class="{ 'view-btn--active': viewMode === 'grid' }"
+          @click="setViewMode('grid')"
+          title="Grid view"
+        ><LayoutGrid :size="14" :stroke-width="1.5" /></button>
+        <button
+          class="view-btn"
+          :class="{ 'view-btn--active': viewMode === 'list' }"
+          @click="setViewMode('list')"
+          title="List view"
+        ><List :size="14" :stroke-width="1.5" /></button>
+      </div>
     </div>
 
-    <!-- Body — same vertical rhythm as Library's main pane. -->
     <div class="wb-body">
-      <main class="wb-main">
+      <main class="wb-main" @contextmenu.prevent="onMainContextMenu">
         <div
           v-if="error"
           class="flex items-center gap-2 text-[11px] text-red-400 mx-4 my-3 px-3 py-2 border border-red-500/30 rounded bg-red-500/5"
@@ -59,90 +75,69 @@
           >{{ t('common.retry') || 'Retry' }}</button>
         </div>
 
-        <!-- File list — same column structure + row styling as Library's
-             FileList. Workspace entries are filesystem-style
-             ({path, name, is_dir, size_bytes, modified_at}); folders rank
-             above files (mirrors FileList) and Type comes from the
-             extension just like Library does. -->
-        <div class="file-list" v-if="!error">
-          <div
-            v-if="loading && !entries.length"
-            class="file-list__loading"
-          >Loading…</div>
-          <table class="w-full text-[11px]">
-            <colgroup>
-              <col class="col-name" />
-              <col class="col-type" />
-              <col class="col-size" />
-              <col class="col-modified" />
-              <col class="col-actions" />
-            </colgroup>
-            <thead>
-              <tr class="text-t3">
-                <th class="list-th">Name</th>
-                <th class="list-th">Type</th>
-                <th class="list-th">Size</th>
-                <th class="list-th">Modified</th>
-                <th class="list-th"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="entry in sortedEntries"
-                :key="entry.path"
-                class="list-row group"
-                @dblclick="onEntryActivate(entry)"
-              >
-                <td>
-                  <div class="name-cell">
-                    <FileIcon
-                      :kind="entry.is_dir ? 'folder' : 'file'"
-                      :name="entry.name"
-                      :size="16"
-                      class="row-icon"
-                    />
-                    <button
-                      class="name-text text-left truncate w-full"
-                      :title="entry.path"
-                      @click="onEntryActivate(entry)"
-                    >{{ entry.name }}</button>
-                  </div>
-                </td>
-                <td>{{ entry.is_dir ? 'Folder' : fmtType(entry.name) }}</td>
-                <td>{{ entry.is_dir ? '—' : fmtSize(entry.size_bytes) }}</td>
-                <td>{{ fmtDate(entry.modified_at) }}</td>
-                <td class="row-actions">
-                  <div class="row-actions-inner">
-                    <button
-                      v-if="entry.is_dir"
-                      class="row-action-btn"
-                      :title="t('workspace.open_chat_here')"
-                      @click.stop="onOpenChat(entry)"
-                    >
-                      <MessageSquare :size="12" :stroke-width="1.5" />
-                    </button>
-                    <a
-                      v-else
-                      class="row-action-btn"
-                      :href="downloadUrl(entry.path)"
-                      :title="t('workspace.download')"
-                      @click.stop
-                    >
-                      <Download :size="12" :stroke-width="1.5" />
-                    </a>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!loading && !entries.length">
-                <td colspan="5" class="list-empty">
-                  {{ t('workspace.empty_title') }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <!-- Marquee + table/tiles. Capabilities here gate Stage-2 features
+             (select / multi-select / context-menu); ``rename`` and
+             ``dragMove`` stay off until Stage 3 lands the backend
+             ``/workdir/rename`` + ``/workdir/move`` endpoints. -->
+        <MarqueeSelection v-if="!error" @select="onMarqueeSelect">
+          <FileTiles
+            v-if="viewMode === 'grid'"
+            :rows="rows"
+            :selection="selection"
+            :loading="loading"
+            :capabilities="capabilities"
+            @select="onSelect"
+            @open-row="onOpenRow"
+            @context-menu="onContextMenu"
+          >
+            <template #empty>{{ t('workspace.empty_title') }}</template>
+          </FileTiles>
+          <FileTable
+            v-else
+            :rows="rows"
+            :selection="selection"
+            :loading="loading"
+            :capabilities="capabilities"
+            :columns="['name', 'type', 'size', 'modified']"
+            @select="onSelect"
+            @open-row="onOpenRow"
+            @context-menu="onContextMenu"
+          >
+            <template #empty>{{ t('workspace.empty_title') }}</template>
+            <template #row-actions="{ row }">
+              <div class="row-actions-inner">
+                <button
+                  v-if="row.kind === 'folder'"
+                  class="row-action-btn"
+                  :title="t('workspace.open_chat_here')"
+                  @click.stop="onOpenChatRow(row)"
+                >
+                  <MessageSquare :size="12" :stroke-width="1.5" />
+                </button>
+                <a
+                  v-else
+                  class="row-action-btn"
+                  :href="downloadUrl(row.path)"
+                  :title="t('workspace.download')"
+                  @click.stop
+                >
+                  <Download :size="12" :stroke-width="1.5" />
+                </a>
+              </div>
+            </template>
+          </FileTable>
+        </MarqueeSelection>
       </main>
     </div>
+
+    <ContextMenu
+      :open="ctx.open"
+      :x="ctx.x"
+      :y="ctx.y"
+      :items="ctxItems"
+      @close="ctx.open = false"
+      @action="onContextAction"
+    />
 
     <FilePreview
       v-model:open="previewOpen"
@@ -155,13 +150,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircle,
   Download,
   FolderPlus,
+  LayoutGrid,
+  List,
   MessageSquare,
   Upload,
 } from 'lucide-vue-next'
@@ -175,7 +172,10 @@ import {
   workdirPreviewUrl,
 } from '@/api'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
-import FileIcon from '@/components/workspace/FileIcon.vue'
+import FileTable from '@/components/files/FileTable.vue'
+import FileTiles from '@/components/files/FileTiles.vue'
+import MarqueeSelection from '@/components/files/MarqueeSelection.vue'
+import ContextMenu from '@/components/files/ContextMenu.vue'
 import FilePreview from '@/components/preview/FilePreview.vue'
 import { useDialog } from '@/composables/useDialog'
 
@@ -184,9 +184,7 @@ const router = useRouter()
 const route = useRoute()
 const dialog = useDialog()
 
-// Current folder we're showing. Lives in the URL ``?path=`` so a
-// shared link reproduces the same view + back/forward navigation
-// works without extra state.
+// ── Path + load state ────────────────────────────────────────────
 const currentPath = ref(route.query.path || '/')
 const entries = ref([])
 const loading = ref(true)
@@ -195,9 +193,6 @@ const busy = ref(false)
 const uploadInput = ref(null)
 
 const crumbs = computed(() => {
-  // Shape matches the shared <Breadcrumb> component contract:
-  // ``{ path, name }``. Always include the workspace root; then
-  // split currentPath into a chain of clickable parents.
   const out = [{ path: '/', name: t('workspace.root') }]
   if (currentPath.value && currentPath.value !== '/') {
     const parts = currentPath.value
@@ -212,32 +207,73 @@ const crumbs = computed(() => {
   return out
 })
 
-// Folders first, then files; both alphabetical. Matches Library's
-// default sort (name asc) so newcomers see the same ordering.
-const sortedEntries = computed(() => {
-  const dirs = []
-  const files = []
-  for (const e of entries.value) {
-    (e.is_dir ? dirs : files).push(e)
-  }
-  const cmp = (a, b) => (a.name || '').localeCompare(b.name || '')
-  dirs.sort(cmp)
-  files.sort(cmp)
-  return [...dirs, ...files]
-})
+// ── View mode (list / grid) — persisted ──────────────────────────
+// Library and Workbench share the same localStorage key so a user
+// who flipped Library to grid sees Workbench in grid too. Either
+// view falling back to a sensible default if the saved value is
+// somehow invalid keeps the toggle working after a future change
+// to the value space.
+const _savedMode = localStorage.getItem('workspace.viewMode')
+const viewMode = ref(['grid', 'list'].includes(_savedMode) ? _savedMode : 'list')
+function setViewMode(mode) {
+  if (!['grid', 'list'].includes(mode)) return
+  viewMode.value = mode
+  localStorage.setItem('workspace.viewMode', mode)
+}
 
+// ── Selection (Set of FileRow keys; keys are "fs:" + path) ───────
+const selection = reactive(new Set())
+function clearSelection() { selection.clear() }
+function toggleSelect(key, additive) {
+  if (!additive) {
+    selection.clear()
+    selection.add(key)
+    return
+  }
+  if (selection.has(key)) selection.delete(key)
+  else selection.add(key)
+}
+
+// ── Rows: fs entries → FileRow shape ─────────────────────────────
+// Adapter that translates the workdir API's
+// {path, name, is_dir, size_bytes, modified_at} into the neutral
+// FileRow shape FileTable / FileTiles consume. The ``key`` uses
+// the path as the stable identifier (paths are unique within a
+// workdir at any given moment).
+const rows = computed(() => entries.value.map(e => ({
+  key: 'fs:' + e.path,
+  kind: e.is_dir ? 'folder' : 'file',
+  name: e.name,
+  path: e.path,
+  size: e.is_dir ? null : (e.size_bytes ?? null),
+  createdAt: null,                     // workdir API doesn't expose
+  modifiedAt: e.modified_at ?? null,
+  extras: e,
+})))
+
+// ── Capabilities the renderer should enable ───────────────────────
+// Stage 2 turns on select / multi-select / context-menu but keeps
+// rename + drag-move off until the backend endpoints land in
+// Stage 3 (otherwise the menu items would silently no-op which is
+// worse than not appearing).
+const capabilities = {
+  select: true,
+  multiSelect: true,
+  rename: false,
+  dragMove: false,
+  contextMenu: true,
+}
+
+// ── Load ──────────────────────────────────────────────────────────
 async function load(path) {
   loading.value = true
   error.value = ''
   try {
-    // Confirm the workdir is up first (auto-creates on first hit).
-    // Cheap enough to do on every navigation; backend just stats
-    // the dir and returns.
     await getWorkdirInfo()
     const list = await listWorkdir(path === '/' ? '' : path)
     entries.value = list
     currentPath.value = path
-    // Reflect navigation in URL so reload + back/forward work.
+    clearSelection()
     if (route.query.path !== path && !(path === '/' && !route.query.path)) {
       router.replace({ path: route.path, query: path === '/' ? {} : { path } })
     }
@@ -249,24 +285,108 @@ async function load(path) {
   }
 }
 
-function open(path) {
-  load(path)
-}
+function open(path) { load(path) }
 
-function onEntryActivate(entry) {
-  if (entry.is_dir) {
-    open(entry.path)
+// ── Row interaction ─────────────────────────────────────────────
+function onSelect({ key, additive }) { toggleSelect(key, additive) }
+
+function onOpenRow(row) {
+  if (row.kind === 'folder') {
+    open(row.path)
     return
   }
-  // Open the preview modal for files. The modal's per-kind viewer
-  // handles known types (image / video / audio for now; markdown,
-  // pdf, code, spreadsheet, docx, html land in subsequent commits).
-  // Unsupported extensions render a download fallback inside the
-  // modal — the user always has a way out.
-  previewEntry.value = entry
+  // Files: open the preview modal. The modal dispatches by
+  // extension to image / video / audio / pdf / md / code /
+  // spreadsheet / docx / html viewers.
+  previewEntry.value = row.extras
   previewOpen.value = true
 }
 
+function onMarqueeSelect({ keys, additive }) {
+  // MarqueeSelection emits the keys it's covering. Same semantics as
+  // a click: additive means union with existing selection;
+  // non-additive replaces.
+  if (!additive) selection.clear()
+  for (const k of keys || []) selection.add(k)
+}
+
+// Click on the workbench background (anywhere outside a row) —
+// clear selection. Same affordance the Library uses: clicking the
+// canvas is the universal "deselect all" gesture.
+function onWorkbenchClick(e) {
+  if (busy.value) return
+  const t = e.target
+  if (!t || typeof t.closest !== 'function') return
+  // Ignore clicks inside any actionable element — toolbar buttons,
+  // table cells, tiles, the breadcrumb — those have their own
+  // handlers and we don't want to fight them.
+  if (t.closest('.list-row, .file-card, .wb-toolbar, .preview-modal, .ctx-menu')) return
+  selection.clear()
+}
+
+// ── Context menu ────────────────────────────────────────────────
+const ctx = reactive({ open: false, x: 0, y: 0, row: null })
+function onContextMenu({ x, y, row }) {
+  // Single-row right-click: replace selection with that row so
+  // menu actions act on what was right-clicked, regardless of any
+  // previous multi-selection.
+  if (row) {
+    selection.clear()
+    selection.add(row.key)
+  }
+  ctx.row = row
+  ctx.x = x
+  ctx.y = y
+  ctx.open = true
+}
+function onMainContextMenu(e) {
+  ctx.row = null
+  ctx.x = e.clientX
+  ctx.y = e.clientY
+  ctx.open = true
+}
+
+// Menu item shape: { id, label, icon?, danger?, disabled? }.
+// ContextMenu emits ``action`` with the picked id; we route below.
+const ctxItems = computed(() => {
+  const r = ctx.row
+  if (!r) {
+    // Empty-area menu — only "New folder" makes sense without a row.
+    return [
+      { id: 'new-folder', label: t('workspace.new_folder') },
+    ]
+  }
+  if (r.kind === 'folder') {
+    return [
+      { id: 'open', label: 'Open' },
+      { id: 'open-chat', label: t('workspace.open_chat_here') },
+    ]
+  }
+  return [
+    { id: 'preview', label: 'Preview' },
+    { id: 'download', label: t('workspace.download') },
+  ]
+})
+
+function onContextAction(actionId) {
+  ctx.open = false
+  const r = ctx.row
+  if (actionId === 'new-folder') {
+    onMakeFolder()
+    return
+  }
+  if (!r) return
+  if (actionId === 'open') open(r.path)
+  else if (actionId === 'open-chat') onOpenChatRow(r)
+  else if (actionId === 'preview') {
+    previewEntry.value = r.extras
+    previewOpen.value = true
+  } else if (actionId === 'download') {
+    window.open(downloadUrl(r.path), '_blank', 'noopener')
+  }
+}
+
+// ── Preview ─────────────────────────────────────────────────────
 const previewEntry = ref(null)
 const previewOpen = ref(false)
 const previewPath = computed(() => previewEntry.value?.path || '')
@@ -278,17 +398,15 @@ const previewDownloadUrl = computed(() =>
   previewPath.value ? workdirDownloadUrl(previewPath.value) : '',
 )
 
-function onOpenChat(folderEntry) {
-  // Navigate to /chat with cwd_path query param. Chat.vue picks
-  // it up, threads through to the agent runtime as the agent's
-  // working directory.
-  router.push({ path: '/chat', query: { cwd: folderEntry.path } })
+// ── Open chat with cwd bound to this folder ─────────────────────
+function onOpenChatRow(row) {
+  router.push({ path: '/chat', query: { cwd: row.path } })
 }
-
 function onOpenChatCurrent() {
   router.push({ path: '/chat', query: { cwd: currentPath.value } })
 }
 
+// ── Toolbar actions ─────────────────────────────────────────────
 async function onMakeFolder() {
   if (busy.value) return
   const name = await dialog.prompt({
@@ -298,8 +416,6 @@ async function onMakeFolder() {
     confirmText: t('workspace.new_folder_dialog.confirm'),
   })
   if (!name) return
-  // Reject path-separator-laden names client-side — backend enforces too,
-  // but this gives a faster error.
   if (name.includes('/') || name.includes('\\')) {
     dialog.alert({
       title: t('workspace.new_folder_error_title'),
@@ -342,59 +458,28 @@ async function onUpload(event) {
   }
 }
 
-function downloadUrl(path) {
-  return workdirDownloadUrl(path)
-}
+function downloadUrl(path) { return workdirDownloadUrl(path) }
 
-function fmtSize(bytes) {
-  if (bytes == null) return ''
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
-function fmtDate(d) {
-  if (!d) return '—'
-  try { return new Date(d).toLocaleString() } catch { return d }
-}
-
-function fmtType(name) {
-  const m = (name || '').match(/\.([^.]+)$/)
-  return m ? m[1].toUpperCase() : '—'
-}
-
+// ── URL ↔ state sync ────────────────────────────────────────────
 watch(
   () => route.query.path,
   (p) => {
     p = p || '/'
-    if (p !== currentPath.value) {
-      load(p)
-    }
+    if (p !== currentPath.value) load(p)
   },
 )
 
-onMounted(() => {
-  load(currentPath.value)
-})
+onMounted(() => { load(currentPath.value) })
 </script>
 
 <style scoped>
-/* Container — full height, column layout matching Library.vue's
-   ``.workspace`` outer shell so the page chrome (toolbar height, body
-   scroll behaviour) is identical. */
 .workbench {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  outline: none;
 }
-
-/* Toolbar — copies Library Toolbar.vue's surface exactly. The classes
-   below are equivalent to ``flex items-center gap-1 px-5 py-3
-   border-b border-line bg-bg2 min-h-[52px]``. Pin in CSS so HMR /
-   theme tokens flow through cleanly without re-resolving Tailwind
-   utilities at every component edit. */
 .wb-toolbar {
   display: flex;
   align-items: center;
@@ -405,7 +490,6 @@ onMounted(() => {
   min-height: 52px;
   flex-shrink: 0;
 }
-
 .wb-body {
   display: flex;
   flex: 1 1 auto;
@@ -418,10 +502,6 @@ onMounted(() => {
   overflow: auto;
 }
 
-/* Toolbar-btn — duplicate of the .toolbar-btn rules in
-   components/workspace/Toolbar.vue. The Library toolbar's scoped
-   styles can't leak here; copying the few rules keeps the visual
-   match without introducing a shared global selector. */
 .toolbar-btn {
   display: inline-flex;
   align-items: center;
@@ -446,9 +526,6 @@ onMounted(() => {
   pointer-events: none;
 }
 
-/* Hidden file input — visually invisible but keeps the label/button
-   wrapper as the click target. Chrome won't open the picker on a
-   ``display: none`` input, hence the 1×1 + opacity approach. */
 .upload-input {
   position: absolute;
   width: 1px;
@@ -457,94 +534,43 @@ onMounted(() => {
   pointer-events: none;
 }
 
-/* List — mirrors components/workspace/FileList.vue's table styles
-   one-for-one so workbench rows, hover/selected states, name cells,
-   and column widths visually match the Library list view. */
-.file-list {
-  position: relative;
-  padding: 8px 16px;
-  min-height: 160px;
-  user-select: none;
-}
-.file-list table {
-  border-collapse: collapse;
-  table-layout: fixed;
-  min-width: 686px;
-}
-.file-list__loading {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 11px;
-  color: var(--color-t3);
-  letter-spacing: 0.02em;
-  animation: fl-loading-pulse 1.4s ease-in-out infinite;
-  pointer-events: none;
-}
-@keyframes fl-loading-pulse {
-  0%, 100% { opacity: 0.45; }
-  50%      { opacity: 0.9; }
-}
-
-.col-name      { width: auto; }
-.col-type      { width: 90px; }
-.col-size      { width: 96px; }
-.col-modified  { width: 150px; }
-.col-actions   { width: 56px; }
-
-.list-th {
-  text-align: left;
-  padding: 6px 8px;
-  font-weight: 400;
-  font-size: 10px;
-  color: var(--color-t3);
-  white-space: nowrap;
-}
-
-.list-row { cursor: default; color: var(--color-t2); }
-.list-row td {
-  padding: 6px 8px;
-  border-top: 1px solid var(--color-line);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.list-row:hover { background: var(--color-bg3); color: var(--color-t1); }
-
-.list-empty {
-  padding: 32px;
-  text-align: center;
-  color: var(--color-t3);
-}
-
-.name-cell {
-  display: flex;
+/* View toggle — same shape as Library's Toolbar.vue. Two icon
+   buttons inside a thin border-bordered pill so the user reads
+   them as a single grouped control. */
+.view-toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
+  gap: 0.5px;
+  padding: 0.5px;
+  margin-left: 4px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
 }
-.name-cell .row-icon {
-  flex-shrink: 0;
-}
-.name-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.view-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  color: var(--color-t3);
   background: transparent;
   border: none;
-  color: inherit;
-  font: inherit;
+  border-radius: 4px;
   cursor: pointer;
-  padding: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.view-btn:hover { color: var(--color-t1); background: var(--color-bg2); }
+.view-btn--active {
+  color: var(--color-t1);
+  background: var(--color-bg3);
 }
 
-/* Hover-revealed action icons in the rightmost column — matches the
-   Library list affordance pattern (icons appear when the row is
-   pointed at). */
-.row-actions { text-align: right; }
-.row-actions-inline { display: inline-flex; gap: 2px; }
+/* Hover-revealed action icons in the table's right-most column.
+   Mirror of Library's pattern (icons appear on row-hover). The
+   parent table doesn't reveal these — the parent of FileTable
+   wraps the actions slot and applies its own hover via the
+   ``.list-row:hover .row-actions-inner`` rule below. */
 .row-actions-inner {
   display: inline-flex;
   align-items: center;
@@ -553,7 +579,7 @@ onMounted(() => {
   opacity: 0;
   transition: opacity 0.12s;
 }
-.list-row:hover .row-actions-inner { opacity: 1; }
+:deep(.list-row:hover) .row-actions-inner { opacity: 1; }
 .row-action-btn {
   display: inline-flex;
   align-items: center;
