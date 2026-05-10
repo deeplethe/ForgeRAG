@@ -58,3 +58,12 @@ test_localsystem.txt
 # Smoke-test scratch (auto-minted token + sample request body)
 .smoke-token
 .smoke-body.json
+
+# Personal dev workflow scripts — these hardcode the maintainer's
+# remote dev box (user, host, SSH key path) and aren't meant to be
+# shared. The topology they describe (local source → rclone →
+# remote backend) is an internal preference; other contributors
+# pick their own setup. Leave the files on disk (they aren't
+# generated; the operator wrote them) but keep them out of git.
+scripts/dev-remote.sh
+scripts/dev-bootstrap-remote.sh
