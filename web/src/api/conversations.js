@@ -92,3 +92,14 @@ export const getMessages = (conversationId, limit = 100) =>
  */
 export const addMessage = (conversationId, role, content) =>
   post(`/api/v1/conversations/${conversationId}/messages`, { role, content })
+
+/**
+ * Mark a conversation as read for the current user. Sets
+ * ``last_read_at = now()`` server-side; the sidebar's unread blue
+ * dot clears when ``unread`` recomputes false on the next list
+ * fetch. Idempotent — safe to call on every conv-open.
+ * @param {string} conversationId
+ * @returns {Promise<null>}
+ */
+export const markConversationRead = (conversationId) =>
+  post(`/api/v1/conversations/${conversationId}/read`, {})

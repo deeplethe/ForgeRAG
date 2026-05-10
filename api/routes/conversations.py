@@ -250,6 +250,31 @@ def update_conversation(
     return get_conversation(conversation_id, state, principal)
 
 
+@router.post("/{conversation_id}/read", status_code=204)
+def mark_conversation_read(
+    conversation_id: str,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """Mark a conversation as read for the calling user.
+
+    Sets ``last_read_at = now()`` so the sidebar's unread blue dot
+    clears. Idempotent. The unread comparison is
+    ``last_assistant_at > last_read_at``, so calling this after every
+    new agent reply (or whenever the user opens / sends in this
+    conversation) is the right pattern.
+
+    Conversations are user-private already, so there's no separate
+    per-user read state — the column lives on the conversation row.
+    """
+    row = state.store.get_conversation(conversation_id)
+    if not row or not _owns_conversation(row, _effective_owner(state, principal)):
+        raise HTTPException(404, "conversation not found")
+    from datetime import datetime as _dt
+
+    state.store.update_conversation(conversation_id, last_read_at=_dt.utcnow())
+
+
 @router.delete("/{conversation_id}", status_code=204)
 def delete_conversation(
     conversation_id: str,

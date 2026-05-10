@@ -886,7 +886,15 @@ class Store:
 
                 conv = s.get(Conversation, conv_id)
                 if conv is not None:
-                    conv.updated_at = _dt.utcnow()
+                    now = _dt.utcnow()
+                    conv.updated_at = now
+                    # ``last_assistant_at`` powers the sidebar's unread
+                    # blue dot. Bumped only on assistant turns — user
+                    # messages don't trigger the indicator on the
+                    # user's own conv (they obviously saw what they
+                    # just typed).
+                    if record.get("role") == "assistant":
+                        conv.last_assistant_at = now
 
     def get_messages(self, conversation_id: str, *, limit: int = 100) -> list[dict]:
         with self._session() as s:
@@ -1267,6 +1275,16 @@ def _chunk_to_dict(row: ChunkRow) -> dict:
 
 
 def _conversation_to_dict(row: Conversation) -> dict:
+    last_assistant_at = getattr(row, "last_assistant_at", None)
+    last_read_at = getattr(row, "last_read_at", None)
+    # ``unread`` is computed here (not in the route) so any caller
+    # that lists/gets a conversation gets a consistent flag without
+    # having to recompute the comparison. NULL ``last_assistant_at``
+    # → false (no agent turn yet, nothing to badge).
+    unread = bool(
+        last_assistant_at is not None
+        and (last_read_at is None or last_assistant_at > last_read_at)
+    )
     return {
         "conversation_id": row.conversation_id,
         "title": row.title,
@@ -1280,6 +1298,9 @@ def _conversation_to_dict(row: Conversation) -> dict:
         "updated_at": row.updated_at,
         "metadata_json": row.metadata_json or {},
         "is_favorite": bool(getattr(row, "is_favorite", False)),
+        "last_assistant_at": last_assistant_at,
+        "last_read_at": last_read_at,
+        "unread": unread,
     }
 
 

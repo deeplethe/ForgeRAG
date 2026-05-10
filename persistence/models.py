@@ -312,6 +312,13 @@ class Conversation(Base):
     # the frontend can sort favorites to the top of the list.
     # Added in 20260515_add_conversation_favorite.
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Unread-indicator support — see 20260520_add_conversation_read_state.
+    # ``last_assistant_at`` bumps every time an agent message is added;
+    # ``last_read_at`` is set when the user opens the conversation.
+    # Sidebar shows a blue dot when ``last_assistant_at > last_read_at``,
+    # which automatically syncs across devices.
+    last_assistant_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Message(Base):

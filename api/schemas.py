@@ -393,6 +393,15 @@ class ConversationOut(BaseModel):
     updated_at: Any = None
     message_count: int | None = None
     is_favorite: bool = False
+    # Unread-indicator state. ``last_assistant_at`` advances whenever
+    # an agent message is added; ``last_read_at`` is set when the user
+    # opens the conversation (POST /conversations/{id}/read). The
+    # ``unread`` flag is computed server-side as
+    # ``last_assistant_at > last_read_at`` — exposed pre-computed so
+    # the sidebar doesn't have to do timestamp math per row.
+    last_assistant_at: Any = None
+    last_read_at: Any = None
+    unread: bool = False
 
 
 class MessageOut(BaseModel):
