@@ -557,6 +557,28 @@ answering:
     refuse_when_unknown: true               # tell the model to say "I don't know" when context is thin
     refuse_message: "I don't know based on the provided documents."
 
+    # ── Modality capabilities (auto-probed) ───────────────────────
+    # Tells the chat UI whether this model can natively accept image
+    # / PDF / other binary attachments inline. Both default to
+    # ``false``; the chat UI will only allow plain-text attachments
+    # (txt/md/html/json/csv/...) — pasted big text auto-converts to
+    # an attachment file. When the values say ``true`` the upload
+    # button accepts the matching MIME types and the agent runtime
+    # passes the attachment through as a native ``image`` /
+    # ``document`` content block instead of converting it to text.
+    #
+    # NOT YET implemented: a one-time startup probe will overwrite
+    # these by sending a tiny test image / test PDF to the model and
+    # checking whether the response shows the model actually parsed
+    # it (vs ignored or hallucinated, the way deepseek does today).
+    # For now leave both at ``false`` and override only if you know
+    # your model supports it (Claude 3.5+ supports both; gpt-4o*
+    # supports image, gpt-4.1+ supports both; deepseek-chat / -v3 /
+    # -v4 don't support either).
+    capabilities:
+      vision: false                         # accept image/* attachments inline
+      pdf: false                            # accept application/pdf inline
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Image enrichment — VLM describes figures so they're searchable as text

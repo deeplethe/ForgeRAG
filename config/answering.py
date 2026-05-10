@@ -15,6 +15,22 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class GeneratorCapabilities(BaseModel):
+    """Modality flags for the generator model.
+
+    Drives the chat UI's attachment-upload behaviour and the agent
+    runtime's content-block construction. ``vision`` controls
+    ``image/*`` MIME acceptance; ``pdf`` controls
+    ``application/pdf`` (Anthropic ``document`` blocks). Plain-text
+    attachments (txt / md / html / json / csv / ...) work for every
+    model regardless of these flags — they're just inlined into the
+    prompt as text.
+    """
+
+    vision: bool = False
+    pdf: bool = False
+
+
 class GeneratorConfig(BaseModel):
     """
     Connection-level config for the LLM. yaml has the bare minimum
@@ -53,6 +69,21 @@ class GeneratorConfig(BaseModel):
     # If True, instruct the model to refuse when context is thin
     refuse_when_unknown: bool = True
     refuse_message: str = "I don't know based on the provided documents."
+
+    # Modality capabilities. The chat UI reads these to decide which
+    # MIME types the upload button accepts and whether to pass an
+    # attachment to the model as a native ``image`` / ``document``
+    # content block (true) versus stripping it out (false). Both
+    # default to ``false`` — only flip true for models you've
+    # confirmed actually parse the binary inline (Claude 3.5+ for
+    # both; gpt-4o* / gpt-4.1+ for image; deepseek-* doesn't support
+    # either despite the wire formats accepting the field).
+    #
+    # Future: a one-time startup probe will overwrite these by
+    # sending a tiny test image / test PDF through the proxy and
+    # asserting the model actually parsed the content. Until that
+    # ships, operators set the flags by hand in yaml.
+    capabilities: GeneratorCapabilities = Field(default_factory=lambda: GeneratorCapabilities())
 
 
 class CORSConfig(BaseModel):
