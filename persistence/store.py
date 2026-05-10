@@ -835,7 +835,20 @@ class Store:
         chats in a particular project).
         """
         with self._session() as s:
-            stmt = select(Conversation).order_by(Conversation.updated_at.desc())
+            # Sort by "last agent activity" — the most recent assistant
+            # reply, falling back to ``created_at`` for conversations
+            # that haven't had a turn yet. Sorting by ``updated_at``
+            # (the previous behaviour) re-shuffled the list whenever
+            # the user touched a conversation in any way (mark-as-read,
+            # rename, favorite toggle, sending a message), which made
+            # the sidebar jumpy. Only an actual agent reply should
+            # bump a conversation's slot.
+            from sqlalchemy import func as sa_func, desc
+
+            sort_key = sa_func.coalesce(
+                Conversation.last_assistant_at, Conversation.created_at
+            )
+            stmt = select(Conversation).order_by(desc(sort_key))
             if user_id is not None:
                 stmt = stmt.where(Conversation.user_id == user_id)
             if project_id is not None:
