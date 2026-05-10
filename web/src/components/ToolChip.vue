@@ -1,24 +1,28 @@
 <script setup>
 /**
- * Inline tool-call chip — one chip per tool dispatch (Claude Code-
- * style). Folded state is a single one-liner that hints at WHAT got
- * called (tool name + a short detail like the Bash command, the
- * search query, the file path); expanded state shows the full
- * ``input`` (params dict the model handed the tool) and ``output``
- * (the tool's response, capped at 8 KiB upstream).
+ * Inline tool-call chip — one chip per tool dispatch, Claude-Code
+ * style. Folded state hints at WHAT got called (one verb-and-object
+ * line); expanded state shows the call's input / output rendered
+ * type-aware:
  *
- * The single-tool-per-chip layout replaces the prior batched chip
- * ("Searched 3 times, read 8 passages") because the user wants to
- * be able to click any specific call and see its bash output / file
- * diff / hit list — that's per-call data, not per-batch.
+ *   Bash       headline ``$ <command>`` · expand → stdout/stderr block
+ *   Write      headline ``Wrote <path>`` · expand → file path link +
+ *              the content body (or new content for Edit)
+ *   Edit       headline ``Edited <path>`` · expand → unified diff
+ *              built from ``old_string`` / ``new_string``
+ *   Read       headline ``Read <path>`` · expand → file body
+ *   Glob/Grep  headline ``Pattern <p>`` · expand → match list
+ *   search_*   headline `` <query>`` · expand → query + hits dump
+ *   anything   else falls back to raw JSON input + text output blocks
  *
- * This pass keeps the expansion content as raw text/JSON code blocks.
- * A follow-up pass specialises the rendering per tool type
- * (Bash → ``$ command`` + stdout; Read/Edit/Write → clickable file
- * path + diff; search_* → query + hits chips).
+ * Filesystem-shaped paths (``/workdir/...`` plus the explicit
+ * ``file_path`` / ``path`` props) render as clickable links that open
+ * the workdir preview modal — the user's "interim artifact path
+ * should be clickable" requirement.
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ChevronRight } from 'lucide-vue-next'
 import ThinkingPulse from './ThinkingPulse.vue'
 
@@ -27,11 +31,8 @@ const props = defineProps({
 })
 
 const { t } = useI18n()
+const router = useRouter()
 
-// Friendly per-tool labels for the chip headline. Falls back to the
-// raw tool name (``Bash``, ``Write``, …) when no i18n key matches —
-// the SDK-driven Bash/Write/Read/Edit family doesn't get translated
-// for now since the names are universally legible.
 const TOOL_LABELS = {
   search_bm25: 'chat.tool.search_bm25',
   search_vector: 'chat.tool.search_vector',
@@ -46,36 +47,113 @@ const toolLabel = computed(() => {
   return k ? t(k) : props.tool.name
 })
 
-// Short summary line for the collapsed state. Prefer the runtime's
-// pre-computed ``detail`` (already 64-char-truncated) so we don't
-// need to know each tool's params shape; falls back to a derived
-// preview from ``input`` for newer-style entries that didn't bother
-// computing detail.
+// ── Tool-family classification ───────────────────────────────────
+// Each family gets its own rendering recipe; the catch-all "generic"
+// just dumps input JSON + output text, same as the previous pass.
+const family = computed(() => {
+  const n = props.tool.name || ''
+  if (n === 'Bash') return 'bash'
+  if (n === 'Write') return 'write'
+  if (n === 'Edit') return 'edit'
+  if (n === 'Read') return 'read'
+  if (n === 'Glob' || n === 'Grep') return 'pattern'
+  if (n.startsWith('search_') || n === 'graph_explore' || n === 'web_search' || n === 'rerank') return 'search'
+  if (n === 'read_chunk' || n === 'read_tree' || n === 'list_folders' || n === 'list_docs') return 'rag-read'
+  return 'generic'
+})
+
+const inp = computed(() => props.tool.input || {})
+const out = computed(() => props.tool.output || '')
+
+// ── Folded headline ──────────────────────────────────────────────
+// Verb-and-object string the user sees before clicking. "Read
+// /workdir/x.md" is more informative than the raw "Read" the
+// previous chip showed. Falls back to the legacy ``detail`` field
+// for trace rows persisted before phase2(agent) — those have a
+// 64-char detail snippet but no structured ``input`` dict yet.
 const headline = computed(() => {
-  if (props.tool.detail) return props.tool.detail
-  const inp = props.tool.input
-  if (inp && typeof inp === 'object') {
-    for (const k of ['command', 'query', 'path', 'file_path', 'chunk_id', 'doc_id']) {
-      if (typeof inp[k] === 'string' && inp[k]) return inp[k].slice(0, 80)
-    }
+  const i = inp.value
+  let fromInput = ''
+  switch (family.value) {
+    case 'bash':
+      fromInput = i.command || ''
+      break
+    case 'write':
+    case 'edit':
+    case 'read':
+      fromInput = i.file_path || i.path || ''
+      break
+    case 'pattern':
+      fromInput = i.pattern || ''
+      break
+    case 'search':
+      fromInput = i.query || ''
+      break
+    case 'rag-read':
+      fromInput = i.chunk_id || i.doc_id || i.path || ''
+      break
   }
-  return ''
+  return fromInput || props.tool.detail || ''
 })
 
+const headlineMono = computed(() =>
+  family.value === 'bash' || family.value === 'write' ||
+  family.value === 'edit' || family.value === 'read' ||
+  family.value === 'pattern' || family.value === 'rag-read',
+)
+
+// ── Path detection + click handler ───────────────────────────────
+// Workdir paths come in two flavours: backend-side ``/workdir/foo``
+// (the sandbox-internal absolute), or frontend-side ``/foo`` which
+// is what the workspace UI talks. Strip the ``/workdir`` prefix
+// when present so the workspace view's ``?path=`` query lands on
+// the right folder.
+function normaliseWorkdirPath(p) {
+  if (typeof p !== 'string') return ''
+  let s = p.trim()
+  if (!s) return ''
+  if (s.startsWith('/workdir')) s = s.slice('/workdir'.length) || '/'
+  return s.startsWith('/') ? s : '/' + s
+}
+function openInWorkspace(p) {
+  const n = normaliseWorkdirPath(p)
+  if (!n) return
+  // Folder path → workspace at that folder; file path → workspace
+  // at the parent and let the user click into preview. Cheap
+  // heuristic: trailing slash or no extension treated as folder.
+  const isFile = /\.[^/]+$/.test(n) && !n.endsWith('/')
+  const target = isFile ? n.replace(/\/[^/]+$/, '') || '/' : n
+  router.push({ path: '/workspace', query: target === '/' ? {} : { path: target } })
+}
+
+// ── Diff builder for Edit ────────────────────────────────────────
+// We don't have the actual unified diff, just old + new strings.
+// Render line-prefixed +/- side-by-side so the user can see what
+// changed. Simple enough; for a real full-file diff (git-blame
+// quality) we'd reach for ``diff`` (npm) but the agent's edits are
+// usually small enough that the eyeball comparison works.
+const diffLines = computed(() => {
+  if (family.value !== 'edit') return []
+  const o = String(inp.value.old_string || '').split('\n')
+  const n = String(inp.value.new_string || '').split('\n')
+  const out = []
+  for (const line of o) out.push({ kind: 'remove', text: line })
+  for (const line of n) out.push({ kind: 'add', text: line })
+  return out
+})
+
+// ── Pretty input JSON for the generic fallback path ──────────────
 const inputJson = computed(() => {
-  const inp = props.tool.input
-  if (inp == null || (typeof inp === 'object' && !Object.keys(inp).length)) return ''
+  const i = inp.value
+  if (i == null || (typeof i === 'object' && !Object.keys(i).length)) return ''
   try {
-    return JSON.stringify(inp, null, 2)
+    return JSON.stringify(i, null, 2)
   } catch {
-    return String(inp)
+    return String(i)
   }
 })
-
-const outputText = computed(() => props.tool.output || '')
 
 const running = computed(() => props.tool.status === 'running')
-
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
 </script>
@@ -87,19 +165,128 @@ function toggle() { expanded.value = !expanded.value }
       <ChevronRight v-else :size="12" :stroke-width="1.75"
         class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-name">{{ toolLabel }}</span>
-      <span v-if="headline" class="head-detail">{{ headline }}</span>
+      <span
+        v-if="headline"
+        class="head-detail"
+        :class="{ 'head-detail--mono': headlineMono }"
+      >{{ headline }}</span>
       <span v-if="tool.summary" class="head-summary">· {{ tool.summary }}</span>
     </button>
+
     <div v-if="expanded" class="chip-body">
-      <div v-if="inputJson" class="chip-block">
-        <div class="chip-block__label">Input</div>
-        <pre class="chip-block__pre"><code>{{ inputJson }}</code></pre>
-      </div>
-      <div v-if="outputText" class="chip-block">
-        <div class="chip-block__label">Output</div>
-        <pre class="chip-block__pre"><code>{{ outputText }}</code></pre>
-      </div>
-      <div v-if="!inputJson && !outputText" class="chip-block__empty">
+      <!-- Bash: $ command + stdout. The first ``v-if`` falls back to
+           ``tool.detail`` so trace rows persisted before
+           phase2(agent) (no structured ``input`` field yet) still
+           show the command line, just without the captured stdout. -->
+      <template v-if="family === 'bash'">
+        <div v-if="inp.command || tool.detail" class="chip-block">
+          <div class="chip-block__label">Command</div>
+          <pre class="chip-block__pre"><code><span class="prompt">$ </span>{{ inp.command || tool.detail }}</code></pre>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Output</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <!-- Write: clickable path + content body -->
+      <template v-else-if="family === 'write'">
+        <div v-if="inp.file_path" class="chip-block">
+          <div class="chip-block__label">File</div>
+          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ inp.file_path }}</button>
+        </div>
+        <div v-if="inp.content" class="chip-block">
+          <div class="chip-block__label">Content</div>
+          <pre class="chip-block__pre"><code>{{ inp.content }}</code></pre>
+        </div>
+      </template>
+
+      <!-- Edit: clickable path + unified-ish diff -->
+      <template v-else-if="family === 'edit'">
+        <div v-if="inp.file_path" class="chip-block">
+          <div class="chip-block__label">File</div>
+          <button class="chip-path" @click="openInWorkspace(inp.file_path)">{{ inp.file_path }}</button>
+        </div>
+        <div v-if="diffLines.length" class="chip-block">
+          <div class="chip-block__label">Diff</div>
+          <pre class="chip-block__pre chip-diff"><code><span
+              v-for="(l, i) in diffLines"
+              :key="i"
+              class="diff-line"
+              :class="'diff-line--' + l.kind"
+            >{{ l.kind === 'add' ? '+ ' : '- ' }}{{ l.text }}
+</span></code></pre>
+        </div>
+      </template>
+
+      <!-- Read: clickable path + body -->
+      <template v-else-if="family === 'read'">
+        <div v-if="inp.file_path || inp.path" class="chip-block">
+          <div class="chip-block__label">File</div>
+          <button
+            class="chip-path"
+            @click="openInWorkspace(inp.file_path || inp.path)"
+          >{{ inp.file_path || inp.path }}</button>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Body</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <!-- Glob / Grep: pattern + matches -->
+      <template v-else-if="family === 'pattern'">
+        <div v-if="inp.pattern" class="chip-block">
+          <div class="chip-block__label">Pattern</div>
+          <pre class="chip-block__pre"><code>{{ inp.pattern }}</code></pre>
+        </div>
+        <div v-if="inp.path" class="chip-block">
+          <div class="chip-block__label">In</div>
+          <button class="chip-path" @click="openInWorkspace(inp.path)">{{ inp.path }}</button>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Matches</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <!-- search_* / graph_explore / web_search / rerank -->
+      <template v-else-if="family === 'search'">
+        <div v-if="inp.query" class="chip-block">
+          <div class="chip-block__label">Query</div>
+          <pre class="chip-block__pre"><code>{{ inp.query }}</code></pre>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Hits</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <!-- read_chunk / read_tree / list_* — RAG navigation -->
+      <template v-else-if="family === 'rag-read'">
+        <div v-if="inputJson" class="chip-block">
+          <div class="chip-block__label">Input</div>
+          <pre class="chip-block__pre"><code>{{ inputJson }}</code></pre>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Result</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <!-- Catch-all: raw JSON input + raw text output -->
+      <template v-else>
+        <div v-if="inputJson" class="chip-block">
+          <div class="chip-block__label">Input</div>
+          <pre class="chip-block__pre"><code>{{ inputJson }}</code></pre>
+        </div>
+        <div v-if="out" class="chip-block">
+          <div class="chip-block__label">Output</div>
+          <pre class="chip-block__pre"><code>{{ out }}</code></pre>
+        </div>
+      </template>
+
+      <div v-if="!inputJson && !out && !inp.command && !inp.file_path && !inp.query && !inp.pattern" class="chip-block__empty">
         (no captured payload)
       </div>
     </div>
@@ -141,13 +328,15 @@ function toggle() { expanded.value = !expanded.value }
   white-space: nowrap;
 }
 .head-detail {
-  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
-  font-size: 0.6875rem;
   color: var(--color-t3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 320px;
+  max-width: 360px;
+}
+.head-detail--mono {
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.6875rem;
 }
 .head-summary {
   color: var(--color-t3);
@@ -155,7 +344,6 @@ function toggle() { expanded.value = !expanded.value }
   white-space: nowrap;
 }
 
-/* Expanded body — input + output blocks stacked. */
 .chip-body {
   margin: 6px 0 0 18px;
   padding: 0 0 0 12px;
@@ -191,5 +379,45 @@ function toggle() { expanded.value = !expanded.value }
   font-size: 0.6875rem;
   color: var(--color-t3);
   font-style: italic;
+}
+
+/* Bash command prompt — subtle ``$`` prefix */
+.prompt {
+  color: var(--color-t3);
+  user-select: none;
+}
+
+/* Path button — looks like a link, opens the workspace at that path */
+.chip-path {
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.6875rem;
+  color: var(--color-brand);
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.chip-path:hover {
+  text-decoration-color: var(--color-brand);
+}
+
+/* Diff coloring */
+.chip-diff { padding: 4px 8px; }
+.diff-line {
+  display: block;
+  white-space: pre;
+}
+.diff-line--add {
+  background: color-mix(in srgb, var(--color-ok-fg) 12%, transparent);
+  color: var(--color-ok-fg);
+}
+.diff-line--remove {
+  background: color-mix(in srgb, var(--color-err-fg) 12%, transparent);
+  color: var(--color-err-fg);
 }
 </style>
