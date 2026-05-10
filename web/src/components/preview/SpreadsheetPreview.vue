@@ -244,7 +244,7 @@ watch(() => props.url, () => { load() })
 }
 .ss-preview__tab {
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -258,7 +258,7 @@ watch(() => props.url, () => { load() })
   background: var(--color-bg3);
 }
 .ss-preview__truncated {
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   color: var(--color-warn-fg, #b45309);
 }
 
@@ -268,7 +268,7 @@ watch(() => props.url, () => { load() })
   overflow: auto;
 }
 .ss-preview__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
   padding: 32px 16px;
@@ -278,7 +278,7 @@ watch(() => props.url, () => { load() })
 .ss-preview__table {
   border-collapse: collapse;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--color-t1);
   width: max-content;
   /* Minimum so an empty / single-column sheet doesn't collapse to
@@ -293,7 +293,7 @@ watch(() => props.url, () => { load() })
   background: var(--color-bg2);
   z-index: 2;
   font-weight: 500;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   color: var(--color-t3);
   text-align: center;
   border: 1px solid var(--color-line);
@@ -306,7 +306,7 @@ watch(() => props.url, () => { load() })
   background: var(--color-bg2);
   z-index: 1;
   font-weight: 500;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   color: var(--color-t3);
   text-align: center;
   border: 1px solid var(--color-line);

@@ -83,7 +83,7 @@
       <main class="wb-main" @contextmenu.prevent="onMainContextMenu">
         <div
           v-if="error"
-          class="flex items-center gap-2 text-[11px] text-red-400 mx-4 my-3 px-3 py-2 border border-red-500/30 rounded bg-red-500/5"
+          class="flex items-center gap-2 text-2xs text-red-400 mx-4 my-3 px-3 py-2 border border-red-500/30 rounded bg-red-500/5"
         >
           <AlertCircle :size="14" :stroke-width="1.75" />
           <span>{{ t('workspace.load_error', { msg: error }) }}</span>
@@ -766,7 +766,7 @@ onMounted(() => { load(currentPath.value) })
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -812,7 +812,7 @@ onMounted(() => { load(currentPath.value) })
 .search-input {
   width: 220px;
   padding: 4px 24px 4px 26px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line);

@@ -183,7 +183,7 @@ function step(direction) {
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: transparent;
   border: none;
@@ -214,7 +214,7 @@ function step(direction) {
   align-items: center;
   justify-content: center;
   width: 18px;
-  font-size: 8px;
+  font-size: 0.5rem;
   color: var(--color-t3);
   background: transparent;
   border: none;

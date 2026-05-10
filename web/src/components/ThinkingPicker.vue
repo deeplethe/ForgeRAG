@@ -16,7 +16,7 @@
   <div ref="rootEl" class="relative inline-block">
     <button
       type="button"
-      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 text-[11px] text-t2 hover:bg-bg3 transition-colors"
+      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 text-2xs text-t2 hover:bg-bg3 transition-colors"
       :class="{ 'text-brand': modelValue !== null, '!bg-bg3': open }"
       :title="t('tools.thinking_hint')"
       @click="toggle"
@@ -45,7 +45,7 @@
           v-for="opt in options"
           :key="String(opt.value)"
           type="button"
-          class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-[12px] transition-colors"
+          class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs transition-colors"
           :class="modelValue === opt.value
             ? 'bg-bg3 text-t1'
             : 'text-t2 hover:bg-bg3'"

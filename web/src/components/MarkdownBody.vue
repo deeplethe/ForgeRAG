@@ -94,7 +94,7 @@ const rendered = computed(() =>
 /* cite-tag lives inside v-html, so needs :deep() under scoped styles */
 .msg-body :deep(.cite-tag) {
   display: inline; padding: 1px 5px; margin: 0 1px; border-radius: 4px;
-  font-size: 10px; font-weight: 600;
+  font-size: 0.625rem; font-weight: 600;
   color: var(--color-brand, #3d3d3d); background: var(--color-bg3, #f0f0f0);
   cursor: pointer; transition: background .15s;
 }

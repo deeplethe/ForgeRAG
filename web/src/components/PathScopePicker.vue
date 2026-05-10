@@ -34,7 +34,7 @@
          transparent area; hover deepens. -->
     <button
       type="button"
-      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 text-[11px] text-t2 hover:bg-bg3 transition-colors"
+      class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 text-2xs text-t2 hover:bg-bg3 transition-colors"
       :class="{ 'text-brand': scoped, '!bg-bg3': open }"
       :title="scoped ? t('scope.tooltip_scoped_to', { path: modelValue }) : t('scope.tooltip_idle')"
       @click="toggle"
@@ -54,7 +54,7 @@
       >
         <!-- Search -->
         <div class="px-3 pt-2.5 pb-1.5 border-b border-line">
-          <div class="flex items-center gap-2 text-[12px] text-t2">
+          <div class="flex items-center gap-2 text-xs text-t2">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               class="text-t3 shrink-0">
               <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
@@ -69,7 +69,7 @@
             />
             <button
               v-if="search"
-              class="text-t3 hover:text-t1 text-[10px]"
+              class="text-t3 hover:text-t1 text-3xs"
               :title="t('common.close')"
               @click="search = ''"
             >✕</button>
@@ -77,7 +77,7 @@
         </div>
 
         <!-- Breadcrumb / current location (hidden during search) -->
-        <div v-if="!search" class="flex items-center gap-1 px-3 py-1.5 border-b border-line text-[11px] text-t3">
+        <div v-if="!search" class="flex items-center gap-1 px-3 py-1.5 border-b border-line text-2xs text-t3">
           <button
             class="p-0.5 rounded hover:bg-bg3 disabled:opacity-30 disabled:cursor-default"
             :disabled="currentDir === '/'"
@@ -91,7 +91,7 @@
           <span class="font-mono truncate flex-1">{{ currentDir }}</span>
           <button
             v-if="currentDir !== '/'"
-            class="px-1.5 py-0.5 rounded text-brand hover:bg-brand/10 text-[10px] font-medium"
+            class="px-1.5 py-0.5 rounded text-brand hover:bg-brand/10 text-3xs font-medium"
             :title="t('scope.tooltip_confirm_close')"
             @click="confirmCurrent"
           >{{ t('scope.select_this_folder') }}</button>
@@ -103,7 +103,7 @@
           <button
             v-if="!search && currentDir === '/'"
             type="button"
-            class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t2 hover:bg-bg3 border-b border-line/50"
+            class="w-full flex items-center gap-2 px-3 py-2 text-xs text-t2 hover:bg-bg3 border-b border-line/50"
             :class="{ 'text-brand': !modelValue || modelValue === '/' }"
             @click="selectRoot"
           >
@@ -118,12 +118,12 @@
           </button>
 
           <!-- Loading state -->
-          <div v-if="loading" class="flex items-center justify-center py-6 text-[11px] text-t3 gap-2">
+          <div v-if="loading" class="flex items-center justify-center py-6 text-2xs text-t3 gap-2">
             <Spinner size="sm" /> {{ t('common.loading') }}
           </div>
 
           <!-- Empty state -->
-          <div v-else-if="!folders.length && !docs.length" class="py-6 text-center text-[11px] text-t3">
+          <div v-else-if="!folders.length && !docs.length" class="py-6 text-center text-2xs text-t3">
             <span v-if="search">{{ t('scope.no_match', { query: search }) }}</span>
             <span v-else>{{ t('scope.empty_dir') }}</span>
           </div>
@@ -135,7 +135,7 @@
               v-for="f in folders"
               :key="'f:' + f.path"
               type="button"
-              class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t1 hover:bg-bg3"
+              class="w-full flex items-center gap-2 px-3 py-2 text-xs text-t1 hover:bg-bg3"
               :class="{ 'text-brand bg-brand/5': modelValue === f.path }"
               :title="t('scope.tooltip_pick_and_dive', { path: f.path })"
               @click="pickFolder(f)"
@@ -160,7 +160,7 @@
               v-for="d in docs"
               :key="'d:' + d.doc_id"
               type="button"
-              class="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-t1 hover:bg-bg3"
+              class="w-full flex items-center gap-2 px-3 py-2 text-xs text-t1 hover:bg-bg3"
               :class="{ 'text-brand bg-brand/5': modelValue === d.path }"
               :title="d.path"
               @click="selectFile(d)"
@@ -171,7 +171,7 @@
                 <path d="M14 2v6h6"/>
               </svg>
               <span class="flex-1 text-left truncate">{{ leaf(d.path) }}</span>
-              <span v-if="search" class="text-t3 text-[10px] font-mono truncate max-w-[140px]">{{ parentDir(d.path) }}</span>
+              <span v-if="search" class="text-t3 text-3xs font-mono truncate max-w-[140px]">{{ parentDir(d.path) }}</span>
               <svg v-if="modelValue === d.path" width="10" height="10" viewBox="0 0 24 24"
                 fill="none" stroke="currentColor" stroke-width="3">
                 <path d="M20 6L9 17l-5-5"/>

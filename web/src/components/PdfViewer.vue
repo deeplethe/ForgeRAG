@@ -307,7 +307,7 @@ defineExpose({ scrollToPage: (p) => { applyHighlightsAndScroll() } })
 <template>
   <div class="pdf-viewer-root flex flex-col h-full">
     <!-- Page info bar -->
-    <div class="shrink-0 px-3 py-1.5 border-b border-line flex items-center justify-between text-[9px] text-t3">
+    <div class="shrink-0 px-3 py-1.5 border-b border-line flex items-center justify-between text-4xs text-t3">
       <span v-if="totalPages">{{ totalPages }} pages</span>
       <span v-if="loading" class="text-brand animate-pulse">Loading...</span>
       <div class="flex items-center gap-1">
@@ -319,7 +319,7 @@ defineExpose({ scrollToPage: (p) => { applyHighlightsAndScroll() } })
         <button @click="zoomIn" class="p-0.5 rounded hover:bg-bg2 transition-colors" title="Zoom in">
           <ZoomIn class="w-3.5 h-3.5" :stroke-width="1.5" />
         </button>
-        <button @click="zoomReset" class="px-1 py-0.5 rounded hover:bg-bg2 transition-colors text-[8px]" title="Fit width">Fit</button>
+        <button @click="zoomReset" class="px-1 py-0.5 rounded hover:bg-bg2 transition-colors text-5xs" title="Fit width">Fit</button>
 
         <!-- Separator -->
         <span v-if="downloadUrl || sourceDownloadUrl" class="mx-1 h-3 border-l border-line"></span>

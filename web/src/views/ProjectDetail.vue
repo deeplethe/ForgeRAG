@@ -165,7 +165,7 @@ onMounted(load)
   border-radius: 6px;
   background: transparent;
   color: var(--text-muted, #6b7280);
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 
@@ -176,14 +176,14 @@ onMounted(load)
 
 .proj-detail__heading h1 {
   margin: 0 0 2px;
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
 }
 
 .proj-detail__desc {
   margin: 0;
   color: var(--text-muted, #6b7280);
-  font-size: 13px;
+  font-size: 0.8125rem;
   max-width: 720px;
 }
 
@@ -218,7 +218,7 @@ onMounted(load)
 
 .proj-detail__placeholder h2 {
   margin: 8px 0 0;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text, #111827);
 }
@@ -226,7 +226,7 @@ onMounted(load)
 .proj-detail__placeholder p {
   max-width: 480px;
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .proj-detail__placeholder--error {
@@ -234,7 +234,7 @@ onMounted(load)
 }
 
 .proj-detail__hint {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   opacity: 0.6;
 }
 
@@ -252,7 +252,7 @@ onMounted(load)
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
   background: transparent;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
   transition: background 120ms ease;

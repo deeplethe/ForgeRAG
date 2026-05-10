@@ -104,7 +104,7 @@ watch(() => props.url, () => { load() })
 }
 .md-preview__tab {
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: none;
@@ -125,7 +125,7 @@ watch(() => props.url, () => { load() })
   padding: 24px 32px;
 }
 .md-preview__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
   padding: 32px 16px;
@@ -133,7 +133,7 @@ watch(() => props.url, () => { load() })
 .md-preview__hint--err { color: #ef4444; }
 
 .md-preview__rendered {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
   line-height: 1.65;
   max-width: 760px;
@@ -142,7 +142,7 @@ watch(() => props.url, () => { load() })
 
 .md-preview__raw {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--color-t1);
   white-space: pre-wrap;

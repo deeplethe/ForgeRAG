@@ -248,7 +248,7 @@ watch(
 }
 .preview-modal__icon { color: var(--color-t3); flex-shrink: 0; }
 .preview-modal__name {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   font-weight: 500;
   overflow: hidden;
@@ -296,11 +296,11 @@ watch(
 }
 .preview-modal__unsupported-icon { color: var(--color-t3); }
 .preview-modal__unsupported-title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
 }
 .preview-modal__unsupported-desc {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--color-t3);
   max-width: 360px;
   line-height: 1.5;
@@ -311,7 +311,7 @@ watch(
   gap: 6px;
   margin-top: 8px;
   padding: 6px 12px;
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--color-t1);
   background: var(--color-bg2);
   border: 1px solid var(--color-line);

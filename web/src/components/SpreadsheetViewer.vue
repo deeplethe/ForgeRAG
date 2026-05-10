@@ -213,7 +213,7 @@ const dl = computed(() => props.downloadUrl || '')
 
 .sv-tab {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-t2);
   background: transparent;
@@ -265,7 +265,7 @@ const dl = computed(() => props.downloadUrl || '')
 
 .sv-desc-label {
   display: inline-block;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-t3);
   letter-spacing: 0.06em;
@@ -274,7 +274,7 @@ const dl = computed(() => props.downloadUrl || '')
 
 .sv-desc-text {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--color-t1);
   white-space: pre-wrap;
@@ -292,12 +292,12 @@ const dl = computed(() => props.downloadUrl || '')
   justify-content: center;
   height: 100%;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .sv-table {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: var(--font-mono, ui-monospace, monospace);
   background: var(--color-bg);
   /* No fixed width: let the table grow horizontally so wide sheets

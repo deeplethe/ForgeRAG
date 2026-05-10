@@ -90,10 +90,32 @@
      without committing to a terminal status color). Distinct from
      ``--color-warn-fg`` which signals an actual warning state. */
   --color-amber: #f5a623;
+
+  /* ── Smaller-than-xs font tokens ──────────────────────────
+     Tailwind v4's default fontSize scale starts at xs = 12 px.
+     This UI runs much denser (11 px body / 10 px chips / 9-10 px
+     meta), so we extend the scale below xs with rem-based tokens.
+     Putting them here means a future ``font-size`` bump on
+     ``:root`` (or a UI-scale toggle) lifts every text-* utility
+     uniformly — both stock Tailwind tokens and these new ones. */
+  --text-2xs: 0.6875rem;  /* 11 px @ root 16 */
+  --text-3xs: 0.625rem;   /* 10 px */
+  --text-4xs: 0.5625rem;  /*  9 px */
+  --text-5xs: 0.5rem;     /*  8 px */
 }
 
 /* Non-color tokens (pure CSS custom properties — not Tailwind-exposed) */
 :root {
+  /* Pin the document root font-size — the rem unit's base. All
+     ``text-*`` Tailwind utilities and any rem-sized values in
+     ``<style>`` blocks scale off this. ``--ui-scale`` is the global
+     density knob (a Settings toggle could expose it later); 1.10
+     lifts the body neighbourhood out of the denser-than-Vercel 11-12 px
+     range without going as wide as Claude/ChatGPT — text-xs ≈ 13.2 px,
+     text-sm ≈ 15.4 px. */
+  --ui-scale: 1.10;
+  font-size: calc(16px * var(--ui-scale));
+
   /* Radii */
   --r-sm: 5px;                    /* buttons, inputs, chips */
   --r-md: 10px;                   /* panels, cards — Vercel observability uses ~10-12px */
@@ -199,7 +221,7 @@ html, body {
 }
 body {
   font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
   background: var(--color-bg2);   /* page canvas */
   -webkit-font-smoothing: antialiased;

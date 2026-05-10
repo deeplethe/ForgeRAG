@@ -46,7 +46,7 @@ const error = ref(false)
   padding: 8px 16px;
   background: rgba(0, 0, 0, 0.7);
   color: #fff;
-  font-size: 12px;
+  font-size: 0.75rem;
   border-radius: 6px;
 }
 .video-preview__error a {

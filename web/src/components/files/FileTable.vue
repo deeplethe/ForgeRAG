@@ -4,7 +4,7 @@
       v-if="loading && !rows.length"
       class="file-list__loading"
     >Loading…</div>
-    <table class="w-full text-[12px]">
+    <table class="w-full text-xs">
       <colgroup>
         <col class="col-name" />
         <col v-if="cols.has('type')" class="col-type" />
@@ -391,7 +391,7 @@ function formatType(row) {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   letter-spacing: 0.02em;
   animation: fl-loading-pulse 1.4s ease-in-out infinite;
@@ -413,7 +413,7 @@ function formatType(row) {
   text-align: left;
   padding: 6px 8px;
   font-weight: 400;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   white-space: nowrap;
 }
@@ -425,7 +425,7 @@ function formatType(row) {
   width: 10px;
   margin-left: 4px;
   text-align: center;
-  font-size: 9px;
+  font-size: 0.5625rem;
 }
 
 .list-row { cursor: pointer; color: var(--color-t2); }
@@ -482,7 +482,7 @@ function formatType(row) {
   min-width: 0;
   max-width: 240px;
   padding: 0 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: inherit;
   color: var(--color-t1);
   background: var(--color-bg);

@@ -277,7 +277,7 @@ onUnmounted(() => {
   justify-content: space-between;
   width: 100%;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -300,7 +300,7 @@ onUnmounted(() => {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
   z-index: 90;
   padding: 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
 }
 
@@ -312,7 +312,7 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .dp-title {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--color-t1);
   letter-spacing: -0.01em;
@@ -325,7 +325,7 @@ onUnmounted(() => {
   gap: 2px;
 }
 .dow {
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 500;
   color: var(--color-t3);
   text-align: center;
@@ -334,7 +334,7 @@ onUnmounted(() => {
   padding: 6px 0 4px;
 }
 .day {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: transparent;
   border: 1px solid transparent;
@@ -366,7 +366,7 @@ onUnmounted(() => {
 }
 .shortcut {
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t2);
   background: var(--color-bg2);
   border: 1px solid var(--color-line);
@@ -386,7 +386,7 @@ onUnmounted(() => {
   border-top: 1px solid var(--color-line);
 }
 .link {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: none;
@@ -400,7 +400,7 @@ onUnmounted(() => {
 .btn-icon {
   width: 22px;
   height: 22px;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1;
 }
 </style>

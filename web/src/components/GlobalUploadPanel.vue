@@ -4,7 +4,7 @@
     <!-- ── Expanded drawer (overlay above the bar) ─────────────────────── -->
     <div v-if="store.drawerOpen" class="upload-drawer">
       <div class="drawer-header">
-        <div class="flex items-center gap-3 text-[11px]">
+        <div class="flex items-center gap-3 text-2xs">
           <span class="text-t1 font-medium">Uploads</span>
           <span class="text-t3">·</span>
           <span class="text-t2">{{ store.items.length }} total</span>
@@ -13,23 +13,23 @@
           <button
             v-if="store.completed.length"
             @click="store.clearCompleted"
-            class="text-[10px] text-t3 hover:text-t1"
+            class="text-3xs text-t3 hover:text-t1"
           >clear done ({{ store.completed.length }})</button>
           <button
             v-if="store.failed.length"
             @click="store.clearFailed"
-            class="text-[10px] text-t3 hover:text-t1"
+            class="text-3xs text-t3 hover:text-t1"
           >clear failed ({{ store.failed.length }})</button>
           <button
             @click="store.toggleDrawer(false)"
-            class="text-t3 hover:text-t1 text-[12px] leading-none"
+            class="text-t3 hover:text-t1 text-xs leading-none"
             title="Collapse"
           >⌄</button>
         </div>
       </div>
 
       <div class="drawer-body">
-        <div v-if="!pageItems.length" class="text-[11px] text-t3 py-6 text-center">
+        <div v-if="!pageItems.length" class="text-2xs text-t3 py-6 text-center">
           No items on this page.
         </div>
         <div
@@ -97,7 +97,7 @@
           @click="page = Math.max(1, page - 1)"
           class="pager-btn"
         >‹</button>
-        <span class="text-[10px] text-t3">{{ page }} / {{ totalPages }}</span>
+        <span class="text-3xs text-t3">{{ page }} / {{ totalPages }}</span>
         <button
           :disabled="page === totalPages"
           @click="page = Math.min(totalPages, page + 1)"
@@ -224,7 +224,7 @@ function fmtSize(n) {
   align-items: center;
   justify-content: space-between;
   padding: 0 14px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: var(--color-bg);
   border-top: 1px solid var(--color-line);
@@ -235,8 +235,8 @@ function fmtSize(n) {
 .upload-bar:hover { background: var(--color-bg2); }
 
 .bar-left { display: flex; align-items: center; gap: 8px; }
-.bar-right { display: flex; align-items: center; gap: 8px; font-size: 10px; }
-.chev { font-size: 10px; color: var(--color-t3); width: 10px; display: inline-block; }
+.bar-right { display: flex; align-items: center; gap: 8px; font-size: 0.625rem; }
+.chev { font-size: 0.625rem; color: var(--color-t3); width: 10px; display: inline-block; }
 
 /* Chip styling is provided globally in style.css (.chip / .chip-ok/err/run).
    Compact bar variant: slightly denser padding + inline icon. */
@@ -280,7 +280,7 @@ function fmtSize(n) {
   align-items: center;
   gap: 10px;
   padding: 5px 14px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   border-top: 1px solid transparent;
 }
 .row:not(:first-child) { border-top-color: var(--color-line); }
@@ -288,9 +288,9 @@ function fmtSize(n) {
 .row-error .row-name { color: var(--color-err-fg); }
 
 .state-icon {
-  font-size: 10px;
+  font-size: 0.625rem;
   text-align: center;
-  line-height: 16px;
+  line-height: 1rem;
   width: 16px;
   height: 16px;
   border-radius: 3px;
@@ -319,7 +319,7 @@ function fmtSize(n) {
 }
 .row-folder {
   color: var(--color-t3);
-  font-size: 10px;
+  font-size: 0.625rem;
   flex-shrink: 0;
 }
 
@@ -339,7 +339,7 @@ function fmtSize(n) {
    Clamped to 2 lines; full text in title attribute on hover. */
 .row-error-msg {
   margin-top: 3px;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-err-fg);
   line-height: 1.35;
   display: -webkit-box;
@@ -354,7 +354,7 @@ function fmtSize(n) {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  font-size: 10px;
+  font-size: 0.625rem;
   gap: 2px;
 }
 
@@ -367,7 +367,7 @@ function fmtSize(n) {
 .row-actions .btn-icon {
   width: 20px;
   height: 20px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 /* ── Pager ────────────────────────────────────────────────────────── */
@@ -385,7 +385,7 @@ function fmtSize(n) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   background: transparent;
   border: none;

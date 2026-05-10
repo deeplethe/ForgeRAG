@@ -43,17 +43,17 @@ function hasChildren() {
       <button
         v-if="hasChildren()"
         @click.stop="emit('toggle', node.node_id)"
-        class="text-[10px] text-t3 w-3 shrink-0 mt-px select-none"
+        class="text-3xs text-t3 w-3 shrink-0 mt-px select-none"
       >{{ isExpanded() ? '\u25BE' : '\u25B8' }}</button>
       <span v-else class="w-3 shrink-0"></span>
 
       <!-- content -->
       <div class="min-w-0 flex-1">
-        <div class="text-[10px] truncate"
+        <div class="text-3xs truncate"
              :class="filterNodeId === node.node_id || highlight.has(node.node_id) ? 'text-t1 font-semibold' : 'text-t1'">
           {{ node.title || node.node_id }}
         </div>
-        <div class="text-[8px]"
+        <div class="text-5xs"
              :class="filterNodeId === node.node_id || highlight.has(node.node_id) ? 'text-t2 font-medium' : 'text-t3'">
           L{{ node.level }}
           <template v-if="node.page_start"> · p.{{ node.page_start }}{{ node.page_end && node.page_end !== node.page_start ? '-' + node.page_end : '' }}</template>

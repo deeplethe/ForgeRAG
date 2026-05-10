@@ -1,16 +1,16 @@
 <template>
   <!-- Single-row toolbar: [breadcrumb slot] ... [actions on the right].
        Breadcrumb arrives via the ``lead`` slot so the parent owns nav
-       state without us re-passing crumbs through props. Padding
-       (px-5 py-3) matches the Knowledge page topbar so the global
-       page-header height stays consistent across views. -->
-  <!-- ``min-h-[52px]`` locks the toolbar height so it doesn't shrink
-       2px when switching to trash mode. In browse mode the search
-       input (the tallest action) drives the natural height; in trash
-       mode there's no search, so without this min-height the
-       toolbar would collapse to whatever the breadcrumb + small
-       buttons need, causing visible vertical jitter on enter/exit. -->
-  <div class="flex items-center gap-1 px-5 py-3 border-b border-line bg-bg2 min-h-[52px]">
+       state without us re-passing crumbs through props.
+
+       Padding is in **literal px** (not Tailwind's rem-based ``p-*``
+       scale) because the Workspace/Workbench top bar shares this
+       layout and writes its own padding in raw px. Without the
+       arbitrary-px override, ``px-5 py-3`` would ride ``--ui-scale``
+       and the two pages' bars would diverge by a couple of px every
+       time the global density knob moves. ``min-h-[52px]`` keeps
+       trash-mode (no search input) from shrinking the row.  -->
+  <div class="flex items-center gap-1 px-[20px] py-[12px] border-b border-line bg-bg2 min-h-[52px]">
     <slot name="lead" />
 
     <div class="flex-1"></div>
@@ -80,7 +80,7 @@
          lives further left and uses neutral styling; the destructive
          intent is gated by the confirmation modal. -->
     <template v-else>
-      <span class="text-[11px] text-t3">
+      <span class="text-2xs text-t3">
         {{ trashCount }} item{{ trashCount === 1 ? '' : 's' }}
       </span>
       <button
@@ -122,7 +122,7 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -157,7 +157,7 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   background: transparent;
   border-radius: 4px;
@@ -185,8 +185,11 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
 }
 .search-input {
   width: 100%;
-  padding: 5px 26px 5px 24px;
-  font-size: 11px;
+  /* 4px (not 5px) so the search input matches the 28px toolbar-btn
+     height. With 5px padding the input renders 30px tall and pushes
+     this whole bar 2px taller than Workspace's clone. */
+  padding: 4px 26px 4px 24px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -205,7 +208,7 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   background: transparent;
   border: none;

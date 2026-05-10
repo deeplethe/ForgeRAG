@@ -212,14 +212,14 @@ function isExpired(token) {
   margin-bottom: 18px;
 }
 .page-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-t1);
   margin: 0 0 4px;
 }
 .page-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   margin: 0;
 }
@@ -234,12 +234,12 @@ function isExpired(token) {
 .t {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .t thead th {
   text-align: left;
   font-weight: 500;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-t3);
@@ -257,13 +257,13 @@ function isExpired(token) {
 
 .prefix {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 
 .chip {
   display: inline-block;
-  font-size: 10px;
+  font-size: 0.625rem;
   padding: 1px 6px;
   border-radius: 3px;
   letter-spacing: 0.02em;
@@ -282,7 +282,7 @@ function isExpired(token) {
 }
 
 .row-action {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-err-fg, #b91c1c);
   background: transparent;
   border: none;
@@ -295,14 +295,14 @@ function isExpired(token) {
   padding: 24px;
   text-align: center;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 /* Buttons */
 .btn-primary {
   height: 28px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   border: none;
   border-radius: var(--r-sm);
@@ -317,7 +317,7 @@ function isExpired(token) {
 .btn-secondary {
   height: 28px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);
@@ -343,19 +343,19 @@ function isExpired(token) {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
 }
 .modal-title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
   font-weight: 500;
   margin-bottom: 4px;
 }
 .modal-hint {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   margin-bottom: 16px;
 }
 .field-label {
   display: block;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   margin-bottom: 4px;
 }
@@ -364,7 +364,7 @@ function isExpired(token) {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);
@@ -389,7 +389,7 @@ function isExpired(token) {
   background: color-mix(in srgb, #f59e0b 10%, transparent);
 }
 .secret-warn {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   color: #b45309;
   margin-bottom: 4px;
@@ -402,14 +402,14 @@ function isExpired(token) {
 .secret {
   flex: 1;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 0.6875rem;
   word-break: break-all;
 }
 .copy-btn {
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
 }
 .copy-btn:hover { color: var(--color-t1); }

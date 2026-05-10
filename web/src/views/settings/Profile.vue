@@ -313,7 +313,7 @@ async function onSavePassword() {
 <style scoped>
 .profile-page { max-width: 640px; }
 .page-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-t1);
@@ -327,13 +327,13 @@ async function onSavePassword() {
   margin-bottom: 16px;
 }
 .card-title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-t1);
   margin: 0 0 4px;
 }
 .card-hint {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   margin: 0 0 12px;
   line-height: 1.5;
@@ -341,8 +341,8 @@ async function onSavePassword() {
 
 .identity-row { display: flex; align-items: center; gap: 14px; }
 .identity-meta { min-width: 0; }
-.email { font-size: 13px; color: var(--color-t1); font-weight: 500; }
-.role { font-size: 11px; color: var(--color-t3); margin-top: 2px; text-transform: lowercase; }
+.email { font-size: 0.8125rem; color: var(--color-t1); font-weight: 500; }
+.role { font-size: 0.6875rem; color: var(--color-t3); margin-top: 2px; text-transform: lowercase; }
 
 /* Avatar editor — clickable disc with a hover camera overlay.
    Same approach Linear uses on its profile page: the avatar IS
@@ -390,7 +390,7 @@ async function onSavePassword() {
   padding: 0;
   background: transparent;
   border: none;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   cursor: pointer;
   transition: color 0.15s;
@@ -408,7 +408,7 @@ async function onSavePassword() {
 .input {
   height: 32px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);
@@ -420,7 +420,7 @@ async function onSavePassword() {
 .btn-primary {
   height: 32px;
   padding: 0 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   border: none;
   border-radius: var(--r-sm);
@@ -432,8 +432,8 @@ async function onSavePassword() {
 .btn-primary:hover:not(:disabled) { background: var(--color-t1-hover); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.form-error { margin-top: 8px; font-size: 11px; color: var(--color-err-fg); }
-.form-success { margin-top: 8px; font-size: 11px; color: var(--color-ok-fg); }
+.form-error { margin-top: 8px; font-size: 0.6875rem; color: var(--color-err-fg); }
+.form-success { margin-top: 8px; font-size: 0.6875rem; color: var(--color-ok-fg); }
 
 /* Usage stat grid — 4 cells, the third (Total) is faintly emphasised
    so the eye lands there. Numbers are tabular for clean alignment. */
@@ -453,7 +453,7 @@ async function onSavePassword() {
   background: var(--color-bg2);
 }
 .usage-num {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   color: var(--color-t1);
   font-variant-numeric: tabular-nums;
@@ -461,7 +461,7 @@ async function onSavePassword() {
 }
 .usage-label {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 </style>

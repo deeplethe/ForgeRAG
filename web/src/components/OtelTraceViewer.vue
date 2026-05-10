@@ -1,10 +1,10 @@
 <template>
-  <div v-if="!hasSpans" class="px-4 py-6 text-[11px] text-t3">
+  <div v-if="!hasSpans" class="px-4 py-6 text-2xs text-t3">
     No trace data.
   </div>
   <div v-else class="otel-viewer">
     <!-- Summary header -->
-    <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-t3 px-4 py-3 border-b border-line">
+    <div class="flex flex-wrap gap-x-4 gap-y-1 text-3xs text-t3 px-4 py-3 border-b border-line">
       <span><b class="text-t2">{{ totalMs.toFixed(0) }}</b>ms total</span>
       <span><b class="text-t2">{{ spans.length }}</b> spans</span>
       <span v-if="llmCalls"><b class="text-t2">{{ llmCalls }}</b> LLM calls</span>
@@ -67,7 +67,7 @@
               }"
               @click="onRowClick(row)"
             >
-              <div class="flex items-center text-[10px]" :style="{ paddingLeft: row.displayDepth * 12 + 'px' }">
+              <div class="flex items-center text-3xs" :style="{ paddingLeft: row.displayDepth * 12 + 'px' }">
                 <button
                   v-if="row.hasChildren"
                   type="button"
@@ -82,7 +82,7 @@
                 <span v-else class="span-chevron-spacer" />
                 <span class="span-tag" :class="`span-tag--${row.category}`">{{ row.shortName }}</span>
                 <span class="span-full-name truncate">{{ row.displayName }}</span>
-                <span class="ml-auto pl-2 text-t3 font-mono tabular-nums text-[9px]">{{ row.duration_ms.toFixed(1) }}ms</span>
+                <span class="ml-auto pl-2 text-t3 font-mono tabular-nums text-4xs">{{ row.duration_ms.toFixed(1) }}ms</span>
               </div>
               <div class="bar-track">
                 <div
@@ -91,13 +91,13 @@
                   :style="{ left: row.offsetPct + '%', width: row.widthPct + '%' }"
                 />
               </div>
-              <div v-if="row.llmInfo" class="text-[9px] text-t3 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
+              <div v-if="row.llmInfo" class="text-4xs text-t3 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
                 <span class="font-mono">{{ row.llmInfo.model }}</span>
                 <span v-if="row.llmInfo.in_tokens" class="ml-2">in <b>{{ row.llmInfo.in_tokens }}</b></span>
                 <span v-if="row.llmInfo.out_tokens" class="ml-2">out <b>{{ row.llmInfo.out_tokens }}</b></span>
                 <span v-if="row.llmInfo.cost" class="ml-2">${{ row.llmInfo.cost.toFixed(4) }}</span>
               </div>
-              <div v-if="row.isError" class="text-[9px] text-rose-500 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
+              <div v-if="row.isError" class="text-4xs text-rose-500 mt-0.5" :style="{ paddingLeft: row.displayDepth * 12 + 24 + 'px' }">
                 ⚠ {{ row.errorSummary }}
               </div>
             </div>
@@ -123,15 +123,15 @@
 
     <!-- Detail pane (attributes) -->
     <div v-if="selectedRow" class="flex-none border-t border-line px-4 py-2 max-h-60 overflow-y-auto">
-      <div class="text-[9px] text-t3 uppercase tracking-wider mb-1">{{ selectedRow.name }} · attributes</div>
-      <div class="space-y-px text-[10px]">
+      <div class="text-4xs text-t3 uppercase tracking-wider mb-1">{{ selectedRow.name }} · attributes</div>
+      <div class="space-y-px text-3xs">
         <div v-for="(v, k) in selectedRow.attributes" :key="k" class="flex gap-2 leading-tight">
           <span class="text-t3 font-mono shrink-0">{{ k }}</span>
           <span class="text-t2 font-mono break-all">{{ formatValue(v) }}</span>
         </div>
         <div v-if="selectedRow.events?.length" class="mt-2 pt-2 border-t border-line/50">
-          <div class="text-[9px] text-t3 uppercase tracking-wider mb-1">events</div>
-          <div v-for="(ev, i) in selectedRow.events" :key="i" class="text-[9px] mb-1">
+          <div class="text-4xs text-t3 uppercase tracking-wider mb-1">events</div>
+          <div v-for="(ev, i) in selectedRow.events" :key="i" class="text-4xs mb-1">
             <span class="text-t2 font-medium">{{ ev.name }}</span>
             <span v-for="(v, k) in ev.attributes" :key="k" class="ml-2 text-t3">
               {{ k }}=<span class="text-t2">{{ formatValue(v) }}</span>
@@ -596,22 +596,22 @@ function formatValue(v) {
 
 .phase-label {
   grid-area: label;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--color-t1);
 }
 .phase-count {
   grid-area: count;
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   background: var(--color-bg3);
   padding: 0 5px;
   border-radius: 8px;
-  line-height: 14px;
+  line-height: 0.875rem;
 }
 .phase-duration {
   grid-area: duration;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t2);
   font-family: var(--font-mono, monospace);
 }
@@ -690,8 +690,8 @@ function formatValue(v) {
   min-width: 22px;
   padding: 0 4px;
   margin-right: 5px;
-  font-size: 8px;
-  line-height: 14px;
+  font-size: 0.5rem;
+  line-height: 0.875rem;
   text-align: center;
   border-radius: 2px;
   background: var(--color-bg3);
@@ -705,7 +705,7 @@ function formatValue(v) {
 
 .span-full-name {
   color: var(--color-t1);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
 }
 
@@ -767,7 +767,7 @@ function formatValue(v) {
   padding: 1px 5px;
   background: var(--color-t1);
   color: var(--color-bg);
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-family: var(--font-mono, monospace);
   border-radius: 3px;
   white-space: nowrap;

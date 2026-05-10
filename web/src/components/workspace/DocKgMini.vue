@@ -607,7 +607,7 @@ onBeforeUnmount(destroySigma)
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   pointer-events: none;
 }

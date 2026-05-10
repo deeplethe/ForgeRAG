@@ -292,7 +292,7 @@ function fmtRelativeTime(d) {
 
       <!-- Translation chip — left-aligned under the bar so the
            header stack shares one vertical axis. -->
-      <div v-if="translations" class="mt-3 flex items-center gap-2 max-w-[720px] flex-wrap text-[11px] text-t3">
+      <div v-if="translations" class="mt-3 flex items-center gap-2 max-w-[720px] flex-wrap text-2xs text-t3">
         <span>{{ t('search.expanded_label') }}</span>
         <span
           v-for="(tx, i) in translations"
@@ -357,7 +357,7 @@ function fmtRelativeTime(d) {
 
     <!-- ── Body ─────────────────────────────────────────────────── -->
     <main class="flex-1 flex flex-col overflow-y-auto px-12 pt-2 pb-10">
-      <div v-if="_error" class="mt-2 flex items-center gap-2 px-3.5 py-2.5 text-[13px] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
+      <div v-if="_error" class="mt-2 flex items-center gap-2 px-3.5 py-2.5 text-[0.8125rem] text-red-600 bg-red-500/[0.08] border border-red-500/20 rounded-md max-w-[720px]">
         <AlertCircle :size="16" />
         <span>{{ _error }}</span>
       </div>
@@ -367,22 +367,22 @@ function fmtRelativeTime(d) {
            short viewports squeezed the icon up while wide
            viewports left it slumped at the top — neither read
            as "centred". -->
-      <div v-else-if="_loading && !_results" class="flex-1 flex items-center justify-center text-t3 text-[13px]">
+      <div v-else-if="_loading && !_results" class="flex-1 flex items-center justify-center text-t3 text-[0.8125rem]">
         {{ t('search.empty.searching') }}
       </div>
 
-      <div v-else-if="!_results" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
+      <div v-else-if="!_results" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[0.8125rem]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.idle') }}</p>
-        <p class="text-[12px] mt-1.5 opacity-70">{{ t('search.empty.hint') }}</p>
+        <p class="text-xs mt-1.5 opacity-70">{{ t('search.empty.hint') }}</p>
       </div>
 
-      <div v-else-if="!hasResults" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
+      <div v-else-if="!hasResults" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[0.8125rem]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.none', { query: _query }) }}</p>
       </div>
 
-      <div v-else-if="!hasFiltered" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[13px]">
+      <div v-else-if="!hasFiltered" class="flex-1 flex flex-col items-center justify-center text-t3 text-center text-[0.8125rem]">
         <Search :size="32" :stroke-width="1.5" class="text-t3 opacity-40 mb-3" />
         <p>{{ t('search.empty.filtered') }}</p>
       </div>
@@ -436,7 +436,7 @@ function fmtRelativeTime(d) {
           </li>
         </ul>
 
-        <div v-if="stats" class="mt-4 pt-3 text-[12px] text-t3">
+        <div v-if="stats" class="mt-4 pt-3 text-xs text-t3">
           {{ t('search.footer_v3', {
             files: filtersActive ? files.length : (stats.file_hits ?? files.length),
             chunks: stats.chunk_hits ?? 0,
@@ -487,7 +487,7 @@ function fmtRelativeTime(d) {
   background: transparent;
   border: none;
   outline: none;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
   line-height: 1.5;
 }
@@ -505,7 +505,7 @@ function fmtRelativeTime(d) {
   border: none;
   border-radius: var(--r-sm);
   color: var(--color-t3);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1;
   cursor: pointer;
   transition: color 0.12s, background-color 0.12s;
@@ -524,7 +524,7 @@ function fmtRelativeTime(d) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   border: none;
   border-radius: var(--r-md);
@@ -566,7 +566,7 @@ function fmtRelativeTime(d) {
   min-width: 0;
 }
 .filename {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--color-t1);
   flex: 1;
@@ -580,7 +580,7 @@ function fmtRelativeTime(d) {
   align-items: center;
   gap: 6px;
   margin-left: 22px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   min-width: 0;
 }
@@ -600,7 +600,7 @@ function fmtRelativeTime(d) {
   padding: 0 5px;
   background: var(--color-bg3);
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 0.04em;
 }
 .row-meta .path {
@@ -613,7 +613,7 @@ function fmtRelativeTime(d) {
 
 .row-snippet {
   margin-left: 22px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t2);
   line-height: 1.55;
   display: -webkit-box;
@@ -624,7 +624,7 @@ function fmtRelativeTime(d) {
 
 /* ── Match badge ────────────────────────────────────────────── */
 .badge {
-  font-size: 10px;
+  font-size: 0.625rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
@@ -651,7 +651,7 @@ function fmtRelativeTime(d) {
   gap: 6px;
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -690,7 +690,7 @@ function fmtRelativeTime(d) {
   gap: 8px;
   width: 100%;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;

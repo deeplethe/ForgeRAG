@@ -173,7 +173,7 @@ const dl = computed(() => props.downloadUrl || props.url)
 }
 
 .iv-zoom {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   font-family: var(--font-mono, ui-monospace, monospace);
   padding: 0 6px;

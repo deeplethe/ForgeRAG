@@ -86,7 +86,7 @@ defineEmits(['action', 'dismiss'])
   min-width: 260px;
   max-width: 380px;
   padding: 8px 8px 8px 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--color-t1);
   background: var(--color-bg);
@@ -131,7 +131,7 @@ defineEmits(['action', 'dismiss'])
 .toast__action {
   flex-shrink: 0;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--color-t1);
   background: transparent;

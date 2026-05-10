@@ -99,7 +99,7 @@ function fmtMs(ms) {
 <style scoped>
 .tool-chip {
   margin: 8px 0;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .chip-head {
   display: inline-flex;
@@ -151,7 +151,7 @@ function fmtMs(ms) {
 .detail-text {
   color: var(--color-t3);
   font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
-  font-size: 11px;
+  font-size: 0.6875rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -161,7 +161,7 @@ function fmtMs(ms) {
 .detail-meta {
   color: var(--color-t3);
   font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-feature-settings: "tnum";
   margin-left: auto;
   white-space: nowrap;

@@ -53,13 +53,13 @@ const error = ref(false)
 }
 .audio-preview__icon { color: var(--color-t3); }
 .audio-preview__name {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   word-break: break-all;
   text-align: center;
 }
 .audio-preview__el { width: 100%; outline: none; }
-.audio-preview__error { font-size: 11px; color: var(--color-t3); }
+.audio-preview__error { font-size: 0.6875rem; color: var(--color-t3); }
 .audio-preview__error a {
   color: var(--color-accent, #3b82f6);
   text-decoration: underline;

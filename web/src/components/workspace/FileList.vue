@@ -193,9 +193,9 @@ function isDocInFlight(d) {
   align-items: center;
   padding: 0 6px;
   margin-left: 6px;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 500;
-  line-height: 14px;
+  line-height: 0.875rem;
   border-radius: 3px;
   cursor: help;
 }

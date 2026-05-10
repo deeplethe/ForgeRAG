@@ -3,8 +3,8 @@
     <!-- Header: range toggle + refresh -->
     <header class="m-header">
       <div>
-        <h1 class="text-[13px] text-t1 font-medium">Metrics</h1>
-        <p class="text-[10px] text-t3 mt-0.5">Query &amp; ingestion health. Derived from <code>query_traces</code> + <code>documents</code>.</p>
+        <h1 class="text-[0.8125rem] text-t1 font-medium">Metrics</h1>
+        <p class="text-3xs text-t3 mt-0.5">Query &amp; ingestion health. Derived from <code>query_traces</code> + <code>documents</code>.</p>
       </div>
       <div class="flex items-center gap-3">
         <div class="range-toggle">
@@ -21,7 +21,7 @@
              → "1m ago") doesn't keep changing the controls-block width;
              space-between would otherwise propagate that into a sideways
              jitter on the range-toggle every second. -->
-        <span class="text-[10px] text-t3 tabular updated-label">
+        <span class="text-3xs text-t3 tabular updated-label">
           <span v-if="lastRefreshedLabel">updated {{ lastRefreshedLabel }}</span>
         </span>
       </div>
@@ -353,7 +353,7 @@ function fmtAgo(iso) {
 }
 .range-btn {
   padding: 4px 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   background: var(--color-bg);
   border: none;
@@ -375,7 +375,7 @@ function fmtAgo(iso) {
 
 .btn-ghost {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   background: transparent;
   border: 1px solid var(--color-line);
@@ -401,7 +401,7 @@ function fmtAgo(iso) {
   flex-wrap: wrap;
   gap: 20px;
   padding: 16px 20px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -411,9 +411,9 @@ function fmtAgo(iso) {
 }
 .kpi b { font-variant-numeric: tabular-nums; }   /* fixed-width digits → no width jitter when numbers change */
 .kpi { font-variant-numeric: tabular-nums; }
-.kpi b { font-size: 14px; color: var(--color-t1); font-weight: 600; margin-right: 3px; }
+.kpi b { font-size: 0.875rem; color: var(--color-t1); font-weight: 600; margin-right: 3px; }
 .kpi.sep { color: var(--color-line); margin: 0 -10px; }
-.err { color: var(--color-err-fg); font-size: 11px; }
+.err { color: var(--color-err-fg); font-size: 0.6875rem; }
 
 .chart-grid {
   display: grid;
@@ -428,7 +428,7 @@ function fmtAgo(iso) {
    states so range-toggle clicks don't make the page jolt. */
 .panel { padding: 18px 20px; min-width: 0; min-height: 220px; }
 .panel-head {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   font-weight: 500;
   margin-bottom: 12px;
@@ -436,12 +436,12 @@ function fmtAgo(iso) {
 .panel-table { margin: 0 24px 14px; padding: 16px 0 0; }
 .panel-table .panel-head { padding: 0 20px; }
 
-.t { width: 100%; border-collapse: collapse; font-size: 11px; }
+.t { width: 100%; border-collapse: collapse; font-size: 0.6875rem; }
 .t thead tr { background: var(--color-bg2); }
 .t th {
   padding: 9px 16px;
   font-weight: 500;
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -466,5 +466,5 @@ function fmtAgo(iso) {
 .row-link { cursor: pointer; }
 .row-link:hover td { background: var(--color-bg2); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty { padding: 24px 16px; text-align: center; color: var(--color-t3); font-size: 11px; }
+.empty { padding: 24px 16px; text-align: center; color: var(--color-t3); font-size: 0.6875rem; }
 </style>

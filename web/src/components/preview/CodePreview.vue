@@ -182,18 +182,18 @@ watch(() => props.url, () => { load() })
   border-bottom: 1px solid var(--color-line);
   background: var(--color-bg2);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 .code-preview__lang {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-t2);
 }
 .code-preview__truncated {
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   color: var(--color-warn-fg, #b45309);
 }
 
@@ -203,7 +203,7 @@ watch(() => props.url, () => { load() })
   overflow: auto;
 }
 .code-preview__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
   padding: 32px 16px;
@@ -217,7 +217,7 @@ watch(() => props.url, () => { load() })
   margin: 0;
   padding: 16px 20px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   white-space: pre;
   overflow: visible;       /* parent scrolls — no double scrollbars */

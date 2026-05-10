@@ -180,20 +180,20 @@ async function onSubmit() {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
 }
 .modal-title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--color-t1);
   margin-bottom: 4px;
 }
 .modal-subtitle {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   line-height: 1.5;
   margin-bottom: 16px;
 }
 .modal-label {
   display: block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   margin-bottom: 4px;
 }
@@ -212,7 +212,7 @@ async function onSubmit() {
 .modal-btn {
   padding: 7px 14px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   border: 1px solid transparent;
@@ -240,7 +240,7 @@ async function onSubmit() {
   margin-top: 12px;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   color: var(--color-err-fg, #d23);
   background: var(--color-err-bg, rgba(214, 60, 50, 0.08));

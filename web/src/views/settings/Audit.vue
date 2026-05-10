@@ -304,14 +304,14 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   margin-bottom: 20px;
 }
 .page-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-t1);
   margin: 0 0 4px;
 }
 .page-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   margin: 0;
   max-width: 540px;
@@ -345,7 +345,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
 .chip {
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -367,7 +367,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   gap: 6px;
   height: 28px;
   padding: 0 8px 0 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: var(--color-bg2);
   border: 1px solid var(--color-line);
@@ -377,7 +377,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   background: transparent;
   border: none;
   color: var(--color-t3);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
@@ -403,7 +403,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   width: 100%;
   height: 28px;
   padding: 0 8px 0 28px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);
@@ -432,7 +432,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   height: 36px;
   background: var(--color-bg2);
   border-bottom: 1px solid var(--color-line);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-t3);
@@ -442,7 +442,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   padding-top: 10px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--color-line);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .row:last-child { border-bottom: none; }
 .row:hover { background: var(--color-bg2); }
@@ -471,7 +471,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .actor-email {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -482,7 +482,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
 .action-pill {
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 8px;
   border-radius: 3px;
   background: var(--color-bg3);
@@ -500,7 +500,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
 
 .target {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 0.6875rem;
   background: var(--color-bg2);
   padding: 1px 6px;
   border-radius: 3px;
@@ -512,7 +512,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
 .dim { color: var(--color-t3); }
 .col-detail {
   color: var(--color-t3);
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -520,7 +520,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   padding: 32px;
   text-align: center;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 /* ── Pager ──────────────────────────────────────────────────── */
@@ -530,7 +530,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   align-items: center;
   gap: 12px;
   margin-top: 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
 }
 .pager-info { margin-right: auto; }
@@ -541,7 +541,7 @@ function setActorFilter(actorId) { filterActor.value = actorId }
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   color: var(--color-t1);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 .pager-btn:hover:not(:disabled) { background: var(--color-bg2); }

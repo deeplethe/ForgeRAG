@@ -247,14 +247,14 @@ onBeforeUnmount(() => {
 }
 
 .picker-title {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--text, #111827);
 }
 
 .picker-subtitle {
   margin-top: 2px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--text-muted, #6b7280);
 }
 
@@ -292,7 +292,7 @@ onBeforeUnmount(() => {
   padding: 0 10px 0 32px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   background: var(--surface, #fff);
 }
 
@@ -310,7 +310,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   background: rgba(220, 38, 38, 0.08);
   color: var(--danger, #b91c1c);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .picker-results {
@@ -332,7 +332,7 @@ onBeforeUnmount(() => {
 }
 
 .picker-state--empty p {
-  font-size: 13px;
+  font-size: 0.8125rem;
   margin: 0;
 }
 
@@ -381,7 +381,7 @@ onBeforeUnmount(() => {
 }
 
 .picker-row__name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
 }
 
 .picker-row__path {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--text-muted, #6b7280);
   font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
   overflow: hidden;
@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
 
 .picker-footnote {
   margin: 0;
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--text-muted, #6b7280);
   line-height: 1.4;
 }

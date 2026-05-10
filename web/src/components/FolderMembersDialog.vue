@@ -427,13 +427,13 @@ function friendlyError(e, fallback) {
   border-bottom: 1px solid var(--color-line);
 }
 .title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-t1);
 }
 .subtitle {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 .folder-label {
@@ -484,7 +484,7 @@ function friendlyError(e, fallback) {
   width: 100%;
   height: 30px;
   padding: 0 24px 0 28px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: 6px;
   background: var(--color-bg);
@@ -496,7 +496,7 @@ function friendlyError(e, fallback) {
 .role-select {
   height: 30px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: 6px;
   background: var(--color-bg);
@@ -505,7 +505,7 @@ function friendlyError(e, fallback) {
 }
 .role-select--row {
   height: 26px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .btn-primary {
@@ -515,7 +515,7 @@ function friendlyError(e, fallback) {
   border: 1px solid transparent;
   background: var(--color-t1);
   color: var(--color-bg);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.12s ease;
@@ -530,7 +530,7 @@ function friendlyError(e, fallback) {
   border: 1px solid var(--color-line);
   background: var(--color-bg);
   color: var(--color-t1);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 .btn-secondary:hover { background: var(--color-bg2); }
@@ -568,17 +568,17 @@ function friendlyError(e, fallback) {
 .suggestion.is-disabled { opacity: 0.5; cursor: not-allowed; }
 .suggestion-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .suggestion-name {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .suggestion-email {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .badge-already {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   background: var(--color-bg3);
   padding: 1px 5px;
@@ -593,7 +593,7 @@ function friendlyError(e, fallback) {
   padding: 8px 16px;
   background: var(--color-bg2);
   border-bottom: 1px solid var(--color-line);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .picked-name { color: var(--color-t1); font-weight: 500; }
 .picked-email { color: var(--color-t3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -616,7 +616,7 @@ function friendlyError(e, fallback) {
 }
 .empty {
   padding: 20px 16px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
 }
@@ -631,18 +631,18 @@ function friendlyError(e, fallback) {
 .member-meta { flex: 1; min-width: 0; }
 .member-name-row { display: flex; align-items: center; gap: 6px; }
 .member-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t1);
   font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .member-email {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .badge-you, .badge-owner, .badge-inherited {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   padding: 1px 5px;
   border-radius: 3px;
@@ -657,7 +657,7 @@ function friendlyError(e, fallback) {
   color: var(--color-t3);
 }
 .role-static {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   padding: 0 6px;
 }
@@ -681,7 +681,7 @@ function friendlyError(e, fallback) {
   margin: 0 16px 12px;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   color: var(--color-err-fg, #d23);
   background: var(--color-err-bg, rgba(214, 60, 50, 0.08));

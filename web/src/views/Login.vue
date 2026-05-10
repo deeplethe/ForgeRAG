@@ -6,7 +6,7 @@
     <form v-if="!probing" @submit.prevent="onSubmit" class="auth-card" novalidate>
       <div class="auth-brand">
         <img src="/craig.png" alt="" class="auth-logo" />
-        <span class="wordmark text-[20px]">OpenCraig</span>
+        <span class="wordmark text-xl">OpenCraig</span>
         <span class="auth-subtitle">Sign in to continue</span>
       </div>
 
@@ -186,14 +186,14 @@ async function onSubmit() {
 }
 .auth-subtitle {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 
 /* ── Inputs ────────────────────────────────────────────────────── */
 .auth-label {
   display: block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   margin-bottom: 4px;
 }
@@ -210,7 +210,7 @@ async function onSubmit() {
   border: 1px solid transparent;
   background: var(--color-t1);
   color: var(--color-bg);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.12s ease, transform 0.06s ease;
@@ -224,7 +224,7 @@ async function onSubmit() {
   margin-top: 12px;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   color: var(--color-err-fg, #d23);
   background: var(--color-err-bg, rgba(214, 60, 50, 0.08));
@@ -233,7 +233,7 @@ async function onSubmit() {
 .auth-foot {
   margin-top: 18px;
   text-align: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 .auth-link {

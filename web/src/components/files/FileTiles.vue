@@ -9,7 +9,7 @@
          ``rename`` controls inline-rename; the create flow uses its
          own ``creating`` toggle since there's no "old name" yet. -->
     <div v-if="creating" class="file-card file-card--creating">
-      <div class="file-card__icon"><FileIcon kind="folder" variant="jumbo" :size="36" /></div>
+      <div class="file-card__icon"><FileIcon kind="folder" variant="jumbo" :size="48" /></div>
       <input
         ref="newNameInput"
         type="text"
@@ -19,7 +19,10 @@
         @keydown.esc.prevent="$emit('cancel-create')"
         @blur="confirmCreate"
       />
-      <div class="file-card__meta">&nbsp;</div>
+      <!-- Match the regular cards' meta-row policy: only reserve
+           the line when the consumer actually passes ``row-meta``,
+           so the creating tile stays the same height as siblings. -->
+      <div v-if="$slots['row-meta']" class="file-card__meta">&nbsp;</div>
     </div>
 
     <div
@@ -47,7 +50,7 @@
           :kind="row.kind"
           :name="row.kind === 'file' ? row.name : null"
           variant="jumbo"
-          :size="36"
+          :size="48"
         />
         <slot name="row-status" :row="row" />
       </div>
@@ -64,14 +67,14 @@
         @blur="confirmRename(row)"
       />
       <div v-else class="file-card__title" :title="row.name">{{ row.name }}</div>
-      <div class="file-card__meta">
-        <slot name="row-meta" :row="row">
-          <!-- Default meta: file size for files, blank for folders.
-               Domain-specific captions (e.g. "N docs · M subfolders"
-               in the Library) come in via the ``row-meta`` slot. -->
-          <template v-if="row.kind === 'file' && row.size">{{ fmtSize(row.size) }}</template>
-          <template v-else>&nbsp;</template>
-        </slot>
+      <!-- Meta row only renders when the consumer actually passes
+           something. Tile view default is the Finder-/Explorer-style
+           "icon + name" pair; surfaces that want metadata (Library:
+           "N docs · M subfolders") opt in via the ``row-meta`` slot
+           and the slot's content drives the line height. Surfaces
+           that don't (Workspace) get a tighter card. -->
+      <div v-if="$slots['row-meta']" class="file-card__meta">
+        <slot name="row-meta" :row="row" />
       </div>
     </div>
 
@@ -258,7 +261,7 @@ function fmtSize(n) {
 .file-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fill, 112px);
+  grid-template-columns: repeat(auto-fill, 128px);
   justify-content: start;
   gap: 8px;
   padding: 16px;
@@ -271,7 +274,7 @@ function fmtSize(n) {
   left: 50%;
   transform: translate(-50%, -50%);
   grid-column: 1 / -1;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   letter-spacing: 0.02em;
   animation: fg-loading-pulse 1.4s ease-in-out infinite;
@@ -304,7 +307,7 @@ function fmtSize(n) {
   outline-offset: -1px;
 }
 .file-card__icon {
-  font-size: 32px;
+  font-size: 2rem;
   line-height: 1;
   position: relative;
 }
@@ -312,7 +315,7 @@ function fmtSize(n) {
 .file-card__name-input {
   width: 100%;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-align: center;
   color: var(--color-t1);
   background: var(--color-bg);
@@ -322,7 +325,7 @@ function fmtSize(n) {
   box-shadow: var(--ring-focus);
 }
 .file-card__title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   text-align: center;
   width: 100%;
@@ -334,7 +337,7 @@ function fmtSize(n) {
   word-break: break-word;
 }
 .file-card__meta {
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   text-align: center;
 }
@@ -342,7 +345,7 @@ function fmtSize(n) {
   grid-column: 1 / -1;
   text-align: center;
   padding: 48px 16px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
 }
 </style>

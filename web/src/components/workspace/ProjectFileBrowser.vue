@@ -717,7 +717,7 @@ function fmtDate(iso) {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text, #111827);
   pointer-events: none;
   z-index: 5;
@@ -731,7 +731,7 @@ function fmtDate(iso) {
   background: var(--surface-muted, #fafafa);
   border-bottom: 1px solid var(--border, #e5e7eb);
   color: var(--text-muted, #6b7280);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .pfb__inline-input {
@@ -740,7 +740,7 @@ function fmtDate(iso) {
   padding: 0 8px;
   border: 1px solid var(--accent, #111827);
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   background: white;
 }
@@ -766,7 +766,7 @@ function fmtDate(iso) {
 }
 
 .pfb__state-hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   opacity: 0.75;
   max-width: 360px;
 }
@@ -792,7 +792,7 @@ function fmtDate(iso) {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border-soft, #f3f4f6);
   cursor: default;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .pfb__row--dir {
@@ -828,7 +828,7 @@ function fmtDate(iso) {
 .pfb__size,
 .pfb__date {
   color: var(--text-muted, #6b7280);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -875,7 +875,7 @@ function fmtDate(iso) {
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
   background: var(--surface, #fff);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 500;
   cursor: pointer;
   color: var(--text, #111827);

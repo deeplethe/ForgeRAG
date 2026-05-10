@@ -221,14 +221,14 @@ onMounted(load)
 }
 
 .title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text, #111827);
 }
 
 .subtitle {
   margin-top: 2px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--text-muted, #6b7280);
 }
 
@@ -258,7 +258,7 @@ onMounted(load)
   padding: 0 10px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .role-select {
@@ -266,13 +266,13 @@ onMounted(load)
   padding: 0 10px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   background: var(--surface, #fff);
 }
 
 .role-select--inline {
   height: 28px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .btn {
@@ -280,7 +280,7 @@ onMounted(load)
   padding: 0 14px;
   border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
 }
@@ -307,7 +307,7 @@ onMounted(load)
   border-radius: 6px;
   background: rgba(220, 38, 38, 0.08);
   color: var(--danger, #b91c1c);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .members {
@@ -322,7 +322,7 @@ onMounted(load)
   padding: 16px;
   text-align: center;
   color: var(--text-muted, #6b7280);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .member-row {
@@ -345,7 +345,7 @@ onMounted(load)
 }
 
 .member-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -353,7 +353,7 @@ onMounted(load)
 }
 
 .member-email {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--text-muted, #6b7280);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -362,7 +362,7 @@ onMounted(load)
 
 .role-tag {
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;

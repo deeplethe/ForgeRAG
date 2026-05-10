@@ -79,10 +79,11 @@
             </button>
           </div>
 
+          <!-- Footer: just buttons. The "current location" used to live
+               here too ("Selected: /…") but it duplicated the breadcrumb
+               above; the breadcrumb already shows where you are AND lets
+               you click back, so the footer line was pure repetition. -->
           <div class="picker__footer">
-            <span class="picker__current">
-              {{ t('chat.workdir_picker.selected') }} <b>{{ currentPath }}</b>
-            </span>
             <div class="picker__actions">
               <button class="btn-secondary" @click="onCancel">{{ t('common.cancel') }}</button>
               <button
@@ -302,7 +303,7 @@ function onCancel() {
 }
 .picker__header { padding: 16px 18px 8px; }
 .picker__title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-t1);
   margin: 0;
@@ -310,7 +311,7 @@ function onCancel() {
 }
 .picker__desc {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   line-height: 1.55;
 }
@@ -327,7 +328,7 @@ function onCancel() {
 }
 .picker__crumb-btn {
   padding: 3px 7px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -354,7 +355,7 @@ function onCancel() {
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -376,7 +377,7 @@ function onCancel() {
   flex: 1;
   min-width: 0;
   padding: 2px 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line2);
@@ -392,7 +393,7 @@ function onCancel() {
 }
 .picker__hint {
   padding: 18px 18px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
 }
@@ -403,7 +404,7 @@ function onCancel() {
   gap: 8px;
   width: 100%;
   padding: 6px 16px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;
@@ -423,22 +424,9 @@ function onCancel() {
   border-top: 1px solid var(--color-line);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   background: var(--color-bg2);
-}
-.picker__current {
-  font-size: 11px;
-  color: var(--color-t2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.picker__current b {
-  color: var(--color-t1);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-weight: 500;
 }
 .picker__actions {
   display: inline-flex;
@@ -448,7 +436,7 @@ function onCancel() {
 }
 .btn-primary, .btn-secondary {
   padding: 5px 11px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   border-radius: 5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;

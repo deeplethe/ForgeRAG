@@ -151,14 +151,14 @@ function shortUA(ua) {
   margin-bottom: 18px;
 }
 .page-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-t1);
   margin: 0 0 4px;
 }
 .page-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   margin: 0;
 }
@@ -173,12 +173,12 @@ function shortUA(ua) {
 .t {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .t thead th {
   text-align: left;
   font-weight: 500;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-t3);
@@ -196,7 +196,7 @@ function shortUA(ua) {
 
 .chip {
   display: inline-block;
-  font-size: 10px;
+  font-size: 0.625rem;
   padding: 1px 6px;
   border-radius: 3px;
   letter-spacing: 0.02em;
@@ -207,7 +207,7 @@ function shortUA(ua) {
 }
 
 .row-action {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-err-fg, #b91c1c);
   background: transparent;
   border: none;
@@ -220,13 +220,13 @@ function shortUA(ua) {
   padding: 24px;
   text-align: center;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .btn-secondary {
   height: 28px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);

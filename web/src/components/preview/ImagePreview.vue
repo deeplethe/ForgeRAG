@@ -80,7 +80,7 @@ function toggleZoom() {
 }
 .image-preview__img.is-zoomed { cursor: zoom-out; }
 .image-preview__error {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   padding: 24px;
 }

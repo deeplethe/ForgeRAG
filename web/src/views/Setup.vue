@@ -20,7 +20,7 @@
     <div v-else-if="step === 'pick'" class="setup-card setup-card--wide">
       <div class="setup-brand">
         <img src="/craig.png" alt="" class="setup-logo" />
-        <span class="wordmark text-[20px]">OpenCraig</span>
+        <span class="wordmark text-xl">OpenCraig</span>
       </div>
       <h2 class="setup-title">Configure your model platform</h2>
       <p class="setup-subtitle">
@@ -336,21 +336,21 @@ function friendlyError(e) {
 }
 
 .setup-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--color-t1);
   margin: 0 0 6px;
   text-align: center;
 }
 .setup-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--color-t3);
   margin: 0 0 20px;
   text-align: center;
 }
 
-.big-emoji { font-size: 36px; }
+.big-emoji { font-size: 2.25rem; }
 
 /* ── Preset grid ───────────────────────────────────────────── */
 .preset-grid {
@@ -381,26 +381,26 @@ function friendlyError(e) {
   background: var(--color-bg2);
 }
 .preset-emoji {
-  font-size: 22px;
+  font-size: 1.375rem;
   line-height: 1;
   flex-shrink: 0;
 }
 .preset-meta { flex: 1; min-width: 0; }
 .preset-name {
   display: block;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-t1);
 }
 .preset-tag {
   display: block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   line-height: 1.4;
   margin-top: 2px;
 }
 .preset-badge {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   padding: 2px 6px;
   border-radius: 3px;
@@ -422,7 +422,7 @@ function friendlyError(e) {
   border: none;
   border-radius: 6px;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 .back-btn:hover { color: var(--color-t1); background: var(--color-bg2); }
@@ -443,14 +443,14 @@ function friendlyError(e) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   margin-bottom: 4px;
 }
 .help-link {
   color: var(--color-t1);
   text-decoration: none;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .help-link:hover { text-decoration: underline; }
 .help-line {
@@ -463,7 +463,7 @@ function friendlyError(e) {
   background: var(--color-bg2);
   border: 1px solid var(--color-line);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--color-t2);
   margin-bottom: 14px;
@@ -473,7 +473,7 @@ function friendlyError(e) {
   margin: 12px 0;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   border: 1px solid var(--color-line);
 }
@@ -484,7 +484,7 @@ function friendlyError(e) {
 }
 .test-result.is-ok code {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 1px 5px;
   background: var(--color-bg);
   border-radius: 3px;
@@ -499,7 +499,7 @@ function friendlyError(e) {
   margin: 12px 0 0;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-err-fg, #b91c1c);
   background: var(--color-err-bg, rgba(214, 60, 50, 0.08));
   border: 1px solid var(--color-err-line, rgba(214, 60, 50, 0.25));
@@ -518,7 +518,7 @@ function friendlyError(e) {
   padding: 0 14px;
   border-radius: 8px;
   border: 1px solid transparent;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.12s ease, background 0.12s ease;
@@ -540,7 +540,7 @@ function friendlyError(e) {
 .setup-foot {
   margin-top: 18px;
   text-align: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 .setup-link {
@@ -552,7 +552,7 @@ function friendlyError(e) {
 .setup-link:hover { border-bottom-color: var(--color-t1); }
 
 .loading-label {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   margin-top: 6px;
 }

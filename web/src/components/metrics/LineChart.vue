@@ -150,10 +150,10 @@ const xTicks = computed(() => {
 .lc-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; color: var(--color-t3);
+  font-size: 0.6875rem; color: var(--color-t3);
 }
 .grid { stroke: var(--color-line); stroke-width: 0.5; }
-.axis-label { font-size: 9px; fill: var(--color-t3); }
-.legend-label { font-size: 9px; fill: var(--color-t2); dominant-baseline: middle; }
+.axis-label { font-size: 0.5625rem; fill: var(--color-t3); }
+.legend-label { font-size: 0.5625rem; fill: var(--color-t2); dominant-baseline: middle; }
 .dot { opacity: 0.9; }
 </style>

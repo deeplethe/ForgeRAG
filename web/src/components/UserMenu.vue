@@ -25,8 +25,8 @@
     >
       <UserAvatar :name="identityKey" :img-url="avatarUrl" :size="28" />
       <span class="flex-1 min-w-0 text-left">
-        <span class="block text-[12px] text-t1 truncate">{{ nicknameLabel }}</span>
-        <span v-if="subLabel" class="block text-[10px] text-t3 truncate">{{ subLabel }}</span>
+        <span class="block text-xs text-t1 truncate">{{ nicknameLabel }}</span>
+        <span v-if="subLabel" class="block text-3xs text-t3 truncate">{{ subLabel }}</span>
       </span>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
         class="text-t3 shrink-0 transition-transform"
@@ -233,7 +233,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   justify-content: space-between;
   gap: 10px;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;
@@ -268,7 +268,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .seg-btn {
   height: 20px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   background: transparent;
   border: none;

@@ -141,14 +141,14 @@ window.addEventListener('keydown', onKey)
   padding: 20px 22px 16px;
 }
 .dialog-title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-t1);
   letter-spacing: -0.01em;
 }
 .dialog-desc {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--color-t2);
 }
@@ -163,7 +163,7 @@ window.addEventListener('keydown', onKey)
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);

@@ -1185,7 +1185,7 @@ onActivated(() => {
   align-items: center;
   gap: 10px;
   padding: 12px 18px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -1193,7 +1193,7 @@ onActivated(() => {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
 }
 .drop-pill code {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   padding: 1px 5px;
   background: var(--color-bg2);

@@ -88,7 +88,7 @@ watch(() => props.url, () => { load() })
   padding: 32px 16px;
 }
 .docx-preview__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
   padding: 32px 16px;
@@ -109,21 +109,21 @@ watch(() => props.url, () => { load() })
   border-radius: 4px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.65;
 }
 .docx-preview__page :deep(h1) {
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 600;
   margin: 0 0 12px;
 }
 .docx-preview__page :deep(h2) {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
   margin: 18px 0 10px;
 }
 .docx-preview__page :deep(h3) {
-  font-size: 14.5px;
+  font-size: 0.90625rem;
   font-weight: 600;
   margin: 14px 0 8px;
 }
@@ -134,7 +134,7 @@ watch(() => props.url, () => { load() })
 .docx-preview__page :deep(table) {
   border-collapse: collapse;
   margin: 12px 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 .docx-preview__page :deep(th),
 .docx-preview__page :deep(td) {
@@ -159,8 +159,8 @@ watch(() => props.url, () => { load() })
   border-top: 1px solid var(--color-line);
   background: var(--color-bg2);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-warn-fg, #b45309);
 }
-.docx-preview__msgs-icon { font-size: 12px; }
+.docx-preview__msgs-icon { font-size: 0.75rem; }
 </style>

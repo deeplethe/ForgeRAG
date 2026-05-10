@@ -210,7 +210,7 @@ function onCancel() {
   padding: 16px 18px 8px;
 }
 .picker__title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-t1);
   margin: 0;
@@ -218,7 +218,7 @@ function onCancel() {
 }
 .picker__desc {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   line-height: 1.55;
 }
@@ -236,7 +236,7 @@ function onCancel() {
 }
 .picker__crumb-btn {
   padding: 3px 7px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -266,7 +266,7 @@ function onCancel() {
 }
 .picker__hint {
   padding: 18px 18px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
 }
@@ -277,7 +277,7 @@ function onCancel() {
   gap: 8px;
   width: 100%;
   padding: 7px 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;
@@ -314,7 +314,7 @@ function onCancel() {
   border-top: 1px solid var(--color-line);
 }
 .picker__current {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   overflow: hidden;
   text-overflow: ellipsis;

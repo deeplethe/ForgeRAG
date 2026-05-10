@@ -103,7 +103,7 @@ watch(() => [props.open, props.x, props.y], async () => {
   border: 1px solid var(--color-line);
   border-radius: 6px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .ctx-divider {
   height: 1px;
@@ -150,5 +150,5 @@ watch(() => [props.open, props.x, props.y], async () => {
 .ctx-item--danger .ctx-icon { color: inherit; }
 .ctx-item--disabled .ctx-icon { color: var(--color-t3); }
 .ctx-label { flex: 1; }
-.ctx-shortcut { font-size: 9px; color: var(--color-t3); }
+.ctx-shortcut { font-size: 0.5625rem; color: var(--color-t3); }
 </style>

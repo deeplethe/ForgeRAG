@@ -65,11 +65,11 @@ function fmt(ms) {
 </script>
 
 <style scoped>
-.hb { font-size: 11px; position: relative; }
+.hb { font-size: 0.6875rem; position: relative; }
 .hb-empty {
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 
@@ -81,7 +81,7 @@ function fmt(ms) {
   padding: 3px 0;
 }
 .row-label {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t2);
   text-align: right;
 }
@@ -101,7 +101,7 @@ function fmt(ms) {
 .row-bar-avg { left: 0; }
 .row-bar-p95 { opacity: 0.4; }
 .row-val {
-  font-size: 10px;
+  font-size: 0.625rem;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -110,7 +110,7 @@ function fmt(ms) {
   margin-top: 6px;
   padding-top: 4px;
   border-top: 1px solid var(--color-line);
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   display: flex;
   gap: 6px;

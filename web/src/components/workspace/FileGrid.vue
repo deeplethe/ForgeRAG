@@ -194,7 +194,7 @@ function fmtSize(n) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 600;
   color: white;
   border-radius: 50%;

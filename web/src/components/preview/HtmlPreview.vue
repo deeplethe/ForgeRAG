@@ -140,7 +140,7 @@ watch(() => props.url, () => { load() })
 }
 .html-preview__tab {
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: none;
@@ -154,7 +154,7 @@ watch(() => props.url, () => { load() })
   color: var(--color-t1);
 }
 .html-preview__sandbox-note {
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   color: var(--color-t3);
 }
 
@@ -165,7 +165,7 @@ watch(() => props.url, () => { load() })
   display: flex;
 }
 .html-preview__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   text-align: center;
   padding: 32px 16px;
@@ -185,7 +185,7 @@ watch(() => props.url, () => { load() })
   margin: 0;
   padding: 16px 20px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--color-t1);
   white-space: pre-wrap;

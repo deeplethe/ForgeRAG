@@ -244,9 +244,9 @@ onBeforeUnmount(() => {
         class="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer"
       >
         <img src="/craig.png" alt="" class="w-6 h-6 rounded-full shrink-0" />
-        <span class="wordmark text-[15px]">OpenCraig</span>
+        <span class="wordmark text-[0.9375rem]">OpenCraig</span>
       </button>
-      <span class="text-[10px] text-t3 select-none">v{{ version }}</span>
+      <span class="text-3xs text-t3 select-none">v{{ version }}</span>
       <a
         href="https://github.com/opencraig/opencraig"
         target="_blank"
@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
         v-for="tab in tabs" :key="tab.path"
         @click="onTabClick(tab)"
         :disabled="isTabDisabled(tab)"
-        class="px-3 py-2 rounded-md text-[13px] text-left transition-colors flex items-center gap-2.5"
+        class="px-3 py-2 rounded-md text-[0.8125rem] text-left transition-colors flex items-center gap-2.5"
         :class="isTabDisabled(tab)
           ? 'text-t3/80 cursor-not-allowed'
           : isTabActive(tab)
@@ -275,7 +275,7 @@ onBeforeUnmount(() => {
       >
         <component :is="tab.icon" :size="14" :stroke-width="1.75" class="shrink-0" />
         <span class="flex-1">{{ t(tab.label_key) }}</span>
-        <span v-if="tab.dev" class="text-[10px] text-t3/80">{{ t('sidebar.in_dev') }}</span>
+        <span v-if="tab.dev" class="text-3xs text-t3/80">{{ t('sidebar.in_dev') }}</span>
       </button>
     </div>
 
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
         <div class="conv-section-header">{{ section.label }}</div>
         <div
           v-for="c in section.items" :key="c.conversation_id"
-          class="group conv-row relative flex items-stretch text-[12px]"
+          class="group conv-row relative flex items-stretch text-xs"
           :class="{
             'is-active': currentConvId === c.conversation_id && route.path.startsWith('/chat'),
             'has-open-menu': openMenuId === c.conversation_id,
@@ -444,7 +444,7 @@ onBeforeUnmount(() => {
   margin-top: 18px;
 }
 .conv-section-header {
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.04em;
   color: var(--color-t3);
   margin: 0 0 6px;
@@ -616,7 +616,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   width: 100%;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;

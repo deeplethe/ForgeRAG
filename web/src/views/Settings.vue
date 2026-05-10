@@ -113,13 +113,13 @@ function goBack() {
   border: none;
   border-radius: 6px;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: color .15s, background-color .15s;
 }
 .back-btn:hover { color: var(--color-t2); background: var(--color-bg3); }
 .sub-nav-title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-t1);
   margin: 0 6px 16px;
@@ -130,7 +130,7 @@ function goBack() {
   display: block;
   padding: 6px 10px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-t2);
   text-decoration: none;
   transition: background-color .12s, color .12s;

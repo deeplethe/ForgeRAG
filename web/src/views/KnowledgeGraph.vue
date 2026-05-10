@@ -1155,17 +1155,17 @@ watch(isDark, () => {
           >✕</button>
           <Transition name="fade">
             <div v-if="searchQuery.length >= 2" class="search-results">
-              <div v-if="searching" class="p-3 text-center text-[10px] text-t3">Searching...</div>
+              <div v-if="searching" class="p-3 text-center text-3xs text-t3">Searching...</div>
               <div v-else-if="!searchResults.length"
-                class="p-3 text-center text-[10px] text-t3">No entities found</div>
+                class="p-3 text-center text-3xs text-t3">No entities found</div>
               <button v-for="r in searchResults" :key="r.entity_id"
                 @click="focusNode(r.entity_id)"
                 class="w-full text-left px-3 py-2 hover:bg-bg-hover transition-colors border-b border-line last:border-0">
                 <div class="flex items-center gap-2">
                   <span class="w-2 h-2 rounded-full shrink-0"
                     :style="{ background: typeFill(r.entity_type) }"></span>
-                  <span class="text-[11px] text-t1 font-medium truncate">{{ r.name }}</span>
-                  <span class="text-[9px] text-t3 uppercase ml-auto shrink-0">{{ r.entity_type }}</span>
+                  <span class="text-2xs text-t1 font-medium truncate">{{ r.name }}</span>
+                  <span class="text-4xs text-t3 uppercase ml-auto shrink-0">{{ r.entity_type }}</span>
                 </div>
               </button>
             </div>
@@ -1177,7 +1177,7 @@ watch(isDark, () => {
         <!-- Layout selector -->
         <div class="kg-dropdown relative">
           <button @click="toggleLayoutMenu"
-            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
+            class="flex items-center gap-1 px-2 py-1 rounded-md text-3xs text-t3 hover:text-t1 hover:bg-bg-hover transition-colors">
             <span>{{ activeLayout }}</span>
             <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
               class="transition-transform" :class="showLayoutMenu ? 'rotate-180' : ''">
@@ -1203,7 +1203,7 @@ watch(isDark, () => {
              from the filtered pool, not just dimmed client-side. -->
         <div class="kg-dropdown relative" v-if="availableTypes.length > 1">
           <button @click="toggleTypeMenu"
-            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] hover:bg-bg-hover transition-colors"
+            class="flex items-center gap-1 px-2 py-1 rounded-md text-3xs hover:bg-bg-hover transition-colors"
             :class="entityTypeFilter ? 'text-t1' : 'text-t3 hover:text-t1'">
             <span v-if="entityTypeFilter" class="w-1.5 h-1.5 rounded-full" :style="{ background: typeFill(entityTypeFilter) }"></span>
             <span>{{ entityTypeFilter || 'Type' }}</span>
@@ -1262,7 +1262,7 @@ watch(isDark, () => {
           <div v-if="loading" class="kg-loading-overlay absolute inset-0 flex items-center justify-center z-10">
             <div class="flex flex-col items-center gap-2">
               <Spinner size="lg" />
-              <span class="text-[11px] text-t3">Loading graph data...</span>
+              <span class="text-2xs text-t3">Loading graph data...</span>
             </div>
           </div>
         </Transition>
@@ -1283,7 +1283,7 @@ watch(isDark, () => {
             </div>
             <div>
               <div class="text-sm text-t2 font-medium">No graph data</div>
-              <div class="text-[11px] text-t3 mt-1 leading-relaxed">
+              <div class="text-2xs text-t3 mt-1 leading-relaxed">
                 {{ error || 'Enable retrieval.kg_extraction.enabled in opencraig.yaml, restart the server, and ingest documents to populate the knowledge graph.' }}
               </div>
             </div>
@@ -1310,7 +1310,7 @@ watch(isDark, () => {
           <div class="flex flex-wrap gap-x-3 gap-y-1">
             <div v-for="t in entityTypes" :key="t" class="flex items-center gap-1.5">
               <span class="w-[7px] h-[7px] rounded-full" :style="{ background: typeFill(t) }"></span>
-              <span class="text-[9px] text-t3 uppercase tracking-wide font-medium">{{ t }}</span>
+              <span class="text-4xs text-t3 uppercase tracking-wide font-medium">{{ t }}</span>
             </div>
           </div>
         </div>
@@ -1319,7 +1319,7 @@ watch(isDark, () => {
              the top-left so the canvas stats are bookended at the
              top instead of crowding the bottom legend strip. -->
         <div class="kg-overlay-pill absolute top-3 right-3 backdrop-blur-sm border border-line rounded-md px-2 py-1 z-10 pointer-events-none">
-          <span class="text-[9px] text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
+          <span class="text-4xs text-t3 font-mono tabular-nums">{{ zoomLevel }}%</span>
         </div>
 
         <!-- Node count — "showing N of M" so it's obvious the canvas
@@ -1328,7 +1328,7 @@ watch(isDark, () => {
              rest of the data is missing. -->
         <div v-if="nodeCount"
           class="kg-overlay-pill absolute top-3 left-3 backdrop-blur-sm border border-line rounded-md px-2.5 py-1 z-10 pointer-events-none">
-          <span class="text-[9px] text-t3">
+          <span class="text-4xs text-t3">
             showing
             <span class="font-medium text-t2">{{ nodeCount.toLocaleString() }}</span>
             <template v-if="stats.entities && stats.entities > nodeCount">
@@ -1350,28 +1350,28 @@ watch(isDark, () => {
               <div class="flex items-center gap-2 min-w-0">
                 <span class="w-3 h-3 rounded-full shrink-0 shadow-sm"
                   :style="{ background: selectedNode.color }"></span>
-                <span class="text-[12px] font-semibold text-t1 truncate">{{ selectedNode.name }}</span>
+                <span class="text-xs font-semibold text-t1 truncate">{{ selectedNode.name }}</span>
               </div>
               <button @click="clearSelection" class="p-1 text-t3 hover:text-t1 transition-colors shrink-0 rounded hover:bg-bg-hover">
                 <X class="w-3.5 h-3.5" :stroke-width="1.5" />
               </button>
             </div>
             <div class="flex items-center gap-2 mt-1.5">
-              <span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium"
+              <span class="text-4xs uppercase tracking-wider px-1.5 py-0.5 rounded font-medium"
                 :style="{
                   background: selectedNode.color + '18',
                   color: selectedNode.color
                 }">
                 {{ selectedNode.type }}
               </span>
-              <span class="text-[9px] text-t3">{{ selectedNode.degree }} connections</span>
+              <span class="text-4xs text-t3">{{ selectedNode.degree }} connections</span>
               <!-- "Not on canvas" hint: this entity isn't part of
                    the current visible graph (clicked from search or
                    the relations list, but pulls outside the
                    anchor+halo set). Without the hint users wonder
                    why no node lights up. -->
               <span v-if="selectedNode.offCanvas"
-                class="text-[9px] text-t3 px-1.5 py-0.5 rounded border border-line">
+                class="text-4xs text-t3 px-1.5 py-0.5 rounded border border-line">
                 not on canvas
               </span>
             </div>
@@ -1386,13 +1386,13 @@ watch(isDark, () => {
             <template v-else-if="selectedDetail">
               <!-- Description -->
               <div v-if="selectedDetail.entity?.description" class="px-4 py-3 border-b border-line">
-                <div class="text-[9px] text-t3 uppercase tracking-widest mb-1.5 font-medium">Description</div>
-                <p class="text-[11px] text-t2 leading-relaxed whitespace-pre-wrap">{{ selectedDetail.entity.description }}</p>
+                <div class="text-4xs text-t3 uppercase tracking-widest mb-1.5 font-medium">Description</div>
+                <p class="text-2xs text-t2 leading-relaxed whitespace-pre-wrap">{{ selectedDetail.entity.description }}</p>
               </div>
 
               <!-- Source documents (click to open chunk panel) -->
               <div v-if="selectedDetail.entity?.source_doc_ids?.length" class="px-4 py-3 border-b border-line">
-                <div class="text-[9px] text-t3 uppercase tracking-widest mb-2 font-medium">
+                <div class="text-4xs text-t3 uppercase tracking-widest mb-2 font-medium">
                   Sources
                   <span class="normal-case tracking-normal">({{ selectedDetail.entity.source_doc_ids.length }})</span>
                 </div>
@@ -1403,8 +1403,8 @@ watch(isDark, () => {
                     class="w-full text-left rounded-md px-2.5 py-2 transition-colors group"
                     :class="chunkPanelDocId === did ? 'bg-brand/8 ring-1 ring-brand/20' : 'hover:bg-bg2'">
                     <template v-if="sourceDocs[did]">
-                      <div class="text-[10px] text-t1 font-medium truncate">{{ sourceDocs[did].file_name || sourceDocs[did].filename || did }}</div>
-                      <div class="flex flex-wrap items-center gap-x-2 gap-y-0 mt-0.5 text-[9px] text-t3">
+                      <div class="text-3xs text-t1 font-medium truncate">{{ sourceDocs[did].file_name || sourceDocs[did].filename || did }}</div>
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-0 mt-0.5 text-4xs text-t3">
                         <span class="font-mono">{{ shortId(did) }}</span>
                         <span v-if="sourceDocs[did].format">{{ sourceDocs[did].format }}</span>
                         <span v-if="sourceDocs[did].num_chunks">{{ sourceDocs[did].num_chunks }} chunks</span>
@@ -1412,13 +1412,13 @@ watch(isDark, () => {
                       </div>
                     </template>
                     <template v-else>
-                      <div class="text-[10px] text-t2 font-mono truncate">{{ did }}</div>
-                      <div v-if="docChunkCount(did)" class="text-[9px] text-brand font-medium mt-0.5">{{ docChunkCount(did) }} related chunks</div>
+                      <div class="text-3xs text-t2 font-mono truncate">{{ did }}</div>
+                      <div v-if="docChunkCount(did)" class="text-4xs text-brand font-medium mt-0.5">{{ docChunkCount(did) }} related chunks</div>
                     </template>
                   </button>
                 </div>
 
-                <div v-if="sourceChunksLoading" class="mt-2 text-[9px] text-t3 text-center">Loading chunks...</div>
+                <div v-if="sourceChunksLoading" class="mt-2 text-4xs text-t3 text-center">Loading chunks...</div>
               </div>
 
               <!-- Relations — sorted by weight desc, with an inline
@@ -1428,7 +1428,7 @@ watch(isDark, () => {
                    global scale), so even an entity whose connections
                    are all weak still shows a useful gradient. -->
               <div v-if="sortedRelations.length" class="px-4 py-3">
-                <div class="text-[9px] text-t3 uppercase tracking-widest mb-2 font-medium">
+                <div class="text-4xs text-t3 uppercase tracking-widest mb-2 font-medium">
                   Relations
                   <span class="normal-case tracking-normal">({{ sortedRelations.length }})</span>
                 </div>
@@ -1437,11 +1437,11 @@ watch(isDark, () => {
                     @click="focusNode(rel.source_entity === selectedNode.id ? rel.target_entity : rel.source_entity)"
                     class="w-full text-left px-2 py-1.5 rounded-md hover:bg-bg2 transition-colors group">
                     <div class="flex items-center gap-2">
-                      <div class="text-[10px] text-t1 font-medium truncate group-hover:text-brand transition-colors flex-1 min-w-0">
+                      <div class="text-3xs text-t1 font-medium truncate group-hover:text-brand transition-colors flex-1 min-w-0">
                         {{ rel.source_entity === selectedNode.id ? (rel.target_entity_name || rel.target_entity) : (rel.source_entity_name || rel.source_entity) }}
                       </div>
                       <span v-if="rel.weight"
-                        class="text-[9px] text-t3 tabular-nums font-mono shrink-0">{{ Number(rel.weight).toFixed(1) }}</span>
+                        class="text-4xs text-t3 tabular-nums font-mono shrink-0">{{ Number(rel.weight).toFixed(1) }}</span>
                     </div>
                     <!-- Weight bar — single track so 50 relations
                          don't pile up visual noise. ``rel.weight`` is
@@ -1451,17 +1451,17 @@ watch(isDark, () => {
                       <div class="h-full bg-brand/60"
                         :style="{ width: ((rel.weight / maxRelationWeight) * 100) + '%' }"></div>
                     </div>
-                    <div v-if="rel.keywords" class="text-[9px] text-t3 mt-0.5 truncate">
+                    <div v-if="rel.keywords" class="text-4xs text-t3 mt-0.5 truncate">
                       {{ rel.keywords }}
                     </div>
-                    <div v-if="rel.description" class="text-[9px] text-t3/60 mt-0.5 truncate">
+                    <div v-if="rel.description" class="text-4xs text-t3/60 mt-0.5 truncate">
                       {{ rel.description }}
                     </div>
                   </button>
                 </div>
               </div>
 
-              <div v-else class="px-4 py-6 text-center text-[10px] text-t3">No relations found.</div>
+              <div v-else class="px-4 py-6 text-center text-3xs text-t3">No relations found.</div>
             </template>
           </div>
         </div>
@@ -1478,10 +1478,10 @@ watch(isDark, () => {
           <div class="flex-none px-4 py-3 border-b border-line">
             <div class="flex items-center justify-between">
               <div class="min-w-0 flex-1">
-                <div class="text-[10px] text-t1 font-medium truncate">
+                <div class="text-3xs text-t1 font-medium truncate">
                   {{ sourceDocs[chunkPanelDocId]?.file_name || sourceDocs[chunkPanelDocId]?.filename || chunkPanelDocId }}
                 </div>
-                <div class="flex items-center gap-2 mt-0.5 text-[9px] text-t3">
+                <div class="flex items-center gap-2 mt-0.5 text-4xs text-t3">
                   <span class="font-mono">{{ shortId(chunkPanelDocId) }}</span>
                   <span>{{ panelDocChunks.length }} chunks</span>
                   <span v-if="panelDocChunks.length > chunkRenderLimit" class="text-t3/60">showing {{ chunkRenderLimit }}</span>
@@ -1497,10 +1497,10 @@ watch(isDark, () => {
           <div ref="chunkPanelRef" class="flex-1 overflow-y-auto" @scroll="onChunkPanelScroll">
             <div v-if="sourceChunksLoading && !sourceChunks.length" class="p-6 text-center">
               <Spinner size="md" class="mx-auto" />
-              <div class="text-[10px] text-t3 mt-2">Loading chunks...</div>
+              <div class="text-3xs text-t3 mt-2">Loading chunks...</div>
             </div>
 
-            <div v-else-if="!panelDocChunks.length" class="p-6 text-center text-[10px] text-t3">
+            <div v-else-if="!panelDocChunks.length" class="p-6 text-center text-3xs text-t3">
               {{ sourceChunksLoading ? 'Loading...' : 'No related chunks found' }}
             </div>
 
@@ -1509,15 +1509,15 @@ watch(isDark, () => {
                 class="px-4 py-3 border-b border-line transition-colors group hover:bg-bg2">
                 <!-- Chunk header -->
                 <div class="flex items-center gap-1.5 flex-wrap">
-                  <span class="text-[9px] text-t3 font-mono shrink-0">{{ c.chunk_id }}</span>
+                  <span class="text-4xs text-t3 font-mono shrink-0">{{ c.chunk_id }}</span>
                   <span v-if="c.content_type !== 'text'"
-                    class="text-[8px] uppercase px-1 py-px rounded bg-brand/10 text-brand font-medium">{{ c.content_type }}</span>
-                  <span class="text-[9px] text-t3">{{ c.token_count }} tok</span>
-                  <span class="text-[9px] text-t3">p.{{ c.page_start }}{{ c.page_end !== c.page_start ? '-' + c.page_end : '' }}</span>
+                    class="text-5xs uppercase px-1 py-px rounded bg-brand/10 text-brand font-medium">{{ c.content_type }}</span>
+                  <span class="text-4xs text-t3">{{ c.token_count }} tok</span>
+                  <span class="text-4xs text-t3">p.{{ c.page_start }}{{ c.page_end !== c.page_start ? '-' + c.page_end : '' }}</span>
                 </div>
 
                 <!-- Content (collapsed = line-clamp-1, expanded = full) -->
-                <div class="text-[10px] text-t2 leading-relaxed mt-1" :class="expandedChunks[c.chunk_id] ? 'whitespace-pre-wrap' : 'line-clamp-1'">{{ c.content }}</div>
+                <div class="text-3xs text-t2 leading-relaxed mt-1" :class="expandedChunks[c.chunk_id] ? 'whitespace-pre-wrap' : 'line-clamp-1'">{{ c.content }}</div>
 
                 <!-- Expanded extras: images -->
                 <div v-if="expandedChunks[c.chunk_id] && c.content_type === 'image' && chunkImageUrls(c).length" class="mt-2 flex flex-wrap gap-2">
@@ -1531,16 +1531,16 @@ watch(isDark, () => {
                 <!-- view detail / collapse -->
                 <div class="flex justify-end mt-1">
                   <button v-show="!expandedChunks[c.chunk_id]"
-                    class="text-[9px] text-brand opacity-0 group-hover:opacity-100 transition-opacity"
+                    class="text-4xs text-brand opacity-0 group-hover:opacity-100 transition-opacity"
                     @click.stop="toggleChunk(c.chunk_id)">view detail</button>
                   <button v-show="expandedChunks[c.chunk_id]"
-                    class="text-[9px] text-t3 hover:text-brand"
+                    class="text-4xs text-t3 hover:text-brand"
                     @click.stop="toggleChunk(c.chunk_id)">collapse</button>
                 </div>
               </div>
 
               <!-- Load more indicator -->
-              <div v-if="chunkRenderLimit < panelDocChunks.length" class="py-3 text-center text-[9px] text-t3">
+              <div v-if="chunkRenderLimit < panelDocChunks.length" class="py-3 text-center text-4xs text-t3">
                 Scroll for more &middot; {{ panelDocChunks.length - chunkRenderLimit }} remaining
               </div>
             </template>
@@ -1590,14 +1590,14 @@ watch(isDark, () => {
   border-radius: 6px;
   padding: 4px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .kg-menu-item {
   display: block;
   width: 100%;
   padding: 5px 8px;
   text-align: left;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: none;
@@ -1681,7 +1681,7 @@ watch(isDark, () => {
 .search-input {
   width: 100%;
   padding: 5px 26px 5px 24px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t1);
   background: var(--color-bg);
   border: 1px solid var(--color-line);
@@ -1700,7 +1700,7 @@ watch(isDark, () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   background: transparent;
   border: none;

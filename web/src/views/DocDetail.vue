@@ -968,7 +968,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   flex: 1;
   min-width: 0;
   overflow-x: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   user-select: none;
 }
@@ -989,7 +989,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   align-items: center;
   gap: 4px;
   margin-left: 8px;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   flex-shrink: 0;
 }
@@ -1046,7 +1046,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   align-items: center;
   gap: 6px;
   padding: 24px 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
 }
 .pane-skeleton__dot {
@@ -1071,7 +1071,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -1130,13 +1130,13 @@ watch(() => props.docId, loadAll, { immediate: true })
   border-bottom: 1px solid var(--color-line);
 }
 .pane-title {
-  font-size: 10px;
+  font-size: 0.625rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--color-t3);
 }
 .pane-meta {
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   text-align: right;
   white-space: nowrap;
@@ -1191,7 +1191,7 @@ watch(() => props.docId, loadAll, { immediate: true })
 .pane-empty {
   padding: 24px 12px;
   text-align: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
 }
 .pane-empty--center {
@@ -1236,7 +1236,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
 }
 .chunk-row__page { font-weight: 500; color: var(--color-t2); }
@@ -1248,7 +1248,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   letter-spacing: 0.02em;
 }
 .chunk-row__body {
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1.45;
   color: var(--color-t2);
   white-space: pre-wrap;
@@ -1290,7 +1290,7 @@ watch(() => props.docId, loadAll, { immediate: true })
   margin-top: 4px;
 }
 .chunk-row__view-btn {
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-brand, #3291ff);
   background: transparent;
   border: none;
@@ -1304,7 +1304,7 @@ watch(() => props.docId, loadAll, { immediate: true })
 }
 .chunk-row--active .chunk-row__view-btn { opacity: 1; }
 .chunk-row__close-btn {
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--color-t3);
   background: transparent;
   border: none;

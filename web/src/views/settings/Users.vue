@@ -471,14 +471,14 @@ function promotable(u) {
 
 .page-header { margin-bottom: 20px; }
 .page-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-t1);
   margin: 0 0 4px;
 }
 .page-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
   margin: 0;
 }
@@ -495,7 +495,7 @@ function promotable(u) {
 .chip {
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t2);
   background: transparent;
   border: 1px solid transparent;
@@ -527,7 +527,7 @@ function promotable(u) {
   width: 100%;
   height: 28px;
   padding: 0 8px 0 28px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
   background: var(--color-bg);
@@ -565,13 +565,13 @@ function promotable(u) {
   color: var(--color-t2);
 }
 .usage-num {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .table-head {
   height: 36px;
   background: var(--color-bg2);
   border-bottom: 1px solid var(--color-line);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-t3);
@@ -579,7 +579,7 @@ function promotable(u) {
 .row {
   height: 56px;
   border-bottom: 1px solid var(--color-line);
-  font-size: 13px;
+  font-size: 0.8125rem;
   transition: background-color .12s, opacity .15s;
 }
 .row:last-child { border-bottom: none; }
@@ -590,7 +590,7 @@ function promotable(u) {
   padding: 32px;
   text-align: center;
   color: var(--color-t3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 /* User cell */
@@ -603,7 +603,7 @@ function promotable(u) {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .you-badge {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   padding: 1px 5px;
   border-radius: 3px;
@@ -611,14 +611,14 @@ function promotable(u) {
   color: var(--color-t2);
 }
 .email {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-t3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* Role pill */
 .role-pill {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 7px;
   border-radius: 3px;
   background: var(--color-bg3);
@@ -636,7 +636,7 @@ function promotable(u) {
    suspended→ red     (bad terminal state)
    deleted  → grey    (rare; row usually gone) */
 .status-pill {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 7px;
   border-radius: 3px;
 }
@@ -657,7 +657,7 @@ function promotable(u) {
   color: var(--color-t3);
 }
 
-.col-login { font-size: 12px; color: var(--color-t3); }
+.col-login { font-size: 0.75rem; color: var(--color-t3); }
 
 /* Actions cell */
 .col-actions {
@@ -670,7 +670,7 @@ function promotable(u) {
 .btn-inline {
   display: inline-flex; align-items: center; gap: 4px;
   height: 26px; padding: 0 8px;
-  font-size: 11px; font-weight: 500;
+  font-size: 0.6875rem; font-weight: 500;
   background: var(--color-bg);
   border: 1px solid var(--color-line);
   border-radius: var(--r-sm);
@@ -715,7 +715,7 @@ function promotable(u) {
   display: flex; align-items: center; gap: 8px;
   width: 100%;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t1);
   background: transparent;
   border: none;

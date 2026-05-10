@@ -8,7 +8,7 @@
     <div v-if="loading" class="trash-empty">Loading…</div>
     <div v-else-if="!items.length" class="trash-empty">Recycle bin is empty.</div>
 
-    <table v-else class="w-full text-[11px]">
+    <table v-else class="w-full text-2xs">
       <colgroup>
         <col class="col-name" />
         <col class="col-type" />
@@ -111,7 +111,7 @@ function fmtAgo(iso) {
 .trash-empty {
   padding: 48px 16px;
   text-align: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-t3);
 }
 
@@ -133,7 +133,7 @@ table {
   text-align: left;
   padding: 6px 8px;
   font-weight: 400;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-t3);
   white-space: nowrap;
 }

@@ -1136,7 +1136,7 @@ function onTraceClick(m) {
     <Transition name="slide-trace">
       <div v-if="trace.show" class="w-96 shrink-0 border-r border-line flex flex-col bg-bg overflow-hidden">
         <div class="flex-none flex items-center justify-between px-4 py-2.5 border-b border-line">
-          <span class="text-[11px] text-t1 font-medium">Trace</span>
+          <span class="text-2xs text-t1 font-medium">Trace</span>
           <button @click="trace.show = false" class="p-1 text-t3 hover:text-t1 rounded hover:bg-bg-hover transition-colors">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
@@ -1155,7 +1155,7 @@ function onTraceClick(m) {
            don't lose their visual context overnight. -->
       <div
         v-if="boundProject"
-        class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[11.5px] text-t2"
+        class="flex-none flex items-center justify-between gap-3 px-4 py-1.5 border-b border-line bg-bg2 text-[0.71875rem] text-t2"
       >
         <div class="flex items-center gap-2 min-w-0">
           <FolderKanbanIcon :size="13" :stroke-width="1.75" class="text-t3 shrink-0" />
@@ -1183,10 +1183,15 @@ function onTraceClick(m) {
            surface for setting/clearing it. -->
 
       <!-- EMPTY STATE -->
+      <!-- Empty state — input pinned to the bottom, logo / tagline /
+           presets occupy whatever vertical space is left and centre
+           themselves inside it. Means the logo group sits at the
+           true vertical centre of the available area regardless of
+           how tall the input column ends up (chip rail can grow,
+           "may make mistakes" footnote can wrap, etc.). -->
       <div v-if="empty" class="flex-1 flex flex-col">
-        <div class="flex-[3]"></div>
-        <div class="pl-8 pr-16">
-          <div class="max-w-2xl mx-auto text-center">
+        <div class="flex-1 flex flex-col items-center justify-center pl-8 pr-16">
+          <div class="max-w-2xl w-full text-center">
             <!-- The brand mark already includes the wordmark, so the
                  separate ``<h1>OpenCraig</h1>`` was retired. Two
                  images, one per theme — the inactive one is hidden
@@ -1204,15 +1209,14 @@ function onTraceClick(m) {
               alt="OpenCraig"
               class="h-12 mx-auto mb-6"
             />
-            <p class="text-sm text-t3 mb-8 max-w-md mx-auto leading-relaxed">{{ t('chat.tagline') }}</p>
-            <div class="flex flex-wrap justify-center gap-2 mb-10">
+            <p class="text-sm text-t3 mb-6 max-w-md mx-auto leading-relaxed">{{ t('chat.tagline') }}</p>
+            <div class="flex flex-wrap justify-center gap-2">
               <button v-for="key in presetChipKeys" :key="key" @click="send(t('chat.preset.' + key))"
                 class="px-4 py-2 rounded-full border border-line text-xs text-t2 hover:bg-bg3 hover:border-line2 transition-colors"
               >{{ t('chat.preset.' + key) }}</button>
             </div>
           </div>
         </div>
-        <div class="flex-[4]"></div>
         <div class="pl-8 pr-16 pb-6">
           <div class="max-w-2xl mx-auto">
             <!-- Scope picker + Tools popup: badge-style chips above the
@@ -1229,7 +1233,7 @@ function onTraceClick(m) {
                    chip is just the UI surface. -->
               <button
                 type="button"
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-[11px] transition-colors"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs transition-colors"
                 :class="boundCwdPath ? 'text-brand' : 'text-t2'"
                 :title="boundCwdPath
                   ? t('chat.workdir_chip.tooltip_set', { path: boundCwdPath })
@@ -1237,9 +1241,14 @@ function onTraceClick(m) {
                 @click="switchCwdFolder"
               >
                 <FolderOpenIcon :size="12" :stroke-width="1.75" />
-                <span class="truncate max-w-[200px] font-mono">{{
-                  boundCwdPath || t('chat.workdir_chip.label_idle')
-                }}</span>
+                <!-- ``font-mono`` only when a real path is shown —
+                     it makes folder strings legible. Idle label stays
+                     in the body sans font so the chip reads "Workdir"
+                     in plain weight, not in monospace. -->
+                <span
+                  class="truncate max-w-[200px]"
+                  :class="boundCwdPath ? 'font-mono' : ''"
+                >{{ boundCwdPath || t('chat.workdir_chip.label_idle') }}</span>
                 <span
                   v-if="boundCwdPath"
                   class="text-t3 hover:text-t1 -mr-1 ml-0.5"
@@ -1260,7 +1269,7 @@ function onTraceClick(m) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>
-            <div class="text-center mt-2 text-[10px] text-t3">{{ t('chat.may_make_mistakes') }}</div>
+            <div class="text-center mt-2 text-3xs text-t3">{{ t('chat.may_make_mistakes') }}</div>
           </div>
         </div>
       </div>
@@ -1354,7 +1363,7 @@ function onTraceClick(m) {
                        p114 three times when the agent read three
                        chunks of one page. -->
                   <button v-for="(c, ci) in mergedCitationsForRail(m)" :key="c._key + ':' + ci"
-                    class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] transition-colors"
+                    class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-3xs transition-colors"
                     :class="c._chunkIds.includes(activeChunkId)
                       ? 'border-brand bg-brand/10 text-brand'
                       : 'border-line text-t2 hover:bg-bg3'"
@@ -1367,7 +1376,7 @@ function onTraceClick(m) {
                   </button>
                 </div>
                 <button v-if="m.role === 'assistant' && (m.trace || m.traceId)"
-                  class="mt-1.5 text-[10px] text-t3 invisible group-hover:visible flex items-center gap-1"
+                  class="mt-1.5 text-3xs text-t3 invisible group-hover:visible flex items-center gap-1"
                   @click="onTraceClick(m)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
                   Trace
@@ -1412,7 +1421,7 @@ function onTraceClick(m) {
               <PathScopePicker v-model="pathFilter" />
               <button
                 type="button"
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-[11px] transition-colors"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg3/70 hover:bg-bg3 text-2xs transition-colors"
                 :class="boundCwdPath ? 'text-brand' : 'text-t2'"
                 :title="boundCwdPath
                   ? t('chat.workdir_chip.tooltip_set', { path: boundCwdPath })
@@ -1420,9 +1429,14 @@ function onTraceClick(m) {
                 @click="switchCwdFolder"
               >
                 <FolderOpenIcon :size="12" :stroke-width="1.75" />
-                <span class="truncate max-w-[200px] font-mono">{{
-                  boundCwdPath || t('chat.workdir_chip.label_idle')
-                }}</span>
+                <!-- ``font-mono`` only when a real path is shown —
+                     it makes folder strings legible. Idle label stays
+                     in the body sans font so the chip reads "Workdir"
+                     in plain weight, not in monospace. -->
+                <span
+                  class="truncate max-w-[200px]"
+                  :class="boundCwdPath ? 'font-mono' : ''"
+                >{{ boundCwdPath || t('chat.workdir_chip.label_idle') }}</span>
                 <span
                   v-if="boundCwdPath"
                   class="text-t3 hover:text-t1 -mr-1 ml-0.5"
@@ -1433,7 +1447,14 @@ function onTraceClick(m) {
                 </span>
               </button>
             </div>
-            <div class="flex items-end gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
+            <!-- ``items-center`` so the textarea's single-line text sits
+                 vertically centred with the send button. ``items-end``
+                 (the previous default) made the placeholder look "stuck
+                 to the bottom" because the button is taller than one
+                 line of text. In multi-line mode the button rides the
+                 vertical centre of the textarea, which is acceptable —
+                 ChatGPT does the same. -->
+            <div class="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-line bg-bg">
               <textarea v-model="input" @keydown="onKey" :placeholder="t('chat.ask_followup')" rows="1"
                 class="flex-1 bg-transparent border-none outline-none resize-none text-sm text-t1 leading-relaxed"
                 style="min-height: 20px; max-height: 80px"
@@ -1594,7 +1615,7 @@ function onTraceClick(m) {
   border-radius: 8px;
   background: color-mix(in srgb, #ef4444 8%, transparent);
   color: var(--color-err-fg, #b91c1c);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 .error-icon { flex-shrink: 0; margin-top: 2px; }
