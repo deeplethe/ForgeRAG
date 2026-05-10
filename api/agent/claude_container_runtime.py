@@ -273,10 +273,16 @@ class ClaudeContainerRunner:
             "OPENCRAIG_MODEL": config.model,
             "OPENCRAIG_MAX_TURNS": str(config.max_iterations),
         }
+        # The bundled ``claude`` CLI binary reads ``ANTHROPIC_BASE_URL``
+        # and ``ANTHROPIC_API_KEY`` (NOT the OpenAI-named variants).
+        # Setting the OpenAI ones leaves the CLI in its default auth
+        # state — ``Not logged in · Please run /login`` — even though
+        # we configured everything else correctly. Same names the
+        # in-process runtime uses (``api/agent/claude_runtime.py``).
         if config.base_url:
-            env["OPENAI_BASE_URL"] = _rewrite_loopback(config.base_url)
+            env["ANTHROPIC_BASE_URL"] = _rewrite_loopback(config.base_url)
         if config.api_key:
-            env["OPENAI_API_KEY"] = config.api_key
+            env["ANTHROPIC_API_KEY"] = config.api_key
         if config.system_message:
             env["OPENCRAIG_SYSTEM_PROMPT"] = config.system_message
 
