@@ -57,6 +57,7 @@ import queue
 import threading
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from .claude_runtime import (
     ClaudeTurnConfig,
@@ -66,6 +67,45 @@ from .claude_runtime import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# Hosts the in-container agent can't reach when they refer to "the
+# backend". 127.0.0.1 / localhost / 0.0.0.0 inside the container
+# point at the container itself, not the host running the backend
+# that just spawned it. ``host.docker.internal`` is the daemon-
+# resolved gateway; SandboxManager declares it via ``extra_hosts``
+# at container-create time so this hostname works on Linux daemons
+# (Docker Desktop sets it up automatically, but our deploys run on
+# Linux daemons over SSH).
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "0.0.0.0", "::1"})
+
+
+def _rewrite_loopback(url: str) -> str:
+    """Rewrite a URL whose host is a loopback alias so it works
+    from inside the sandbox container. Non-loopback hosts pass
+    through unchanged. Returns the original string on parse error
+    so a malformed URL surfaces as a downstream connection error
+    rather than getting silently mangled here."""
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if (parsed.hostname or "").lower() not in _LOOPBACK_HOSTS:
+        return url
+    # Preserve port + userinfo if any. ``hostname`` strips them; we
+    # rebuild the netloc explicitly.
+    new_host = "host.docker.internal"
+    netloc = new_host
+    if parsed.port is not None:
+        netloc = f"{new_host}:{parsed.port}"
+    if parsed.username is not None:
+        cred = parsed.username
+        if parsed.password is not None:
+            cred = f"{cred}:{parsed.password}"
+        netloc = f"{cred}@{netloc}"
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 # Stable path the Day 1 Dockerfile copies the entrypoint to. The
@@ -212,6 +252,18 @@ class ClaudeContainerRunner:
           * docker exec env injection is one well-understood path
           * the entrypoint's ``_read_str`` / ``_read_history``
             helpers expect this exact shape
+
+        URL host translation
+        --------------------
+        ``config.base_url`` and any MCP server URL the route built
+        for the in-process path point at the BACKEND'S local loopback
+        (e.g. ``http://127.0.0.1:8000/...``). Inside the container,
+        ``127.0.0.1`` is the container's own loopback — connecting
+        to it gets connection-refused because the backend isn't
+        running there. Rewrite the host part to
+        ``host.docker.internal``, which the daemon resolves to the
+        host's bridge-gateway IP via the ``--add-host`` directive
+        SandboxManager passes at container-create time.
         """
         env: dict[str, str] = {
             "OPENCRAIG_USER_MESSAGE": user_message,
@@ -222,11 +274,32 @@ class ClaudeContainerRunner:
             "OPENCRAIG_MAX_TURNS": str(config.max_iterations),
         }
         if config.base_url:
-            env["OPENAI_BASE_URL"] = config.base_url
+            env["OPENAI_BASE_URL"] = _rewrite_loopback(config.base_url)
         if config.api_key:
             env["OPENAI_API_KEY"] = config.api_key
         if config.system_message:
             env["OPENCRAIG_SYSTEM_PROMPT"] = config.system_message
+
+        # MCP wiring — the in-container agent reads
+        # ``OPENCRAIG_MCP_URL`` + ``OPENCRAIG_MCP_TOKEN`` to mount
+        # the OpenCraig MCP server (search_vector, read_chunk,
+        # graph_explore, etc.). Without these the agent has zero
+        # domain tools and falls back to its general knowledge —
+        # the same RAG-broken state we already fixed for the
+        # in-process path.
+        mcp_servers = config.mcp_servers or {}
+        first = next(iter(mcp_servers.values()), None) if mcp_servers else None
+        if first and first.get("url"):
+            env["OPENCRAIG_MCP_URL"] = _rewrite_loopback(first["url"])
+            headers = first.get("headers") or {}
+            auth = headers.get("Authorization") or ""
+            # Strip the ``Bearer `` prefix — the entrypoint adds it
+            # back when it composes the Authorization header.
+            if auth.startswith("Bearer "):
+                env["OPENCRAIG_MCP_TOKEN"] = auth[len("Bearer "):]
+            elif auth:
+                env["OPENCRAIG_MCP_TOKEN"] = auth
+
         # Normalise cwd_path: leading "/", no trailing. Empty →
         # don't pass the env var at all so the entrypoint stays
         # at ``/workdir`` root.

@@ -700,8 +700,20 @@ class DockerBackend:
             # the only thing reachable, and only via 127.0.0.1.
             network_mode="bridge",
             ports=port_spec or None,
-            # restart=no means a kernel crash inside doesn't bounce
-            # the whole container; SandboxManager owns the lifecycle
+            # Resolve ``host.docker.internal`` to the host's IP from
+            # inside the container. The Docker daemon implements the
+            # magic value ``host-gateway`` as "the docker bridge
+            # gateway IP" (typically 172.17.0.1). Docker Desktop adds
+            # this binding automatically; on a Linux daemon (where
+            # most production deployments + the dev SSH-tunnel setup
+            # live) we have to declare it explicitly. The SDK and
+            # MCP client inside the container then dial
+            # ``http://host.docker.internal:8000`` and reach the
+            # backend that started them; without this the agent
+            # gets connection-refused on every LLM proxy + MCP call.
+            extra_hosts={"host.docker.internal": "host-gateway"},
+            # restart=no means a crash inside doesn't bounce the
+            # whole container; SandboxManager owns the lifecycle
             # decision.
             restart_policy={"Name": "no"},
             # Don't auto-remove — explicit stop() lets us drain
