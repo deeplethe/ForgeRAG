@@ -1,23 +1,21 @@
 <script setup>
 /**
- * Inline tool-call chip — Claude Code-style compact summary of one
- * or more consecutive tool dispatches the agent made between two
- * stretches of natural-language reasoning.
+ * Inline tool-call chip — one chip per tool dispatch (Claude Code-
+ * style). Folded state is a single one-liner that hints at WHAT got
+ * called (tool name + a short detail like the Bash command, the
+ * search query, the file path); expanded state shows the full
+ * ``input`` (params dict the model handed the tool) and ``output``
+ * (the tool's response, capped at 8 KiB upstream).
  *
- *   ▸ Searched the corpus, read 4 passages
- *   ▸ Explored knowledge graph, read 8 passages
- *   ▸ Ran 7 commands, used a tool
+ * The single-tool-per-chip layout replaces the prior batched chip
+ * ("Searched 3 times, read 8 passages") because the user wants to
+ * be able to click any specific call and see its bash output / file
+ * diff / hit list — that's per-call data, not per-batch.
  *
- * Click the chip to expand a per-tool list with each call's
- * detail (the query string for searches, the chunk_id for reads,
- * etc.) and any result summary the dispatch returned ("20 hits",
- * "10 entities", "error").
- *
- * Lives inline in the message body — the whole "agent reasoning
- * chain" panel that used to hover above the answer is now woven
- * into the message itself, with text segments (the model's own
- * narration via ``agent.thought`` / streamed deltas) rendered
- * as normal markdown between chips.
+ * This pass keeps the expansion content as raw text/JSON code blocks.
+ * A follow-up pass specialises the rendering per tool type
+ * (Bash → ``$ command`` + stdout; Read/Edit/Write → clickable file
+ * path + diff; search_* → query + hits chips).
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -25,13 +23,15 @@ import { ChevronRight } from 'lucide-vue-next'
 import ThinkingPulse from './ThinkingPulse.vue'
 
 const props = defineProps({
-  tools: { type: Array, required: true },
+  tool: { type: Object, required: true },
 })
 
 const { t } = useI18n()
 
-// Per-tool friendly labels for the EXPANDED detail rows. The
-// collapsed headline uses verb-style summaries derived below.
+// Friendly per-tool labels for the chip headline. Falls back to the
+// raw tool name (``Bash``, ``Write``, …) when no i18n key matches —
+// the SDK-driven Bash/Write/Read/Edit family doesn't get translated
+// for now since the names are universally legible.
 const TOOL_LABELS = {
   search_bm25: 'chat.tool.search_bm25',
   search_vector: 'chat.tool.search_vector',
@@ -41,64 +41,74 @@ const TOOL_LABELS = {
   web_search: 'chat.tool.web_search',
   rerank: 'chat.tool.rerank',
 }
-function toolLabel(name) {
-  const k = TOOL_LABELS[name]
-  return k ? t(k) : name
-}
-
-// Build the collapsed-state headline by counting tools per type
-// and joining them with commas:
-//   Searched 2 times, read 8 passages, explored graph
-const headline = computed(() => {
-  const counts = {}
-  for (const t of props.tools) {
-    counts[t.name] = (counts[t.name] || 0) + 1
-  }
-  const phrases = []
-  for (const [name, n] of Object.entries(counts)) {
-    phrases.push(t(`chat.chip.${name}`, { n }))
-  }
-  return phrases.join(t('chat.chip.sep'))
+const toolLabel = computed(() => {
+  const k = TOOL_LABELS[props.tool.name]
+  return k ? t(k) : props.tool.name
 })
 
-const anyRunning = computed(() => props.tools.some((t) => t.status === 'running'))
+// Short summary line for the collapsed state. Prefer the runtime's
+// pre-computed ``detail`` (already 64-char-truncated) so we don't
+// need to know each tool's params shape; falls back to a derived
+// preview from ``input`` for newer-style entries that didn't bother
+// computing detail.
+const headline = computed(() => {
+  if (props.tool.detail) return props.tool.detail
+  const inp = props.tool.input
+  if (inp && typeof inp === 'object') {
+    for (const k of ['command', 'query', 'path', 'file_path', 'chunk_id', 'doc_id']) {
+      if (typeof inp[k] === 'string' && inp[k]) return inp[k].slice(0, 80)
+    }
+  }
+  return ''
+})
+
+const inputJson = computed(() => {
+  const inp = props.tool.input
+  if (inp == null || (typeof inp === 'object' && !Object.keys(inp).length)) return ''
+  try {
+    return JSON.stringify(inp, null, 2)
+  } catch {
+    return String(inp)
+  }
+})
+
+const outputText = computed(() => props.tool.output || '')
+
+const running = computed(() => props.tool.status === 'running')
 
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
-
-function fmtMs(ms) {
-  if (ms == null) return ''
-  if (ms <= 0) return '<1ms'
-  if (ms < 1000) return ms + 'ms'
-  const sec = ms / 1000
-  return sec < 10 ? sec.toFixed(1) + 's' : Math.round(sec) + 's'
-}
 </script>
 
 <template>
-  <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
+  <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': running }">
     <button class="chip-head" @click="toggle">
-      <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon" />
+      <ThinkingPulse v-if="running" :size="14" class="head-icon" />
       <ChevronRight v-else :size="12" :stroke-width="1.75"
         class="head-icon chev" :class="{ 'rotate-90': expanded }" />
-      <span class="head-text">{{ headline }}</span>
+      <span class="head-name">{{ toolLabel }}</span>
+      <span v-if="headline" class="head-detail">{{ headline }}</span>
+      <span v-if="tool.summary" class="head-summary">· {{ tool.summary }}</span>
     </button>
-    <ol v-if="expanded" class="detail-list">
-      <li v-for="(tc, i) in tools" :key="tc.call_id || i" class="detail-row">
-        <span class="detail-name">{{ toolLabel(tc.name) }}</span>
-        <span v-if="tc.detail" class="detail-text">"{{ tc.detail }}"</span>
-        <span class="detail-meta">
-          <template v-if="tc.summary">{{ tc.summary }} · </template>
-          <template v-if="tc.elapsedMs != null">{{ fmtMs(tc.elapsedMs) }}</template>
-        </span>
-      </li>
-    </ol>
+    <div v-if="expanded" class="chip-body">
+      <div v-if="inputJson" class="chip-block">
+        <div class="chip-block__label">Input</div>
+        <pre class="chip-block__pre"><code>{{ inputJson }}</code></pre>
+      </div>
+      <div v-if="outputText" class="chip-block">
+        <div class="chip-block__label">Output</div>
+        <pre class="chip-block__pre"><code>{{ outputText }}</code></pre>
+      </div>
+      <div v-if="!inputJson && !outputText" class="chip-block__empty">
+        (no captured payload)
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .tool-chip {
-  margin: 8px 0;
+  margin: 6px 0;
   font-size: 0.75rem;
 }
 .chip-head {
@@ -125,45 +135,61 @@ function fmtMs(ms) {
   transition: transform .15s;
 }
 .head-icon.rotate-90 { transform: rotate(90deg); }
-.head-text {
-  font-feature-settings: "tnum";
-  letter-spacing: -0.005em;
-}
-
-.detail-list {
-  list-style: none;
-  margin: 6px 0 0 18px;
-  padding: 0;
-  border-left: 1px solid var(--color-line);
-  padding-left: 12px;
-}
-.detail-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 3px 0;
-  line-height: 1.5;
-}
-.detail-name {
-  color: var(--color-t2);
+.head-name {
+  font-weight: 500;
+  color: var(--color-t1);
   white-space: nowrap;
 }
-.detail-text {
-  color: var(--color-t3);
+.head-detail {
   font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
   font-size: 0.6875rem;
+  color: var(--color-t3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
-  flex: 1 1 auto;
+  max-width: 320px;
 }
-.detail-meta {
+.head-summary {
   color: var(--color-t3);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+/* Expanded body — input + output blocks stacked. */
+.chip-body {
+  margin: 6px 0 0 18px;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--color-line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chip-block__label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--color-t3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.chip-block__pre {
+  margin: 0;
+  padding: 8px 10px;
   font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
   font-size: 0.6875rem;
-  font-feature-settings: "tnum";
-  margin-left: auto;
-  white-space: nowrap;
+  line-height: 1.5;
+  color: var(--color-t1);
+  background: var(--color-bg3);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.chip-block__empty {
+  font-size: 0.6875rem;
+  color: var(--color-t3);
+  font-style: italic;
 }
 </style>

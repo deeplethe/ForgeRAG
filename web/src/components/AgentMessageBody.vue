@@ -40,7 +40,10 @@ const props = defineProps({
 
 // Turn the (raw) trace into render parts:
 //   * 'text' parts come from phase/thought entries with non-empty text
-//   * 'tools' parts group consecutive tool entries between text segments
+//   * 'tool' parts come from each individual tool entry — Claude-Code
+//     style is one chip per call rather than the prior summarised
+//     "Searched 3 times, read 8 passages" group, so the user can
+//     click any single chip to inspect that call's input + output
 // Final answer (props.content) lands as the trailing text part.
 const parts = computed(() => {
   const out = []
@@ -56,21 +59,12 @@ const parts = computed(() => {
       out.push({ kind: 'text', content: txt.trim() })
     }
   }
-  // Helper to start / extend a tool group.
-  const pushTool = (entry) => {
-    const last = out[out.length - 1]
-    if (last && last.kind === 'tools') {
-      last.tools.push(entry)
-    } else {
-      out.push({ kind: 'tools', tools: [entry] })
-    }
-  }
 
   for (const entry of trace) {
     if (entry.kind === 'phase' || entry.kind === 'thought') {
       if (entry.text) pushText(entry.text)
     } else if (entry.kind === 'tool') {
-      pushTool(entry)
+      out.push({ kind: 'tool', tool: entry })
     }
   }
 
@@ -100,7 +94,7 @@ function renderPart(text) {
         :html="renderPart(part.content)"
         @click="onCiteClick && onCiteClick($event)"
       />
-      <ToolChip v-else-if="part.kind === 'tools'" :tools="part.tools" />
+      <ToolChip v-else-if="part.kind === 'tool'" :tool="part.tool" />
     </template>
   </div>
 </template>
