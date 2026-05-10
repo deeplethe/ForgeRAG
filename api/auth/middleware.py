@@ -207,6 +207,28 @@ async def _authenticate(request: Request, cfg, store) -> AuthenticatedPrincipal 
             raw_token = x_api_key.strip()
     if raw_token:
         raw = raw_token
+        # Agent-loopback bearer — deterministic per-user HMAC token
+        # the chat route hands to the in-container Claude Agent SDK.
+        # Verified by HMAC, not DB lookup; see api/auth/agent_loop.py
+        # for the rationale. Short-circuits BEFORE the AuthToken
+        # query so these tokens never need (and never get) a row.
+        from .agent_loop import parse_and_verify as _aloop_verify
+
+        aloop_user_id = _aloop_verify(raw)
+        if aloop_user_id is not None:
+            with store.transaction() as sess:
+                user = sess.get(AuthUser, aloop_user_id)
+                if user is None or not user.is_active:
+                    raise AuthError("invalid token")
+                return AuthenticatedPrincipal(
+                    user_id=user.user_id,
+                    username=user.username,
+                    role=user.role,
+                    via="token",
+                    token_id="aloop",
+                    token_name="agent-loop",
+                )
+
         tid_hash = hash_sk(raw)
         with store.transaction() as sess:
             row = sess.execute(

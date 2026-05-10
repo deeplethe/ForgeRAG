@@ -238,70 +238,37 @@ def _agent_loopback_url(request) -> str:
 def _get_or_create_agent_token(
     state: AppState, principal: AuthenticatedPrincipal,
 ) -> str:
-    """Return the user's persistent agent-loopback bearer.
+    """Return the user's deterministic agent-loopback bearer.
 
-    The SDK's bundled CLI calls our LLM proxy (and, in the future,
-    our MCP server) during a turn; those endpoints sit behind the
-    same auth middleware as everything else, and the agent's
-    outbound HTTP from a subprocess can't carry the user's web
-    session cookie. So each user gets one ``agent-loop`` bearer,
-    minted lazily on first chat and reused for every subsequent
-    turn — same lifecycle as Claude Code's ANTHROPIC_API_KEY.
+    The SDK's bundled CLI calls our LLM proxy + MCP server during a
+    turn; those endpoints sit behind the same auth middleware as
+    everything else, and the agent's outbound HTTP from a subprocess
+    can't carry the user's web session cookie. So each user gets a
+    stable ``aloop_<user>_<hmac>`` token derived from a server-side
+    secret — same lifecycle as Claude Code's ANTHROPIC_API_KEY but
+    with no DB row.
 
-    Why one-per-user instead of one-per-turn:
+    Why HMAC-derived instead of a minted ``AuthToken`` row:
 
-      * agent tasks routinely span many minutes (multi-step research,
-        reading dozens of PDFs, code generation with several bash
-        invocations) — a 5-minute per-turn token would expire mid-
-        task and every subsequent tool call would fail
-      * minting per-turn churns ``auth_tokens`` rows for nothing
-      * security posture stays the same: one user-scoped bearer with
-        the user's role, revokable explicitly via the existing token
-        management UI
+      * No DB churn — restart-safe by construction; same user always
+        gets the same bearer. The previous design re-minted on every
+        backend restart and accumulated 44 rows in a few weeks of
+        dev because the in-memory cache was lost on restart and the
+        hash-only column couldn't surface the raw value.
+      * Verifiable by HMAC alone — middleware short-circuits on the
+        ``aloop_`` prefix BEFORE the AuthToken hash lookup; these
+        tokens never need (and never get) a row.
+      * Revokable as a class — rotate ``storage/.agent_loop_secret``
+        and every agent-loop bearer becomes invalid. Coarse but
+        appropriate for an internal-only credential.
 
-    Cache strategy:
-
-      * raw value cached in memory on the ``AppState`` instance
-        (``state._agent_token_cache: dict[user_id, raw]``) so the
-        token primer doesn't go to the DB on every chat turn
-      * cache scopes per backend process, so a backend restart re-
-        mints (and the previous DB row is left intact, unused, for
-        the existing token-prune housekeeping to clean up)
-      * no explicit expiry — same lifetime as the user account;
-        revoke explicitly if compromised
-
-    Memory cache lives on ``state`` (and so dies with the process)
-    rather than at module level so tests get a fresh cache per
-    fixture and so any future "rotate all tokens" admin action can
-    just clear the dict.
+    See ``api/auth/agent_loop.py`` for the secret loading + HMAC
+    construction, and ``api/auth/middleware.py`` for the
+    short-circuit verify path.
     """
-    cache = getattr(state, "_agent_token_cache", None)
-    if cache is None:
-        cache = {}
-        state._agent_token_cache = cache
+    from api.auth.agent_loop import mint_token
 
-    cached = cache.get(principal.user_id)
-    if cached:
-        return cached
-
-    from uuid import uuid4
-
-    from api.auth.primitives import generate_sk, hash_prefix, hash_sk
-    from persistence.models import AuthToken
-
-    raw = generate_sk()
-    with state.store.transaction() as sess:
-        sess.add(AuthToken(
-            token_id=uuid4().hex[:32],
-            user_id=principal.user_id,
-            name="agent-loop",
-            token_hash=hash_sk(raw),
-            hash_prefix=hash_prefix(raw),
-            role=getattr(principal, "role", "user"),
-            expires_at=None,  # persistent; revoke explicitly
-        ))
-    cache[principal.user_id] = raw
-    return raw
+    return mint_token(principal.user_id)
 
 
 def _load_conversation_history(state: AppState, conv_id: str) -> list[dict]:
