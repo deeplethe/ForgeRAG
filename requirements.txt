@@ -54,6 +54,35 @@ mcp>=1.27
 #    API calls.
 claude-agent-sdk>=0.1.80
 
+# ── Sandbox container manager (Phase 2 agent loop) ──────────────────────────
+#
+#    Docker Engine API client. ``api/state.py``'s SandboxManager uses
+#    it to start / stop / reap per-user containers — the container is
+#    what gives the agent SDK a real ``/workdir/`` to read / edit /
+#    write inside, plus the ``python_exec`` tool wired to a jupyter
+#    kernel and matplotlib/plotly artifact persistence.
+#
+#    The deployment may use a LOCAL daemon (Docker Desktop) or a
+#    REMOTE one — the SDK reads ``DOCKER_HOST`` and supports
+#    ``ssh://user@host``, ``tcp://host:2375``, or ``unix:///``. The
+#    Python SDK still has to be installed locally regardless of
+#    where the daemon lives, hence pinning here.
+#
+#    A namespace-package shadow (an empty ``./docker/`` directory
+#    at the repo root holding Dockerfile material) used to mask the
+#    missing-dep state — ``import docker`` would succeed with an
+#    empty module and ``docker.from_env()`` would raise
+#    AttributeError, which got logged as "daemon unreachable",
+#    sending operators down the wrong rabbit hole. Pinning here
+#    keeps the SDK present so the namespace shadow never wins.
+#
+#    The ``[ssh]`` extra pulls in paramiko so ``DOCKER_HOST=ssh://``
+#    works out of the box. TCP and unix-socket transports don't
+#    need it; we install it unconditionally because the cost is
+#    small and SSH-to-remote-docker is a common dev / CI setup
+#    (no need for the daemon to expose a TCP port).
+docker[ssh]>=7.1
+
 # ── Observability (OpenTelemetry) ────────────────────────────────────────────
 # SDK + OTLP HTTP exporter (so users can point at Langfuse / Jaeger / etc.)
 # + auto-instrumentation for FastAPI, SQLAlchemy, and outbound httpx (used by
