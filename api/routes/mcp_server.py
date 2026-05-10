@@ -53,6 +53,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from ..auth import AuthenticatedPrincipal
 
@@ -121,6 +122,28 @@ mcp_server = FastMCP(
     stateless_http=True,
     streamable_http_path="/",
     json_response=True,
+    # Transport security — the in-container agent reaches us via
+    # ``host.docker.internal`` (container-side rewrite of loopback,
+    # see api/agent/claude_container_runtime.py::_rewrite_loopback).
+    # By default mcp 1.27+'s TransportSecurityMiddleware logs an
+    # "Invalid Host header" warning for any host not on its allow
+    # list — even when DNS rebinding protection is disabled — and
+    # newer paths reject the connection outright. Whitelist the
+    # loopback aliases the SDK actually uses so the agent's MCP
+    # client connects cleanly. ``:*`` matches any port.
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+        allowed_hosts=[
+            "127.0.0.1:*",
+            "localhost:*",
+            "host.docker.internal:*",
+        ],
+        allowed_origins=[
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://host.docker.internal:*",
+        ],
+    ),
 )
 
 
