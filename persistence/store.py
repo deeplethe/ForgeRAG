@@ -28,6 +28,7 @@ from config import RelationalConfig
 
 from .engine import make_engine
 from .models import (
+    Attachment,
     Base,
     ChunkRow,
     Conversation,
@@ -935,6 +936,98 @@ class Store:
             )
 
     # =======================================================================
+    # Attachments — chat-message file uploads (drafts + bound)
+    # =======================================================================
+
+    def add_attachment(self, record: dict) -> None:
+        """Insert a draft attachment row (``message_id`` typically NULL).
+
+        The row's status flips from "draft" to "bound" later via
+        ``bind_attachments_to_message`` once the user actually sends
+        the message that owns these uploads.
+        """
+        with self._session() as s:
+            s.add(Attachment(**record))
+
+    def get_attachment(self, attachment_id: str) -> dict | None:
+        with self._session() as s:
+            row = s.get(Attachment, attachment_id)
+            return _attachment_to_dict(row) if row else None
+
+    def list_attachments_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        only_drafts: bool = False,
+    ) -> list[dict]:
+        """List attachments belonging to a conversation.
+
+        ``only_drafts=True`` filters to ``message_id IS NULL`` — i.e.
+        the user has uploaded but not yet sent. Used by the chat UI
+        on conv-load to repopulate the input row's chip rail (so a
+        page refresh mid-compose doesn't lose the staged uploads).
+        """
+        with self._session() as s:
+            stmt = (
+                select(Attachment)
+                .where(Attachment.conversation_id == conversation_id)
+                .order_by(Attachment.created_at.asc())
+            )
+            if only_drafts:
+                stmt = stmt.where(Attachment.message_id.is_(None))
+            rows = s.execute(stmt).scalars().all()
+            return [_attachment_to_dict(r) for r in rows]
+
+    def list_attachments_for_message(self, message_id: str) -> list[dict]:
+        with self._session() as s:
+            rows = (
+                s.execute(
+                    select(Attachment)
+                    .where(Attachment.message_id == message_id)
+                    .order_by(Attachment.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [_attachment_to_dict(r) for r in rows]
+
+    def bind_attachments_to_message(
+        self, message_id: str, attachment_ids: list[str]
+    ) -> int:
+        """Promote draft attachments to bound by stamping ``message_id``.
+
+        Only updates rows whose ``message_id`` is currently NULL —
+        re-binding an already-bound row would cross-link it from
+        another message, which we don't want. Returns the number of
+        rows actually updated; the caller can compare against
+        ``len(attachment_ids)`` to detect a partial bind (some ids
+        weren't drafts anymore).
+        """
+        if not attachment_ids:
+            return 0
+        with self._session() as s:
+            from sqlalchemy import update
+
+            result = s.execute(
+                update(Attachment)
+                .where(Attachment.attachment_id.in_(attachment_ids))
+                .where(Attachment.message_id.is_(None))
+                .values(message_id=message_id)
+            )
+            return int(result.rowcount or 0)
+
+    def delete_attachment(self, attachment_id: str) -> dict | None:
+        """Delete the row + return its dict (caller still has to remove
+        the blob on disk — this only handles the DB side)."""
+        with self._session() as s:
+            row = s.get(Attachment, attachment_id)
+            if not row:
+                return None
+            d = _attachment_to_dict(row)
+            s.delete(row)
+            return d
+
+    # =======================================================================
     # Settings
     # =======================================================================
 
@@ -1328,6 +1421,22 @@ def _message_to_dict(row: Message) -> dict:
         "agent_trace_json": row.agent_trace_json,
         "input_tokens": row.input_tokens,
         "output_tokens": row.output_tokens,
+        "created_at": row.created_at,
+    }
+
+
+def _attachment_to_dict(row: Attachment) -> dict:
+    return {
+        "attachment_id": row.attachment_id,
+        "conversation_id": row.conversation_id,
+        "message_id": row.message_id,
+        "user_id": row.user_id,
+        "filename": row.filename,
+        "mime": row.mime,
+        "size_bytes": row.size_bytes,
+        "sha256": row.sha256,
+        "kind": row.kind,
+        "blob_path": row.blob_path,
         "created_at": row.created_at,
     }
 

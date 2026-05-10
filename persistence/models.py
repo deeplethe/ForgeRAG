@@ -357,6 +357,46 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Attachment(Base):
+    """Chat-message file attachment.
+
+    Lifecycle is two-phase: a draft row (``message_id = NULL``) is
+    created on upload before the message is sent; the chat route
+    promotes the draft to a bound row by stamping ``message_id`` once
+    the message persists. Conversation-level + message-level cascade
+    deletes keep orphans from accumulating; a future GC pass can
+    sweep stale drafts older than N hours. Schema lives in
+    20260521_add_attachments_table.
+    """
+
+    __tablename__ = "attachments"
+
+    attachment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        index=True,
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("messages.message_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("auth_users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    filename: Mapped[str] = mapped_column(String(512))
+    mime: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    blob_path: Mapped[str] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Runtime settings (frontend-editable config overrides)
 # ---------------------------------------------------------------------------

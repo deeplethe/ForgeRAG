@@ -48,6 +48,16 @@ class AgentConfig(BaseModel):
     # for deployments stuck on the pre-refactor data model).
     user_workdirs_root: str = "./storage/user-workdirs"
 
+    # Per-user chat-attachment storage root. Files uploaded inline in
+    # the chat (image / PDF / pasted-as-file plain text) live at
+    # ``<user_uploads_root>/<user_id>/<conv_id>/<attachment_id>__<name>``.
+    # Kept SEPARATE from ``user_workdirs_root`` on purpose — workdir
+    # is the agent's read/write surface, attachments are user-supplied
+    # context that the agent normally only reads. Mixing them would
+    # let the agent overwrite an attachment with a tool call, which
+    # is rarely what the user wants.
+    user_uploads_root: str = "./storage/user-uploads"
+
     # Hard upper bound on the total size of a project's workdir
     # (uploads + agent outputs + trash combined). Default ~10 GiB
     # is generous enough for "drop a few datasets and produce some
