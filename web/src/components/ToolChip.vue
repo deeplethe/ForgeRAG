@@ -227,9 +227,6 @@ const hasAnyDetail = computed(() => Boolean(
 <template>
   <div class="tool-chip" :class="{ 'is-expanded': expanded, 'is-running': running }">
     <button class="chip-head" @click="toggle">
-      <ThinkingPulse v-if="running" :size="14" class="head-icon" />
-      <ChevronRight v-else :size="12" :stroke-width="1.75"
-        class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-name">{{ toolLabel }}</span>
       <span
         v-if="headline"
@@ -238,6 +235,12 @@ const hasAnyDetail = computed(() => Boolean(
       >{{ headline }}</span>
       <span v-if="editStat" class="head-stat">{{ editStat }}</span>
       <span v-if="tool.summary" class="head-summary">· {{ tool.summary }}</span>
+      <!-- Chevron at the trailing edge so content reads left-to-right
+           without the disclosure widget interrupting the verb-then-
+           object scan. macOS finder-style. -->
+      <ThinkingPulse v-if="running" :size="14" class="head-icon head-icon--end" />
+      <ChevronRight v-else :size="12" :stroke-width="1.75"
+        class="head-icon head-icon--end chev" :class="{ 'rotate-90': expanded }" />
     </button>
 
     <div v-if="expanded" class="chip-body">
@@ -412,6 +415,11 @@ const hasAnyDetail = computed(() => Boolean(
   flex-shrink: 0;
   color: var(--color-t3);
   transition: transform .15s;
+}
+.head-icon--end {
+  /* Trailing-edge chevron: pin to the right of the row regardless
+     of how much content sits before it. */
+  margin-left: auto;
 }
 .head-icon.rotate-90 { transform: rotate(90deg); }
 .head-name {

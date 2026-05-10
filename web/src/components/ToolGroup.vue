@@ -80,10 +80,14 @@ function toggle() { expanded.value = !expanded.value }
 <template>
   <div class="tool-group" :class="{ 'is-expanded': expanded, 'is-running': anyRunning }">
     <button class="group-head" @click="toggle">
-      <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon" />
-      <ChevronRight v-else :size="12" :stroke-width="1.75"
-        class="head-icon chev" :class="{ 'rotate-90': expanded }" />
       <span class="head-text">{{ headline }}</span>
+      <!-- Chevron sits trailing — content reads "Edited 2 files…" on the
+           left, the disclosure widget hangs on the right (macOS-style)
+           so the eye lands on what was done before noticing it can be
+           expanded. -->
+      <ThinkingPulse v-if="anyRunning" :size="14" class="head-icon head-icon--end" />
+      <ChevronRight v-else :size="12" :stroke-width="1.75"
+        class="head-icon head-icon--end chev" :class="{ 'rotate-90': expanded }" />
     </button>
     <div v-if="expanded" class="group-body">
       <ToolChip v-for="(tc, i) in tools" :key="tc.call_id || i" :tool="tc" />
@@ -100,16 +104,20 @@ function toggle() { expanded.value = !expanded.value }
 /* Folded headline — Claude.ai style: chevron + grey text, NO
    border, NO background-fill. Hover lights the underline only. */
 .group-head {
-  display: inline-flex;
+  /* Full-width row so the trailing chevron pins to the right edge
+     (lined up with the panel border below it). ``inline-flex``
+     before this would shrink-to-text, leaving the chevron snugged
+     against the headline instead of at the row's far right. */
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
+  width: 100%;
+  padding: 2px 4px;
   background: transparent;
   border: none;
   color: var(--color-t2);
   cursor: pointer;
   text-align: left;
-  max-width: 100%;
 }
 .group-head:hover .head-text { color: var(--color-t1); }
 .group-head:hover .head-icon { color: var(--color-t2); }
@@ -117,6 +125,11 @@ function toggle() { expanded.value = !expanded.value }
   flex-shrink: 0;
   color: var(--color-t3);
   transition: transform .15s;
+}
+.head-icon--end {
+  /* Trailing-edge chevron: pin to the right of the row regardless
+     of how much content sits before it. */
+  margin-left: auto;
 }
 .head-icon.rotate-90 { transform: rotate(90deg); }
 .head-text {
