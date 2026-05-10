@@ -449,12 +449,19 @@ class _TraceAccumulator:
                 if isinstance(v, str) and v:
                     detail = v[:64]
                     break
+        # ``input`` keeps the full params dict (Bash command body,
+        # Write file path + content, search query, …) so the frontend
+        # can render it verbatim inside the expanded chip. ``detail``
+        # is the legacy short headline still used for the collapsed
+        # one-liner.
         self.entries.append(
             {
                 "kind": "tool",
                 "call_id": call_id,
                 "name": name,
                 "detail": detail,
+                "input": params if isinstance(params, dict) else {},
+                "output": "",
                 "elapsedMs": 0,
                 "status": "running",
                 "summary": "",
@@ -467,6 +474,7 @@ class _TraceAccumulator:
         call_id: str,
         latency_ms: int,
         result_summary: dict | None,
+        output: str = "",
     ) -> None:
         for e in reversed(self.entries):
             if e.get("kind") == "tool" and e.get("call_id") == call_id:
@@ -481,6 +489,13 @@ class _TraceAccumulator:
                     e["summary"] = f"{summary['chunk_count']} chunks"
                 elif summary.get("error"):
                     e["summary"] = "error"
+                # Capped tool response stringified by the runtime.
+                # The frontend renders this verbatim inside the
+                # expanded chip — Bash stdout, Read body, hit-list
+                # JSON, etc. Empty when the runtime didn't return
+                # anything, which is fine.
+                if output:
+                    e["output"] = output
                 break
         self._tool_t0.pop(call_id, None)
 
@@ -592,6 +607,7 @@ def _translate(evt: dict) -> str | None:
                 "tool": evt.get("tool", ""),
                 "latency_ms": evt.get("latency_ms", 0),
                 "result_summary": evt.get("result_summary", {}),
+                "output": evt.get("output", ""),
             },
         )
     if kind == "error":
@@ -862,6 +878,7 @@ async def claude_chat(
                         evt.get("result_summary")
                         if isinstance(evt.get("result_summary"), dict)
                         else None,
+                        str(evt.get("output") or ""),
                     )
                 elif kind == "citations":
                     items = evt.get("items") or []

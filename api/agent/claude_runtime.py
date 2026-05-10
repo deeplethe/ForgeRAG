@@ -95,7 +95,11 @@ def _evt_tool_start(call_id: str, tool: str, params: dict) -> dict:
 
 
 def _evt_tool_end(
-    call_id: str, tool: str, latency_ms: int, result_summary: dict | None
+    call_id: str,
+    tool: str,
+    latency_ms: int,
+    result_summary: dict | None,
+    output: str = "",
 ) -> dict:
     return {
         "kind": "tool_end",
@@ -103,7 +107,41 @@ def _evt_tool_end(
         "tool": tool,
         "latency_ms": latency_ms,
         "result_summary": result_summary or {},
+        # Stringified, length-capped tool response. Lets the frontend
+        # render the raw output (Bash stdout, Read body, search hit
+        # JSON, …) inside an expandable chip without us having to
+        # bake per-tool formatting into the runtime. Cap is 8 KiB —
+        # enough for a typical Bash run / file read; larger payloads
+        # truncate with a marker so the trace JSON stays bounded.
+        "output": output or "",
     }
+
+
+# Per-call output cap — 8 KiB strikes the balance between "useful
+# preview" and "DB row stays small". A run with 20 tool calls hits
+# at most 160 KiB of trace JSON, comfortably inside the SQLite
+# ``messages.agent_trace_json`` column's practical ceiling.
+_TOOL_OUTPUT_MAX = 8192
+
+
+def _stringify_tool_output(value) -> str:
+    """Coerce a tool response (dict / list / str / None) to a
+    string-and-truncate so it can ride a JSON event without bloating
+    the trace blob. Dicts/lists go through ``json.dumps`` for
+    readability; long strings get a "..[N chars truncated]" tail.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        s = value
+    else:
+        try:
+            s = json.dumps(value, ensure_ascii=False, default=str, indent=2)
+        except Exception:
+            s = str(value)
+    if len(s) > _TOOL_OUTPUT_MAX:
+        s = s[:_TOOL_OUTPUT_MAX] + f"\n…[+{len(s) - _TOOL_OUTPUT_MAX} chars truncated]"
+    return s
 
 
 def _evt_citations(items: list[dict]) -> dict:
@@ -435,7 +473,13 @@ class ClaudeRuntime:
                         summary = {"text": str(tool_response["content"])[:200]}
                 else:
                     summary = {"text": str(tool_response)[:200]} if tool_response else {}
-                emit(_evt_tool_end(cid, str(tool_name), latency_ms, summary))
+                # Full stringified output (capped) — lets the
+                # frontend render the actual response (Bash stdout,
+                # Read body, hit list, ...) inside an expandable
+                # chip. ``result_summary`` keeps its narrow,
+                # backwards-compatible shape for the chip headline.
+                output = _stringify_tool_output(tool_response)
+                emit(_evt_tool_end(cid, str(tool_name), latency_ms, summary, output))
 
                 # Citation pool: search / read / rerank tools carry the
                 # records the model will quote inline as ``[c_<id>]``.
