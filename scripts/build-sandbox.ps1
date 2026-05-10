@@ -49,10 +49,14 @@ Write-Host '==> Done. Image summary:' -ForegroundColor Cyan
 docker image inspect $Tag --format '{{.RepoTags}}  {{.Size}} bytes  ({{.Created}})'
 
 Write-Host ''
-Write-Host '==> Smoke check: kernel + pandas import' -ForegroundColor Cyan
+Write-Host '==> Smoke check: data-stack imports + claude binary present' -ForegroundColor Cyan
+# Code execution is subprocess-based via the SDK's bundled Bash
+# tool — jupyter / ipykernel are intentionally NOT installed in
+# the image (see docker/sandbox/requirements.txt comment block).
 docker run --rm $Tag python -c @'
-import ipykernel, jupyter_client, pandas, matplotlib, pdfplumber
-print('kernel/pandas/plt/pdfplumber import OK')
-print('python', __import__('sys').version.split()[0])
+import pandas, matplotlib, pdfplumber, openpyxl
 print('pandas', pandas.__version__)
+print('matplotlib', matplotlib.__version__)
+print('pdfplumber', pdfplumber.__version__)
 '@
+docker run --rm $Tag sh -c "command -v claude >/dev/null && echo 'claude binary OK' || (echo 'MISSING: claude binary' >&2; exit 1)"

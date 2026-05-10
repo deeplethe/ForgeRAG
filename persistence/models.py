@@ -753,13 +753,16 @@ class ChunkRow(Base):
 # at ``/workdir/<project_id>/`` (see docs/roadmaps/agent-workspace.md).
 # Artifacts are files inside the workdir that we promote to first-class
 # tracked deliverables (lineage, mime, sha256). Runs + Steps are the audit
-# trail of agent work; ExecutionSession tracks the live ipykernel.
+# trail of agent work. (An ``ExecutionSession`` model used to track a
+# live ipykernel per project, but the codebase pivoted off ipykernel-based
+# code execution onto the SDK's built-in Bash tool — see commit 0f2487a —
+# so that model and the corresponding table are no longer maintained.)
 
 
 class Project(Base):
     """An agent-workspace project. Owns a workdir on disk; multiple
-    chats can bind to it (``conversations.project_id``); agent_runs,
-    artifacts, and execution_sessions all hang off it."""
+    chats can bind to it (``conversations.project_id``); agent_runs
+    and artifacts hang off it."""
 
     __tablename__ = "projects"
 
@@ -1002,40 +1005,13 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
-class ExecutionSession(Base):
-    """A live ipykernel inside a user's per-user Docker container.
-
-    Tracks (container_id, kernel_id, last_active_at) so the
-    SandboxManager (Phase 2) can decide when to reap idle kernels
-    and when to cold-start a fresh one for a project. One row per
-    project per active kernel; rows are kept after reaping (status
-    flips to 'reaped') for audit purposes.
-    """
-
-    __tablename__ = "execution_sessions"
-
-    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
-        String(32),
-        ForeignKey("projects.project_id", ondelete="CASCADE"),
-        index=True,
-    )
-    user_id: Mapped[str] = mapped_column(
-        String(32),
-        ForeignKey("auth_users.user_id", ondelete="CASCADE"),
-        index=True,
-    )
-    # Docker container id (long form). NULL while the container is
-    # being cold-started; populated once the daemon returns it.
-    container_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Jupyter kernel uuid (from the kernel's connection-info file).
-    kernel_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # starting | ready | busy | dead | reaped
-    status: Mapped[str] = mapped_column(
-        String(16), default="starting", server_default="starting", index=True
-    )
-    last_active_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+# NOTE: ``ExecutionSession`` (rows tracking a live ipykernel inside
+# a per-user container) used to be defined here but was removed when
+# the project pivoted off the self-built python_exec / KernelManager
+# stack (commit 0f2487a). The Claude Agent SDK's bundled Read /
+# Edit / Write / Bash / Glob / Grep tools cover what python_exec was
+# meant to do, with no jupyter kernel to babysit. The
+# ``execution_sessions`` table from the original migration may still
+# exist on long-lived deployments; that's harmless dead schema —
+# nothing reads or writes it. A future cleanup migration can drop it
+# but there's no rush.

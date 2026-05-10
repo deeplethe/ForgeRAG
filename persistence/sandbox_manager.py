@@ -3,13 +3,15 @@ SandboxManager — per-user agent container lifecycle.
 
 The Phase 2 architectural decision (see docs/roadmaps/agent-workspace.md):
 
-    one Docker container per user
-    one ipykernel per project (subprocess inside the user's container)
+    one Docker container per user — long-lived, bind-mounts that
+    user's workdir, hosts every chat turn the agent runs
 
-This module owns the OUTER layer — starting / stopping / reaping
-containers. The kernel-orchestration layer (jupyter_client +
-``docker exec`` to launch ipykernels) lands in Phase 2.3 on top
-of the same handles this manager hands out.
+The original plan also added an ipykernel per project for the
+``python_exec`` tool, but the project pivoted off that stack onto
+the Claude Agent SDK's bundled ``Bash`` / ``Read`` / ``Edit`` /
+``Write`` / ``Glob`` / ``Grep`` tools (commit 0f2487a). Code
+execution is now subprocess-based via Bash; jupyter is no longer
+in the picture, so this module's job stops at the container.
 
 Design points:
 
@@ -28,20 +30,19 @@ Design points:
   don't race to start two containers for the same user.
 
 * **Idle reaping** is opt-in, called explicitly by a maintenance
-  loop (Phase 2.9 wires the periodic call into AppState; for now
-  callers invoke ``reap_idle()`` directly). Container idle = no
+  loop (callers invoke ``reap_idle()`` directly today; a periodic
+  task may wire it into AppState later). Container idle = no
   ``touch()`` call within ``container_idle_seconds``. Default 30 min.
 
-* **Restart recovery** (Phase 2.9). A FastAPI worker restart loses
-  the in-memory table. On next ``ensure_container_for_user``, the
-  backend's ``list_owned`` reports any container the previous
-  process left running with our naming convention; we adopt it
-  rather than spawning a duplicate.
+* **Restart recovery**. A FastAPI worker restart loses the in-memory
+  table. On next ``ensure_container_for_user``, the backend's
+  ``list_owned`` reports any container the previous process left
+  running with our naming convention; we adopt it rather than
+  spawning a duplicate.
 
-* **No DB writes here**. ExecutionSession DB persistence lands in
-  Phase 2.9. Keeping persistence out of the manager's hot path
-  makes every operation cheap and side-effect-free for the test
-  suite (fake backend + in-memory handles is enough).
+* **No DB writes here**. The manager keeps persistence out of its
+  hot path so every operation stays cheap and side-effect-free for
+  the test suite (fake backend + in-memory handles is enough).
 """
 
 from __future__ import annotations
@@ -58,9 +59,7 @@ log = logging.getLogger(__name__)
 
 # Container naming convention — `<prefix><user_id>`. Lets us list
 # adopted containers across worker restart by name pattern alone,
-# no DB lookup required (DB-recorded ExecutionSession rows in
-# Phase 2.9 will cross-check, but the in-memory recovery path
-# survives a fresh process even before that lands).
+# no DB lookup required.
 DEFAULT_CONTAINER_NAME_PREFIX = "opencraig-sandbox-"
 
 # Default image tag built by ``scripts/build-sandbox.sh``. Operators
@@ -70,10 +69,7 @@ DEFAULT_CONTAINER_NAME_PREFIX = "opencraig-sandbox-"
 DEFAULT_SANDBOX_IMAGE = "opencraig/sandbox:py3.13"
 
 # Idle thresholds (matched to roadmap "Container lifecycle" section).
-# Kernel-level idle reaping is Phase 2.3's responsibility; container
-# idle is owned here.
 DEFAULT_CONTAINER_IDLE_SECONDS = 30 * 60   # 30 min — see roadmap rationale
-DEFAULT_KERNEL_IDLE_SECONDS = 10 * 60      # exposed for completeness
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +110,10 @@ class Mount:
 class ExecResult:
     """Result of a one-shot ``exec`` against a running container.
 
-    Phase 2.3+ uses the dedicated kernel channel for streaming
-    execution; ``exec`` is for kernel-launch + setup-style commands
-    (``micromamba install ...``, ``cat /workspace/.envs/r/.ready``,
-    etc.) where one-shot stdout/stderr capture is enough.
+    Used for setup-style commands (``micromamba install ...``,
+    ``cat /workspace/.envs/r/.ready``, etc.) where one-shot
+    stdout/stderr capture is enough — the agent's Bash tool runs
+    via the SDK's own subprocess transport, not through this path.
     """
 
     exit_code: int
@@ -233,8 +229,8 @@ class SandboxManager:
             user_id="u_alice",
             owned_project_ids=["proj_001", "proj_002"],
         )
-        # handle.container_id is now alive; Phase 2.3 launches
-        # ipykernels via docker exec on it.
+        # handle.container_id is now alive; the SDK exec'd inside
+        # it (via ClaudeContainerRunner) runs each chat turn.
     """
 
     def __init__(
@@ -271,12 +267,12 @@ class SandboxManager:
         )
         self.container_name_prefix = container_name_prefix
         self.container_idle_seconds = container_idle_seconds
-        # Port range to publish on every fresh container. Originally
-        # allocated for ipykernel ZMQ; under the Claude Agent SDK model
-        # the in-container agent doesn't need bound ports, but we
-        # keep the range for any future MCP / debug / preview server
-        # that wants to listen. All bindings stay loopback-only at
-        # the docker layer; no exposure to non-localhost callers.
+        # Port range to publish on every fresh container. The Claude
+        # Agent SDK in-container agent doesn't need bound ports, so
+        # this defaults to nothing — kept as a knob for any future
+        # MCP / debug / preview server that wants to listen. All
+        # bindings stay loopback-only at the docker layer; no
+        # exposure to non-localhost callers.
         self.published_ports = published_ports
         self._clock = clock
 
@@ -348,9 +344,9 @@ class SandboxManager:
 
     def touch(self, user_id: str) -> None:
         """Mark ``user_id``'s container as recently used. Called by
-        the kernel orchestration layer (Phase 2.3) after every
-        ``execute_request`` so reaping doesn't murder an active
-        kernel."""
+        ``ClaudeContainerRunner`` at the start of every chat turn so
+        the container that's about to run a turn doesn't get reaped
+        for being "idle" while the SDK is running inside it."""
         with self._table_lock:
             self._touch(user_id)
 
