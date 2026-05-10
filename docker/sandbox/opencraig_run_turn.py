@@ -196,7 +196,9 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
     )
 
 
-def _emit_message_events(msg, sdk, tool_t0: dict, tool_name: dict) -> str | None:
+def _emit_message_events(
+    msg, sdk, tool_t0: dict, tool_name: dict, streamed_indices: set[int]
+) -> str | None:
     """Translate one SDK message into zero-or-more JSONL events on
     stdout. Returns the final answer text if the message is a
     ResultMessage; ``None`` otherwise.
@@ -209,14 +211,17 @@ def _emit_message_events(msg, sdk, tool_t0: dict, tool_name: dict) -> str | None
     final_text: str | None = None
 
     if isinstance(msg, sdk.AssistantMessage):
-        for block in msg.content:
-            if isinstance(block, sdk.ThinkingBlock):
-                # Whole-message thinking blocks. Token-level thinking
-                # also surfaces via StreamEvent below — partial-stream
-                # de-dup is handled by skipping TextBlock when its
-                # content was already streamed (see seen_partial).
-                emit({"kind": "thinking", "text": block.thinking})
-            elif isinstance(block, sdk.ToolUseBlock):
+        # Whole-message blocks land here AFTER per-token StreamEvent
+        # deltas. Without dedup, the answer body emits twice (once
+        # per delta, once on the wrap-up TextBlock). Skip blocks at
+        # indices we already streamed via StreamEvent; emit only
+        # blocks that arrived without partial deltas (non-streaming
+        # providers). Mirror of api/agent/claude_runtime.py.
+        for i, block in enumerate(msg.content):
+            if isinstance(block, sdk.ToolUseBlock):
+                # Tool-use blocks always emit — they're not the
+                # streamed-text shape (a tool call doesn't reach us
+                # via content_block_delta).
                 tool_t0[block.id] = time.time()
                 tool_name[block.id] = block.name
                 emit({
@@ -225,14 +230,18 @@ def _emit_message_events(msg, sdk, tool_t0: dict, tool_name: dict) -> str | None
                     "tool": block.name,
                     "params": dict(block.input or {}),
                 })
+                continue
+            if i in streamed_indices:
+                continue
+            if isinstance(block, sdk.ThinkingBlock):
+                if block.thinking:
+                    emit({"kind": "thinking", "text": block.thinking})
             elif isinstance(block, sdk.TextBlock):
-                # Whole-text fall-through emitted only when partial
-                # streaming didn't produce deltas for this block. The
-                # caller marks _seen_partial[id(block)]=True when a
-                # delta event lands. Without that signal we'd
-                # double-emit the answer body.
-                if block.text and not msg.uuid:  # uuid set on stream-paired block
+                if block.text:
                     emit({"kind": "answer_delta", "text": block.text})
+        # Reset for the next assistant message — each turn opens a
+        # fresh content_block sequence.
+        streamed_indices.clear()
     elif isinstance(msg, sdk.UserMessage):
         # Tool results land here. The SDK delivers ToolResultBlock
         # in the user-side replay of the conversation; we fan it
@@ -258,6 +267,12 @@ def _emit_message_events(msg, sdk, tool_t0: dict, tool_name: dict) -> str | None
     elif isinstance(msg, sdk.StreamEvent):
         ev = msg.event or {}
         if ev.get("type") == "content_block_delta":
+            # Track which content_block indices were emitted via
+            # StreamEvent so the AssistantMessage wrap-up handler
+            # can skip them (otherwise the answer body emits twice).
+            idx = ev.get("index")
+            if isinstance(idx, int):
+                streamed_indices.add(idx)
             delta = ev.get("delta") or {}
             if delta.get("type") == "text_delta":
                 t = delta.get("text") or ""
@@ -323,20 +338,43 @@ async def _drive(user_message: str, history: list[dict], sdk) -> tuple[str, int]
         mcp_token=_read_str("OPENCRAIG_MCP_TOKEN"),
     )
 
+    # The SDK's streaming-input mode treats EVERY ``type:"user"``
+    # dict as a fresh prompt the agent must respond to. Replaying
+    # history as a series of user/assistant pairs causes the SDK
+    # to re-answer each historical user turn (observed: the
+    # bundled CLI raises "Stream closed" / "tool_use_id in J"
+    # under that mode). Fold history into a single ``type:"user"``
+    # whose text body includes the prior turns as plain context —
+    # SDK then makes exactly one LLM call.
+    #
+    # Also: the bundled claude binary iterates ``message.content``
+    # looking for tool-use blocks. A plain string makes JS iterate
+    # characters and the ``in`` operator throws "J is not an
+    # Object". Wrap as a single-element content-block array.
+    #
+    # Mirror of api/agent/claude_runtime.py — keep the two in sync
+    # whenever either changes.
     async def _prompt_stream():
-        for m in history or []:
-            role = m.get("role")
-            content = m.get("content")
-            if role in ("user", "assistant") and isinstance(content, str) and content:
-                yield {
-                    "type": "user" if role == "user" else "assistant",
-                    "message": {"role": role, "content": content},
-                    "parent_tool_use_id": None,
-                    "session_id": "",
-                }
+        if history:
+            lines = ["[prior conversation]"]
+            for m in history:
+                role = m.get("role")
+                content = m.get("content")
+                if role in ("user", "assistant") and isinstance(content, str) and content:
+                    speaker = "User" if role == "user" else "Assistant"
+                    lines.append(f"{speaker}: {content}")
+            lines.append("[end prior conversation]")
+            lines.append("")
+            lines.append(user_message)
+            composed = "\n".join(lines)
+        else:
+            composed = user_message
         yield {
             "type": "user",
-            "message": {"role": "user", "content": user_message},
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": composed}],
+            },
             "parent_tool_use_id": None,
             "session_id": "",
         }
@@ -345,9 +383,12 @@ async def _drive(user_message: str, history: list[dict], sdk) -> tuple[str, int]
     iterations = 0
     tool_t0: dict = {}
     tool_name: dict = {}
+    # Track which content_block indices were streamed via
+    # StreamEvent — see ``_emit_message_events``.
+    streamed_indices: set[int] = set()
 
     async for msg in sdk.query(prompt=_prompt_stream(), options=options):
-        ft = _emit_message_events(msg, sdk, tool_t0, tool_name)
+        ft = _emit_message_events(msg, sdk, tool_t0, tool_name, streamed_indices)
         if ft is not None:
             final_text = ft
             iterations = getattr(msg, "num_turns", 0) or 0
