@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -1616,6 +1617,104 @@ async def submit_feedback_route(
     handle.submit_feedback(env)
 
     return {"ok": True, "run_id": run_id, "delivered_type": body.type}
+
+
+class PreToolUseRequest(BaseModel):
+    """Posted by the in-container agent's PreToolUse hook before any
+    SDK-builtin tool (Bash / Edit / Write / Read / ...) runs.
+
+    The hook hands us the tool name + input; we route through
+    approval_policy + the active run's HITL channel and return the
+    SDK's expected ``permissionDecision`` shape. This is the only
+    signal channel we have into a sandboxed agent for builtin tools
+    — MCP tools are already gated by ``mcp_tools._approval_check_async``.
+    """
+
+    tool_name: str = Field(..., min_length=1)
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    tool_use_id: str | None = None
+
+
+class PreToolUseResponse(BaseModel):
+    """Mirrors the SDK's PreToolUseHookSpecificOutput. Callers should
+    inject ``decision`` straight into the hook's
+    ``{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+    "permissionDecision": decision, "permissionDecisionReason": reason}}``.
+    """
+
+    decision: str  # "allow" | "deny" | "ask"
+    reason: str | None = None
+    approval_id: str | None = None
+
+
+@router.post(
+    "/internal/pre_tool_use",
+    summary=(
+        "PreToolUse approval gate for SDK-builtin tools running in the "
+        "agent container. Called by the entrypoint's PreToolUse hook."
+    ),
+    response_model=PreToolUseResponse,
+    include_in_schema=False,
+)
+async def internal_pre_tool_use(
+    body: PreToolUseRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+) -> PreToolUseResponse:
+    """Resolve a PreToolUse approval verdict.
+
+    Flow:
+      1. Resolve the active run for ``principal.user_id``. If none,
+         allow by default — the agent must be running outside an
+         OpenCraig run context, and refusing here would deadlock it.
+      2. Apply ``approval_policy.needs_approval`` per the run's
+         configured mode. Bypass / non-required → allow.
+      3. Required → emit ``approval_request`` over the run's SSE,
+         await ``handle.wait_for_approval``, translate the user's
+         envelope into the SDK's permission verdict.
+
+    The route blocks until the user decides (timeout = 10 min, after
+    which we synthesise a deny with ``reason='timeout'`` so the agent
+    sees a definite verdict rather than hanging).
+    """
+    from ..agent.approval_policy import needs_approval as _needs_approval
+    handle = None
+    for h in state.active_runs.values():
+        if getattr(h, "user_id", None) == principal.user_id:
+            handle = h
+            break
+    if handle is None:
+        # Agent is making tool calls outside a managed run — allow.
+        # Refusing here would deadlock any in-container loop the
+        # operator runs against OpenCraig MCP without a /send.
+        return PreToolUseResponse(decision="allow")
+
+    mode = os.environ.get("OPENCRAIG_APPROVAL_MODE", "bypass")
+    decision = _needs_approval(body.tool_name, body.tool_input, approval_mode=mode)
+    if not decision.needs_approval:
+        return PreToolUseResponse(decision="allow")
+
+    approval_id = uuid.uuid4().hex
+    await handle.emit(
+        "approval_request",
+        {
+            "approval_id": approval_id,
+            "tool": body.tool_name,
+            "input": body.tool_input,
+            "risk": decision.risk,
+            "reason": decision.reason,
+            "tool_use_id": body.tool_use_id,
+            "via": "preToolUse_hook",
+        },
+    )
+    envelope = await handle.wait_for_approval(approval_id, timeout_s=600.0)
+    if envelope.type == "deny":
+        return PreToolUseResponse(
+            decision="deny",
+            reason=envelope.message or "denied by user",
+            approval_id=approval_id,
+        )
+    return PreToolUseResponse(decision="allow", approval_id=approval_id)
 
 
 def _find_active_run_id_for_conv(

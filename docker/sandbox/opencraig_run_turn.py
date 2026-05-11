@@ -200,6 +200,77 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
     if _read_str("OPENCRAIG_THINKING").lower() in ("enabled", "on", "1", "true"):
         thinking_cfg = {"type": "enabled", "budget_tokens": 1024}
 
+    # PreToolUse hook → HTTP callback to backend.
+    #
+    # SDK-builtin tools (Bash / Edit / Write / Delete / ...) execute
+    # inside this sandbox without round-tripping through the backend's
+    # MCP server, so MCP-layer approval (round-7 Bug 11 fix) doesn't
+    # cover them. The only signal channel we have into a sandboxed
+    # agent is the HTTP gateways it already calls (LLM proxy + MCP).
+    # We add one more: POST /api/v1/agent/internal/pre_tool_use to
+    # ask the backend "should this tool fire?", await the verdict,
+    # translate it into the SDK's PreToolUseHookSpecificOutput shape.
+    # The backend looks up the active run, applies approval_policy,
+    # emits ``approval_request`` over SSE, awaits ``/feedback approve|
+    # deny``, and returns the decision — same plumbing as the MCP
+    # route, just reached via HTTP rather than the in-process call.
+    backend_url = _read_str("OPENCRAIG_BACKEND_URL")
+    backend_token = _read_str("OPENCRAIG_API_TOKEN") or mcp_token
+
+    hooks_cfg: dict = {}
+    if backend_url and backend_token:
+        try:
+            import httpx as _httpx  # type: ignore[import-not-found]
+        except ImportError:
+            _httpx = None  # type: ignore[assignment]
+
+        async def _on_pre_tool(input_data, tool_use_id, context):
+            if _httpx is None:
+                return {}
+            tool_name = input_data.get("tool_name") or ""
+            tool_input = input_data.get("tool_input") or {}
+            url = f"{backend_url.rstrip('/')}/api/v1/agent/internal/pre_tool_use"
+            try:
+                async with _httpx.AsyncClient(timeout=620.0) as client:
+                    resp = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {backend_token}"},
+                        json={
+                            "tool_name": tool_name,
+                            "tool_input": tool_input,
+                            "tool_use_id": str(tool_use_id or ""),
+                        },
+                    )
+                if resp.status_code != 200:
+                    # Fail-open on backend errors — denying every tool
+                    # because the approval endpoint had a hiccup would
+                    # be the worst kind of broken. Operators see the
+                    # 5xx in backend logs.
+                    return {}
+                body = resp.json()
+                decision = body.get("decision", "allow")
+                if decision == "deny":
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                body.get("reason") or "denied by user"
+                            ),
+                        }
+                    }
+                return {}
+            except Exception:
+                # Network blip / timeout / unparseable response — same
+                # fail-open rationale as above.
+                return {}
+
+        hooks_cfg = {
+            "PreToolUse": [
+                sdk.HookMatcher(matcher=".*", hooks=[_on_pre_tool])
+            ],
+        }
+
     return sdk.ClaudeAgentOptions(
         model=_read_str("OPENCRAIG_MODEL") or None,
         system_prompt=_read_str("OPENCRAIG_SYSTEM_PROMPT") or None,
@@ -209,7 +280,15 @@ def _build_options(sdk, *, mcp_url: str, mcp_token: str):
         # workspace. ``allowed_tools`` left default so the SDK's full
         # built-in set is available; MCP tools fan in as ``mcp__name__*``.
         cwd=os.getcwd(),
+        # Stay on ``bypassPermissions`` — the SDK's own ``default``
+        # permission flow has its own ideas about which paths the
+        # agent may touch and refused mkdir under /workspace in
+        # round-7 Task R. Per the Claude Code hooks docs, PreToolUse
+        # hooks fire under ``bypassPermissions`` too — they're the
+        # operator's gate, the SDK's built-in flow is a separate
+        # layer that we don't want active.
         permission_mode="bypassPermissions",
+        hooks=hooks_cfg or None,
         max_turns=_read_int("OPENCRAIG_MAX_TURNS", 90),
         include_partial_messages=True,
         thinking=thinking_cfg,

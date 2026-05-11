@@ -308,6 +308,20 @@ class ClaudeContainerRunner:
                 env["OPENCRAIG_MCP_TOKEN"] = auth[len("Bearer "):]
             elif auth:
                 env["OPENCRAIG_MCP_TOKEN"] = auth
+            # PreToolUse hook callback target. The hook in
+            # ``opencraig_run_turn.py`` POSTs to
+            # ``$OPENCRAIG_BACKEND_URL/api/v1/agent/internal/pre_tool_use``
+            # for SDK-builtin tool approval (round-7 follow-up to Bug
+            # 11). Strip the FULL mount path (``/api/v1/mcp`` or
+            # ``/mcp``) off the MCP URL to get the bare backend origin,
+            # otherwise prefixes double up to ``/api/v1/api/v1/...``.
+            mcp_url_for_backend = env["OPENCRAIG_MCP_URL"]
+            from urllib.parse import urlsplit, urlunsplit
+            _parts = urlsplit(mcp_url_for_backend)
+            env["OPENCRAIG_BACKEND_URL"] = urlunsplit(
+                (_parts.scheme, _parts.netloc, "", "", "")
+            )
+            env["OPENCRAIG_API_TOKEN"] = env.get("OPENCRAIG_MCP_TOKEN", "")
 
         # Multimodal content blocks (image / pdf the user attached
         # this turn). Ship as JSON via env var so the entrypoint can
