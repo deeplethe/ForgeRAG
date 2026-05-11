@@ -214,7 +214,13 @@ def _on_litellm_success(
     # Emit usage + check budget. handle.emit is async but the LiteLLM
     # callback is sync; schedule on the handle's loop via run_coroutine_
     # threadsafe so we don't block the LLM thread.
-    loop = getattr(handle, "loop", None) or asyncio.get_event_loop()
+    loop = getattr(handle, "loop", None)
+    if loop is None:
+        # No captured loop (shouldn't happen post round-7 fix in
+        # task_handle.start()) — totals are already updated on the
+        # handle; skip the emit + budget signal.
+        log.warning("usage_callback: handle has no loop; emit skipped")
+        return
     coro = handle.emit(
         "usage",
         {
@@ -225,8 +231,6 @@ def _on_litellm_success(
     try:
         asyncio.run_coroutine_threadsafe(coro, loop)
     except Exception:
-        # Loop may not be available from this thread (e.g. tests).
-        # Fire-and-forget; the totals are already updated on the handle.
         log.exception("usage_callback: run_coroutine_threadsafe emit failed")
 
     if handle.is_over_budget():

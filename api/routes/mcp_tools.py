@@ -33,16 +33,238 @@ Tools NOT exposed here:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any
 
 from ..agent import build_tool_context
+from ..agent.approval_policy import needs_approval as _needs_approval
 from ..agent.dispatch import dispatch as _dispatch
 from .mcp_server import get_mcp_principal, mcp_server
 
 log = logging.getLogger(__name__)
+
+
+async def _approval_check_async(
+    state: Any,
+    principal: Any,
+    tool_name: str,
+    params: dict[str, Any],
+    call_id: str,
+) -> dict[str, Any] | None:
+    """Async approval gate. Use from async MCP wrappers — emits + awaits
+    directly on the FastAPI loop. The sync version below trampolines
+    through ``run_coroutine_threadsafe`` and was found to dead-lock
+    when FastMCP runs the sync tool on the same loop as the SSE
+    subscriber (round-7 Task Q: the .result() timeout blocks the loop,
+    so the scheduled coroutine never runs until the timeout fires)."""
+    mode = os.environ.get("OPENCRAIG_APPROVAL_MODE", "bypass")
+    if mode == "bypass":
+        return None
+    decision = _needs_approval(tool_name, params, approval_mode=mode)
+    if not decision.needs_approval:
+        return None
+    handle = None
+    try:
+        for h in list(state.active_runs.values()):
+            if getattr(h, "user_id", None) == principal.user_id:
+                handle = h
+                break
+    except Exception:
+        log.exception("approval_check_async: active_runs scan failed")
+        return {
+            "error": "approval check failed: cannot scan active runs",
+            "tool": tool_name,
+        }
+    if handle is None:
+        return {
+            "error": (
+                f"approval required for {tool_name} (mode={mode}) but no "
+                f"active run for user — refusing to auto-approve"
+            ),
+            "tool": tool_name,
+        }
+    approval_id = uuid.uuid4().hex
+    await handle.emit(
+        "approval_request",
+        {
+            "approval_id": approval_id,
+            "tool": tool_name,
+            "input": params,
+            "risk": decision.risk,
+            "reason": decision.reason,
+            "call_id": call_id,
+        },
+    )
+    envelope = await handle.wait_for_approval(approval_id, timeout_s=600.0)
+    if envelope.type == "deny":
+        return {
+            "error": (
+                f"tool call denied by user (approval_id={approval_id}): "
+                f"{envelope.message or 'no reason given'}"
+            ),
+            "tool": tool_name,
+            "denied": True,
+        }
+    return None
+
+
+async def _dispatch_via_mcp_async(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Async variant of ``_dispatch_via_mcp``. Required for tools that
+    need to await an approval round-trip (round-7 Bug 11). Other
+    aspects identical to the sync path."""
+    principal = get_mcp_principal()
+    if principal is None:
+        return {
+            "error": (
+                "MCP server: no authenticated principal on this connection."
+            ),
+            "tool": tool_name,
+        }
+    state = _resolve_app_state()
+    if state is None:
+        return {
+            "error": "MCP server: backend state not initialised yet.",
+            "tool": tool_name,
+        }
+    ctx = build_tool_context(state, principal, project_id=project_id)
+    call_id = uuid.uuid4().hex
+    approval_decision = await _approval_check_async(
+        state, principal, tool_name, params, call_id
+    )
+    if approval_decision is not None:
+        return approval_decision
+    t0 = time.time()
+    result = _dispatch(tool_name, params, ctx)
+    latency_ms = int((time.time() - t0) * 1000)
+    log.info(
+        "mcp_tool_call call_id=%s user=%s tool=%s latency_ms=%d "
+        "params_keys=%s",
+        call_id,
+        principal.user_id,
+        tool_name,
+        latency_ms,
+        sorted(params.keys()),
+    )
+    return {k: v for k, v in result.items() if not k.startswith("_")}
+
+
+def _approval_check(
+    state: Any,
+    principal: Any,
+    tool_name: str,
+    params: dict[str, Any],
+    call_id: str,
+) -> dict[str, Any] | None:
+    """PreToolUse gate for MCP tools (round-6 Bug 11).
+
+    Returns ``None`` if the call should proceed; returns an error dict
+    that MCP will surface as the tool result if the call must be
+    blocked. Modes:
+
+      - ``bypass`` (default) — no approval ever needed; legacy path.
+      - ``default`` / ``paranoid`` / ``permissive`` — per
+        ``approval_policy.needs_approval``.
+
+    Sandbox limitation: SDK builtins (Bash / Edit / Write / Read)
+    execute inside the agent container and never round-trip through
+    this dispatcher, so this gate doesn't cover them. For native MCP
+    tools (search_vector, inspect_artifact, web_fetch, ...) this is
+    the full PreToolUse path.
+    """
+    mode = os.environ.get("OPENCRAIG_APPROVAL_MODE", "bypass")
+    if mode == "bypass":
+        return None
+    decision = _needs_approval(tool_name, params, approval_mode=mode)
+    if not decision.needs_approval:
+        return None
+    # Find the user's active run handle to emit the request + await
+    # an answer. If they have no active run, there's no one to
+    # approve through and no SSE channel — fail closed.
+    handle = None
+    try:
+        for h in list(state.active_runs.values()):
+            if getattr(h, "user_id", None) == principal.user_id:
+                handle = h
+                break
+    except Exception:
+        log.exception("approval_check: active_runs scan failed")
+        return {
+            "error": "approval check failed: cannot scan active runs",
+            "tool": tool_name,
+        }
+    if handle is None:
+        log.warning(
+            "approval_check: no active run for user=%s; tool=%s",
+            principal.user_id, tool_name,
+        )
+        return {
+            "error": (
+                f"approval required for {tool_name} (mode={mode}) but no "
+                f"active run for user — refusing to auto-approve"
+            ),
+            "tool": tool_name,
+        }
+    approval_id = uuid.uuid4().hex
+    loop = getattr(handle, "loop", None)
+    if loop is None:
+        log.error(
+            "approval_check: handle has no captured event loop "
+            "(run_id=%s); cannot route emit/wait. Refusing.",
+            getattr(handle, "run_id", "?"),
+        )
+        return {
+            "error": (
+                "approval check unavailable: handle missing event loop "
+                "reference"
+            ),
+            "tool": tool_name,
+        }
+    # Emit + wait via the handle's own event loop. wait_for_approval
+    # synthesises a 'deny' envelope on timeout so the agent gets a
+    # definite verdict either way.
+    async def _emit_and_wait():
+        await handle.emit(
+            "approval_request",
+            {
+                "approval_id": approval_id,
+                "tool": tool_name,
+                "input": params,
+                "risk": decision.risk,
+                "reason": decision.reason,
+                "call_id": call_id,
+            },
+        )
+        return await handle.wait_for_approval(approval_id, timeout_s=600.0)
+
+    try:
+        envelope = asyncio.run_coroutine_threadsafe(
+            _emit_and_wait(), loop
+        ).result(timeout=620.0)
+    except Exception as e:
+        log.exception("approval_check: emit+wait failed")
+        return {
+            "error": f"approval check raised: {type(e).__name__}: {e}",
+            "tool": tool_name,
+        }
+    if envelope.type == "deny":
+        return {
+            "error": (
+                f"tool call denied by user (approval_id={approval_id}): "
+                f"{envelope.message or 'no reason given'}"
+            ),
+            "tool": tool_name,
+            "denied": True,
+        }
+    return None  # approved
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +329,24 @@ def _dispatch_via_mcp(
     # ID we can later persist into ``tool_call_log``. the SDK never
     # sees this — it lives on our side of the wire.
     call_id = uuid.uuid4().hex
+
+    # PreToolUse approval check (Inc 4 wiring; round-6 Bug 11 fix).
+    # We can only gate MCP tools here — SDK builtins (Bash / Edit /
+    # Write / Read) execute inside the sandbox and never touch the
+    # backend. For those, approval requires a stdin protocol into
+    # the container, which the current runtime doesn't have.
+    #
+    # Approval mode: env-driven so deployments can flip behaviour
+    # without code changes. ``OPENCRAIG_APPROVAL_MODE`` is one of
+    # ``bypass`` (default; current behaviour), ``default``,
+    # ``paranoid``, ``permissive``. The probe sets ``paranoid`` to
+    # exercise the round-trip for round-6 Task Q.
+    approval_decision = _approval_check(
+        state, principal, tool_name, params, call_id
+    )
+    if approval_decision is not None:
+        return approval_decision  # short-circuit on deny / timeout / missing run
+
     t0 = time.time()
     result = _dispatch(tool_name, params, ctx)
     latency_ms = int((time.time() - t0) * 1000)
@@ -452,7 +692,7 @@ def import_from_library(
 
 
 @mcp_server.tool()
-def inspect_artifact(path: str, text_head_chars: int = 500) -> dict:
+async def inspect_artifact(path: str, text_head_chars: int = 500) -> dict:
     """Inspect a file in the agent's workspace WITHOUT loading its full
     content into context. Use this instead of ``Read`` for verifying
     that an artifact you wrote (CSV, PNG, PDF, JSON, ...) exists with
@@ -486,7 +726,11 @@ def inspect_artifact(path: str, text_head_chars: int = 500) -> dict:
     params: dict[str, Any] = {"path": path}
     if text_head_chars is not None and text_head_chars != 500:
         params["text_head_chars"] = int(text_head_chars)
-    return _dispatch_via_mcp("inspect_artifact", params)
+    # async path so the approval gate (if active) can ``await`` the
+    # user's verdict without blocking the FastMCP loop. The sync
+    # dispatch path dead-locks under load — see _approval_check_async
+    # docstring for the round-7 Task Q diagnosis.
+    return await _dispatch_via_mcp_async("inspect_artifact", params)
 
 
 # ---------------------------------------------------------------------------

@@ -203,6 +203,17 @@ class AgentTaskHandle:
     # The asyncio.Task running the agent itself (set by runtime in Inc 3)
     agent_task: asyncio.Task | None = None
 
+    # The asyncio event loop that owns this handle. Captured at
+    # ``start()`` because the LiteLLM success_callback and the MCP
+    # approval gate both run in worker threads — they need the
+    # FastAPI/uvicorn loop to do ``run_coroutine_threadsafe(handle.emit
+    # (...))``. ``asyncio.get_event_loop()`` from a worker thread
+    # returns a fresh, never-driven loop, so anything submitted to it
+    # blocks forever. Bug surfaced in round-7 Task Q: the MCP approval
+    # check awaited on the wrong loop and the three inspect_artifact
+    # calls hung indefinitely without any approval_request emit.
+    loop: asyncio.AbstractEventLoop | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -214,6 +225,10 @@ class AgentTaskHandle:
         self._db_queue = asyncio.Queue()
         self.user_inbox = asyncio.Queue()
         self._db_write_lock = asyncio.Lock()
+        # Capture the running loop so callers from worker threads
+        # (litellm callback, MCP approval gate) can do
+        # ``asyncio.run_coroutine_threadsafe(coro, handle.loop)``.
+        self.loop = asyncio.get_running_loop()
         self._writer_task = asyncio.create_task(
             self._writer_loop(), name=f"agent-writer-{self.run_id}"
         )
