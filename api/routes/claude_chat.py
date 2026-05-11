@@ -64,6 +64,8 @@ from ..agent.claude_runtime import (
     ClaudeUnavailableError,
     stream_turn,
 )
+from ..agent.runtime_adapter import run_agent_through_handle
+from ..agent.task_handle import AgentTaskHandle
 from ..auth import AuthenticatedPrincipal
 from ..deps import get_principal, get_state
 from ..state import AppState
@@ -811,7 +813,649 @@ def _translate(evt: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Route
+# Long-task architecture (Inc 3): /send + /stream
+# ---------------------------------------------------------------------------
+#
+# Two endpoints implement disconnect-survival + reconnect-replay:
+#
+#   POST /conversations/{conv_id}/send
+#       Sets up the turn (history, attachments, knowledge scope), creates
+#       an AgentRun row + AgentTaskHandle, kicks off the agent as a
+#       background asyncio.Task, returns {run_id} immediately. The HTTP
+#       response closes before the agent finishes — client doesn't have
+#       to stay connected.
+#
+#   GET /conversations/{conv_id}/stream?since=N
+#       SSE stream subscribing to the conv's currently-active run. The
+#       `since` query param is the last seq the client saw; server
+#       replays seq>since from the buffer/DB then tails live. Reconnect
+#       is just opening this endpoint again with the new `since`.
+#
+# Legacy POST /chat (below) keeps working — Inc 6 will deprecate it
+# once the frontend has cut over.
+
+
+async def _setup_turn(
+    state: AppState,
+    request: Request,
+    body: "ChatRequest",
+    principal: AuthenticatedPrincipal,
+) -> dict[str, Any]:
+    """Shared setup the new /send route and the legacy /chat both need:
+    resolve model + loopback URL + agent token, load history, persist
+    user message, build attachment feed, compose query, build MCP server
+    config. Returns a dict the caller hands to the runtime adapter."""
+    try:
+        model = _resolve_model_name(state, body.model)
+        base_url = _agent_loopback_url(request)
+        api_key = _get_or_create_agent_token(state, principal)
+    except Exception as e:
+        log.exception("setup_turn: model config resolution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    history: list[dict] = []
+    cwd_path: str | None = body.cwd_path
+    effective_path_filters: list[str] = [
+        p for p in (body.path_filters or []) if isinstance(p, str) and p.strip()
+    ]
+    user_message_id: str | None = None
+
+    if body.conversation_id:
+        try:
+            history = _load_conversation_history(state, body.conversation_id)
+        except Exception:
+            log.exception(
+                "setup_turn: history load failed conv=%s", body.conversation_id
+            )
+
+        # Resolve + persist cwd_path (latest "switch folder" wins),
+        # plus knowledge-scope chip rail persistence.
+        try:
+            existing = state.store.get_conversation(body.conversation_id)
+            if existing is not None:
+                stored_cwd = existing.get("cwd_path") if isinstance(existing, dict) else None
+                if cwd_path is None and stored_cwd:
+                    cwd_path = stored_cwd
+                if body.cwd_path and body.cwd_path != stored_cwd:
+                    try:
+                        state.store.update_conversation(
+                            body.conversation_id, cwd_path=body.cwd_path,
+                        )
+                    except Exception:
+                        log.exception(
+                            "setup_turn: cwd_path update failed conv=%s",
+                            body.conversation_id,
+                        )
+                stored_pf = (
+                    existing.get("path_filters")
+                    if isinstance(existing, dict) else []
+                ) or []
+                if body.path_filters is not None:
+                    cleaned_pf = [
+                        p for p in body.path_filters
+                        if isinstance(p, str) and p.strip()
+                    ]
+                    if cleaned_pf != stored_pf:
+                        try:
+                            state.store.update_conversation(
+                                body.conversation_id,
+                                path_filters_json=cleaned_pf,
+                            )
+                        except Exception:
+                            log.exception(
+                                "setup_turn: path_filters update failed conv=%s",
+                                body.conversation_id,
+                            )
+                    effective_path_filters = cleaned_pf
+                else:
+                    effective_path_filters = list(stored_pf)
+        except Exception:
+            log.exception(
+                "setup_turn: cwd_path resolution failed conv=%s",
+                body.conversation_id,
+            )
+
+        try:
+            user_message_id = _persist_user_message(
+                state, body.conversation_id, body.query,
+            )
+        except Exception:
+            log.exception(
+                "setup_turn: user-message persist failed conv=%s",
+                body.conversation_id,
+            )
+
+        if user_message_id and body.attachment_ids:
+            try:
+                state.store.bind_attachments_to_message(
+                    user_message_id, list(body.attachment_ids),
+                )
+            except Exception:
+                log.exception(
+                    "setup_turn: bind_attachments failed conv=%s msg=%s",
+                    body.conversation_id, user_message_id,
+                )
+
+    # Attachment feed
+    attachment_text_prefix = ""
+    extra_user_blocks: list[dict] = []
+    if body.attachment_ids and body.conversation_id:
+        try:
+            attachment_text_prefix, extra_user_blocks, _skipped = (
+                _build_attachment_feed(
+                    state,
+                    user_id=principal.user_id,
+                    conv_id=body.conversation_id,
+                    attachment_ids=list(body.attachment_ids),
+                )
+            )
+        except Exception:
+            log.exception(
+                "setup_turn: attachment feed build failed conv=%s",
+                body.conversation_id,
+            )
+
+    # Knowledge-scope hint
+    knowledge_scope_hint = ""
+    if effective_path_filters:
+        path_lines = "\n".join(f"  - {p}" for p in effective_path_filters)
+        knowledge_scope_hint = (
+            "[knowledge scope]\n"
+            "The user has pinned the following knowledge paths for this "
+            "turn — prefer searching within these scopes. Call "
+            "``search_vector`` once per path if you need broad coverage; "
+            "you may search outside if the answer clearly isn't in any "
+            "of them.\n"
+            f"{path_lines}\n"
+            "[end knowledge scope]\n"
+        )
+
+    parts: list[str] = []
+    if knowledge_scope_hint:
+        parts.append(knowledge_scope_hint)
+    if attachment_text_prefix:
+        parts.append(attachment_text_prefix)
+    parts.append(body.query)
+    composed_query = "\n".join(parts)
+
+    proxy_root = _agent_loopback_url(request).rsplit(
+        "/api/v1/llm/anthropic", 1
+    )[0]
+    mcp_servers = {
+        "opencraig": {
+            "url": f"{proxy_root}/api/v1/mcp/",
+            "headers": {"Authorization": f"Bearer {api_key}"},
+        }
+    }
+
+    config = ClaudeTurnConfig(
+        model=model,
+        base_url=base_url or "",
+        api_key=api_key or "",
+        max_iterations=90,
+        system_message=body.system_prompt_override or _DEFAULT_AGENT_SYSTEM_PROMPT,
+        mcp_servers=mcp_servers,
+    )
+
+    return {
+        "config": config,
+        "composed_query": composed_query,
+        "history": history,
+        "extra_user_blocks": extra_user_blocks,
+        "cwd_path": cwd_path,
+        "user_message_id": user_message_id,
+    }
+
+
+async def _run_agent_in_background(
+    state: AppState,
+    handle: AgentTaskHandle,
+    *,
+    composed_query: str,
+    config: ClaudeTurnConfig,
+    history: list[dict],
+    extra_user_blocks: list[dict],
+    use_container: bool,
+    principal_user_id: str,
+    cwd_path: str | None,
+    conv_id: str | None,
+    started_at: float,
+) -> None:
+    """The background task that actually runs one agent turn through
+    the new handle-based event bus. Persists assistant Message + final
+    AgentRun state, then closes the handle.
+
+    Always closes the handle even on exceptions, so the run row ends
+    up in a terminal state and ``state.active_runs`` doesn't leak.
+    """
+    try:
+        result = await run_agent_through_handle(
+            handle,
+            composed_query=composed_query,
+            config=config,
+            use_container=use_container,
+            state=state,
+            conversation_history=history,
+            extra_user_content_blocks=extra_user_blocks,
+            principal_user_id=principal_user_id,
+            cwd_path=cwd_path,
+        )
+
+        final_text = result["final_text"]
+        citations_pool = result["citations_pool"]
+        input_tokens = result["input_tokens"]
+        output_tokens = result["output_tokens"]
+        error = result["error"]
+
+        # Build the trace snapshot from the events we just emitted. The
+        # frontend's AgentMessageBody needs this on reload so the
+        # chronological tool-chip sequence renders without replaying SSE.
+        # Reconstruct from handle.event_buffer (in-memory; covers a
+        # just-completed run) — simpler than maintaining a parallel
+        # _TraceAccumulator like the legacy /chat route did, and avoids
+        # double-bookkeeping.
+        agent_trace = _trace_from_handle_events(handle)
+
+        # Emit the terminal ``done`` event (force-flushed by emit's
+        # critical-event policy). The handle.close() below will mark
+        # the run row's status.
+        await handle.emit(
+            "done",
+            {
+                "stop_reason": "error" if error else "end_turn",
+                "total_latency_ms": int((time.time() - started_at) * 1000),
+                "final_text": final_text,
+                "iterations": result["iterations"],
+                "citations": citations_pool or None,
+                "error": error,
+            },
+        )
+
+        # Post-stream persistence — assistant message + cleanup.
+        # Failures don't bubble up: they get logged but we still close
+        # the handle cleanly so the run row reaches a terminal state.
+        if conv_id:
+            try:
+                _persist_assistant_message(
+                    state,
+                    conv_id,
+                    final_text,
+                    agent_trace=agent_trace,
+                    citations=citations_pool,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            except Exception:
+                log.exception(
+                    "background_run: assistant persist failed conv=%s",
+                    conv_id,
+                )
+
+        final_status = "failed" if error else "done"
+    except asyncio.CancelledError:
+        # Triggered by shutdown or explicit interrupt (Inc 4 wires this).
+        await handle.emit("interrupted", {"by_user": False, "reason": "cancelled"})
+        final_status = "interrupted"
+        raise
+    except Exception as e:
+        log.exception(
+            "background_run: agent raised run=%s", handle.run_id
+        )
+        try:
+            await handle.emit(
+                "error", {"message": str(e), "type": type(e).__name__}
+            )
+        except Exception:
+            pass
+        final_status = "failed"
+    finally:
+        # close() flushes the event buffer + updates agent_runs row +
+        # broadcasts a synthetic terminal to any remaining subscribers
+        # so their async generators exit cleanly.
+        try:
+            await handle.close(final_status=final_status)
+        except Exception:
+            log.exception(
+                "background_run: handle.close failed run=%s", handle.run_id
+            )
+        # Drop from active registry.
+        state.active_runs.pop(handle.run_id, None)
+
+
+def _trace_from_handle_events(handle: AgentTaskHandle) -> list[dict] | None:
+    """Convert handle.event_buffer into the trace shape Chat.vue's
+    streamTrace reducer expects, so a conv reload renders the same
+    inline tool chips the user saw live.
+
+    Schema mirrors what the legacy ``_TraceAccumulator`` produced:
+      [{kind: 'phase' | 'thought' | 'tool', ...}, ...]
+    """
+    if not handle.event_buffer:
+        return None
+    out: list[dict] = []
+    open_tool_calls: dict[str, dict] = {}  # call_id → tool entry being built
+    for ev in handle.event_buffer:
+        t = ev["type"]
+        p = ev.get("payload") or {}
+        if t == "phase":
+            out.append({"kind": "phase", "phase": p.get("phase", "")})
+        elif t == "thought":
+            out.append({"kind": "thought", "text": p.get("text", "")})
+        elif t == "tool_start":
+            entry = {
+                "kind": "tool",
+                "id": p.get("call_id", ""),
+                "tool": p.get("tool", ""),
+                "input": p.get("input"),
+            }
+            out.append(entry)
+            open_tool_calls[entry["id"]] = entry
+        elif t == "tool_end":
+            cid = p.get("call_id", "")
+            entry = open_tool_calls.get(cid)
+            if entry is not None:
+                entry["latency_ms"] = p.get("latency_ms")
+                entry["output"] = p.get("output")
+                entry["is_error"] = p.get("is_error")
+                entry["result_summary"] = p.get("result_summary")
+        # Skip token/usage/citation/done — not part of the trace shape;
+        # they're rendered separately (answer body / context ring / chips).
+    return out or None
+
+
+class SendTurnRequest(ChatRequest):
+    """Same shape as ChatRequest for now — separate class so the new
+    /send route can evolve independently of the legacy /chat body
+    without breaking either."""
+
+
+class SendTurnResponse(BaseModel):
+    run_id: str
+    started_at: float
+
+
+@router.post(
+    "/conversations/{conv_id}/send",
+    response_model=SendTurnResponse,
+    summary="Start an agent turn in the background (long-task architecture).",
+)
+async def send_turn(
+    conv_id: str,
+    request: Request,
+    body: SendTurnRequest,
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+    state: AppState = Depends(get_state),
+) -> SendTurnResponse:
+    """Kick off one agent turn as a background task. Returns ``run_id``
+    immediately — the client subscribes to events via
+    ``GET /conversations/{conv_id}/stream``.
+
+    If the conversation already has an active run, returns 409
+    Conflict. The MVP rule is "one active run per conv";
+    cross-conv concurrency is allowed (run in conv A while another
+    runs in conv B).
+    """
+    # Ensure conv_id consistency (body may pass it too — body wins if set
+    # for back-compat, but route param is the canonical surface).
+    body_conv = body.conversation_id or conv_id
+    if body_conv != conv_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"body.conversation_id={body_conv!r} differs from path conv_id={conv_id!r}",
+        )
+    body.conversation_id = conv_id
+
+    # Concurrency guard: one active run per conv (Inc 3 simplification).
+    try:
+        existing_active = state.store.find_active_agent_run(conv_id)
+    except Exception:
+        log.exception("send_turn: find_active_agent_run failed conv=%s", conv_id)
+        existing_active = None
+    if existing_active is not None and existing_active.get("run_id") in state.active_runs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "active_run_exists",
+                "active_run_id": existing_active["run_id"],
+                "active_status": existing_active.get("status"),
+                "hint": "Subscribe via GET /stream, or POST /feedback {type:'interrupt'} to abort first.",
+            },
+        )
+
+    ctx = await _setup_turn(state, request, body, principal)
+
+    run_id = uuid.uuid4().hex
+    started_at = time.time()
+
+    # Persist the AgentRun row eagerly so the row exists before any
+    # event lands. ``status="running"`` + ``token_budget_total`` from
+    # config (Inc 5 wires per-request budget).
+    try:
+        state.store.create_agent_run(
+            {
+                "run_id": run_id,
+                "conversation_id": conv_id,
+                "user_id": principal.user_id,
+                "cwd_path": ctx["cwd_path"],
+                "status": "running",
+                "depth": 0,
+                "parent_run_id": None,
+                "last_event_seq": 0,
+            }
+        )
+    except Exception:
+        log.exception("send_turn: create_agent_run failed run=%s", run_id)
+        raise HTTPException(status_code=500, detail="failed to create agent run")
+
+    # Build + register the handle.
+    handle = AgentTaskHandle(
+        run_id=run_id,
+        conversation_id=conv_id,
+        user_id=principal.user_id,
+        store=state.store,
+        depth=0,
+        parent_run_id=None,
+    )
+    await handle.start()
+    state.active_runs[run_id] = handle
+
+    # Kick off the background task. We deliberately don't await it —
+    # the HTTP response returns immediately and the agent keeps running
+    # regardless of whether the client subscribes.
+    #
+    # Two precautions so the task survives the request lifecycle:
+    #
+    #   1. Store the Task reference on the handle (which lives in
+    #      state.active_runs) so Python's GC can't collect a task no
+    #      one strongly references.
+    #   2. Wrap the coroutine in ``asyncio.shield`` so request-scoped
+    #      cancellation (Starlette tears down the request scope when
+    #      the response is sent, and anyio/TestClient may cancel
+    #      "orphan" tasks created inside that scope) doesn't propagate
+    #      into the agent run. Shield-ing means the OUTER task can be
+    #      cancelled (by client disconnect / test teardown) without
+    #      bubbling into the agent run itself; only an explicit
+    #      ``handle.agent_task.cancel()`` (via /feedback interrupt,
+    #      Inc 4) reaches the agent loop.
+    use_container = getattr(state, "sandbox", None) is not None
+
+    inner_task = asyncio.create_task(
+        _run_agent_in_background(
+            state,
+            handle,
+            composed_query=ctx["composed_query"],
+            config=ctx["config"],
+            history=ctx["history"],
+            extra_user_blocks=ctx["extra_user_blocks"],
+            use_container=use_container,
+            principal_user_id=principal.user_id,
+            cwd_path=ctx["cwd_path"],
+            conv_id=conv_id,
+            started_at=started_at,
+        ),
+        name=f"agent-run-{run_id}",
+    )
+    # Keep both references: ``inner_task`` is what Inc 4's interrupt
+    # path will explicitly cancel; the shielded wrapper is what the
+    # request scope might try to cancel (and we want it to fail to
+    # propagate).
+    handle.agent_task = inner_task
+    # Fire the shielded wrapper so the request scope's cancellation
+    # only hits the wrapper, not the underlying agent task.
+    asyncio.create_task(
+        _shield_agent_task(inner_task), name=f"agent-shield-{run_id}"
+    )
+
+    return SendTurnResponse(run_id=run_id, started_at=started_at)
+
+
+async def _shield_agent_task(task: asyncio.Task) -> None:
+    """Tiny wrapper around ``asyncio.shield`` so the request scope's
+    cancellation (TestClient teardown / client disconnect / etc.)
+    cannot propagate into the agent run. If the request scope
+    cancels this coroutine, ``shield`` swallows the CancelledError
+    on its end and lets the inner task keep running.
+
+    The function also awaits the task's result so any unhandled
+    exception is logged rather than vanishing into a 'never retrieved'
+    warning.
+    """
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Request scope was cancelled (TestClient teardown / client
+        # closed connection). The shielded task keeps running; we
+        # just exit here. Background task ownership has already been
+        # transferred to handle.agent_task + state.active_runs.
+        pass
+    except Exception:
+        # Inner task raised — already logged by _run_agent_in_background
+        # finally clause; nothing else to do here.
+        pass
+
+
+@router.get(
+    "/conversations/{conv_id}/stream",
+    summary="SSE stream of events for the conversation's active run (resumable).",
+)
+async def stream_conversation(
+    conv_id: str,
+    since: int = -1,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+):
+    """SSE stream of agent events. ``since`` = last seq the client saw
+    (defaults to -1 = "give me everything from seq=0"). On reconnect
+    pass the highest seq you've processed and the server fills the gap.
+
+    Three paths:
+      - Active run in memory: subscribe + replay buffer/DB then tail live
+      - Run completed but row still in DB: replay events from DB, emit done
+      - No run for conv: 404
+    """
+    handle = state.active_runs.get(_find_active_run_id_for_conv(state, conv_id))
+
+    if handle is None:
+        # No live run — try to replay a completed one's events from DB.
+        last_run = _find_latest_run_for_conv(state, conv_id, principal)
+        if last_run is None:
+            raise HTTPException(404, "no agent run for this conversation")
+
+        async def replay_only() -> AsyncIterator[bytes]:
+            yield (": keepalive\n\n").encode("utf-8")
+            try:
+                rows = state.store.list_agent_events_since(
+                    last_run["run_id"], since_seq=since
+                )
+            except Exception:
+                log.exception(
+                    "stream: DB replay failed run=%s since=%d",
+                    last_run["run_id"], since,
+                )
+                rows = []
+            for r in rows:
+                ev = {
+                    "seq": r["seq"],
+                    "type": r["event_type"],
+                    "run_id": last_run["run_id"],
+                    "conversation_id": conv_id,
+                    "depth": last_run.get("depth", 0),
+                    "ts": r["created_at"].isoformat()
+                    if hasattr(r["created_at"], "isoformat")
+                    else str(r["created_at"]),
+                    "payload": r["payload_json"] or {},
+                }
+                yield (f"data: {json.dumps(ev, ensure_ascii=False)}\n\n").encode("utf-8")
+            # Synthetic terminal so clients close cleanly.
+            yield (
+                f"data: {json.dumps({'type': 'stream_end', 'run_id': last_run['run_id'], 'synthetic': True})}\n\n"
+            ).encode("utf-8")
+
+        return StreamingResponse(
+            replay_only(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Active run: subscribe + stream.
+    async def event_iter() -> AsyncIterator[bytes]:
+        # Send an immediate keepalive so the client knows the connection is up.
+        yield (": connected\n\n").encode("utf-8")
+        try:
+            async for ev in handle.subscribe(since_seq=since):
+                yield (
+                    f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                ).encode("utf-8")
+        except Exception:
+            log.exception("stream: subscriber raised conv=%s", conv_id)
+
+    return StreamingResponse(
+        event_iter(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _find_active_run_id_for_conv(state: AppState, conv_id: str) -> str | None:
+    """Look up the run_id of the conv's currently-active run from the
+    in-memory registry. Cheaper than asking the DB on every reconnect
+    poll."""
+    for run_id, h in state.active_runs.items():
+        if h.conversation_id == conv_id:
+            return run_id
+    return None
+
+
+def _find_latest_run_for_conv(
+    state: AppState, conv_id: str, principal: AuthenticatedPrincipal
+) -> dict | None:
+    """Most recent run for a conv from DB, regardless of status. Used
+    to replay a completed run's events when a client reconnects after
+    the in-memory handle has been torn down."""
+    try:
+        runs = state.store.list_agent_runs_by_conversation(conv_id, limit=1)
+    except Exception:
+        log.exception(
+            "stream: list_agent_runs_by_conversation failed conv=%s", conv_id
+        )
+        return None
+    if not runs:
+        return None
+    run = runs[0]
+    # Authz: a run must belong to the requesting principal (no cross-user
+    # eavesdropping via someone else's conv id). Admin role bypasses this
+    # mirroring the rest of the route surface.
+    if (
+        principal.role != "admin"
+        and run.get("user_id") is not None
+        and run["user_id"] != principal.user_id
+    ):
+        return None
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Legacy Route (deprecated — Inc 6 will remove)
 # ---------------------------------------------------------------------------
 
 

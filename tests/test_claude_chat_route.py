@@ -137,7 +137,9 @@ def stub_stream(monkeypatch):
     """
     holder: dict[str, Any] = {"events": [], "calls": []}
 
-    def _stream_turn(runtime, user_message, *, config, conversation_history=None):
+    def _stream_turn(runtime, user_message, *, config, conversation_history=None, **_kw):
+        # **_kw absorbs newer kwargs (extra_user_content_blocks, etc.)
+        # so this stub stays resilient as the real signature evolves.
         holder["calls"].append(
             {
                 "runtime_kind": "inprocess",
@@ -151,7 +153,7 @@ def stub_stream(monkeypatch):
 
     def _stream_turn_container(
         runner, user_message, *, config, principal_user_id,
-        cwd_path=None, conversation_history=None,
+        cwd_path=None, conversation_history=None, **_kw,
     ):
         holder["calls"].append(
             {
@@ -166,9 +168,18 @@ def stub_stream(monkeypatch):
         for evt in holder["events"]:
             yield evt
 
+    # Patch both at the route module AND at the runtime_adapter module
+    # (Inc 3 added the adapter wrapper for /send + /stream; it imports
+    # ``stream_turn`` directly so a setattr on claude_chat_module alone
+    # wouldn't intercept calls from the new path).
+    from api.agent import runtime_adapter as _adapter_mod
     monkeypatch.setattr(claude_chat_module, "stream_turn", _stream_turn)
     monkeypatch.setattr(
         claude_chat_module, "stream_turn_container", _stream_turn_container,
+    )
+    monkeypatch.setattr(_adapter_mod, "stream_turn", _stream_turn)
+    monkeypatch.setattr(
+        _adapter_mod, "stream_turn_container", _stream_turn_container,
     )
 
     # Patch the runner constructor too so the route doesn't try to

@@ -142,6 +142,19 @@ class AgentTaskHandle:
     batch_interval_s: float = 0.1
     _db_queue: asyncio.Queue | None = None
     _writer_task: asyncio.Task | None = None
+    # SQLite is single-writer; even when run_in_executor uses a thread
+    # pool, concurrent batched-insert + update statements on the SAME
+    # SQLite connection collide ("cannot commit transaction - SQL
+    # statements in progress"). Serialize every store write made by
+    # this handle through the lock. Postgres deployments don't strictly
+    # need this but it's cheap (a few µs of contention) and keeps the
+    # SQLite dev path reliable.
+    _db_write_lock: asyncio.Lock | None = None
+    # Cooperative shutdown flag. close() flips this true and waits for
+    # the writer to drain the queue + exit on its own — instead of
+    # cancelling mid-flush, which would lose any rows the writer had
+    # pulled into a local batch and not yet committed.
+    _shutting_down: bool = False
 
     # HITL channels (consumers wired in Inc 4)
     user_inbox: asyncio.Queue | None = None
@@ -166,51 +179,73 @@ class AgentTaskHandle:
             return
         self._db_queue = asyncio.Queue()
         self.user_inbox = asyncio.Queue()
+        self._db_write_lock = asyncio.Lock()
         self._writer_task = asyncio.create_task(
             self._writer_loop(), name=f"agent-writer-{self.run_id}"
         )
 
     async def close(self, *, final_status: str | None = None) -> None:
-        """Flush pending events to DB, cancel writer task, mark run terminal
-        in DB. Safe to call multiple times.
+        """Mark the run terminal: signal the writer to drain on its own,
+        wait for it to finish, then persist the final agent_run state.
+        Safe to call multiple times.
 
-        ``final_status`` patches ``status`` if provided — runtime sets this
-        to "done" / "failed" / "interrupted" before close. None = no change.
+        ``final_status`` patches ``status`` if provided — runtime sets
+        this to "done" / "failed" / "interrupted" before close. None =
+        no change.
+
+        Cooperative shutdown protocol: flips ``_shutting_down=True``,
+        waits up to 5 s for the writer to drain remaining queued events
+        and exit naturally. Falls back to hard-cancel on timeout
+        (rare — would only happen if a single _flush_batch hangs > 5 s).
         """
         if final_status is not None:
             self.status = final_status
 
-        # Drain pending writes synchronously before cancelling the writer.
-        # The writer's CancelledError handler also drains, but doing it
-        # here ensures completed_at is committed too.
-        if self._db_queue is not None:
-            await self._drain_and_flush()
-
+        # Cooperative writer shutdown — flag + wait.
+        self._shutting_down = True
         if self._writer_task is not None and not self._writer_task.done():
-            self._writer_task.cancel()
             try:
-                await self._writer_task
+                await asyncio.wait_for(self._writer_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "close: writer didn't drain in 5s, hard-cancelling run=%s",
+                    self.run_id,
+                )
+                self._writer_task.cancel()
+                try:
+                    await self._writer_task
+                except (asyncio.CancelledError, BaseException):
+                    pass
             except (asyncio.CancelledError, BaseException):
                 pass
             self._writer_task = None
 
         # Final DB update with completion timestamp + status. Wrapped in
         # try/except so a store hiccup doesn't crash the close path.
-        try:
-            self.store.update_agent_run(
-                self.run_id,
-                {
-                    "status": self.status,
-                    "completed_at": datetime.now(timezone.utc),
-                    "total_input_tokens": self.total_input_tokens,
-                    "total_output_tokens": self.total_output_tokens,
-                    "last_event_seq": self.event_seq - 1
-                    if self.event_seq > 0
-                    else 0,
-                },
-            )
-        except Exception:
-            log.exception("close: final agent_run update failed run=%s", self.run_id)
+        # Held under the same write lock as the flush path so we don't
+        # race with the writer's last in-flight update.
+        if self._db_write_lock is not None:
+            try:
+                async with self._db_write_lock:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        self.store.update_agent_run,
+                        self.run_id,
+                        {
+                            "status": self.status,
+                            "completed_at": datetime.now(timezone.utc),
+                            "total_input_tokens": self.total_input_tokens,
+                            "total_output_tokens": self.total_output_tokens,
+                            "last_event_seq": self.event_seq - 1
+                            if self.event_seq > 0
+                            else 0,
+                        },
+                    )
+            except Exception:
+                log.exception(
+                    "close: final agent_run update failed run=%s", self.run_id
+                )
 
         # Cancel any pending HITL futures so awaiting coroutines fail fast.
         for fut in list(self.pending_approvals.values()):
@@ -485,41 +520,54 @@ class AgentTaskHandle:
     async def _writer_loop(self) -> None:
         """Batch DB writes: every 100ms OR 50 events, whichever first.
 
-        Cancellation drains the queue once more before exiting so close()
-        never loses already-emitted batched events.
+        Cooperative shutdown: when close() sets ``_shutting_down=True``,
+        the loop drains the queue one final pass, flushes the tail, and
+        exits cleanly. Avoids the cancel-mid-flush trap where the
+        writer's in-flight batch (already pulled from the queue but not
+        yet committed) would be lost.
+
+        Hard cancellation (CancelledError) is still handled as a
+        fallback — for shutdown paths that can't use the cooperative
+        flag — but loses any in-flight batch.
         """
         assert self._db_queue is not None
         batch: list[dict] = []
         try:
             while True:
+                if self._shutting_down and self._db_queue.empty() and not batch:
+                    # Cooperative exit: nothing more coming, nothing pending.
+                    return
                 try:
                     first = await asyncio.wait_for(
                         self._db_queue.get(), timeout=self.batch_interval_s
                     )
                     batch.append(first)
-                    # Drain queue up to batch_size
                     while len(batch) < self.batch_size:
                         try:
                             batch.append(self._db_queue.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-                    await self._flush_batch(batch)
-                    batch.clear()
+                    pending = batch
+                    batch = []
+                    await self._flush_batch(pending)
                 except asyncio.TimeoutError:
-                    # No new events in the interval — flush what we have.
                     if batch:
-                        await self._flush_batch(batch)
-                        batch.clear()
+                        pending = batch
+                        batch = []
+                        await self._flush_batch(pending)
         except asyncio.CancelledError:
-            # Final drain on shutdown.
+            # Hard cancel — best-effort tail drain (in-flight batch may
+            # have been lost mid-flush; cooperative shutdown is the
+            # preferred path).
+            tail: list[dict] = []
             while True:
                 try:
-                    batch.append(self._db_queue.get_nowait())
+                    tail.append(self._db_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
-            if batch:
+            if tail:
                 try:
-                    await self._flush_batch(batch)
+                    await self._flush_batch(tail)
                 except Exception:
                     log.exception(
                         "writer_loop: final drain flush failed run=%s",
@@ -544,42 +592,57 @@ class AgentTaskHandle:
         """Bulk-insert a batch + bump last_event_seq on the run row.
         Both DB calls happen in a thread executor since the store is
         sync (SQLAlchemy session); offloading keeps the event loop free.
+
+        Serialized by ``_db_write_lock`` so concurrent _flush_batch +
+        _persist_one calls don't race on the same SQLite connection.
         """
+        if not batch:
+            return
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(
-                None, self.store.bulk_append_agent_events, batch
-            )
-            max_seq = max(r["seq"] for r in batch)
-            await loop.run_in_executor(
-                None,
-                self.store.update_agent_run,
-                self.run_id,
-                {"last_event_seq": max_seq},
-            )
-        except Exception:
-            log.exception(
-                "writer_loop: batch flush failed run=%s batch=%d (events lost from DB but still in buffer)",
-                self.run_id,
-                len(batch),
-            )
+        assert self._db_write_lock is not None
+        async with self._db_write_lock:
+            try:
+                await loop.run_in_executor(
+                    None, self.store.bulk_append_agent_events, batch
+                )
+                max_seq = max(r["seq"] for r in batch)
+                await loop.run_in_executor(
+                    None,
+                    self.store.update_agent_run,
+                    self.run_id,
+                    {"last_event_seq": max_seq},
+                )
+            except Exception:
+                log.exception(
+                    "writer_loop: batch flush failed run=%s batch=%d (events lost from DB but still in buffer)",
+                    self.run_id,
+                    len(batch),
+                )
 
     async def _persist_one(self, row: dict) -> None:
         """Synchronous DB write for force_flush. Used for critical events
-        where we MUST be sure the event is durable before returning."""
+        where we MUST be sure the event is durable before returning.
+
+        Same lock as _flush_batch — a critical event arriving during a
+        batch flush waits for the batch to commit. Acceptable: critical
+        events are rare (approval / ask_human / done / interrupted /
+        error), and the lock wait is dominated by SQLite commit latency
+        anyway."""
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, self.store.append_agent_event, row)
-            await loop.run_in_executor(
-                None,
-                self.store.update_agent_run,
-                self.run_id,
-                {"last_event_seq": row["seq"]},
-            )
-        except Exception:
-            log.exception(
-                "persist_one: critical event write failed run=%s seq=%d type=%s",
-                self.run_id,
-                row["seq"],
-                row["event_type"],
-            )
+        assert self._db_write_lock is not None
+        async with self._db_write_lock:
+            try:
+                await loop.run_in_executor(None, self.store.append_agent_event, row)
+                await loop.run_in_executor(
+                    None,
+                    self.store.update_agent_run,
+                    self.run_id,
+                    {"last_event_seq": row["seq"]},
+                )
+            except Exception:
+                log.exception(
+                    "persist_one: critical event write failed run=%s seq=%d type=%s",
+                    self.run_id,
+                    row["seq"],
+                    row["event_type"],
+                )
