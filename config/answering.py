@@ -61,6 +61,17 @@ class GeneratorConfig(BaseModel):
     # from the tail until the budget is satisfied
     max_context_chars: int = 20000
 
+    # Model's published context-window size in tokens. The frontend
+    # reads this from /health and uses it as the denominator of the
+    # chat composer's context-window ring (the small donut next to
+    # the send button that shows e.g. "658k / 1M (66%)"). Backend
+    # does NOT enforce this — it's a UI hint, not a hard cap.
+    # Defaults to 200k (Claude / GPT-4 class); tune per model in
+    # opencraig.yaml. Known reference points: claude-* = 200000,
+    # claude-*-1m = 1000000, gpt-4o = 128000, deepseek-chat = 65536,
+    # deepseek-reasoner = 128000.
+    context_window: int = 200_000
+
     # System prompt override. None -> use the default in prompts.py
     system_prompt: str | None = None
     # User message template. None -> use the default in prompts.py

@@ -432,6 +432,13 @@ class MessageOut(BaseModel):
     # ``[]`` for messages without attachments — the UI hides the
     # rail in that case.
     attachments: list[dict] | None = None
+    # Per-call usage from the SDK's ResultMessage. ``input_tokens``
+    # is the tokens the model SAW on its last call (= prior history
+    # + this turn's prompt + tool results); used by the frontend's
+    # context-window ring as the numerator. Zero for legacy rows
+    # written before usage capture landed.
+    input_tokens: int = 0
+    output_tokens: int = 0
     created_at: Any = None
 
 

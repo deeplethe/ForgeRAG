@@ -28,6 +28,14 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
     img_ok = is_image_upload_configured(state.cfg.image_enrichment)
     sheet_ok = is_spreadsheet_upload_configured(state.cfg.table_enrichment)
 
+    # Generator info — frontend reads model name + context window
+    # to label the chat composer's context-window ring. Both come
+    # from cfg.answering.generator; falls back to safe defaults if
+    # answering / generator missing.
+    gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
+    gen_model = getattr(gen, "model", None) or "unknown"
+    gen_context_window = int(getattr(gen, "context_window", 0) or 200_000)
+
     return HealthResponse(
         status="ok",
         components={
@@ -49,6 +57,10 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
             # Always rejected at upload — frontend uses this list to
             # show "save as .docx instead" before sending the bytes.
             "legacy_office_extensions": list(LEGACY_OFFICE_EXTENSIONS),
+            # Generator metadata — chat UI uses these to size the
+            # context-window ring + label the active model.
+            "generator_model": gen_model,
+            "generator_context_window": gen_context_window,
         },
     )
 

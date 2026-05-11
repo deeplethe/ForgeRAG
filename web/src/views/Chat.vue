@@ -68,7 +68,7 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { agentChatStream, createConversation, getMessages, getConversation, updateConversation, filePreviewUrl, fileDownloadUrl, getProject, getTrace, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
+import { agentChatStream, createConversation, getMessages, getConversation, updateConversation, filePreviewUrl, fileDownloadUrl, getProject, getTrace, getHealth, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
 import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, Paperclip as PaperclipIcon, X as XIcon, Plus as PlusIcon, Library as LibraryIcon, FileUp as FileUpIcon } from 'lucide-vue-next'
 import { useDialog } from '@/composables/useDialog'
 import { useTheme } from '@/composables/useTheme'
@@ -94,6 +94,7 @@ import WorkdirFolderPicker from '@/components/WorkdirFolderPicker.vue'
 import KnowledgeFolderPicker from '@/components/KnowledgeFolderPicker.vue'
 import AgentMessageBody from '@/components/AgentMessageBody.vue'
 import AttachmentChip from '@/components/AttachmentChip.vue'
+import ContextWindowRing from '@/components/ContextWindowRing.vue'
 // ThinkingPicker removed post-cutover (provider CoT permanently
 // disabled; see commit d07f673). Component file kept for now —
 // settings UI may reuse it as an advanced/debug toggle later.
@@ -136,6 +137,15 @@ const knowledgePaths = ref([])
 // Add-context popover (paperclip + chips replacement). One small
 // menu with "Knowledge" / "File" entries, future-extensible.
 const addMenuOpen = ref(false)
+// Context-window ring state. ``contextUsed`` is the input_tokens
+// the model saw on its last call (= prior history + this turn);
+// updated live from the SSE ``usage`` event AND hydrated from the
+// last assistant message's ``input_tokens`` on reload. ``contextLimit``
+// is loaded once from /health -> features.generator_context_window;
+// reflects the configured model's published window (200k default).
+const contextUsed = ref(0)
+const contextLimit = ref(0)
+const generatorModelName = ref('')
 // Knowledge picker modal state — opens when user clicks the
 // "Knowledge" entry in the add-menu.
 const knowledgePicker = reactive({ open: false })
@@ -287,6 +297,15 @@ const empty = computed(() => !convId.value && !msgs.value.length && !streaming.v
 // The watch(convId) only fires on *change* — if convId is the same (e.g. user
 // clicked Chat tab to come back), the watch doesn't fire and we'd show stale data.
 onMounted(async () => {
+  // Load context-window limit + model name once. Cached for the
+  // session — model rarely changes mid-chat (and if it does the
+  // user will get a fresh ring on next page load).
+  try {
+    const h = await getHealth()
+    contextLimit.value = h?.features?.generator_context_window || 200000
+    generatorModelName.value = h?.features?.generator_model || ''
+  } catch { /* non-fatal — ring degrades to 0 / hidden */ }
+
   if (convId.value && !streaming.value) {
     // Load draft attachments + pinned knowledge paths on mount so a
     // refresh / direct URL nav restores the chip rail. The convId
@@ -368,6 +387,7 @@ watch(convId, async (id) => {
   // them back up rather than losing them.
   attachments.value = []
   knowledgePaths.value = []
+  contextUsed.value = 0
   if (id) {
     try { attachments.value = await listAttachments(id, { only_drafts: true }) }
     catch { /* non-fatal */ }
@@ -525,6 +545,12 @@ async function _loadAndPoll(id) {
       // under the user bubble that appeared above the input box
       // at compose time.
       attachments: Array.isArray(m.attachments) ? m.attachments : null,
+      // Per-turn token usage from the SDK's ResultMessage —
+      // assistant messages carry the input_tokens (= model's
+      // observed context size that turn) which feeds the
+      // context-window ring on reload.
+      inputTokens: typeof m.input_tokens === 'number' ? m.input_tokens : 0,
+      outputTokens: typeof m.output_tokens === 'number' ? m.output_tokens : 0,
       traceId: m.trace_id || null,
     }))
   }
@@ -533,6 +559,18 @@ async function _loadAndPoll(id) {
     const raw = await getMessages(id)
     msgs.value = _parseRaw(raw)
     enrichHistoricalCitations()
+    // Hydrate context-window usage from the most-recent assistant
+    // message's input_tokens — that's what the model saw on its
+    // last call (= the current "context size" for this conv).
+    // Walk backward so the freshest non-zero count wins; older
+    // rows from before usage capture have 0/0 and we skip them.
+    for (let i = msgs.value.length - 1; i >= 0; i--) {
+      const m = msgs.value[i]
+      if (m.role === 'assistant' && m.inputTokens > 0) {
+        contextUsed.value = m.inputTokens
+        break
+      }
+    }
   } catch {} finally {
     _loadingHistory.value = false
   }
@@ -982,6 +1020,13 @@ async function send(text) {
         if (last && last.status === 'running') last.status = 'done'
         if (!streamText.value) streamText.value = evt.text || ''
         scroll()
+      } else if (t === 'usage') {
+        // Token usage from the SDK's ResultMessage — update the
+        // context-window ring immediately so the user sees the
+        // chat's footprint grow as turns land.
+        if (typeof evt.input_tokens === 'number' && evt.input_tokens > 0) {
+          contextUsed.value = evt.input_tokens
+        }
       } else if (t === 'done') {
         fin = evt
         citationsList = evt.citations || null
@@ -1545,6 +1590,12 @@ function onTraceClick(m) {
                 :attachment="a"
                 @remove="onRemoveAttachment"
               />
+              <!-- Context-window ring pinned to the right edge.
+                   Hidden when no usage data yet (fresh chat / model
+                   that doesn't report usage). -->
+              <div class="ml-auto" v-if="contextUsed > 0 && contextLimit > 0">
+                <ContextWindowRing :used="contextUsed" :limit="contextLimit" :show-label="true" />
+              </div>
             </div>
             <div class="flex items-end gap-2 px-4 py-3 rounded-xl border border-line shadow-sm bg-bg">
               <textarea v-model="input" @keydown="onKey" @paste="onTextareaPaste" :placeholder="t('chat.ask_a_question')" rows="2"
@@ -1808,6 +1859,9 @@ function onTraceClick(m) {
                 :attachment="a"
                 @remove="onRemoveAttachment"
               />
+              <div class="ml-auto" v-if="contextUsed > 0 && contextLimit > 0">
+                <ContextWindowRing :used="contextUsed" :limit="contextLimit" :show-label="true" />
+              </div>
             </div>
             <!-- ``items-center`` so the textarea's single-line text sits
                  vertically centred with the send button. ``items-end``

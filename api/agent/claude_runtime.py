@@ -676,6 +676,24 @@ class ClaudeRuntime:
             ))
             raise
 
+        # SDK ResultMessage.usage shape (Anthropic-flavoured):
+        #   {"input_tokens": N, "output_tokens": M,
+        #    "cache_creation_input_tokens": …, "cache_read_input_tokens": …}
+        # Emit a ``usage`` event ahead of ``done`` so the chat route
+        # can persist input/output_tokens on the assistant Message
+        # row — the frontend's context-window ring reads back
+        # ``message.input_tokens`` to size its progress arc. Cache
+        # counters are accurate but not the MVP signal; can be added
+        # later. Skip if non-Anthropic provider didn't return usage.
+        usage = raw.get("usage") if isinstance(raw, dict) else None
+        if isinstance(usage, dict) and (
+            usage.get("input_tokens") or usage.get("output_tokens")
+        ):
+            emit({
+                "kind": "usage",
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+            })
         emit(_evt_done(final_text, iterations=iterations))
         return ClaudeTurnResult(
             final_text=final_text,

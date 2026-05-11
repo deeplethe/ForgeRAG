@@ -326,7 +326,20 @@ def _emit_message_events(
                 if t:
                     emit({"kind": "thinking", "text": t})
     elif isinstance(msg, sdk.ResultMessage):
+        # Final turn boundary — emit usage so the chat route can
+        # persist input/output_tokens on the assistant Message
+        # (powers the frontend's context-window ring). ``usage``
+        # is an Anthropic-shaped dict on the SDK's ResultMessage;
+        # may be None for non-Anthropic providers, in which case
+        # we just don't emit (frontend falls back to "no data").
         final_text = msg.result or ""
+        usage = getattr(msg, "usage", None) or {}
+        if isinstance(usage, dict) and (usage.get("input_tokens") or usage.get("output_tokens")):
+            emit({
+                "kind": "usage",
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+            })
 
     return final_text
 

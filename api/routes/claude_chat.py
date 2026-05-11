@@ -472,6 +472,8 @@ def _persist_assistant_message(
     *,
     agent_trace: list | None = None,
     citations: list | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> None:
     """Always writes a row, even when ``content`` is empty. Empty =
     failed turn (LLM error / aborted) — the row's PRESENCE is what
@@ -498,6 +500,10 @@ def _persist_assistant_message(
         record["agent_trace_json"] = agent_trace
     if citations:
         record["citations_json"] = citations
+    if input_tokens:
+        record["input_tokens"] = input_tokens
+    if output_tokens:
+        record["output_tokens"] = output_tokens
     state.store.add_message(record)
 
 
@@ -777,6 +783,17 @@ def _translate(evt: dict) -> str | None:
                 "result_summary": evt.get("result_summary", {}),
                 "output": evt.get("output", ""),
                 "is_error": bool(evt.get("is_error")),
+            },
+        )
+    if kind == "usage":
+        # Forward live so the frontend's context-window ring can
+        # update at the moment the turn finishes (also bundled into
+        # the terminal ``done`` event for clients that prefer that).
+        return _sse(
+            "usage",
+            {
+                "input_tokens": int(evt.get("input_tokens") or 0),
+                "output_tokens": int(evt.get("output_tokens") or 0),
             },
         )
     if kind == "error":
@@ -1131,6 +1148,13 @@ async def claude_chat(
         # still get the final list) and persist it onto the assistant
         # message row for reload.
         citations_pool: list[dict] = []
+        # Token usage from the SDK's ResultMessage. Surfaced as a
+        # ``kind=usage`` event by both runtime paths (in-process +
+        # container). We persist these on the assistant Message so
+        # the frontend's context-window ring can read back
+        # ``message.input_tokens`` after a reload.
+        turn_input_tokens = 0
+        turn_output_tokens = 0
 
         try:
             while True:
@@ -1170,6 +1194,14 @@ async def claude_chat(
                     # around for the ``done`` event.
                     if isinstance(items, list):
                         citations_pool = items
+                elif kind == "usage":
+                    # Token counts from the SDK's ResultMessage —
+                    # ship to client as a streamed event AND keep
+                    # locally so we can write them onto the
+                    # persisted assistant Message after the stream
+                    # closes.
+                    turn_input_tokens = int(evt.get("input_tokens") or 0)
+                    turn_output_tokens = int(evt.get("output_tokens") or 0)
                 elif kind == "error":
                     error_message = (
                         f"{evt.get('type', 'RuntimeError')}: "
@@ -1214,6 +1246,8 @@ async def claude_chat(
                     final_text,
                     agent_trace=trace_acc.snapshot() if trace_acc.entries else None,
                     citations=citations_pool,
+                    input_tokens=turn_input_tokens,
+                    output_tokens=turn_output_tokens,
                 )
             except Exception:
                 log.exception(
