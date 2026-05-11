@@ -1,6 +1,6 @@
 """Add ``agent_events`` + long-task columns on ``agent_runs``.
 
-Revision ID: 20260512_add_agent_events_and_run_long_task_cols
+Revision ID: 20260512_agent_events
 Revises: 20260522_add_conversation_path_filters
 Create Date: 2026-05-12
 
@@ -40,7 +40,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "20260512_add_agent_events_and_run_long_task_cols"
+revision = "20260512_agent_events"
 down_revision = "20260522_add_conversation_path_filters"
 branch_labels = None
 depends_on = None

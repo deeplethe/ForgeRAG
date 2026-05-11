@@ -24,14 +24,20 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    """Resolve DB URL from OpenCraig config, same as the app does."""
+    """Resolve DB URL from OpenCraig config, same as the app does.
+
+    Uses ``URL.render_as_string(hide_password=False)`` rather than
+    ``str(engine.url)`` — the default ``__str__`` masks the password
+    as ``***`` (sane for logs), but alembic actually needs to use it
+    to connect.
+    """
     try:
         from config.loader import load_config
         from persistence.engine import make_engine
 
         cfg = load_config(os.environ.get("OPENCRAIG_CONFIG"))
         engine = make_engine(cfg.persistence.relational)
-        return str(engine.url)
+        return engine.url.render_as_string(hide_password=False)
     except Exception:
         # Fallback: try env var
         url = os.environ.get("OPENCRAIG_DATABASE_URL")
