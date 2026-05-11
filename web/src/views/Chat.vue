@@ -315,6 +315,24 @@ const empty = computed(() => !convId.value && !msgs.value.length && !streaming.v
 // The watch(convId) only fires on *change* — if convId is the same (e.g. user
 // clicked Chat tab to come back), the watch doesn't fire and we'd show stale data.
 onMounted(async () => {
+  // Inc 7: defensive recovery from a stuck-true ``_streaming`` flag.
+  // Module-level refs persist across component remount (deliberate;
+  // see the top-of-file comment), but if a prior turn ended abnormally
+  // — page reload, network error, HMR — the flag can remain true with
+  // no live for-await loop or AbortController. Mount with that state
+  // hides the input behind a stop-button mask forever. Heuristic:
+  // streaming=true + no abortCtrl = the loop ended but cleanup didn't
+  // run; clear so the user can type again.
+  if (streaming.value && !abortCtrl.value) {
+    streaming.value = false
+    streamText.value = ''
+    streamTrace.value = []
+    currentRunId.value = null
+    pendingQuestion.value = null
+    pendingAnswerText.value = ''
+    stopTimer()
+  }
+
   // Load context-window limit + model name once. Cached for the
   // session — model rarely changes mid-chat (and if it does the
   // user will get a fresh ring on next page load).

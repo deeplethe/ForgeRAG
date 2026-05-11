@@ -1463,11 +1463,28 @@ async def stream_conversation(
         )
 
     # Active run: subscribe + stream.
+    #
+    # Periodic ``: ping`` SSE comments every 15 s during quiet periods
+    # keep intermediate proxies (Cloudflare, nginx, k8s ingress, …)
+    # from idle-closing the long-lived connection. SSE comments aren't
+    # delivered to the EventSource `onmessage` handler — they're pure
+    # transport-level chatter.
     async def event_iter() -> AsyncIterator[bytes]:
-        # Send an immediate keepalive so the client knows the connection is up.
         yield (": connected\n\n").encode("utf-8")
+        sub_iter = handle.subscribe(since_seq=since).__aiter__()
+        keepalive_s = 15.0
         try:
-            async for ev in handle.subscribe(since_seq=since):
+            while True:
+                try:
+                    ev = await asyncio.wait_for(
+                        sub_iter.__anext__(), timeout=keepalive_s
+                    )
+                except asyncio.TimeoutError:
+                    # No event in the interval — send a heartbeat and loop.
+                    yield (": ping\n\n").encode("utf-8")
+                    continue
+                except StopAsyncIteration:
+                    break
                 yield (
                     f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
                 ).encode("utf-8")
