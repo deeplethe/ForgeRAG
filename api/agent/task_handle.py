@@ -66,6 +66,14 @@ _CRITICAL_EVENT_TYPES = frozenset(
 # detect via seq jumps and reconnect to backfill via DB).
 _SUBSCRIBER_PUT_TIMEOUT_S = 0.05
 
+# Idle-keepalive interval used inside ``AgentTaskHandle.subscribe``.
+# When the subscriber queue has no event for this many seconds, the
+# generator emits a synthetic ``_keepalive`` sentinel so the SSE route
+# can flush a ``: ping`` comment without an intermediate proxy / SSH
+# tunnel tearing the long-lived connection. Tuned at 15s: short enough
+# to beat typical 30s NAT/proxy idle timers, long enough to be cheap.
+_KEEPALIVE_S = 15.0
+
 
 # ---------------------------------------------------------------------------
 # Feedback envelopes (the user_inbox payloads — Inc 4 implements consumers)
@@ -456,9 +464,24 @@ class AgentTaskHandle:
         # negligible (events ~500B = 2.5MB max per subscriber).
         q: asyncio.Queue = asyncio.Queue(maxsize=5000)
         self.subscribers.add(q)
+        # Idle keepalive: yield a synthetic ``_keepalive`` sentinel after
+        # ``_KEEPALIVE_S`` seconds of queue silence so the SSE route can
+        # flush a ``: ping`` comment without idle proxies/SSH tunnels
+        # tearing the connection down. Doing the timeout against the
+        # local queue (rather than against ``subscribe.__anext__()`` from
+        # the route via ``asyncio.wait_for``) avoids the round-3 Task J
+        # bug: ``wait_for`` cancels the inner coroutine on each timeout,
+        # which propagates into this generator's ``await q.get()`` and
+        # tears the generator down via its finally — every subsequent
+        # ``__anext__`` then raises StopAsyncIteration, closing the
+        # client's stream after the FIRST quiet 15s window.
         try:
             while True:
-                ev = await q.get()
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=_KEEPALIVE_S)
+                except asyncio.TimeoutError:
+                    yield {"type": "_keepalive", "seq": -1, "synthetic": True}
+                    continue
                 if ev.get("synthetic"):
                     # close() broadcast a fake terminal — exit cleanly.
                     return

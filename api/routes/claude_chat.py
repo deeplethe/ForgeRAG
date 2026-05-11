@@ -1472,27 +1472,28 @@ async def stream_conversation(
 
     # Active run: subscribe + stream.
     #
-    # Periodic ``: ping`` SSE comments every 15 s during quiet periods
-    # keep intermediate proxies (Cloudflare, nginx, k8s ingress, …)
-    # from idle-closing the long-lived connection. SSE comments aren't
-    # delivered to the EventSource `onmessage` handler — they're pure
-    # transport-level chatter.
+    # Periodic ``: ping`` SSE comments during quiet periods keep
+    # intermediate proxies (Cloudflare, nginx, k8s ingress, SSH
+    # tunnels...) from idle-closing the long-lived connection. SSE
+    # comments aren't delivered to the EventSource `onmessage` handler
+    # — they're pure transport-level chatter.
+    #
+    # Keepalive cadence is owned by ``handle.subscribe`` itself: it
+    # yields a synthetic ``_keepalive`` sentinel after _KEEPALIVE_S of
+    # queue silence. The route translates that into a ``: ping``
+    # comment. The previous design (``asyncio.wait_for`` around
+    # ``sub_iter.__anext__()``) ended the SSE stream after the first
+    # quiet 15s window: wait_for cancels its inner task on timeout,
+    # which cancels the generator's queue.get, which runs the
+    # generator's finally and makes the next __anext__ raise
+    # StopAsyncIteration. Surfaced in round-3 Task J.
     async def event_iter() -> AsyncIterator[bytes]:
         yield (": connected\n\n").encode("utf-8")
-        sub_iter = handle.subscribe(since_seq=since).__aiter__()
-        keepalive_s = 15.0
         try:
-            while True:
-                try:
-                    ev = await asyncio.wait_for(
-                        sub_iter.__anext__(), timeout=keepalive_s
-                    )
-                except asyncio.TimeoutError:
-                    # No event in the interval — send a heartbeat and loop.
+            async for ev in handle.subscribe(since_seq=since):
+                if ev.get("type") == "_keepalive":
                     yield (": ping\n\n").encode("utf-8")
                     continue
-                except StopAsyncIteration:
-                    break
                 yield (
                     f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
                 ).encode("utf-8")
