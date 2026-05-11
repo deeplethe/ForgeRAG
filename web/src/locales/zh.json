@@ -184,9 +184,28 @@
     "nav": {
       "profile": "个人资料",
       "sessions": "登录会话",
+      "metrics": "用量统计",
+      "scheduled_tasks": "定时任务",
+      "plugins": "插件",
+      "team_tools": "工具站",
       "tokens": "API Tokens",
       "users": "用户管理",
       "audit": "操作记录"
+    },
+    "scheduled_tasks": {
+      "subtitle": "周期性或延时执行的 Agent 任务。每周汇总、每日监控、长任务跑完再回头看。",
+      "coming_soon": "敬请期待",
+      "placeholder_desc": "定时任务和后台长任务上线后会在这里管理。当前一个对话从开始到结束必须保持页面打开。"
+    },
+    "plugins": {
+      "subtitle": "开关单个工具集,或者接入自有的 MCP 服务器（Linear / Jira / GitHub / 内部 API）。",
+      "coming_soon": "敬请期待",
+      "placeholder_desc": "当前的工具(搜索 / 知识图谱 / 文档导入)在后端启动时注册。后续会做动态注册,可以在这里挂自己的 MCP 集成。"
+    },
+    "team_tools": {
+      "subtitle": "团队保存的 Agent 预设——内部问答助手、术语查询、领域专用助理,一键启动。",
+      "coming_soon": "敬请期待",
+      "placeholder_desc": "把 Agent 提示词 + 工具配置封装到一个稳定 URL 背后,非熟手也能直接用,不用自己写提示。排在定时任务之后。"
     },
     "profile": {
       "title": "个人资料",

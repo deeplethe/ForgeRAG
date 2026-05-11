@@ -32,7 +32,11 @@ const router = createRouter({
     },
     { path: '/ingestion', redirect: '/library' },
     { path: '/knowledge-graph', component: () => import('@/views/KnowledgeGraph.vue') },
-    { path: '/metrics', component: () => import('@/views/Metrics.vue') },
+    // Metrics moved under /settings/metrics so it sits next to the
+    // other "look at your account" tools. Keep the legacy
+    // top-level URL alive as a redirect — old bookmarks / docs
+    // still land somewhere sensible.
+    { path: '/metrics', redirect: '/settings/metrics' },
     // Legacy redirect: /tokens (the old "Tokens & Sessions" page) is
     // gone — it split into /settings/sessions (everyone) and
     // /settings/tokens (admin-only). Land both groups on the page
@@ -53,6 +57,17 @@ const router = createRouter({
       children: [
         { path: 'profile', component: () => import('@/views/settings/Profile.vue') },
         { path: 'sessions', component: () => import('@/views/settings/Sessions.vue') },
+        // Metrics — anyone logged in. Page renders a personal
+        // usage card for everyone + an extra admin-only per-user
+        // table when the caller has admin role.
+        { path: 'metrics', component: () => import('@/views/settings/Metrics.vue') },
+        // Scheduled tasks / Plugins / Team tools — placeholders for
+        // now; real implementations land alongside the background
+        // long-task + MCP plugin work. Sidebar exposes them early
+        // so the IA reads as "settled" before the features ship.
+        { path: 'scheduled-tasks', component: () => import('@/views/settings/ScheduledTasks.vue') },
+        { path: 'plugins', component: () => import('@/views/settings/Plugins.vue') },
+        { path: 'team-tools', component: () => import('@/views/settings/TeamTools.vue') },
         {
           path: 'tokens',
           component: () => import('@/views/settings/Tokens.vue'),

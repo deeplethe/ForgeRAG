@@ -42,6 +42,10 @@ const links = computed(() => {
   const all = [
     { path: '/settings/profile', label: t('settings.nav.profile') },
     { path: '/settings/sessions', label: t('settings.nav.sessions') },
+    { path: '/settings/metrics', label: t('settings.nav.metrics') },
+    { path: '/settings/scheduled-tasks', label: t('settings.nav.scheduled_tasks') },
+    { path: '/settings/plugins', label: t('settings.nav.plugins') },
+    { path: '/settings/team-tools', label: t('settings.nav.team_tools') },
     { path: '/settings/tokens', label: t('settings.nav.tokens'), adminOnly: true },
     { path: '/settings/users', label: t('settings.nav.users'), adminOnly: true },
     { path: '/settings/audit', label: t('settings.nav.audit'), adminOnly: true },
