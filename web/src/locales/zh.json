@@ -1,4 +1,36 @@
 {
+  "tools_page": {
+    "title": "工具站",
+    "subtitle": "Agent 能做的事。接入 MCP 服务器添加新工具,或保存团队共享的技能,一键触发常用工作流。",
+    "tabs": {
+      "tools": "工具",
+      "skills": "技能"
+    },
+    "tools_tab": {
+      "coming_soon": "工具注册中心 敬请期待",
+      "placeholder_desc": "当前的工具(知识库检索、文档导入、网页搜索)在服务启动时注册。后续会做动态注册,可以在这里挂自定义 MCP 集成。"
+    },
+    "skills_tab": {
+      "coming_soon": "技能 敬请期待",
+      "placeholder_desc": "把 Agent 提示词 + 工具配置 + 推荐上下文封装到一键启动的卡片,团队里的非熟手不用自己写提示也能跑工作流。"
+    }
+  },
+  "tasks": {
+    "title": "任务",
+    "subtitle": "长任务和定时任务的管理面板。跑个长任务后稍后再来看;或者设置周期性触发的 cron 任务。",
+    "tabs": {
+      "active": "进行中",
+      "scheduled": "定时"
+    },
+    "active_tab": {
+      "coming_soon": "实时任务列表 敬请期待",
+      "placeholder_desc": "后端解耦后,关闭页面也能让 Agent 继续跑;进行中的任务都会在这里显示,可以监控进度、跳转到对应对话、或直接取消。"
+    },
+    "scheduled_tab": {
+      "coming_soon": "定时任务 敬请期待",
+      "placeholder_desc": "Cron 风格的周期性 Agent 任务——每周汇总、每日监控,任何你想定时触发的事。跟长任务一起上线。"
+    }
+  },
   "notifications": {
     "title": "通知",
     "tooltip_idle": "暂无新回复",
@@ -35,7 +67,8 @@
       "library": "知识库",
       "workspace": "工作台",
       "knowledge_graph": "知识图谱",
-      "metrics": "指标"
+      "tools": "工具站",
+      "tasks": "任务"
     },
     "in_dev": "(开发中)",
     "starred": "已收藏",
@@ -201,27 +234,9 @@
       "profile": "个人资料",
       "sessions": "登录会话",
       "metrics": "用量统计",
-      "scheduled_tasks": "定时任务",
-      "plugins": "插件",
-      "team_tools": "工具站",
       "tokens": "API Tokens",
       "users": "用户管理",
       "audit": "操作记录"
-    },
-    "scheduled_tasks": {
-      "subtitle": "周期性或延时执行的 Agent 任务。每周汇总、每日监控、长任务跑完再回头看。",
-      "coming_soon": "敬请期待",
-      "placeholder_desc": "定时任务和后台长任务上线后会在这里管理。当前一个对话从开始到结束必须保持页面打开。"
-    },
-    "plugins": {
-      "subtitle": "开关单个工具集,或者接入自有的 MCP 服务器（Linear / Jira / GitHub / 内部 API）。",
-      "coming_soon": "敬请期待",
-      "placeholder_desc": "当前的工具(搜索 / 知识图谱 / 文档导入)在后端启动时注册。后续会做动态注册,可以在这里挂自己的 MCP 集成。"
-    },
-    "team_tools": {
-      "subtitle": "团队保存的 Agent 预设——内部问答助手、术语查询、领域专用助理,一键启动。",
-      "coming_soon": "敬请期待",
-      "placeholder_desc": "把 Agent 提示词 + 工具配置封装到一个稳定 URL 背后,非熟手也能直接用,不用自己写提示。排在定时任务之后。"
     },
     "profile": {
       "title": "个人资料",

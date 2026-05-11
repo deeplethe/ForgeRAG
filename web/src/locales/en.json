@@ -1,4 +1,36 @@
 {
+  "tools_page": {
+    "title": "Tools",
+    "subtitle": "What your agent can do. Connect MCP servers to add new tools, and save team-shared skills for one-click workflows.",
+    "tabs": {
+      "tools": "Tools",
+      "skills": "Skills"
+    },
+    "tools_tab": {
+      "coming_soon": "Tool registry coming soon",
+      "placeholder_desc": "Today's tools (knowledge-base search, document import, web search) are registered when the server boots. A dynamic registry that lets you add custom MCP integrations from this page is next."
+    },
+    "skills_tab": {
+      "coming_soon": "Skills coming soon",
+      "placeholder_desc": "Wrap an agent prompt + tool config + suggested context behind a one-click tile so the rest of the team can launch the workflow without writing the prompt themselves."
+    }
+  },
+  "tasks": {
+    "title": "Tasks",
+    "subtitle": "Long-running and scheduled agent work. Kick something off and check back later; set up recurring runs that fire automatically.",
+    "tabs": {
+      "active": "Active",
+      "scheduled": "Scheduled"
+    },
+    "active_tab": {
+      "coming_soon": "Live task list coming soon",
+      "placeholder_desc": "When the backend long-task refactor ships, every in-flight agent run shows up here so you can monitor it, jump to its chat, or cancel it without keeping a tab open."
+    },
+    "scheduled_tab": {
+      "coming_soon": "Scheduled runs coming soon",
+      "placeholder_desc": "Cron-style recurring agent runs — weekly digests, daily monitors, anything you want to fire on a schedule. Lands together with the long-task work."
+    }
+  },
   "notifications": {
     "title": "Notifications",
     "tooltip_idle": "No new replies",
@@ -35,7 +67,8 @@
       "library": "Knowledge Base",
       "workspace": "Workbench",
       "knowledge_graph": "Knowledge Graph",
-      "metrics": "Metrics"
+      "tools": "Tools",
+      "tasks": "Tasks"
     },
     "in_dev": "(In Dev)",
     "starred": "Starred",
@@ -201,27 +234,9 @@
       "profile": "Profile",
       "sessions": "Sessions",
       "metrics": "Metrics",
-      "scheduled_tasks": "Scheduled tasks",
-      "plugins": "Plugins",
-      "team_tools": "Team tools",
       "tokens": "API Tokens",
       "users": "Users",
       "audit": "Activity"
-    },
-    "scheduled_tasks": {
-      "subtitle": "Recurring or deferred agent runs. Set up a weekly digest, a daily monitor, or fire off a long task to check back later.",
-      "coming_soon": "Coming soon",
-      "placeholder_desc": "Scheduled and background tasks land here once the long-running agent work ships. For now, every chat turn finishes before you close the page."
-    },
-    "plugins": {
-      "subtitle": "Enable or disable individual tool packs, and connect your own MCP servers (Linear / Jira / GitHub / internal APIs).",
-      "coming_soon": "Coming soon",
-      "placeholder_desc": "Today's tools (search, knowledge graph, library import) are registered at server boot. A dynamic registry that lets you add custom MCP integrations from this page is on the roadmap."
-    },
-    "team_tools": {
-      "subtitle": "Saved agent presets your team can launch with one click — internal Q&A bots, glossary lookups, domain-specific assistants.",
-      "coming_soon": "Coming soon",
-      "placeholder_desc": "Wrap an agent prompt + tool config behind a stable URL so non-power users find their workflow without writing prompts. Lands after scheduled tasks."
     },
     "profile": {
       "title": "Profile",

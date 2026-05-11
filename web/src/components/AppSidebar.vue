@@ -8,7 +8,8 @@ import {
   BookOpen,
   FolderKanban,
   Network,
-  BarChart3,
+  Wrench,
+  Clock,
   Loader2,
   MoreHorizontal,
   Star,
@@ -100,12 +101,13 @@ const tabs = computed(() => [
   { path: '/library', label_key: 'sidebar.tabs.library', icon: BookOpen },
   { path: '/workspace', label_key: 'sidebar.tabs.workspace', icon: FolderKanban },
   { path: '/knowledge-graph', label_key: 'sidebar.tabs.knowledge_graph', icon: Network },
-  { path: '/metrics', label_key: 'sidebar.tabs.metrics', icon: BarChart3 },
-  // /simulation + /benchmark + /tokens used to live here. /tokens
-  // moved into /settings/{sessions,tokens}; simulation + benchmark
-  // were removed (simulation hit the deleted /api/v1/query;
-  // benchmark will be rebuilt). The avatar menu's Settings link
-  // is the entry point for account / token / user management.
+  // Daily-use agent surfaces: pickable agent presets (Tools +
+  // Skills) and the queue of long / scheduled tasks. Both ride
+  // the main nav rather than Settings — they're operational, not
+  // configuration. /metrics moved into /settings/metrics where
+  // the rest of the account-state pages live.
+  { path: '/tools', label_key: 'sidebar.tabs.tools', icon: Wrench },
+  { path: '/tasks', label_key: 'sidebar.tabs.tasks', icon: Clock },
 ])
 
 function isTabDisabled(tab) {
