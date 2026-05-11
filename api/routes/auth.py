@@ -445,6 +445,11 @@ class UsageOut(BaseModel):
     output_tokens: int
     total_tokens: int
     message_count: int
+    # Estimated USD cost using ``cfg.answering.generator.{input,output}_cost_per_1m_usd``.
+    # Zero when rates aren't configured — UI hides the cost line.
+    input_cost_usd: float = 0.0
+    output_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
 
 
 @router.get("/me/usage", response_model=UsageOut)
@@ -454,15 +459,23 @@ def me_usage(request: Request, state: AppState = Depends(get_state)):
     """
     principal = _require_principal(request)
     from ..auth.usage import user_usage
+    from .admin import _cost_rates, _compute_usd
 
     with state.store.transaction() as sess:
         totals = user_usage(sess, principal.user_id)
+    in_rate, out_rate = _cost_rates(state)
+    in_usd, out_usd, tot_usd = _compute_usd(
+        totals.input_tokens, totals.output_tokens, in_rate, out_rate,
+    )
     return UsageOut(
         user_id=totals.user_id or principal.user_id,
         input_tokens=totals.input_tokens,
         output_tokens=totals.output_tokens,
         total_tokens=totals.total_tokens,
         message_count=totals.message_count,
+        input_cost_usd=in_usd,
+        output_cost_usd=out_usd,
+        total_cost_usd=tot_usd,
     )
 
 

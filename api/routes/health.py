@@ -35,6 +35,8 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
     gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
     gen_model = getattr(gen, "model", None) or "unknown"
     gen_context_window = int(getattr(gen, "context_window", 0) or 200_000)
+    gen_cost_in = float(getattr(gen, "input_cost_per_1m_usd", 0.0) or 0.0)
+    gen_cost_out = float(getattr(gen, "output_cost_per_1m_usd", 0.0) or 0.0)
 
     return HealthResponse(
         status="ok",
@@ -61,6 +63,11 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
             # context-window ring + label the active model.
             "generator_model": gen_model,
             "generator_context_window": gen_context_window,
+            # Per-1M-token USD rates for cost-estimate display.
+            # Zero means "not configured" — UI hides the cost
+            # column rather than showing $0.00 for real usage.
+            "input_cost_per_1m_usd": gen_cost_in,
+            "output_cost_per_1m_usd": gen_cost_out,
             # Web-search providers the deployment has configured.
             # Empty list = no web tools available to the agent.
             "web_search_providers": sorted(

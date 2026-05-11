@@ -90,9 +90,13 @@
       </div>
     </section>
 
-    <!-- Per-user token usage table -->
+    <!-- Per-user token + cost table -->
     <section v-if="userUsage.length" class="panel panel-table">
-      <div class="panel-head">Tokens by user <span class="text-t3">· lifetime</span></div>
+      <div class="panel-head">
+        Tokens by user <span class="text-t3">· lifetime</span>
+        <span v-if="costConfigured" class="text-t3"> · cost @ ${{ costInPer1M }}/M in · ${{ costOutPer1M }}/M out</span>
+        <span v-else class="text-t3"> · cost not configured (set <code>answering.generator.input_cost_per_1m_usd</code>)</span>
+      </div>
       <table class="t">
         <thead>
           <tr>
@@ -101,6 +105,7 @@
             <th class="w-[80px] tabular">output</th>
             <th class="w-[90px] tabular">total</th>
             <th class="w-[70px] tabular">answers</th>
+            <th v-if="costConfigured" class="w-[80px] tabular">cost</th>
           </tr>
         </thead>
         <tbody>
@@ -110,6 +115,7 @@
             <td class="tabular text-t3">{{ (u.output_tokens || 0).toLocaleString() }}</td>
             <td class="tabular">{{ (u.total_tokens || 0).toLocaleString() }}</td>
             <td class="tabular text-t3">{{ (u.message_count || 0).toLocaleString() }}</td>
+            <td v-if="costConfigured" class="tabular">{{ fmtCost(u.total_cost_usd) }}</td>
           </tr>
         </tbody>
       </table>
@@ -196,6 +202,20 @@ const slow = ref([])
 const failures = ref([])
 // Admin-only; a 403 just leaves it empty so the panel disappears.
 const userUsage = ref([])
+// Cost rates from /health — drives whether the cost column shows
+// and the header note labels (e.g. "$3/M in · $15/M out").
+const costInPer1M = ref(0)
+const costOutPer1M = ref(0)
+const costConfigured = computed(() => costInPer1M.value > 0 || costOutPer1M.value > 0)
+// USD formatter — sub-cent values would otherwise render as "$0.00"
+// which reads as "free", misleading users who have real usage.
+// Showing "<$0.01" preserves the "tiny but nonzero" signal.
+function fmtCost(v) {
+  const n = Number(v) || 0
+  if (n <= 0) return '$0.00'
+  if (n < 0.01) return '<$0.01'
+  return `$${n.toFixed(2)}`
+}
 
 const bucketLabel = computed(() => ({ '24h': '15 min', '7d': 'hour', '30d': '6 hrs' }[range.value]))
 
@@ -241,6 +261,14 @@ async function refresh() {
     } catch {
       userUsage.value = []
     }
+    // Health snapshot for cost-rate display ("cost @ $3/M in").
+    // Same endpoint that powers the context-window ring — cached
+    // per refresh, so the rate stays consistent across the page.
+    try {
+      const h = await fetch('/api/v1/health', { credentials: 'include' }).then(r => r.json())
+      costInPer1M.value = h?.features?.input_cost_per_1m_usd || 0
+      costOutPer1M.value = h?.features?.output_cost_per_1m_usd || 0
+    } catch { /* non-fatal */ }
     lastRefreshedAt.value = Date.now()
   } catch (e) {
     err.value = e?.message || String(e)

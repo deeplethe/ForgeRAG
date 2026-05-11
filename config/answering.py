@@ -72,6 +72,23 @@ class GeneratorConfig(BaseModel):
     # deepseek-reasoner = 128000.
     context_window: int = 200_000
 
+    # Token pricing for cost estimation in the Metrics view. Both
+    # values are USD per ONE MILLION tokens — matches what every
+    # provider publishes on their pricing pages, easier to copy
+    # without slippage. Zero (default) hides the cost columns in
+    # the metrics UI ("not configured"). Set both in opencraig.yaml
+    # to enable cost-per-user accounting:
+    #   answering.generator:
+    #     input_cost_per_1m_usd: 3.0      # claude-sonnet-4.5 example
+    #     output_cost_per_1m_usd: 15.0
+    # Per-call cost is computed as ``tokens / 1_000_000 * rate``;
+    # mixed-model deployments where the agent switches models
+    # mid-conversation will only get the configured-model rate
+    # applied uniformly — close enough for monthly admin reviews,
+    # not invoice-grade.
+    input_cost_per_1m_usd: float = 0.0
+    output_cost_per_1m_usd: float = 0.0
+
     # System prompt override. None -> use the default in prompts.py
     system_prompt: str | None = None
     # User message template. None -> use the default in prompts.py

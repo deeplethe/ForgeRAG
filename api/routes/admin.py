@@ -88,6 +88,13 @@ class UserUsageOut(BaseModel):
     output_tokens: int
     total_tokens: int
     message_count: int
+    # Estimated cost in USD using the configured per-1M rates on
+    # ``cfg.answering.generator``. Both fields default to 0 when
+    # rates aren't configured — the metrics UI hides the column in
+    # that case rather than showing a misleading "$0".
+    input_cost_usd: float = 0.0
+    output_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +169,30 @@ def list_users(
 # in the same block for cohesion.
 
 
+def _cost_rates(state: AppState) -> tuple[float, float]:
+    """Return ``(input_per_1m_usd, output_per_1m_usd)``. Zero means
+    "not configured" — the UI hides the cost columns rather than
+    showing a misleading "$0.00" for users with real tokens."""
+    gen = getattr(getattr(state.cfg, "answering", None), "generator", None)
+    if gen is None:
+        return 0.0, 0.0
+    return (
+        float(getattr(gen, "input_cost_per_1m_usd", 0.0) or 0.0),
+        float(getattr(gen, "output_cost_per_1m_usd", 0.0) or 0.0),
+    )
+
+
+def _compute_usd(input_tokens: int, output_tokens: int, in_rate: float, out_rate: float) -> tuple[float, float, float]:
+    """Tokens → USD. Returns ``(input_usd, output_usd, total_usd)``;
+    all zero when both rates are zero (preserves the "not configured"
+    signal so the UI can hide the column)."""
+    if in_rate <= 0 and out_rate <= 0:
+        return 0.0, 0.0, 0.0
+    i = (input_tokens or 0) / 1_000_000.0 * in_rate
+    o = (output_tokens or 0) / 1_000_000.0 * out_rate
+    return i, o, i + o
+
+
 @router.get("/users/usage", response_model=list[UserUsageOut])
 def list_user_usage(
     request: Request,
@@ -192,9 +223,13 @@ def list_user_usage(
                 ).scalars()
                 user_rows = {r.user_id: r for r in rows}
 
+    in_rate, out_rate = _cost_rates(state)
     out: list[UserUsageOut] = []
     for t in totals:
         u = user_rows.get(t.user_id) if t.user_id else None
+        in_usd, out_usd, tot_usd = _compute_usd(
+            t.input_tokens, t.output_tokens, in_rate, out_rate,
+        )
         out.append(
             UserUsageOut(
                 user_id=t.user_id or "local",
@@ -205,6 +240,9 @@ def list_user_usage(
                 output_tokens=t.output_tokens,
                 total_tokens=t.total_tokens,
                 message_count=t.message_count,
+                input_cost_usd=in_usd,
+                output_cost_usd=out_usd,
+                total_cost_usd=tot_usd,
             )
         )
     return out
@@ -224,6 +262,10 @@ def get_user_usage(
         if user_id != "local" and user is None:
             raise HTTPException(404, "user not found")
         totals = user_usage(sess, user_id)
+    in_rate, out_rate = _cost_rates(state)
+    in_usd, out_usd, tot_usd = _compute_usd(
+        totals.input_tokens, totals.output_tokens, in_rate, out_rate,
+    )
     return UserUsageOut(
         user_id=user_id,
         username=user.username if user else None,
@@ -233,6 +275,9 @@ def get_user_usage(
         output_tokens=totals.output_tokens,
         total_tokens=totals.total_tokens,
         message_count=totals.message_count,
+        input_cost_usd=in_usd,
+        output_cost_usd=out_usd,
+        total_cost_usd=tot_usd,
     )
 
 
