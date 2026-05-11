@@ -104,10 +104,13 @@ const tabs = computed(() => [
   // Daily-use agent surfaces: pickable agent presets (Tools +
   // Skills) and the queue of long / scheduled tasks. Both ride
   // the main nav rather than Settings — they're operational, not
-  // configuration. /metrics moved into /settings/metrics where
-  // the rest of the account-state pages live.
-  { path: '/tools', label_key: 'sidebar.tabs.tools', icon: Wrench },
+  // configuration. Tasks sits above Tools because it reads as
+  // "what's happening now" (active state); Tools is "what could
+  // happen" (capability registry) — checking active state is the
+  // higher-frequency action so it goes first; Tools is the
+  // catalogue you dip into less often, so anchors the bottom.
   { path: '/tasks', label_key: 'sidebar.tabs.tasks', icon: Clock },
+  { path: '/tools', label_key: 'sidebar.tabs.tools', icon: Wrench },
 ])
 
 function isTabDisabled(tab) {
