@@ -45,6 +45,7 @@
       v-model:search="searchQuery"
       @new-folder="onNewFolder"
       @upload="onUpload"
+      @upload-folder="onUploadFolder"
       @set-view="ws.setViewMode"
       @show-trash="onShowTrash"
       @empty-trash="onEmptyTrash"
@@ -147,13 +148,26 @@
       :folder-label="membersDialogFolderLabel"
     />
 
-    <!-- Hidden file input for uploads -->
+    <!-- Hidden file inputs — one flat (Upload files), one folder
+         (Upload folder, ``webkitdirectory`` recurses + sets
+         ``webkitRelativePath`` on each File so we can preserve the
+         subfolder structure). Two inputs because the attr toggle
+         can't switch modes per-click reliably across browsers. -->
     <input
       ref="fileInput"
       type="file"
       multiple
       class="hidden"
       @change="onFilesPicked"
+    />
+    <input
+      ref="folderInput"
+      type="file"
+      webkitdirectory
+      directory
+      multiple
+      class="hidden"
+      @change="onFolderPicked"
     />
   </div>
 </template>
@@ -167,6 +181,7 @@ import { useLibrary } from '@/composables/useLibrary'
 import { useLastTabRoute } from '@/composables/useLastTabRoute'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useUploadsStore } from '@/stores/uploads'
+import { walkDataTransfer, fileListWithRelativePaths, groupByFolder } from '@/utils/folderDrop'
 import { useDialog } from '@/composables/useDialog'
 import DocDetail from '@/views/DocDetail.vue'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
@@ -265,17 +280,33 @@ function onOSDragLeave(e) {
   }
 }
 
-function onOSDrop(e) {
+async function onOSDrop(e) {
   if (!isOSFileDrag(e)) return
   _dragCounter = 0
   osDragActive.value = false
-  const files = Array.from(e.dataTransfer.files || [])
-  if (!files.length) return
-  // Capability-aware enqueue — images / legacy Office formats get
-  // toasted + dropped here so the user knows immediately. Backend
-  // 415 is still the source of truth.
-  const accepted = safeEnqueue(files, { folderPath: ws.currentPath.value })
-  if (accepted) uploads.toggleDrawer(true)
+  // Folder-aware walk: when the user drops a folder, ``dataTransfer.files``
+  // is empty / missing the folder contents — must descend via the
+  // ``DataTransferItem.webkitGetAsEntry`` API. ``walkDataTransfer``
+  // gracefully degrades to the flat files list when items API isn't
+  // available, so pure-file drops keep working the same as before.
+  let records = []
+  try {
+    records = await walkDataTransfer(e.dataTransfer.items, e.dataTransfer.files)
+  } catch (err) {
+    console.warn('folder drop walk failed', err)
+    records = Array.from(e.dataTransfer.files || []).map((f) => ({ file: f, relPath: '' }))
+  }
+  if (!records.length) return
+  // Group by target dir so each subfolder's files enqueue with the
+  // right ``folderPath`` — the upload store accepts one path per
+  // enqueue call. Capability-filtering happens per-group so the
+  // accept/reject toast still fires once per file.
+  const groups = groupByFolder(records, ws.currentPath.value || '/')
+  let totalAccepted = 0
+  for (const [folderPath, files] of groups) {
+    totalAccepted += safeEnqueue(files, { folderPath })
+  }
+  if (totalAccepted) uploads.toggleDrawer(true)
   // Refresh the file list shortly after so newly-ingested docs surface
   setTimeout(() => { refresh() }, 800)
 }
@@ -396,6 +427,7 @@ const trashItems = ref([])
 const deletingDocs = reactive(new Set())
 const trashLoading = ref(false)
 const fileInput = ref(null)
+const folderInput = ref(null)
 
 // Synthetic breadcrumb for trash mode. Clicking ``/`` exits the trash
 // (handled by ``onCrumbNavigate`` below); the second crumb is the
@@ -701,6 +733,9 @@ async function onCreateFolderInline(rawName) {
 function onUpload() {
   fileInput.value?.click()
 }
+function onUploadFolder() {
+  folderInput.value?.click()
+}
 
 function onFilesPicked(e) {
   const files = [...(e.target.files || [])]
@@ -714,6 +749,24 @@ function onFilesPicked(e) {
   e.target.value = ''
   // Kick a workspace refresh after a short delay so new docs appear in the
   // file tree once they hit the DB. The queue keeps updating independently.
+  setTimeout(() => { refresh() }, 800)
+}
+
+function onFolderPicked(e) {
+  const files = e.target.files
+  if (!files?.length) return
+  // Each File has ``webkitRelativePath`` like "sales/2025/Q3.pdf";
+  // ``fileListWithRelativePaths`` strips the leaf to give us the
+  // record shape ``walkDataTransfer`` produces, so the rest of the
+  // flow (groupByFolder + per-group enqueue) is identical to drop.
+  const records = fileListWithRelativePaths(files)
+  const groups = groupByFolder(records, ws.currentPath.value || '/')
+  let totalAccepted = 0
+  for (const [folderPath, list] of groups) {
+    totalAccepted += safeEnqueue(list, { folderPath })
+  }
+  if (totalAccepted) uploads.toggleDrawer(true)
+  e.target.value = ''
   setTimeout(() => { refresh() }, 800)
 }
 

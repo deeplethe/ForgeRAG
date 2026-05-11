@@ -23,10 +23,45 @@
         <FolderPlus :size="14" :stroke-width="1.5" />
         <span>New folder</span>
       </button>
-      <button class="toolbar-btn" @click="$emit('upload')" title="Upload file">
-        <Upload :size="14" :stroke-width="1.5" />
-        <span>Upload</span>
-      </button>
+      <!-- Upload — split-style button: main click = files picker,
+           ▾ opens a tiny menu with "Upload folder" (which preserves
+           the subfolder structure under the current dir). Drag-drop
+           on the workspace shell handles both files and folders too. -->
+      <div class="upload-split" :class="{ 'upload-split--open': uploadMenuOpen }">
+        <button
+          class="toolbar-btn upload-split__main"
+          @click="$emit('upload')"
+          title="Upload files"
+        >
+          <Upload :size="14" :stroke-width="1.5" />
+          <span>Upload</span>
+        </button>
+        <button
+          class="upload-split__chev"
+          @click.stop="uploadMenuOpen = !uploadMenuOpen"
+          title="More upload options"
+        >
+          <ChevronDown :size="12" :stroke-width="1.75" />
+        </button>
+        <Transition name="popup">
+          <div v-if="uploadMenuOpen" class="upload-split__menu" @click.stop>
+            <button class="upload-split__item" @click="onPickFiles">
+              <Upload :size="14" :stroke-width="1.5" />
+              <div>
+                <div class="upload-split__title">Upload files</div>
+                <div class="upload-split__desc">Pick one or more files</div>
+              </div>
+            </button>
+            <button class="upload-split__item" @click="onPickFolder">
+              <FolderUp :size="14" :stroke-width="1.5" />
+              <div>
+                <div class="upload-split__title">Upload folder</div>
+                <div class="upload-split__desc">Pick a folder; subfolders preserved</div>
+              </div>
+            </button>
+          </div>
+        </Transition>
+      </div>
 
       <!-- Search — filters the current folder's children -->
       <div class="search-wrap ml-2">
@@ -101,7 +136,8 @@
 </template>
 
 <script setup>
-import { ArrowLeft, FolderPlus, LayoutGrid, List, Search, Trash2, Upload, X } from 'lucide-vue-next'
+import { ArrowLeft, ChevronDown, FolderPlus, FolderUp, LayoutGrid, List, Search, Trash2, Upload, X } from 'lucide-vue-next'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 
 defineProps({
   viewMode: { type: String, required: true },
@@ -113,7 +149,32 @@ defineProps({
   // fire and the label flips to communicate progress.
   emptyingTrash: { type: Boolean, default: false },
 })
-defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 'empty-trash', 'exit-trash'])
+const emit = defineEmits([
+  'new-folder', 'upload', 'upload-folder',
+  'set-view', 'show-trash', 'update:search',
+  'empty-trash', 'exit-trash',
+])
+
+// Upload-split popover. Click ▾ to open, click anywhere outside to
+// close. Selecting an item closes the menu and emits the matching
+// event up; the parent owns the actual file-input click.
+const uploadMenuOpen = ref(false)
+function onPickFiles() {
+  uploadMenuOpen.value = false
+  emit('upload')
+}
+function onPickFolder() {
+  uploadMenuOpen.value = false
+  emit('upload-folder')
+}
+function _onOutsideClick(e) {
+  if (!uploadMenuOpen.value) return
+  const t = e.target
+  if (t?.closest && (t.closest('.upload-split'))) return
+  uploadMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', _onOutsideClick))
+onBeforeUnmount(() => document.removeEventListener('mousedown', _onOutsideClick))
 </script>
 
 <style scoped>
@@ -135,6 +196,79 @@ defineEmits(['new-folder', 'upload', 'set-view', 'show-trash', 'update:search', 
   color: var(--color-t1);
 }
 .toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Upload split — main button + ▾ button glued together as one chip.
+   The chev is its own button so clicks on each half do different
+   things; visually they share the rounded outline. */
+.upload-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+.upload-split__main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: 0;
+}
+.upload-split__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 0.6875rem;
+  color: var(--color-t3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+  cursor: pointer;
+  margin-left: -1px;
+  transition: background 0.12s, color 0.12s;
+}
+.upload-split__chev:hover,
+.upload-split--open .upload-split__chev {
+  background: var(--color-bg2);
+  color: var(--color-t1);
+}
+.upload-split__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.upload-split__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  font-size: 0.75rem;
+  color: var(--color-t1);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.upload-split__item:hover { background: var(--color-bg-soft); }
+.upload-split__title { font-weight: 500; }
+.upload-split__desc {
+  font-size: 0.625rem;
+  color: var(--color-t3);
+  margin-top: 2px;
+}
+.popup-enter-active, .popup-leave-active { transition: opacity .14s ease, transform .14s ease; }
+.popup-enter-from, .popup-leave-to { opacity: 0; transform: translateY(-4px); }
 
 /* Secondary-destructive variant — red text + visible neutral border
    so the button reads as a button at rest, with a red-tinted hover
