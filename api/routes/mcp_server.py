@@ -320,12 +320,71 @@ def mount_mcp(app) -> None:
     # Combine the FastMCP session manager's lifespan with the parent
     # app's. Starlette stores the lifespan on ``router.lifespan_context``
     # — wrap that callable so startup enters BOTH contexts in order.
+    # We ALSO hide-on-startup tools that won't work in this deployment
+    # so the agent doesn't see them and retry against an
+    # always-disabled provider (Bug 2 from Inc 7 long-task probe).
     parent_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
     async def _combined_lifespan(scope_app):
         async with mcp_server.session_manager.run():
             async with parent_lifespan(scope_app):
+                _hide_unconfigured_mcp_tools(scope_app)
                 yield
 
     app.router.lifespan_context = _combined_lifespan
+
+
+def _hide_unconfigured_mcp_tools(scope_app) -> None:
+    """Remove MCP tools that won't work in this deployment from the
+    FastMCP registry so the agent never sees them.
+
+    Inc 7 probe found that agent runs against unconfigured tools
+    (``mcp__opencraig__web_search`` with no tavily/brave key) were
+    burning iterations on retries the prompt couldn't stop —
+    DeepSeek-v4-pro in particular ignored "don't retry not-configured
+    tools" guidance. Hiding the tools at the FastMCP layer makes the
+    state un-representable to the agent rather than relying on prompt
+    discipline.
+
+    Currently gates:
+      - ``web_search`` / ``web_fetch``: hidden when
+        ``state.web_search_providers`` is empty (no tavily/brave key).
+
+    Future gates could include:
+      - ``graph_explore``: hide when ``state.graph_store is None``
+      - ``rerank``: hide when ``state.reranker is None``
+    """
+    state = getattr(scope_app.state, "app", None)
+    if state is None:
+        return
+    providers = getattr(state, "web_search_providers", {}) or {}
+    if not providers:
+        # FastMCP stores tools in _tool_manager._tools (dict by name)
+        # in current versions. Defensive lookup for API shifts.
+        tm = getattr(mcp_server, "_tool_manager", None)
+        if tm is None:
+            log.warning(
+                "hide_unconfigured_mcp_tools: no _tool_manager attr "
+                "(FastMCP API drift?) — agent will still see "
+                "web_search / web_fetch and may retry them"
+            )
+            return
+        tools = getattr(tm, "_tools", None)
+        if not isinstance(tools, dict):
+            log.warning(
+                "hide_unconfigured_mcp_tools: _tool_manager has no "
+                "_tools dict (FastMCP API drift?)"
+            )
+            return
+        removed = []
+        for name in ("web_search", "web_fetch"):
+            if name in tools:
+                del tools[name]
+                removed.append(name)
+        if removed:
+            log.info(
+                "hide_unconfigured_mcp_tools: hid %s (no web search "
+                "provider configured)",
+                removed,
+            )

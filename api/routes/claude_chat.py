@@ -109,6 +109,7 @@ You answer the user's questions, with access to a team knowledge base (a corpus 
 - ``mcp__opencraig__graph_explore(query, top_k)`` — knowledge-graph walk
 - ``mcp__opencraig__rerank(query, chunk_ids, top_k)`` — refine candidates
 - ``mcp__opencraig__import_from_library(...)`` — pull a doc into the workdir
+- ``mcp__opencraig__inspect_artifact(path, text_head_chars)`` — metadata-only file inspection: returns size/mime/dimensions (for images) or line_count + head (for text). **Use this instead of Read for binary artifacts you just wrote** — reading a PNG / PDF via Read inflates context 10–50× via vision encoding.
 - ``mcp__opencraig__ask_human(question, context, options, why)`` — pause and ask the user when you're truly stuck (see "When to escalate" below)
 
 Behaviour rules:

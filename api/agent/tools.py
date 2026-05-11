@@ -1428,6 +1428,190 @@ def _handle_web_fetch(params: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _handle_inspect_artifact(params: dict, ctx) -> dict:
+    """Metadata-only file inspection. Replaces ``Read`` for the
+    verify-existence use case to dodge the "Read a PNG into context
+    via vision encoding" pathology (Inc 7 Task C: 120K input tokens
+    on a single 128KB PNG).
+
+    Path resolution: workspace-relative paths are looked up under the
+    container's bind-mounted user workdir; absolute paths must start
+    with the workdir root. No traversal outside the user's tree.
+    """
+    import mimetypes
+    import os
+    from pathlib import Path
+
+    path_arg = (params.get("path") or "").strip()
+    head_chars = int(params.get("text_head_chars", 500) or 0)
+    if not path_arg:
+        return {"error": "path is required", "tool": "inspect_artifact"}
+
+    # Resolve under the user's workdir bind-mount on the HOST side.
+    # The container sees /workspace; the host sees
+    # storage/user-workdirs/<user_id>/. ToolContext.principal carries
+    # the user_id (per AuthenticatedPrincipal).
+    principal = getattr(ctx, "principal", None)
+    user_id = getattr(principal, "user_id", None) if principal else None
+    if not user_id:
+        return {"error": "no user context", "tool": "inspect_artifact"}
+    user_root = Path(f"./storage/user-workdirs/{user_id}").resolve()
+    user_root.mkdir(parents=True, exist_ok=True)
+
+    # Translate /workspace/X (container view) to host path.
+    rel = path_arg
+    if rel.startswith("/workspace/"):
+        rel = rel[len("/workspace/"):]
+    elif rel.startswith("/workspace"):
+        rel = rel[len("/workspace"):].lstrip("/")
+    target = (user_root / rel).resolve()
+
+    # Guard: don't escape the user_root.
+    try:
+        target.relative_to(user_root)
+    except ValueError:
+        return {
+            "error": f"path {path_arg!r} resolves outside the user workdir",
+            "tool": "inspect_artifact",
+        }
+
+    if not target.exists():
+        return {
+            "path": path_arg,
+            "exists": False,
+            "kind": "missing",
+            "tool": "inspect_artifact",
+        }
+
+    st = target.stat()
+    size = st.st_size
+    mime, _enc = mimetypes.guess_type(target.name)
+    mime = mime or "application/octet-stream"
+
+    # Image: try to read dimensions
+    if mime.startswith("image/"):
+        width = height = None
+        try:
+            from PIL import Image  # type: ignore
+
+            with Image.open(target) as im:
+                width, height = im.size
+        except Exception:
+            pass
+        return {
+            "path": path_arg,
+            "exists": True,
+            "kind": "image",
+            "size_bytes": size,
+            "mime": mime,
+            "width": width,
+            "height": height,
+            "tool": "inspect_artifact",
+        }
+
+    # Text-ish (heuristic by mime + extension + null-byte probe of first 4KB)
+    is_textish = mime.startswith("text/") or mime in (
+        "application/json", "application/xml", "application/yaml",
+        "application/x-yaml", "application/javascript", "application/x-sh",
+        "application/csv", "application/x-csv",
+    ) or target.suffix.lower() in (
+        ".csv", ".tsv", ".json", ".jsonl", ".md", ".markdown",
+        ".py", ".js", ".ts", ".tsx", ".vue", ".html", ".css", ".scss",
+        ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+        ".txt", ".log", ".rst", ".sh", ".rb", ".go", ".rs",
+    )
+    if is_textish:
+        try:
+            head_bytes = target.read_bytes()[:4096]
+            if b"\x00" in head_bytes[:1024]:
+                is_textish = False
+        except Exception:
+            pass
+
+    if is_textish:
+        try:
+            with target.open("r", encoding="utf-8", errors="replace") as f:
+                # Count lines + collect head efficiently
+                head_buf = []
+                line_count = 0
+                for line in f:
+                    if len(head_buf) < head_chars and head_chars > 0:
+                        remaining = head_chars - sum(len(s) for s in head_buf)
+                        head_buf.append(line[:remaining])
+                    line_count += 1
+            return {
+                "path": path_arg,
+                "exists": True,
+                "kind": "text",
+                "size_bytes": size,
+                "mime": mime,
+                "line_count": line_count,
+                "head": "".join(head_buf) if head_chars > 0 else None,
+                "tool": "inspect_artifact",
+            }
+        except Exception as e:
+            return {
+                "path": path_arg,
+                "exists": True,
+                "kind": "text",
+                "size_bytes": size,
+                "mime": mime,
+                "read_error": str(e),
+                "tool": "inspect_artifact",
+            }
+
+    return {
+        "path": path_arg,
+        "exists": True,
+        "kind": "binary",
+        "size_bytes": size,
+        "mime": mime,
+        "tool": "inspect_artifact",
+    }
+
+
+_INSPECT_ARTIFACT_SPEC = ToolSpec(
+    name="inspect_artifact",
+    description=(
+        "Inspect a file in the agent's workspace WITHOUT loading its "
+        "contents into context. Use this instead of ``Read`` to verify "
+        "that an artifact you just wrote (CSV / PNG / PDF / JSON / ...) "
+        "exists and looks right. Returns metadata only: size, mime, "
+        "kind, plus dimensions for images and line_count + head for "
+        "text files.\n"
+        "\n"
+        "Why prefer this over ``Read`` for binary outputs: reading a "
+        "PNG back through ``Read`` forces the LLM to vision-encode the "
+        "image on every subsequent turn, inflating input tokens "
+        "10–50×. ``inspect_artifact`` returns just the dimensions, "
+        "which is what you actually wanted to confirm anyway."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Path to inspect. Workspace-relative (e.g. "
+                    "``outputs/chart.png``) or absolute under "
+                    "``/workspace/``."
+                ),
+            },
+            "text_head_chars": {
+                "type": "integer",
+                "description": (
+                    "For text files, return the first N characters. "
+                    "Default 500. Set to 0 to skip the head sample."
+                ),
+                "default": 500,
+            },
+        },
+        "required": ["path"],
+    },
+    handler=_handle_inspect_artifact,
+)
+
+
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
     description=(
@@ -2020,4 +2204,5 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     # tools. The agent reaches our domain capabilities (search, KG,
     # library, artifacts) via the MCP server (``api/routes/mcp.py``).
     _IMPORT_FROM_LIBRARY_SPEC.name: _IMPORT_FROM_LIBRARY_SPEC,
+    _INSPECT_ARTIFACT_SPEC.name: _INSPECT_ARTIFACT_SPEC,
 }

@@ -435,6 +435,61 @@ def import_from_library(
 
 
 # ---------------------------------------------------------------------------
+# inspect_artifact — metadata-only file inspection (Inc 7 Bug 5 fix)
+# ---------------------------------------------------------------------------
+#
+# Replaces ``Read`` for the verify-existence-of-output use case. Reading
+# a binary artifact (PNG, PDF, archive) the agent just wrote back into
+# the LLM context forces vision encoding of the file on every
+# subsequent turn — Task C of the Inc 7 long-task probe burned 120K
+# input tokens on a single Read of a 128KB matplotlib PNG.
+#
+# This tool returns metadata only:
+#   - size_bytes, mime guess, line count for text files
+#   - image dimensions for PNG/JPG
+#   - first 500 chars head for text files
+# Never returns base64 / vision blobs.
+
+
+@mcp_server.tool()
+def inspect_artifact(path: str, text_head_chars: int = 500) -> dict:
+    """Inspect a file in the agent's workspace WITHOUT loading its full
+    content into context. Use this instead of ``Read`` for verifying
+    that an artifact you wrote (CSV, PNG, PDF, JSON, ...) exists with
+    the right size + shape.
+
+    Returns metadata: ``{path, exists, size_bytes, mime, kind, ...}``
+    where ``kind`` is one of: 'binary' / 'text' / 'image' / 'missing'.
+
+    For text files, includes ``line_count`` and ``head`` (first N chars).
+    For images (PNG/JPG/GIF/WebP), includes ``width`` / ``height``.
+    For binary non-image files, only metadata.
+
+    Why use this over ``Read``:
+      - Reading a 128KB PNG back inflates LLM input ~10-50× via vision
+        encoding, on every subsequent turn (Inc 7 Task C measured
+        120K input tokens for 9 tool calls — 13× normal).
+      - Reading a 100MB CSV preview is wasteful; inspect_artifact gives
+        you size + first 500 chars to verify schema without loading
+        the whole table.
+
+    Args:
+        path: Workspace-relative or absolute path (workspace is
+            ``/workspace`` inside the sandbox).
+        text_head_chars: For text files, return the first N chars
+            (default 500). Set to 0 to skip the head sample.
+
+    Returns:
+        Metadata dict; never raises. Missing files return
+        ``{"exists": False, ...}``.
+    """
+    params: dict[str, Any] = {"path": path}
+    if text_head_chars is not None and text_head_chars != 500:
+        params["text_head_chars"] = int(text_head_chars)
+    return _dispatch_via_mcp("inspect_artifact", params)
+
+
+# ---------------------------------------------------------------------------
 # ask_human — agent-initiated escalation (Inc 4 HITL)
 # ---------------------------------------------------------------------------
 #
