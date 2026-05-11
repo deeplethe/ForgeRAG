@@ -16,6 +16,7 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import UserMenu from './UserMenu.vue'
+import NotificationBell from './NotificationBell.vue'
 import Skeleton from './Skeleton.vue'
 import { useLastTabRoute } from '@/composables/useLastTabRoute'
 import { useChatStreamState } from '@/composables/useChatStreamState'
@@ -403,11 +404,17 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- User card + popup menu. No top divider: padding + the card's
-         own ``bg-bg`` (vs sidebar's ``bg-bg2``) is enough visual
-         separation from the conversation list above. -->
-    <div class="px-2 pt-2 pb-2.5">
-      <UserMenu :me="me" />
+    <!-- User card + popup menu + notification bell. No top divider:
+         padding + the card's own ``bg-bg`` (vs sidebar's ``bg-bg2``)
+         is enough visual separation from the conversation list above.
+         Bell sits right of the user card so the "what changed" cue
+         lives next to "who am I" — both anchor the account
+         neighbourhood. -->
+    <div class="px-2 pt-2 pb-2.5 flex items-center gap-1">
+      <div class="flex-1 min-w-0">
+        <UserMenu :me="me" />
+      </div>
+      <NotificationBell />
     </div>
   </nav>
 </template>

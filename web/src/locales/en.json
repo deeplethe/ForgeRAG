@@ -1,4 +1,20 @@
 {
+  "notifications": {
+    "title": "Notifications",
+    "tooltip_idle": "No new replies",
+    "tooltip_unread": "{n} unread",
+    "mark_all": "Mark all read",
+    "mark_all_tooltip": "Clear the unread state for every conversation",
+    "empty": "You're all caught up.",
+    "untitled": "(untitled conversation)",
+    "just_now": "just now",
+    "a_min_ago": "a minute ago",
+    "n_mins_ago": "{n}m ago",
+    "an_hour_ago": "an hour ago",
+    "n_hours_ago": "{n}h ago",
+    "yesterday": "yesterday",
+    "n_days_ago": "{n}d ago"
+  },
   "common": {
     "ok": "OK",
     "cancel": "Cancel",

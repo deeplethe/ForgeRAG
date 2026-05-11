@@ -1,4 +1,20 @@
 {
+  "notifications": {
+    "title": "通知",
+    "tooltip_idle": "暂无新回复",
+    "tooltip_unread": "{n} 条未读",
+    "mark_all": "全部已读",
+    "mark_all_tooltip": "清除所有对话的未读状态",
+    "empty": "暂时没有新通知。",
+    "untitled": "(未命名对话)",
+    "just_now": "刚刚",
+    "a_min_ago": "1 分钟前",
+    "n_mins_ago": "{n} 分钟前",
+    "an_hour_ago": "1 小时前",
+    "n_hours_ago": "{n} 小时前",
+    "yesterday": "昨天",
+    "n_days_ago": "{n} 天前"
+  },
   "common": {
     "ok": "确定",
     "cancel": "取消",
