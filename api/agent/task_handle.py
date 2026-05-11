@@ -166,6 +166,12 @@ class AgentTaskHandle:
     total_output_tokens: int = 0
     token_budget_total: int | None = None
 
+    # SSE-drop telemetry (Inc 7 Bug 3 fix). Counter of high-frequency
+    # events (token/thought) dropped when a subscriber's queue was full.
+    # Logged at warning level every 100; surfaced via /stream debug
+    # endpoint later if needed.
+    _dropped_token_events: int = 0
+
     # The asyncio.Task running the agent itself (set by runtime in Inc 3)
     agent_task: asyncio.Task | None = None
 
@@ -305,21 +311,60 @@ class AgentTaskHandle:
         while len(self.event_buffer) > self.buffer_size:
             self.event_buffer.popleft()
 
-        # 2. Push to live subscribers (non-blocking; slow ones get gaps).
+        # 2. Push to live subscribers.
+        #
+        # Drop policy when a subscriber's queue is full:
+        #   - High-frequency low-value events (token, thought): drop silently,
+        #     count for telemetry. The client can reconstruct via /stream
+        #     since=N from DB if needed.
+        #   - Everything else (tool_start, tool_end, citation, ask_human,
+        #     approval_request, sub_agent_*, done, ...): rotate the queue —
+        #     drop the OLDEST queued event to make room. Critical
+        #     transitions never silently vanish; the client sees a seq
+        #     gap and can refetch from DB.
+        #
+        # Investigation (Inc 7 long-task probe, task A): with the original
+        # maxsize=200 + universal drop-on-full, an SSE subscriber lost
+        # 89% of events on a 45-tool-call run because token bursts filled
+        # the queue faster than the network drained it. New maxsize=5000
+        # + rotate-on-full for non-token events virtually eliminates the
+        # loss for realistic runs.
+        _LOSSY_TYPES = ("token", "thought")
         if self.subscribers:
             for q in list(self.subscribers):
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
-                    # Slow consumer — drop this event for them only.
-                    # On reconnect they'll see the gap via seq and pull
-                    # missing events from DB.
-                    log.debug(
-                        "subscriber queue full, dropping event for one consumer "
-                        "(run=%s seq=%d)",
-                        self.run_id,
-                        seq,
-                    )
+                    if event_type in _LOSSY_TYPES:
+                        self._dropped_token_events += 1
+                        if self._dropped_token_events % 100 == 1:
+                            log.warning(
+                                "subscriber queue full (run=%s seq=%d): dropped "
+                                "%d high-frequency events so far; client will "
+                                "see seq gaps and can refetch from DB",
+                                self.run_id, seq, self._dropped_token_events,
+                            )
+                    else:
+                        # Rotate: pop oldest, push new. Loses one queued
+                        # event but ensures the critical-ish new one
+                        # reaches the subscriber.
+                        try:
+                            dropped = q.get_nowait()
+                            log.warning(
+                                "subscriber queue full (run=%s): rotated out "
+                                "seq=%d (%s) to make room for seq=%d (%s)",
+                                self.run_id,
+                                dropped.get("seq"),
+                                dropped.get("type"),
+                                seq,
+                                event_type,
+                            )
+                            try:
+                                q.put_nowait(event)
+                            except asyncio.QueueFull:
+                                pass
+                        except asyncio.QueueEmpty:
+                            pass
 
         # 3. Persist.
         should_force = (
@@ -405,7 +450,11 @@ class AgentTaskHandle:
         if self.status in {"done", "failed", "interrupted"}:
             return  # nothing more will come
 
-        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        # maxsize tuned from Inc 7 probe (Task A): 200 dropped 89% of events
+        # on 45-tool-call runs. 5000 = ~25× headroom for typical streaming
+        # rates (~20 tok/s) over multi-second network gaps. Memory cost is
+        # negligible (events ~500B = 2.5MB max per subscriber).
+        q: asyncio.Queue = asyncio.Queue(maxsize=5000)
         self.subscribers.add(q)
         try:
             while True:

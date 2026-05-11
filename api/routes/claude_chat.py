@@ -139,6 +139,13 @@ Do NOT call ``ask_human`` for:
   - Trivial choices where any reasonable answer works (just pick one)
   - Status updates (write a regular assistant message instead)
 
+Tool usage caveats:
+
+- ``WebSearch`` (SDK built-in) accepts ``query`` and optionally ``allowed_domains`` / ``blocked_domains`` only. It does NOT accept ``top_k``, ``limit``, ``num_results``, or similar — those belong to our MCP search tools above. Passing them returns InputValidationError.
+- ``WebFetch`` (SDK built-in) follows redirects to a default cap of 10. If you hit "Too many redirects" on a real URL, try a different source (often canonical homepage vs. mirror); don't retry the same URL.
+- Do NOT call ``Read`` on binary artifacts you just wrote (PNG, PDF, image, archive). Use ``Bash ls -lh <path>`` to confirm existence + size. Reading a PNG back forces the LLM to vision-encode it on every subsequent turn, inflating input tokens 10–50×.
+- If a tool returns ``{"error": "...not configured"}`` once, do NOT retry it — that means the operator hasn't wired the upstream provider. Switch to a sibling tool or skip the step.
+
 For conversational small talk (greetings, thanks, "who are you", "how does this work") you may answer directly with no tool calls."""
 
 
