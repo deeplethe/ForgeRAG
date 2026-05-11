@@ -230,21 +230,43 @@ def create_app(
         try:
             yield
         finally:
-            # Cancel any still-active in-memory runs before shutting down
-            # downstream services. Each handle.close() awaits a final DB
-            # flush so the events buffered at the moment of shutdown
-            # still land in agent_events.
-            import asyncio as _asyncio
+            # Long-task shutdown: cancel each active agent task so its
+            # own finally clause emits the terminal event, persists,
+            # and removes itself from state.active_runs. Awaiting the
+            # task gives it a chance to land the final assistant
+            # message + close the handle cleanly. Hard-cancel via
+            # handle.close() as fallback if the task hangs.
+            import asyncio
 
             handles = list(getattr(built, "active_runs", {}).values())
             if handles:
-                log.info("shutdown: closing %d active agent run(s)", len(handles))
+                log.info(
+                    "shutdown: closing %d active agent run(s)", len(handles)
+                )
+                # Cancel all first so they can clean up in parallel.
+                for h in handles:
+                    if h.agent_task is not None and not h.agent_task.done():
+                        h.agent_task.cancel()
+                # Then await each — bounded so a stuck SDK call can't
+                # block shutdown indefinitely.
                 for h in handles:
                     try:
-                        await h.close(final_status="interrupted")
+                        if h.agent_task is not None:
+                            await asyncio.wait_for(h.agent_task, timeout=10.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        # Cancelled normally OR hung past timeout — close
+                        # the handle directly so the run reaches a terminal
+                        # row state and the writer drains.
+                        try:
+                            await h.close(final_status="interrupted")
+                        except BaseException:
+                            log.exception(
+                                "shutdown: handle.close failed run=%s",
+                                getattr(h, "run_id", "?"),
+                            )
                     except BaseException:
                         log.exception(
-                            "shutdown: handle.close failed run=%s",
+                            "shutdown: agent_task wait failed run=%s",
                             getattr(h, "run_id", "?"),
                         )
             built.shutdown()

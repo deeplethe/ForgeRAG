@@ -675,3 +675,81 @@ def test_no_cwd_path_anywhere_is_pure_qa(client, stub_stream, state):
 
     client.post("/api/v1/agent/chat", json={"query": "ephemeral"})
     assert stub_stream.calls[-1]["cwd_path"] is None
+
+
+# ---------------------------------------------------------------------------
+# Long-task architecture — cross-user authz (Inc 3 review)
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the helper functions in isolation. Full /send +
+# /stream integration tests need a real asyncio loop (TestClient cancels
+# spawned background tasks) so they live in tests/test_long_task_routes.py
+# once Inc 4 stabilises the surface.
+
+
+def test_find_active_run_id_blocks_cross_user_subscribe():
+    """A leaked conv_id must not let user B subscribe to user A's run."""
+    from api.routes.claude_chat import _find_active_run_id_for_conv
+
+    alice = SimpleNamespace(user_id="alice", role="user")
+    bob = SimpleNamespace(user_id="bob", role="user")
+    admin = SimpleNamespace(user_id="root", role="admin")
+
+    # Fake handle as alice's
+    alice_handle = SimpleNamespace(
+        conversation_id="conv_alice",
+        user_id="alice",
+        run_id="r_a",
+    )
+    state = SimpleNamespace(active_runs={"r_a": alice_handle})
+
+    assert _find_active_run_id_for_conv(state, "conv_alice", alice) == "r_a"
+    assert _find_active_run_id_for_conv(state, "conv_alice", bob) is None
+    # Admin bypasses the per-user check (server-side tooling / audit).
+    assert _find_active_run_id_for_conv(state, "conv_alice", admin) == "r_a"
+
+
+def test_find_active_run_id_allows_legacy_null_owner():
+    """A handle with user_id=None (pre-multi-user legacy state) is
+    accessible to any authenticated principal — the multi-user check
+    only blocks when the handle declares an owner."""
+    from api.routes.claude_chat import _find_active_run_id_for_conv
+
+    bob = SimpleNamespace(user_id="bob", role="user")
+    legacy_handle = SimpleNamespace(
+        conversation_id="conv_legacy",
+        user_id=None,
+        run_id="r_legacy",
+    )
+    state = SimpleNamespace(active_runs={"r_legacy": legacy_handle})
+    assert (
+        _find_active_run_id_for_conv(state, "conv_legacy", bob) == "r_legacy"
+    )
+
+
+def test_find_latest_run_blocks_cross_user_replay():
+    """Same authz invariant for the DB-replay path (when the run has
+    already finished and the in-memory handle is gone)."""
+    from api.routes.claude_chat import _find_latest_run_for_conv
+
+    alice = SimpleNamespace(user_id="alice", role="user")
+    bob = SimpleNamespace(user_id="bob", role="user")
+    admin = SimpleNamespace(user_id="root", role="admin")
+
+    state = SimpleNamespace(
+        store=SimpleNamespace(
+            list_agent_runs_by_conversation=lambda cid, *, limit: [
+                {
+                    "run_id": "r_a",
+                    "user_id": "alice",
+                    "status": "done",
+                    "depth": 0,
+                }
+            ]
+        )
+    )
+
+    assert _find_latest_run_for_conv(state, "conv_alice", alice)["run_id"] == "r_a"
+    assert _find_latest_run_for_conv(state, "conv_alice", bob) is None
+    # Admin bypasses
+    assert _find_latest_run_for_conv(state, "conv_alice", admin)["run_id"] == "r_a"

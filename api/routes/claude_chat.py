@@ -1205,6 +1205,25 @@ async def send_turn(
         )
     body.conversation_id = conv_id
 
+    # Conversation ownership check (defense in depth; conv_id leaks
+    # shouldn't let user B send into user A's chat). NULL user_id on
+    # the conv row means it pre-dates multi-user; treat as accessible
+    # by anyone authenticated (legacy single-user behaviour). Admins
+    # bypass.
+    try:
+        conv_row = state.store.get_conversation(conv_id)
+    except Exception:
+        log.exception("send_turn: get_conversation failed conv=%s", conv_id)
+        conv_row = None
+    if conv_row is not None:
+        owner = conv_row.get("user_id") if isinstance(conv_row, dict) else None
+        if (
+            principal.role != "admin"
+            and owner is not None
+            and owner != principal.user_id
+        ):
+            raise HTTPException(status_code=404, detail="conversation not found")
+
     # Concurrency guard: one active run per conv (Inc 3 simplification).
     try:
         existing_active = state.store.find_active_agent_run(conv_id)
@@ -1353,7 +1372,9 @@ async def stream_conversation(
       - Run completed but row still in DB: replay events from DB, emit done
       - No run for conv: 404
     """
-    handle = state.active_runs.get(_find_active_run_id_for_conv(state, conv_id))
+    handle = state.active_runs.get(
+        _find_active_run_id_for_conv(state, conv_id, principal)
+    )
 
     if handle is None:
         # No live run — try to replay a completed one's events from DB.
@@ -1416,13 +1437,28 @@ async def stream_conversation(
     )
 
 
-def _find_active_run_id_for_conv(state: AppState, conv_id: str) -> str | None:
+def _find_active_run_id_for_conv(
+    state: AppState,
+    conv_id: str,
+    principal: AuthenticatedPrincipal,
+) -> str | None:
     """Look up the run_id of the conv's currently-active run from the
     in-memory registry. Cheaper than asking the DB on every reconnect
-    poll."""
+    poll.
+
+    Returns None — same as "no run" — if the run belongs to another
+    user (defense in depth; a leaked conv_id shouldn't let user B
+    subscribe to user A's stream). Admins bypass."""
     for run_id, h in state.active_runs.items():
-        if h.conversation_id == conv_id:
-            return run_id
+        if h.conversation_id != conv_id:
+            continue
+        if (
+            principal.role != "admin"
+            and h.user_id is not None
+            and h.user_id != principal.user_id
+        ):
+            continue
+        return run_id
     return None
 
 
