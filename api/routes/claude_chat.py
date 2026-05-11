@@ -1220,6 +1220,17 @@ class SendTurnRequest(ChatRequest):
     /send route can evolve independently of the legacy /chat body
     without breaking either."""
 
+    token_budget: int | None = Field(
+        default=None,
+        description=(
+            "Hard cap on total tokens (input+output) for THIS run. When "
+            "the running total crosses 80%% of this value a 'soft' "
+            "budget_warning event is emitted; when it reaches 100%% a "
+            "'hard' warning fires and the run is cancelled (lands as "
+            "status=interrupted). NULL = no cap. Inc-5 wiring."
+        ),
+    )
+
 
 class SendTurnResponse(BaseModel):
     run_id: str
@@ -1326,6 +1337,7 @@ async def send_turn(
         store=state.store,
         depth=0,
         parent_run_id=None,
+        token_budget_total=body.token_budget,
     )
     await handle.start()
     state.active_runs[run_id] = handle

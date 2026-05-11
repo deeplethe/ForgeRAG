@@ -70,7 +70,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import AuthenticatedPrincipal
@@ -395,6 +395,53 @@ async def anthropic_messages(
         body.stream,
         len(body.messages),
     )
+
+    # Tag the request with metadata so the LiteLLM success_callback
+    # (api/agent/llm_usage_callback.py) can route per-call usage back
+    # to the right AgentTaskHandle.
+    #
+    # Two keys, because LiteLLM splits "provider metadata" from
+    # "logging metadata":
+    #   * ``metadata`` is forwarded to the Anthropic provider on the
+    #     wire (becomes the Anthropic ``metadata`` object with
+    #     ``user_id``). We don't actually need this for the agent
+    #     route, but it's harmless.
+    #   * ``litellm_metadata`` is THE keyword the callback inspects via
+    #     ``kwargs["litellm_params"]["litellm_metadata"]``. Without
+    #     this the per-call usage hook can't find the active run.
+    md = dict(kwargs.get("metadata") or {})
+    md["opencraig_user_id"] = principal.user_id
+    kwargs["metadata"] = md
+    kwargs["litellm_metadata"] = {"opencraig_user_id": principal.user_id}
+
+    # Pre-flight budget check (Inc 5 / Bug 12 wiring). If the user's
+    # active run already crossed its budget, refuse upstream now — the
+    # in-container claude CLI surfaces this as an LLM failure and the
+    # SDK terminates the run, which is the only signal channel we
+    # have into the sandboxed agent. Without this gate, the budget
+    # warning event would land in SSE but the agent inside the
+    # container would keep calling for tokens until the LLM provider
+    # itself complained.
+    for h in list(state.active_runs.values()):
+        if getattr(h, "user_id", None) == principal.user_id and getattr(
+            h, "_budget_exhausted", False
+        ):
+            return Response(
+                status_code=402,
+                content=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": "BudgetExhausted",
+                        "message": (
+                            f"token budget exhausted for run "
+                            f"{getattr(h, 'run_id', '?')}; "
+                            f"used {h.total_input_tokens + h.total_output_tokens} "
+                            f"of {h.token_budget_total}"
+                        ),
+                    },
+                }),
+                media_type="application/json",
+            )
 
     # litellm.anthropic.messages.acreate is the official adapter
     # that accepts Anthropic Messages format and routes to any

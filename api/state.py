@@ -415,6 +415,20 @@ class AppState:
         # path when the runtime imports state).
         self.active_runs: dict[str, Any] = {}
 
+        # Provider-agnostic per-LLM-call usage hook. LiteLLM normalises
+        # ``ModelResponse.usage`` across Anthropic / DeepSeek / OpenAI /
+        # Bedrock / vLLM / ollama, so a single success_callback fed
+        # back into ``handle.add_usage`` lets budget enforcement land
+        # mid-run regardless of which provider is configured. See
+        # ``api/agent/llm_usage_callback.py``.
+        try:
+            from api.agent.llm_usage_callback import (
+                init_litellm_usage_callback,
+            )
+            init_litellm_usage_callback(self)
+        except Exception:
+            log.exception("AppState: litellm usage callback init failed")
+
     # ------------------------------------------------------------------
     def _try_init_sandbox(self):
         """Best-effort SandboxManager construction.

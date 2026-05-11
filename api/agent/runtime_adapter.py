@@ -238,13 +238,32 @@ async def run_agent_through_handle(
             elif kind == "usage":
                 tin = int(evt.get("input_tokens") or 0)
                 tout = int(evt.get("output_tokens") or 0)
+                is_incremental = bool(evt.get("incremental"))
                 turn_input_tokens = tin
                 turn_output_tokens = tout
-                handle.total_input_tokens = tin
-                handle.total_output_tokens = tout
+                if is_incremental:
+                    # Per-turn delta (round-6 Bug 12 fix). Each
+                    # AssistantMessage reports just its own turn's
+                    # tokens; we accumulate so total reflects the
+                    # whole run, not the latest turn alone.
+                    handle.add_usage(tin, tout)
+                else:
+                    # Cumulative report (legacy ResultMessage path or
+                    # providers that only emit at session end). Take
+                    # max so we don't regress if per-turn fired first
+                    # and got us further ahead.
+                    handle.total_input_tokens = max(
+                        handle.total_input_tokens, tin
+                    )
+                    handle.total_output_tokens = max(
+                        handle.total_output_tokens, tout
+                    )
                 await handle.emit(
                     "usage",
-                    {"input_tokens": tin, "output_tokens": tout},
+                    {
+                        "input_tokens": handle.total_input_tokens,
+                        "output_tokens": handle.total_output_tokens,
+                    },
                 )
                 # Budget enforcement (Inc 5):
                 #   - 80% of budget → soft warning event (once)
@@ -254,7 +273,7 @@ async def run_agent_through_handle(
                 #     its next safe point.
                 budget = handle.token_budget_total
                 if budget:
-                    total = tin + tout
+                    total = handle.total_input_tokens + handle.total_output_tokens
                     if not soft_budget_warned and total >= int(budget * 0.8):
                         soft_budget_warned = True
                         await handle.emit(

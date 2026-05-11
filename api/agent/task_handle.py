@@ -184,6 +184,15 @@ class AgentTaskHandle:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     token_budget_total: int | None = None
+    # Flipped to True by the LiteLLM usage callback when add_usage()
+    # crosses ``token_budget_total``. The /llm_proxy route checks this
+    # before each upstream LLM call and refuses with HTTP 402, which
+    # the in-container claude CLI surfaces as upstream failure and the
+    # run terminates cleanly. Decoupling enforcement from the
+    # in-container path (where we have no signal channel) onto the
+    # backend's HTTP egress is the key trick: we don't need to talk to
+    # the agent — we just stop talking to its LLM.
+    _budget_exhausted: bool = False
 
     # SSE-drop telemetry (Inc 7 Bug 3 fix). Counter of high-frequency
     # events (token/thought) dropped when a subscriber's queue was full.

@@ -267,6 +267,25 @@ def _emit_message_events(
         # Reset for the next assistant message — each turn opens a
         # fresh content_block sequence.
         streamed_indices.clear()
+        # Per-turn usage emit (round-6 Bug 12 fix). AssistantMessage.usage
+        # carries this turn's input/output tokens. The previous design
+        # only emitted usage at ResultMessage (session end), which let
+        # a single agent run blow well past its budget before the
+        # backend's budget check could see the cumulative total. Emit
+        # per turn with ``incremental=True`` so the backend accumulator
+        # picks them up and the soft/hard warnings can actually trip
+        # before the next tool call goes out.
+        msg_usage = getattr(msg, "usage", None)
+        if isinstance(msg_usage, dict):
+            tin = int(msg_usage.get("input_tokens") or 0)
+            tout = int(msg_usage.get("output_tokens") or 0)
+            if tin or tout:
+                emit({
+                    "kind": "usage",
+                    "input_tokens": tin,
+                    "output_tokens": tout,
+                    "incremental": True,
+                })
     elif isinstance(msg, sdk.UserMessage):
         # Tool results land here. The SDK delivers ToolResultBlock
         # in the user-side replay of the conversation; we fan it

@@ -616,6 +616,26 @@ class ClaudeRuntime:
                         # Reset for the next assistant message — each
                         # turn opens a fresh content_block sequence.
                         _streamed_indices.clear()
+                        # Per-turn usage emit (round-6 Bug 12 fix).
+                        # AssistantMessage.usage carries this turn's
+                        # input/output tokens. Previously only the
+                        # session-end ResultMessage emitted usage —
+                        # which meant budget enforcement saw the total
+                        # AFTER the run was already over. Emitting per
+                        # turn lets runtime_adapter's between-turn
+                        # budget check actually trip a hard cap before
+                        # the next tool call goes out.
+                        msg_usage = getattr(msg, "usage", None)
+                        if isinstance(msg_usage, dict):
+                            tin = int(msg_usage.get("input_tokens") or 0)
+                            tout = int(msg_usage.get("output_tokens") or 0)
+                            if tin or tout:
+                                emit({
+                                    "kind": "usage",
+                                    "input_tokens": tin,
+                                    "output_tokens": tout,
+                                    "incremental": True,
+                                })
                     elif isinstance(msg, sdk.StreamEvent):
                         # Token-level streaming. Anthropic SSE format:
                         #   {"type": "content_block_delta",
