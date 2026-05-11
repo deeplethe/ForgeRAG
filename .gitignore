@@ -8,6 +8,9 @@ build/
 .venv/
 .env
 
+# Local maintainer scratch (debug smoke scripts, ad-hoc helpers)
+_scripts/
+
 # Node
 node_modules/
 

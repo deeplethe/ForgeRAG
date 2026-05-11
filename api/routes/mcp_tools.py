@@ -432,3 +432,144 @@ def import_from_library(
         params,
         project_id=project_id or None,
     )
+
+
+# ---------------------------------------------------------------------------
+# ask_human — agent-initiated escalation (Inc 4 HITL)
+# ---------------------------------------------------------------------------
+#
+# The agent calls this tool when it can't proceed on its own — ambiguous
+# instruction, contradiction in source documents, ran out of approaches,
+# or about to do something risky enough to warrant explicit go-ahead.
+#
+# Flow:
+#   1. Tool finds the caller's active AgentTaskHandle (via principal →
+#      state.active_runs).
+#   2. Emits an ``ask_human`` event onto the handle (which the SSE
+#      stream surfaces to the user's UI as a prompt card).
+#   3. Awaits ``handle.wait_for_answer(question_id)`` — blocks until
+#      /feedback delivers an 'answer' envelope.
+#   4. Returns the answer string as the tool result; the agent reads
+#      it as the tool output and continues reasoning with that info.
+#
+# Auth scoping: the agent connects to MCP with the agent-loop bearer,
+# which scopes the request to the run's owner. We look up active runs
+# for that user in ``state.active_runs`` and pick the most recently
+# started one (Inc 4 assumes 1 active run per user; sub-agent dispatch
+# in Inc 5 will pass run_id via tool input).
+
+
+@mcp_server.tool()
+async def ask_human(
+    question: str,
+    context: str = "",
+    options: list[str] | None = None,
+    why: str = "stuck",
+) -> dict:
+    """Pause the run and ask the user a question. Blocks until the
+    user answers. Returns ``{"answer": "..."}`` once they respond.
+
+    Use this tool when (and ONLY when):
+      - You hit a contradiction in source documents you can't resolve
+      - The user's instruction is ambiguous (multiple plausible
+        interpretations and the right one materially affects the answer)
+      - You're about to do something risky (delete data, send a
+        message, run a long-running computation) and want explicit
+        go-ahead
+      - You've tried 3+ approaches to a problem and none worked
+
+    Do NOT use this tool for:
+      - Confirmations you can infer from context
+      - Trivial fill-ins where any reasonable choice works (just pick one)
+      - Status updates (write a regular assistant message)
+      - Anything the user could have anticipated when they wrote
+        the task — they expected you to handle it
+
+    Args:
+        question: The specific question to put to the user. Be concise
+            and answerable — the user reads this in a popup.
+        context: One-paragraph background. Tell them what you've
+            already tried / why the question matters.
+        options: Optional list of short answer choices. When set the
+            UI renders them as buttons; the user can still type
+            free-form. Use for binary decisions and small enums.
+        why: One of: 'stuck' / 'ambiguous' / 'risky' / 'clarification'.
+            Drives the icon on the UI prompt card.
+
+    Returns:
+        {"answer": "..."}  — the literal text the user typed (or the
+            option they picked).
+    """
+    principal = get_mcp_principal()
+    if principal is None:
+        return {"error": "no authenticated principal"}
+    state = _resolve_app_state()
+    if state is None:
+        return {"error": "backend state not initialised"}
+
+    handle = _find_user_active_handle(state, principal.user_id)
+    if handle is None:
+        return {
+            "error": (
+                "no active agent run for this user — ask_human can "
+                "only be called from inside an active /send turn."
+            )
+        }
+
+    question_id = uuid.uuid4().hex
+    try:
+        # Stash escalation_reason on the run row so the Tasks list UI
+        # can render a paused-with-reason badge without parsing events.
+        # Best-effort: a store hiccup doesn't block the question.
+        try:
+            state.store.update_agent_run(
+                handle.run_id,
+                {
+                    "status": "ask_human_wait",
+                    "escalation_reason": (question[:240] if question else why),
+                },
+            )
+        except Exception:
+            log.exception("ask_human: status update failed run=%s", handle.run_id)
+        await handle.emit(
+            "ask_human",
+            {
+                "question_id": question_id,
+                "question": question,
+                "context": context or None,
+                "options": list(options or []),
+                "why": why,
+            },
+        )
+        answer = await handle.wait_for_answer(question_id, timeout_s=24 * 3600)
+        # Clear status back to running for the rest of the turn.
+        try:
+            state.store.update_agent_run(
+                handle.run_id,
+                {"status": "running", "escalation_reason": None},
+            )
+        except Exception:
+            pass
+        return {"answer": answer}
+    except TimeoutError:
+        return {"error": "ask_human timed out (no answer within 24h)"}
+
+
+def _find_user_active_handle(state, user_id: str):
+    """Return the most recently started active handle for this user,
+    or None.
+
+    Inc 4 single-active-run assumption: a user typically has ONE active
+    turn in flight (one conv open, one /send pending). When multiple are
+    in flight cross-conv, we pick the newest. Inc 5 will switch to
+    passing run_id explicitly via the tool's caller context so sub-
+    agents reach their own handle, not the parent's.
+    """
+    candidates = [
+        h for h in getattr(state, "active_runs", {}).values()
+        if h.user_id == user_id
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda h: h.started_at, reverse=True)
+    return candidates[0]

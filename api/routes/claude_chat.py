@@ -65,7 +65,7 @@ from ..agent.claude_runtime import (
     stream_turn,
 )
 from ..agent.runtime_adapter import run_agent_through_handle
-from ..agent.task_handle import AgentTaskHandle
+from ..agent.task_handle import AgentTaskHandle, FeedbackEnvelope
 from ..auth import AuthenticatedPrincipal
 from ..deps import get_principal, get_state
 from ..state import AppState
@@ -109,6 +109,7 @@ You answer the user's questions, with access to a team knowledge base (a corpus 
 - ``mcp__opencraig__graph_explore(query, top_k)`` — knowledge-graph walk
 - ``mcp__opencraig__rerank(query, chunk_ids, top_k)`` — refine candidates
 - ``mcp__opencraig__import_from_library(...)`` — pull a doc into the workdir
+- ``mcp__opencraig__ask_human(question, context, options, why)`` — pause and ask the user when you're truly stuck (see "When to escalate" below)
 
 Behaviour rules:
 
@@ -117,6 +118,26 @@ Behaviour rules:
 3. Cite each grounded claim inline as ``[c_<id>]`` using the exact ``cite`` value (e.g. ``c_1``) returned by the search hits. The UI turns these into clickable chips that resolve to the source chunk.
 4. If the search returns nothing useful, say so plainly and either offer your best general knowledge with that caveat or ask the user to refine the query — don't silently mix retrieved content with parametric knowledge.
 5. Do NOT speculate about what the knowledge base contains, what project it belongs to, or who owns it. The KB is whatever ``search_vector`` finds.
+
+When to escalate via ``ask_human``:
+
+Call it sparingly — only when ALL of these apply:
+  - You can't make progress with the tools you have
+  - The user genuinely couldn't have anticipated this when they wrote the task
+  - The answer will materially affect what you do next
+
+Concrete triggers:
+  - The instruction is genuinely ambiguous and the interpretations diverge a lot
+    (e.g. "summarize last quarter" — Q3 vs Q4? fiscal vs calendar?)
+  - Source documents contradict each other and you can't tell which is canonical
+  - You've tried 3+ approaches to the same sub-problem and none worked
+  - About to do something materially destructive (delete files, send a message,
+    spend a long time computing) — confirm before committing
+
+Do NOT call ``ask_human`` for:
+  - Routine confirmations you can infer from context
+  - Trivial choices where any reasonable answer works (just pick one)
+  - Status updates (write a regular assistant message instead)
 
 For conversational small talk (greetings, thanks, "who are you", "how does this work") you may answer directly with no tool calls."""
 
@@ -1028,6 +1049,8 @@ async def _run_agent_in_background(
     Always closes the handle even on exceptions, so the run row ends
     up in a terminal state and ``state.active_runs`` doesn't leak.
     """
+    _was_cancelled = False
+    final_status = "done"
     try:
         result = await run_agent_through_handle(
             handle,
@@ -1093,10 +1116,25 @@ async def _run_agent_in_background(
 
         final_status = "failed" if error else "done"
     except asyncio.CancelledError:
-        # Triggered by shutdown or explicit interrupt (Inc 4 wires this).
-        await handle.emit("interrupted", {"by_user": False, "reason": "cancelled"})
+        # Triggered by shutdown or explicit /feedback type=interrupt.
+        # Python 3.11+ re-delivers cancellation on every subsequent
+        # await even from inside ``except CancelledError`` — so emit /
+        # close would never complete. ``uncancel()`` consumes the
+        # cancel request so cleanup awaits run normally; we re-raise
+        # at the end to honour the caller's expectation that a
+        # cancelled task finishes in CANCELLED state.
+        try:
+            asyncio.current_task().uncancel()
+        except Exception:
+            pass
+        try:
+            await handle.emit(
+                "interrupted", {"by_user": True, "reason": "user_interrupt"}
+            )
+        except Exception:
+            log.exception("background_run: interrupted-emit failed run=%s", handle.run_id)
         final_status = "interrupted"
-        raise
+        _was_cancelled = True
     except Exception as e:
         log.exception(
             "background_run: agent raised run=%s", handle.run_id
@@ -1120,6 +1158,12 @@ async def _run_agent_in_background(
             )
         # Drop from active registry.
         state.active_runs.pop(handle.run_id, None)
+
+    # If we were cancelled, re-raise so any awaiter sees the task as
+    # cancelled rather than completed normally. Outside the try/except/
+    # finally so the cleanup commits before the cancel re-fires.
+    if _was_cancelled:
+        raise asyncio.CancelledError()
 
 
 def _trace_from_handle_events(handle: AgentTaskHandle) -> list[dict] | None:
@@ -1435,6 +1479,105 @@ async def stream_conversation(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class FeedbackRequest(BaseModel):
+    """User → agent feedback. The route hands this off to
+    ``handle.submit_feedback`` which resolves any matching pending
+    approval/answer Future and pushes the envelope onto user_inbox
+    for the agent loop's interrupt/redirect checkpoints."""
+
+    type: str = Field(
+        ...,
+        description=(
+            "One of: 'interrupt' | 'approve' | 'deny' | 'answer' | 'message'."
+        ),
+    )
+    approval_id: str | None = Field(
+        None,
+        description="Required for type='approve'/'deny'. Carries the id "
+        "the approval_request event published.",
+    )
+    question_id: str | None = Field(
+        None,
+        description="Required for type='answer'. Matches the ask_human "
+        "event's question_id.",
+    )
+    message: str | None = Field(
+        None,
+        description="For 'deny' / 'answer' / 'message': free-text content. "
+        "On 'deny' becomes the explanation the agent sees as the tool result; "
+        "on 'answer' is the literal string returned to the ask_human caller; "
+        "on 'message' is inserted as a new user-role message into the next turn.",
+    )
+    modified_input: dict | None = Field(
+        None,
+        description="Optional override for approved tool input. Lets the user "
+        "edit the agent's bash command / search query / etc. before it fires.",
+    )
+
+
+@router.post(
+    "/conversations/{conv_id}/feedback",
+    summary="Deliver HITL feedback to the conv's active agent run.",
+)
+async def submit_feedback_route(
+    conv_id: str,
+    body: FeedbackRequest,
+    state: AppState = Depends(get_state),
+    principal: AuthenticatedPrincipal = Depends(get_principal),
+) -> dict:
+    """Push user feedback into the active run.
+
+    Idempotent w.r.t. the underlying handle —
+    ``handle.submit_feedback`` matches approval_id / question_id
+    against pending Futures (resolving them) and also enqueues onto
+    user_inbox for the agent loop's checkpoint drain. Sending the
+    same approval twice is a no-op on the second call.
+    """
+    # Authz: same per-user check as /stream.
+    run_id = _find_active_run_id_for_conv(state, conv_id, principal)
+    if run_id is None:
+        raise HTTPException(404, "no active agent run for this conversation")
+    handle: AgentTaskHandle = state.active_runs[run_id]
+
+    # Validate type early to give a precise 400 instead of a silent no-op.
+    allowed = {"interrupt", "approve", "deny", "answer", "message"}
+    if body.type not in allowed:
+        raise HTTPException(
+            400,
+            f"invalid feedback type {body.type!r}; expected one of "
+            f"{sorted(allowed)}",
+        )
+    if body.type in ("approve", "deny") and not body.approval_id:
+        raise HTTPException(
+            400, f"feedback type={body.type!r} requires approval_id"
+        )
+    if body.type == "answer" and not body.question_id:
+        raise HTTPException(
+            400, "feedback type='answer' requires question_id"
+        )
+
+    env = FeedbackEnvelope(
+        type=body.type,
+        approval_id=body.approval_id,
+        question_id=body.question_id,
+        message=body.message,
+        modified_input=body.modified_input,
+    )
+
+    # Interrupt also cancels the agent task explicitly so the SDK stops
+    # at its next safe checkpoint. The handle's user_inbox carries the
+    # interrupt envelope too, in case the runtime adapter checks it
+    # between events first (faster path than asyncio cancel for an
+    # already-yielded SDK event).
+    if body.type == "interrupt":
+        if handle.agent_task is not None and not handle.agent_task.done():
+            handle.agent_task.cancel()
+
+    handle.submit_feedback(env)
+
+    return {"ok": True, "run_id": run_id, "delivered_type": body.type}
 
 
 def _find_active_run_id_for_conv(

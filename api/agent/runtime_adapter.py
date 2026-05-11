@@ -230,11 +230,25 @@ async def run_agent_through_handle(
         # Caller cancelled (shutdown / interrupt). Surface as error event
         # so reconnecting clients see a terminal state, then re-raise so
         # the wrapping task knows it was cancelled.
-        await handle.emit(
-            "error",
-            {"message": "agent run cancelled", "type": "Cancelled"},
-        )
-        raise
+        #
+        # Python 3.11+ re-delivers cancellation on every await even
+        # inside ``except CancelledError`` — uncancel() consumes the
+        # pending cancel request so the emit completes; we raise a
+        # fresh CancelledError after to propagate normally.
+        try:
+            asyncio.current_task().uncancel()
+        except Exception:
+            pass
+        try:
+            await handle.emit(
+                "error",
+                {"message": "agent run cancelled", "type": "Cancelled"},
+            )
+        except Exception:
+            log.exception(
+                "runtime_adapter: cancel-emit failed run=%s", handle.run_id
+            )
+        raise asyncio.CancelledError()
     except Exception as e:
         log.exception("runtime_adapter: pump raised run=%s", handle.run_id)
         error_message = error_message or f"agent failed: {e}"

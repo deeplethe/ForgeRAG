@@ -727,6 +727,52 @@ def test_find_active_run_id_allows_legacy_null_owner():
     )
 
 
+def test_approval_policy_classifies_tools_correctly():
+    """Approval policy delivers the documented buckets:
+    ALWAYS (Bash/Edit/Write/...) → ask, NEVER (Read/Grep/search_*) →
+    auto-allow, IF_RISKY (web_fetch) → ask, ask_human → never recurse,
+    unknown → conservative ask."""
+    from api.agent.approval_policy import (
+        needs_approval,
+        RISK_DESTRUCTIVE,
+        RISK_FILE_WRITE,
+        RISK_READ_ONLY,
+        RISK_EXTERNAL_FETCH,
+    )
+
+    cases = [
+        ("Bash", True, RISK_DESTRUCTIVE),
+        ("Edit", True, RISK_FILE_WRITE),
+        ("Write", True, RISK_FILE_WRITE),
+        ("Read", False, RISK_READ_ONLY),
+        ("Grep", False, RISK_READ_ONLY),
+        ("search_vector", False, RISK_READ_ONLY),
+        ("mcp__opencraig__search_vector", False, RISK_READ_ONLY),
+        ("ask_human", False, RISK_READ_ONLY),  # never recurses
+        ("web_fetch", True, RISK_EXTERNAL_FETCH),
+        ("UnknownToolName", True, RISK_READ_ONLY),
+    ]
+    for tool, want_approval, want_risk in cases:
+        d = needs_approval(tool)
+        assert d.needs_approval is want_approval, f"{tool}: wanted approval={want_approval}, got {d}"
+        assert d.risk == want_risk, f"{tool}: wanted risk={want_risk}, got {d.risk}"
+
+
+def test_approval_policy_honours_modes():
+    """paranoid → ask everything except ask_human;
+    permissive → allow IF_RISKY and unknowns;
+    bypass → never ask."""
+    from api.agent.approval_policy import needs_approval
+
+    assert needs_approval("Read", approval_mode="paranoid").needs_approval is True
+    assert needs_approval("ask_human", approval_mode="paranoid").needs_approval is False
+
+    assert needs_approval("web_fetch", approval_mode="permissive").needs_approval is False
+    assert needs_approval("UnknownToolName", approval_mode="permissive").needs_approval is False
+
+    assert needs_approval("Bash", approval_mode="bypass").needs_approval is False
+
+
 def test_find_latest_run_blocks_cross_user_replay():
     """Same authz invariant for the DB-replay path (when the run has
     already finished and the in-memory handle is gone)."""
