@@ -230,7 +230,10 @@ async function onSavePassword() {
     <!-- ── Usage ── -->
     <section v-if="usage" class="card">
       <h3 class="card-title">{{ t('settings.usage.title') }}</h3>
-      <p class="card-hint">{{ t('settings.usage.subtitle') }}</p>
+      <p class="card-hint">
+        {{ t('settings.usage.subtitle') }}
+        <span v-if="usage.model" class="usage-model"> · {{ usage.model }}</span>
+      </p>
       <div class="usage-grid">
         <div class="usage-stat">
           <div class="usage-num">{{ fmtNum(usage.input_tokens) }}</div>
@@ -463,5 +466,10 @@ async function onSavePassword() {
   margin-top: 2px;
   font-size: 0.6875rem;
   color: var(--color-t3);
+}
+.usage-model {
+  font-family: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.75rem;
+  color: var(--color-t2);
 }
 </style>
