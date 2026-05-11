@@ -408,7 +408,7 @@
     "no_match": "No matches for \"{query}\""
   },
   "chat": {
-    "tagline": "The agent workspace for teams who change the rules.",
+    "tagline": "The agent workspace for research teams.",
     "ask_a_question": "Ask anything about your documents...",
     "ask_followup": "Ask a follow-up...",
     "project_banner": {

@@ -408,7 +408,7 @@
     "no_match": "没有匹配 \"{query}\" 的结果"
   },
   "chat": {
-    "tagline": "改变规则的团队的智能体工作台。",
+    "tagline": "为研究团队打造的 Agent 工作台。",
     "ask_a_question": "在你的文档里问任何问题...",
     "ask_followup": "继续追问...",
     "project_banner": {
