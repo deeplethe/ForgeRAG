@@ -138,6 +138,17 @@ async def run_agent_through_handle(
     turn_output_tokens = 0
     error_message: str | None = None
 
+    # Sub-agent tracking (Inc 5). The Claude Agent SDK's built-in Task
+    # tool spawns a child agent and returns its final answer as the
+    # tool result. We don't get our own AgentTaskHandle for it (the SDK
+    # owns the lifecycle internally) but we DO want the UI to render
+    # the nesting — so we emit synthesized ``sub_agent_start`` /
+    # ``sub_agent_done`` events around each Task tool call.
+    sub_agent_call_ids: set[str] = set()
+    # Soft / hard budget warnings only fire once each per run.
+    soft_budget_warned = False
+    hard_budget_hit = False
+
     await handle.emit("phase", {"phase": "executing"})
 
     try:
@@ -157,27 +168,68 @@ async def run_agent_through_handle(
                 delta_buf.append(text)
                 await handle.emit("token", {"delta": text})
             elif kind == "tool_start":
+                tool = evt.get("tool", "")
+                call_id = evt.get("id", "")
+                params = evt.get("params") or {}
+                # SDK's built-in ``Task`` is the sub-agent spawn primitive.
+                # Emit our higher-level event BEFORE the raw tool_start so
+                # the UI can frame the nested chunk of activity as a
+                # sub-agent block.
+                if tool == "Task":
+                    sub_agent_call_ids.add(call_id)
+                    task_desc = (
+                        params.get("prompt")
+                        or params.get("description")
+                        or params.get("task")
+                        or ""
+                    )
+                    await handle.emit(
+                        "sub_agent_start",
+                        {
+                            "parent_run_id": handle.run_id,
+                            "parent_call_id": call_id,
+                            "depth": handle.depth + 1,
+                            "task_desc": str(task_desc)[:500],
+                        },
+                    )
                 await handle.emit(
                     "tool_start",
                     {
-                        "tool": evt.get("tool", ""),
-                        "call_id": evt.get("id", ""),
-                        "input": evt.get("params"),
+                        "tool": tool,
+                        "call_id": call_id,
+                        "input": params,
                     },
                 )
             elif kind == "tool_end":
+                call_id = evt.get("id", "")
+                output = str(evt.get("output") or "")
+                is_error = bool(evt.get("is_error"))
                 await handle.emit(
                     "tool_end",
                     {
-                        "call_id": evt.get("id", ""),
+                        "call_id": call_id,
                         "latency_ms": int(evt.get("latency_ms") or 0),
-                        "output": str(evt.get("output") or ""),
-                        "is_error": bool(evt.get("is_error")),
+                        "output": output,
+                        "is_error": is_error,
                         "result_summary": evt.get("result_summary")
                         if isinstance(evt.get("result_summary"), dict)
                         else None,
                     },
                 )
+                # Pair with the sub_agent_start emitted on the matching
+                # tool_start. ``summary`` is the sub-agent's final answer
+                # — truncated for the event payload.
+                if call_id in sub_agent_call_ids:
+                    sub_agent_call_ids.discard(call_id)
+                    await handle.emit(
+                        "sub_agent_done",
+                        {
+                            "parent_call_id": call_id,
+                            "depth": handle.depth + 1,
+                            "summary": output[:1000],
+                            "is_error": is_error,
+                        },
+                    )
             elif kind == "citations":
                 items = evt.get("items") or []
                 if isinstance(items, list):
@@ -188,24 +240,62 @@ async def run_agent_through_handle(
                 tout = int(evt.get("output_tokens") or 0)
                 turn_input_tokens = tin
                 turn_output_tokens = tout
-                # Set absolute values on the handle (single-turn run). Sub-agent
-                # aggregation (parent total = sum over children + own) lands in
-                # Inc 5; for Inc 3 the agent is single-shot per run.
                 handle.total_input_tokens = tin
                 handle.total_output_tokens = tout
                 await handle.emit(
                     "usage",
                     {"input_tokens": tin, "output_tokens": tout},
                 )
-                if handle.is_over_budget():
-                    await handle.emit(
-                        "budget_warning",
-                        {
-                            "kind": "token",
-                            "current": tin + tout,
-                            "limit": handle.token_budget_total,
-                        },
-                    )
+                # Budget enforcement (Inc 5):
+                #   - 80% of budget → soft warning event (once)
+                #   - >=100% of budget → hard warning + cancel agent_task
+                #     so the cleanup path lands the run in ``failed`` with
+                #     a clear reason. The SDK call in flight finishes at
+                #     its next safe point.
+                budget = handle.token_budget_total
+                if budget:
+                    total = tin + tout
+                    if not soft_budget_warned and total >= int(budget * 0.8):
+                        soft_budget_warned = True
+                        await handle.emit(
+                            "budget_warning",
+                            {
+                                "severity": "soft",
+                                "kind": "token",
+                                "current": total,
+                                "limit": budget,
+                                "pct": round(100 * total / budget, 1),
+                                "message": (
+                                    "approaching token budget; consider "
+                                    "narrowing remaining tool calls"
+                                ),
+                            },
+                        )
+                    if not hard_budget_hit and total >= budget:
+                        hard_budget_hit = True
+                        await handle.emit(
+                            "budget_warning",
+                            {
+                                "severity": "hard",
+                                "kind": "token",
+                                "current": total,
+                                "limit": budget,
+                                "pct": round(100 * total / budget, 1),
+                                "message": (
+                                    "token budget exhausted — stopping"
+                                ),
+                            },
+                        )
+                        # Stop the run. The CancelledError will land in
+                        # the wrapping background task's handler, which
+                        # already does the right cleanup (emit
+                        # interrupted, close handle, mark agent_run).
+                        # We raise it ourselves rather than relying on
+                        # an external cancel call so the in-flight pump
+                        # doesn't need to round-trip through asyncio.
+                        raise asyncio.CancelledError(
+                            f"token budget {total}/{budget} exhausted"
+                        )
             elif kind == "error":
                 error_message = (
                     f"{evt.get('type', 'RuntimeError')}: "

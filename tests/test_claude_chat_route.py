@@ -727,6 +727,37 @@ def test_find_active_run_id_allows_legacy_null_owner():
     )
 
 
+def test_handle_budget_helpers():
+    """``token_budget_total`` + add_usage + is_over_budget — the
+    primitives Inc 5's runtime adapter calls between events to decide
+    when to emit soft/hard budget_warning."""
+    from api.agent.task_handle import AgentTaskHandle
+
+    class _NoOpStore:
+        def update_agent_run(self, *a, **kw): pass
+        def append_agent_event(self, *a, **kw): pass
+        def bulk_append_agent_events(self, *a, **kw): return 0
+
+    h = AgentTaskHandle(
+        run_id="r", conversation_id="c", user_id="u", store=_NoOpStore(),
+        token_budget_total=100,
+    )
+
+    assert h.is_over_budget() is False
+    h.add_usage(40, 30)
+    assert h.is_over_budget() is False  # 70 < 100
+    h.add_usage(20, 20)
+    assert h.is_over_budget() is True  # 110 >= 100
+
+    # No budget set → never "over"
+    h2 = AgentTaskHandle(
+        run_id="r2", conversation_id="c2", user_id="u", store=_NoOpStore(),
+        token_budget_total=None,
+    )
+    h2.add_usage(10_000_000, 10_000_000)
+    assert h2.is_over_budget() is False
+
+
 def test_approval_policy_classifies_tools_correctly():
     """Approval policy delivers the documented buckets:
     ALWAYS (Bash/Edit/Write/...) → ask, NEVER (Read/Grep/search_*) →
