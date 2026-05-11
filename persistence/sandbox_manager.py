@@ -320,7 +320,11 @@ class SandboxManager:
                 self._touch(user_id)
                 return existing
             # Stale entry — backend says container's gone. Drop it
-            # and fall through to a fresh start.
+            # and fall through to a fresh start. Also evict the dead
+            # container by id so the next ``start_container`` doesn't
+            # 409 on the existing name — adoption sweep only fires
+            # once, so a container that died AFTER adoption would
+            # otherwise leave a name conflict the manager can't clear.
             if existing is not None:
                 log.info(
                     "sandbox: dropping stale handle for user=%s container=%s",
@@ -328,6 +332,15 @@ class SandboxManager:
                     existing.container_id,
                 )
                 self._containers.pop(user_id, None)
+                rm = getattr(self.backend, "remove_container", None)
+                if callable(rm):
+                    try:
+                        rm(existing.container_id, force=True)
+                    except Exception:
+                        log.exception(
+                            "sandbox: remove stale container failed user=%s id=%s",
+                            user_id, existing.container_id,
+                        )
 
             handle = self._start_for_user(
                 user_id,
@@ -610,9 +623,43 @@ class SandboxManager:
         except Exception:
             log.exception("sandbox: orphan-adoption sweep failed; ignoring")
             return
-        for name, cid in owned:
+        for entry in owned:
+            # list_owned returns (name, cid) for back-compat or
+            # (name, cid, status) post-Bug-8 fix. Normalize.
+            if len(entry) == 3:
+                name, cid, status = entry
+            else:
+                name, cid = entry
+                status = "running"  # assume legacy behaviour
             user_id = name[len(self.container_name_prefix):]
             if not user_id:
+                continue
+            if status != "running":
+                # Stopped / exited / created-but-never-started leftover.
+                # Removing it now prevents the 409 name-conflict when
+                # the next request triggers ``_start_for_user`` for the
+                # same user. Mount config may have changed across
+                # backend restarts anyway — fresh spawn is correct.
+                log.info(
+                    "sandbox: removing stopped orphan container "
+                    "user=%s name=%s id=%s status=%s",
+                    user_id, name, cid, status,
+                )
+                try:
+                    rm = getattr(self.backend, "remove_container", None)
+                    if callable(rm):
+                        rm(cid, force=True)
+                    else:
+                        log.warning(
+                            "sandbox: backend has no remove_container method; "
+                            "leftover container %s will block next start", cid,
+                        )
+                except Exception:
+                    log.exception(
+                        "sandbox: remove stopped orphan failed user=%s id=%s",
+                        user_id, cid,
+                    )
+                # Don't add to _containers — next request spawns fresh.
                 continue
             log.info(
                 "sandbox: adopted orphan container user=%s name=%s id=%s",
@@ -696,10 +743,13 @@ class DockerBackend:
             for container_port, host_port in published_ports.items():
                 port_spec[f"{container_port}/tcp"] = ("127.0.0.1", host_port)
         # If a previous run left a container with the same name, the
-        # SDK raises 409. Adoption sweep should have caught this; if
-        # it didn't, the orphan is genuinely orphaned and we'd
-        # rather refuse than silently merge two states.
-        container = client.containers.run(
+        # SDK raises 409. Adoption sweep and the manager's stale-handle
+        # path SHOULD have evicted it already, but defence-in-depth:
+        # if a 409 surfaces here it means the in-memory table never saw
+        # this container (e.g. the orphan listing missed it, or another
+        # backend process created it concurrently). Remove the
+        # conflict by name and retry once before bubbling up.
+        run_kwargs = dict(
             image=image,
             name=name,
             detach=True,
@@ -732,6 +782,35 @@ class DockerBackend:
             tty=False,
             stdin_open=False,
         )
+
+        def _run_once() -> Any:
+            return client.containers.run(**run_kwargs)
+
+        try:
+            container = _run_once()
+        except Exception as e:
+            # docker SDK signals name conflict as APIError 409 with a
+            # message containing "is already in use". Detect by message
+            # so we don't need to import docker.errors here.
+            msg = str(e)
+            if "is already in use" in msg or "409" in msg:
+                log.warning(
+                    "sandbox: name conflict on start (%s) — evicting "
+                    "leftover and retrying once",
+                    name,
+                )
+                try:
+                    existing = client.containers.get(name)
+                    existing.remove(force=True)
+                except Exception:
+                    log.exception(
+                        "sandbox: failed to evict conflicting container %s",
+                        name,
+                    )
+                    raise e
+                container = _run_once()
+            else:
+                raise
         return container.id
 
     def exec(
@@ -807,16 +886,42 @@ class DockerBackend:
         return getattr(c, "status", "") == "running"
 
     def list_owned(self, *, name_prefix: str) -> list[tuple[str, str]]:
+        """List all containers whose name matches the prefix — both
+        running AND stopped. Stopped containers from a previous backend
+        process must be removed (or they cause a 409 on the next
+        ``start_container`` with the same name); the manager's
+        adoption pass handles that.
+
+        Earlier this listed only running containers, which let stopped
+        leftovers survive a backend restart and crash the next user
+        request with a name conflict.
+        """
         client = self._docker()
         out: list[tuple[str, str]] = []
         try:
-            for c in client.containers.list(all=False):
+            for c in client.containers.list(all=True):
                 # ``c.name`` may include a leading slash on some
                 # docker SDK versions — strip it for the prefix
                 # match.
                 name = (getattr(c, "name", "") or "").lstrip("/")
                 if name.startswith(name_prefix):
-                    out.append((name, c.id))
+                    # status is "running" | "exited" | "created" | ...
+                    status = (getattr(c, "status", "") or "").lower()
+                    out.append((name, c.id, status))  # type: ignore[arg-type]
         except Exception:
             log.exception("docker list_containers failed during orphan sweep")
-        return out
+        return out  # type: ignore[return-value]
+
+    def remove_container(self, container_id: str, *, force: bool = True) -> None:
+        """Remove a container by id. Used by the manager's adoption
+        pass to evict dead leftovers before spawning a fresh one
+        with the same name."""
+        client = self._docker()
+        try:
+            c = client.containers.get(container_id)
+            c.remove(force=force)
+        except Exception:
+            log.exception(
+                "docker remove_container failed for %s; "
+                "next start may 409", container_id,
+            )
