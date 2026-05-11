@@ -342,6 +342,156 @@ export async function sendAgentFeedback({
 
 
 /**
+ * Compat-mapping helper: translate new-format events
+ * (``{seq, type, payload}``) into the old wire vocabulary the legacy
+ * Chat.vue reducer already understands (``agent.turn_start`` /
+ * ``agent.thought`` / ``tool.call_start`` / ``tool.call_end`` /
+ * ``answer.delta`` / ``agent.turn_end`` / ``done`` / etc.).
+ *
+ * Lets the rest of the UI keep its event-shape contract while we
+ * roll out the disconnect-survival routes. Returns an array of
+ * legacy events (often 0, 1, or 2 — done emits both turn_end AND done).
+ *
+ * New-format events without a legacy equivalent (ask_human,
+ * approval_request, sub_agent_start/done, budget_warning, interrupted)
+ * return ``null`` here — callers route them to dedicated handlers
+ * (HITL cards / sub-agent UI / etc.).
+ */
+function _newEventToLegacy(ev, ctx) {
+  const t = ev.type
+  const p = ev.payload || {}
+  const runId = ev.run_id
+  const out = []
+
+  // Emit synthetic turn_start once, on the first real event.
+  if (!ctx.turnStarted && t !== 'done' && t !== 'error' && t !== 'interrupted'
+      && t !== 'stream_end' && t !== '_send_meta') {
+    ctx.turnStarted = true
+    out.push({ type: 'agent.turn_start', turn: 1, run_id: runId })
+  }
+
+  if (t === 'phase') {
+    // Phase events have no 1:1 legacy mapping; the old reducer
+    // inferred phase implicitly from turn_start. Skip — emitting a
+    // synthetic agent.thought with no text would create an empty
+    // chain entry.
+    return out
+  }
+  if (t === 'thought') {
+    out.push({ type: 'agent.thought', text: p.text || '' })
+    return out
+  }
+  if (t === 'token') {
+    out.push({ type: 'answer.delta', text: p.delta || '' })
+    return out
+  }
+  if (t === 'tool_start') {
+    out.push({
+      type: 'tool.call_start',
+      id: p.call_id,
+      tool: p.tool,
+      params: (p.input && typeof p.input === 'object') ? p.input : {},
+    })
+    return out
+  }
+  if (t === 'tool_end') {
+    out.push({
+      type: 'tool.call_end',
+      id: p.call_id,
+      latency_ms: p.latency_ms || 0,
+      is_error: !!p.is_error,
+      result_summary: p.result_summary || {},
+      output: p.output || '',
+    })
+    return out
+  }
+  if (t === 'citation') {
+    out.push({ type: 'citations', items: p.items || [] })
+    return out
+  }
+  if (t === 'usage') {
+    out.push({
+      type: 'usage',
+      input_tokens: p.input_tokens || 0,
+      output_tokens: p.output_tokens || 0,
+    })
+    return out
+  }
+  if (t === 'done') {
+    out.push({ type: 'agent.turn_end', turn: 1, run_id: runId })
+    out.push({
+      type: 'done',
+      stop_reason: p.stop_reason || 'end_turn',
+      total_latency_ms: p.total_latency_ms || 0,
+      final_text: p.final_text || '',
+      run_id: runId,
+      error: p.error,
+      citations: p.citations || null,
+    })
+    return out
+  }
+  if (t === 'error') {
+    out.push({ type: 'agent.turn_end', turn: 1, run_id: runId })
+    out.push({
+      type: 'done',
+      stop_reason: 'error',
+      error: p.message || 'agent error',
+      run_id: runId,
+    })
+    return out
+  }
+  if (t === 'interrupted') {
+    out.push({ type: 'agent.turn_end', turn: 1, run_id: runId })
+    out.push({
+      type: 'done',
+      stop_reason: 'interrupted',
+      error: p.reason ? `interrupted: ${p.reason}` : 'interrupted',
+      run_id: runId,
+    })
+    return out
+  }
+  // Unknown / HITL-only types (ask_human, approval_request,
+  // sub_agent_start, sub_agent_done, budget_warning, stream_end):
+  // no legacy equivalent. Caller's HITL handler picks up the raw
+  // event passed in alongside.
+  return out
+}
+
+
+/**
+ * Compat wrapper around ``agentSendAndStream``: yields events in the
+ * LEGACY wire format Chat.vue's reducer already speaks, AND also
+ * emits the raw new-format event (with ``_raw: true``) so callers can
+ * handle HITL types (ask_human, approval_request, sub_agent_*,
+ * budget_warning) without parsing.
+ *
+ * The first emitted event is always a meta object carrying ``run_id``
+ * (so the caller can pin ``/feedback`` to the right run on
+ * interrupt). Shape: ``{type: '_run_meta', run_id, seq: -1}``.
+ *
+ * Reconnect: pass the highest ``_raw_seq`` seen as ``since`` to
+ * ``agentStream`` to resume.
+ */
+export async function* agentSendAndStreamCompat(params) {
+  const meta = await agentSendTurn(params)
+  yield { type: '_run_meta', run_id: meta.run_id, started_at: meta.started_at }
+
+  const ctx = { turnStarted: false }
+  for await (const ev of agentStream({
+    conversationId: params.conversationId,
+    since: -1,
+    signal: params.signal,
+  })) {
+    // Always pass the raw event for HITL / sub-agent / budget handling.
+    yield { _raw: true, _raw_seq: ev.seq, ...ev }
+    // Then yield the translated legacy events for the existing reducer.
+    const legacy = _newEventToLegacy(ev, ctx)
+    for (const lev of legacy) yield lev
+  }
+}
+
+
+/**
  * High-level helper: send a turn AND subscribe to its events in one
  * call. Equivalent to the legacy ``agentChatStream`` ergonomically
  * but uses the disconnect-survival /send + /stream pair under the

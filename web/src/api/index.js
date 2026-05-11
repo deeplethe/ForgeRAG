@@ -63,7 +63,20 @@ export {
 } from './chunks'
 
 // Agent chat (post-cutover replacement for /query)
-export { agentChatStream } from './agent'
+// agentChatStream is the legacy /chat path (deprecated).
+// agentSendAndStreamCompat is the new disconnect-survival path that
+// translates new-format events back to the legacy reducer shape, AND
+// emits raw events with ``_raw: true`` so HITL handlers (ask_human,
+// approval_request, interrupt) can route them. sendAgentFeedback +
+// the lower-level agentSendTurn / agentStream are exposed for callers
+// that need finer control.
+export {
+  agentChatStream,
+  agentSendAndStreamCompat,
+  sendAgentFeedback,
+  agentSendTurn,
+  agentStream,
+} from './agent'
 
 // Workdir — folder-as-cwd user-private file tree (the agent's workspace)
 export {

@@ -68,7 +68,7 @@ function _stopTimer() { if (_timer) { clearInterval(_timer); _timer = null } }
 import { ref, reactive, nextTick, computed, inject, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { agentChatStream, createConversation, getMessages, getConversation, updateConversation, filePreviewUrl, fileDownloadUrl, getProject, getTrace, getHealth, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
+import { agentChatStream, agentSendAndStreamCompat, sendAgentFeedback, createConversation, getMessages, getConversation, updateConversation, filePreviewUrl, fileDownloadUrl, getProject, getTrace, getHealth, uploadAttachment, listAttachments, deleteAttachment } from '@/api'
 import { FolderKanban as FolderKanbanIcon, FolderOpen as FolderOpenIcon, Paperclip as PaperclipIcon, X as XIcon, Plus as PlusIcon, Library as LibraryIcon, FileUp as FileUpIcon } from 'lucide-vue-next'
 import { useDialog } from '@/composables/useDialog'
 import { useTheme } from '@/composables/useTheme'
@@ -214,6 +214,24 @@ const retInfo = _retInfo
 const abortCtrl = _abortCtrl
 const genTools = _genTools
 const streamTrace = _streamTrace
+
+// ── Long-task / HITL (Inc 6b) ─────────────────────────────────────
+// run_id of the currently-active agent turn (returned by /send). Set
+// when the stream opens; cleared when the turn finishes. ``/feedback``
+// targets this run via the conversation_id; we don't need run_id in
+// the URL but we keep it for the "stop" button to know there's
+// something to stop.
+const currentRunId = ref(null)
+// Last seq we processed — for /stream reconnect. Bumped on every raw
+// new-format event. Never read by the legacy reducer; only the
+// reconnect path uses it.
+const lastSeenSeq = ref(-1)
+// Active ask_human prompt the agent is waiting on. ``null`` when no
+// question is pending. Shape:
+//   { question_id, question, context, options[], why }
+const pendingQuestion = ref(null)
+// Free-text answer the user is composing inside the ask_human card.
+const pendingAnswerText = ref('')
 
 // ── Chat attachments (chip rail above the input box) ─────────────
 // Draft attachments staged for the next ``send()``. Populated from
@@ -876,7 +894,14 @@ async function send(text) {
     // Knowledge chips DON'T clear on send — they're sticky scope
     // pins; user removes them explicitly via the chip × button.
     const turnPathFilters = [...knowledgePaths.value]
-    for await (const evt of agentChatStream({
+    // Inc 6b: use the new disconnect-survival /send + /stream path
+    // via the compat helper. Yields:
+    //   - one ``_run_meta`` event with run_id (we pin it to currentRunId
+    //     so the Stop button + interrupt /feedback know which run to hit)
+    //   - raw new-format events with ``_raw: true`` (HITL: ask_human,
+    //     approval_request, sub_agent_*, budget_warning, interrupted)
+    //   - translated legacy events the existing reducer below speaks
+    for await (const evt of agentSendAndStreamCompat({
       message: q,
       conversationId: convId.value,
       cwdPath: boundCwdPath.value || null,
@@ -887,6 +912,57 @@ async function send(text) {
       // If conversation switched away, stop updating UI (but don't
       // abort the request — backend persistence still runs).
       if (myGenId !== _streamGenId) break
+
+      // ── Inc 6b: run-meta + HITL event routing ───────────────────
+      if (evt.type === '_run_meta') {
+        currentRunId.value = evt.run_id
+        lastSeenSeq.value = -1
+        continue
+      }
+      if (evt._raw) {
+        // Track high-water seq for reconnect.
+        if (typeof evt._raw_seq === 'number' && evt._raw_seq > lastSeenSeq.value) {
+          lastSeenSeq.value = evt._raw_seq
+        }
+        // Route new-format-only event types that have no legacy mapping.
+        if (evt.type === 'ask_human') {
+          pendingQuestion.value = {
+            question_id: evt.payload?.question_id,
+            question: evt.payload?.question || '',
+            context: evt.payload?.context || '',
+            options: Array.isArray(evt.payload?.options) ? evt.payload.options : [],
+            why: evt.payload?.why || 'stuck',
+          }
+          pendingAnswerText.value = ''
+          scroll()
+        } else if (evt.type === 'sub_agent_start' || evt.type === 'sub_agent_done') {
+          // Defer rendering to a SubAgentTree component (not added in
+          // this pass) — for now just log so the chain still shows the
+          // raw Task tool_start/tool_end as a regular tool chip.
+          // No-op.
+        } else if (evt.type === 'budget_warning') {
+          // Surface as a synthetic chain entry so the user sees the
+          // warning inline. Severity drives styling later; for now
+          // a single thought entry.
+          streamTrace.value.push({
+            kind: 'thought',
+            phase: 'reviewing',
+            text:
+              `[budget ${evt.payload?.severity || 'warning'}] ` +
+              `${evt.payload?.message || ''} (${evt.payload?.current}/${evt.payload?.limit})`,
+            t0: Date.now(),
+            elapsedSec: 0,
+            status: 'done',
+          })
+          scroll()
+        }
+        // ``approval_request`` deferred until PreToolUse hook lands.
+        // Other raw events (phase, thought, token, tool_start/end, etc.)
+        // are also passed through alongside their translated legacy
+        // equivalents; the legacy reducer below handles them.
+        continue
+      }
+
       const t = evt.type
       if (t === 'agent.turn_start') {
         // 3-way phase choice: forced synthesis (budget hit) → composing;
@@ -1096,11 +1172,29 @@ async function send(text) {
   }
   finally {
     if (myGenId === _streamGenId) { streaming.value = false; stopTimer() }
+    // Run is finished — clear the HITL state so a fresh send doesn't
+    // see stale run_id / pending question state.
+    currentRunId.value = null
+    pendingQuestion.value = null
+    pendingAnswerText.value = ''
     loadConvs()
   }
 }
 
 function stopGeneration() {
+  // Inc 6b: prefer cooperative interrupt via /feedback when we have
+  // an active run on the server. The /feedback handler cancels the
+  // background agent task; cleanup emits "interrupted" + persists.
+  // Fall back to client-side abort if no run_id is known (legacy path).
+  if (currentRunId.value && convId.value) {
+    sendAgentFeedback({
+      conversationId: convId.value,
+      type: 'interrupt',
+    }).catch((err) => {
+      // Network blip / 404 — fall through to the client abort below.
+      console.warn('sendAgentFeedback interrupt failed:', err)
+    })
+  }
   if (abortCtrl.value) { abortCtrl.value.abort(); abortCtrl.value = null }
   _presetGenId++
   streaming.value = false; stopTimer(); stopPoll()
@@ -1110,6 +1204,32 @@ function stopGeneration() {
     streamText.value = ''
   }
   loadConvs()
+}
+
+// Inc 6b: deliver the user's answer to a pending ask_human prompt.
+async function submitPendingAnswer(answer) {
+  const q = pendingQuestion.value
+  if (!q || !convId.value) return
+  const text = (answer != null ? String(answer) : pendingAnswerText.value).trim()
+  if (!text) return
+  // Optimistically clear local state so the card disappears immediately —
+  // backend handles the agent-side resume.
+  pendingQuestion.value = null
+  pendingAnswerText.value = ''
+  try {
+    await sendAgentFeedback({
+      conversationId: convId.value,
+      type: 'answer',
+      questionId: q.question_id,
+      message: text,
+    })
+  } catch (err) {
+    // Restore the card so the user can retry — backend probably 404'd
+    // because the run terminated; cheaper to inform than crash.
+    console.warn('ask_human answer delivery failed:', err)
+    pendingQuestion.value = q
+    pendingAnswerText.value = text
+  }
 }
 
 function scroll() { nextTick(() => chatEl.value && (chatEl.value.scrollTop = chatEl.value.scrollHeight)) }
@@ -1756,6 +1876,46 @@ function onTraceClick(m) {
                 <ThinkingPulse :size="18" />
               </div>
             </div>
+
+            <!-- Inc 6b: ask_human card — appears when the agent calls
+                 ``ask_human`` and pauses. User picks an option or types
+                 a free-form answer; submit POSTs /feedback type=answer
+                 and the run resumes server-side. -->
+            <div v-if="pendingQuestion" class="ask-human-card fadein">
+              <div class="ask-human-card__head">
+                <span class="ask-human-card__icon">?</span>
+                <span class="ask-human-card__why">{{ pendingQuestion.why || 'stuck' }}</span>
+                <span class="ask-human-card__label">Agent is asking</span>
+              </div>
+              <div class="ask-human-card__question">{{ pendingQuestion.question }}</div>
+              <div v-if="pendingQuestion.context" class="ask-human-card__context">
+                {{ pendingQuestion.context }}
+              </div>
+              <div v-if="pendingQuestion.options && pendingQuestion.options.length" class="ask-human-card__options">
+                <button
+                  v-for="opt in pendingQuestion.options"
+                  :key="opt"
+                  type="button"
+                  class="ask-human-card__opt"
+                  @click="submitPendingAnswer(opt)"
+                >{{ opt }}</button>
+              </div>
+              <div class="ask-human-card__input-row">
+                <input
+                  type="text"
+                  v-model="pendingAnswerText"
+                  class="ask-human-card__input"
+                  placeholder="Type your answer…"
+                  @keydown.enter.prevent="submitPendingAnswer()"
+                />
+                <button
+                  type="button"
+                  class="ask-human-card__submit"
+                  :disabled="!pendingAnswerText.trim()"
+                  @click="submitPendingAnswer()"
+                >Send</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1940,6 +2100,118 @@ function onTraceClick(m) {
 <style scoped>
 .fadein { animation: fadein .2s ease; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px) } }
+
+/* Inc 6b: ask_human card — appears when the agent calls
+   ``mcp__opencraig__ask_human`` and pauses for user input. Sits
+   inline with the chat (not modal) so the question reads as part of
+   the conversation flow. Distinct amber-ish accent on the left
+   bar so it visually stands out from regular assistant messages
+   without screaming for attention. */
+.ask-human-card {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: var(--color-bg2);
+  border: 1px solid var(--color-line);
+  border-left: 3px solid #d97706;  /* amber-600 — "agent paused, waiting" */
+  border-radius: 8px;
+}
+.ask-human-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--color-t3);
+}
+.ask-human-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #d97706;
+  color: white;
+  font-weight: 600;
+  font-size: 11px;
+}
+.ask-human-card__why {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  color: #d97706;
+}
+.ask-human-card__label {
+  margin-left: auto;
+  color: var(--color-t3);
+}
+.ask-human-card__question {
+  font-size: 14px;
+  color: var(--color-t1);
+  font-weight: 500;
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+.ask-human-card__context {
+  font-size: 12px;
+  color: var(--color-t2);
+  margin-bottom: 10px;
+  line-height: 1.45;
+}
+.ask-human-card__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ask-human-card__opt {
+  padding: 5px 12px;
+  background: var(--color-bg3);
+  color: var(--color-t1);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.ask-human-card__opt:hover {
+  background: var(--color-bg);
+  border-color: #d97706;
+}
+.ask-human-card__input-row {
+  display: flex;
+  gap: 6px;
+}
+.ask-human-card__input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--color-bg);
+  color: var(--color-t1);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+.ask-human-card__input:focus {
+  border-color: #d97706;
+}
+.ask-human-card__submit {
+  padding: 6px 14px;
+  background: #d97706;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.ask-human-card__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ask-human-card__submit:not(:disabled):hover {
+  background: #b45309;
+}
 
 /* Always-on streaming indicator pinned at the bottom of the
    in-flight assistant message. Visible the whole time
