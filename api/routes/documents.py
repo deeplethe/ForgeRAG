@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import AuthenticatedPrincipal
 from ..deps import (
@@ -280,6 +280,101 @@ async def upload_and_ingest(
         doc_id=actual_doc_id,
         status="pending",
         message="queued for processing",
+    )
+
+
+class UrlIngestRequest(BaseModel):
+    url: str = Field(..., min_length=1)
+    original_name: str | None = None
+    mime_type: str | None = None
+    folder_path: str | None = None
+    doc_id: str | None = None
+
+
+@router.post(
+    "/upload-url-and-ingest",
+    response_model=IngestAcceptedResponse,
+    status_code=202,
+)
+async def upload_url_and_ingest(
+    req: UrlIngestRequest,
+    state: AppState = Depends(get_state),
+):
+    """Fetch a URL into the file store, then queue ingestion.
+
+    Mirrors ``upload_and_ingest`` for the URL-source case — same
+    folder resolution, same placeholder, same queue, same 202 reply
+    shape. The user pastes a URL in the Library; we download it
+    (SSRF-protected via ``url_fetcher``), stash the bytes as a
+    File row, and let the existing pipeline parse + chunk + embed
+    it. Format auto-detected from extension or Content-Type the
+    fetcher surfaced.
+
+    Server-side fetch + ingest in one call beats "fetch elsewhere,
+    then upload the result" — the user keeps a single mental
+    model ("I added a URL to my knowledge base") and the bytes
+    never touch their machine.
+    """
+    from pathlib import Path as _Path
+
+    from ingestion.queue import IngestionJob
+    from persistence.folder_service import (
+        FolderNotFound,
+        FolderService,
+        unique_document_path,
+    )
+
+    target_folder_path = req.folder_path or "/"
+    # Fetch + store. Bubbles SSRF / 4xx / unsupported-mime as 400.
+    try:
+        record = state.file_store.store_from_url(
+            req.url,
+            original_name=req.original_name,
+            mime_type=req.mime_type,
+        )
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, f"url fetch failed: {e}")
+
+    file_id = record["file_id"]
+    name = record.get("original_name") or _Path(req.url).name or "url-fetch.bin"
+
+    # Resolve destination folder + reserve a non-colliding doc path
+    # under it. Same gate as upload_and_ingest — bad path = 404.
+    with state.store.transaction() as sess:
+        try:
+            folder = FolderService(sess).require_by_path(target_folder_path)
+        except FolderNotFound:
+            raise HTTPException(404, f"folder not found: {target_folder_path!r}")
+        target_folder_id = folder.folder_id
+        doc_path = unique_document_path(sess, folder, name)
+
+    actual_doc_id = req.doc_id or f"doc_{file_id[:12]}"
+
+    ext = _Path(name).suffix.lower().lstrip(".")
+    fmt = {
+        "pdf": "pdf",
+        "docx": "docx", "doc": "docx",
+        "pptx": "pptx", "ppt": "pptx",
+        "xlsx": "xlsx", "xls": "xlsx",
+        "txt": "text", "md": "text",
+        "html": "html", "htm": "html",
+    }.get(ext, ext or "unknown")
+
+    state.store.create_document_placeholder(
+        doc_id=actual_doc_id,
+        file_id=file_id,
+        filename=_Path(doc_path).name,
+        format=fmt,
+        status="pending",
+        folder_id=target_folder_id,
+        path=doc_path,
+    )
+    state.ingest_queue.submit(IngestionJob(file_id=file_id, doc_id=actual_doc_id))
+    return IngestAcceptedResponse(
+        file_id=file_id,
+        doc_id=actual_doc_id,
+        status="pending",
+        message="url fetched and queued for processing",
     )
 
 

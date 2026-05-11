@@ -46,6 +46,7 @@
       @new-folder="onNewFolder"
       @upload="onUpload"
       @upload-folder="onUploadFolder"
+      @paste-url="onPasteUrl"
       @set-view="ws.setViewMode"
       @show-trash="onShowTrash"
       @empty-trash="onEmptyTrash"
@@ -182,6 +183,7 @@ import { useLastTabRoute } from '@/composables/useLastTabRoute'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useUploadsStore } from '@/stores/uploads'
 import { walkDataTransfer, fileListWithRelativePaths, groupByFolder } from '@/utils/folderDrop'
+import { ingestFromUrl } from '@/api'
 import { useDialog } from '@/composables/useDialog'
 import DocDetail from '@/views/DocDetail.vue'
 import Breadcrumb from '@/components/workspace/Breadcrumb.vue'
@@ -219,7 +221,7 @@ import {
 const router = useRouter()
 const route = useRoute()
 const ws = useLibrary()
-const { confirm, toast, dismissToast } = useDialog()
+const { confirm, prompt, alert, toast, dismissToast } = useDialog()
 const { t } = useI18n()
 
 // Record where the user is in the Library so the sidebar's "Library"
@@ -750,6 +752,39 @@ function onFilesPicked(e) {
   // Kick a workspace refresh after a short delay so new docs appear in the
   // file tree once they hit the DB. The queue keeps updating independently.
   setTimeout(() => { refresh() }, 800)
+}
+
+async function onPasteUrl() {
+  // Tiny prompt → POST to /upload-url-and-ingest. The backend
+  // downloads + queues; the upload drawer's polling picks up the
+  // new doc by doc_id and shows the same parse → ready progression
+  // as a normal upload. No client-side fetch — the server's
+  // url_fetcher has SSRF protection and runs on the right side
+  // of the firewall.
+  const raw = await prompt({
+    title: 'Add URL',
+    description: 'Paste a link to a web page, PDF, or document. We’ll fetch it and ingest into the current folder.',
+    placeholder: 'https://example.com/report.pdf',
+    confirmText: 'Add',
+  })
+  const url = (raw || '').trim()
+  if (!url) return
+  if (!/^(https?|s3|oss):\/\//i.test(url)) {
+    alert({ title: 'Bad URL', description: 'URL must start with http://, https://, s3://, or oss://.' })
+    return
+  }
+  const folderPath = ws.currentPath.value || '/'
+  try {
+    await ingestFromUrl(url, { folderPath })
+    uploads.toggleDrawer(true)
+    toast(`Fetching ${url.slice(0, 60)}… watch the upload drawer for progress.`, { duration: 5000 })
+    setTimeout(() => { refresh() }, 1200)
+  } catch (e) {
+    alert({
+      title: 'URL fetch failed',
+      description: e?.message || String(e),
+    })
+  }
 }
 
 function onFolderPicked(e) {

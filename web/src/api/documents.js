@@ -62,6 +62,32 @@ export function uploadAndIngest(file, options = {}) {
 }
 
 /**
+ * Fetch a URL into the file store + queue ingestion in one shot.
+ * Mirror of ``uploadAndIngest`` for the URL-source case — server-side
+ * fetch is SSRF-protected (private IPs blocked unless opted in).
+ *
+ * @param {string} url        http/https/s3/oss URL
+ * @param {object} [options]
+ * @param {string} [options.originalName] override the auto-detected filename
+ * @param {string} [options.mimeType]     override the auto-detected MIME
+ * @param {string} [options.folderPath]   destination folder (default '/')
+ * @param {string} [options.docId]        override the auto-generated doc_id
+ * @returns {Promise<{ file_id: string, doc_id: string, status: string, message: string }>}
+ */
+export function ingestFromUrl(url, options = {}) {
+  const body = { url }
+  if (options.originalName) body.original_name = options.originalName
+  if (options.mimeType) body.mime_type = options.mimeType
+  if (options.folderPath) body.folder_path = options.folderPath
+  if (options.docId) body.doc_id = options.docId
+  return request('/api/v1/documents/upload-url-and-ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/**
  * 文档列表
  * @param {object} [params]
  * @param {number} [params.limit=50]           分页大小 (≤ 200)

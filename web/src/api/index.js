@@ -37,6 +37,7 @@ export {
 export {
   ingestDocument,
   uploadAndIngest,
+  ingestFromUrl,
   listDocuments,
   getDocument,
   lookupDocuments,

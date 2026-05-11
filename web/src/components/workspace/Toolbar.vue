@@ -59,6 +59,13 @@
                 <div class="upload-split__desc">Pick a folder; subfolders preserved</div>
               </div>
             </button>
+            <button class="upload-split__item" @click="onPasteUrl">
+              <LinkIcon :size="14" :stroke-width="1.5" />
+              <div>
+                <div class="upload-split__title">Add URL</div>
+                <div class="upload-split__desc">Fetch a web page or document by URL</div>
+              </div>
+            </button>
           </div>
         </Transition>
       </div>
@@ -136,7 +143,7 @@
 </template>
 
 <script setup>
-import { ArrowLeft, ChevronDown, FolderPlus, FolderUp, LayoutGrid, List, Search, Trash2, Upload, X } from 'lucide-vue-next'
+import { ArrowLeft, ChevronDown, FolderPlus, FolderUp, LayoutGrid, Link as LinkIcon, List, Search, Trash2, Upload, X } from 'lucide-vue-next'
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 
 defineProps({
@@ -150,7 +157,7 @@ defineProps({
   emptyingTrash: { type: Boolean, default: false },
 })
 const emit = defineEmits([
-  'new-folder', 'upload', 'upload-folder',
+  'new-folder', 'upload', 'upload-folder', 'paste-url',
   'set-view', 'show-trash', 'update:search',
   'empty-trash', 'exit-trash',
 ])
@@ -166,6 +173,10 @@ function onPickFiles() {
 function onPickFolder() {
   uploadMenuOpen.value = false
   emit('upload-folder')
+}
+function onPasteUrl() {
+  uploadMenuOpen.value = false
+  emit('paste-url')
 }
 function _onOutsideClick(e) {
   if (!uploadMenuOpen.value) return
