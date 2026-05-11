@@ -168,6 +168,17 @@ class AgentTaskHandle:
     user_inbox: asyncio.Queue | None = None
     pending_approvals: dict[str, asyncio.Future] = field(default_factory=dict)
     pending_questions: dict[str, asyncio.Future] = field(default_factory=dict)
+    # Early-arrival buffers. If /feedback (answer/approval) lands BEFORE
+    # the agent's await side has registered its Future — which happens
+    # when an external auto-responder reacts to the SSE event faster
+    # than ``emit()`` returns control to the calling coroutine — we
+    # stash the envelope here keyed by id. wait_for_* drains the buffer
+    # at registration time. Without this, ``submit_feedback`` would
+    # silently drop the early envelope and the agent would block until
+    # tool timeout. Surfaced in round-5 Task N (4 sequential ask_human
+    # calls, every single one losing the answer to the race).
+    early_answers: dict[str, "FeedbackEnvelope"] = field(default_factory=dict)
+    early_approvals: dict[str, "FeedbackEnvelope"] = field(default_factory=dict)
 
     # Token accounting (display in M units on the wire)
     total_input_tokens: int = 0
@@ -508,7 +519,16 @@ class AgentTaskHandle:
 
         Timeout = synthesise a 'deny' envelope with message='timeout'
         so the agent can continue (the SDK's PreToolUse hook expects
-        a definite allow/deny, not an exception)."""
+        a definite allow/deny, not an exception).
+
+        Early-arrival handling: if /feedback already landed before this
+        coroutine had a chance to register a Future (a fast external
+        responder reacting to the emit's SSE before emit returns), the
+        envelope was stashed in ``early_approvals`` — drain it here so
+        we don't block waiting for a response that already came."""
+        early = self.early_approvals.pop(approval_id, None)
+        if early is not None:
+            return early
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self.pending_approvals[approval_id] = fut
@@ -526,7 +546,14 @@ class AgentTaskHandle:
     ) -> str:
         """Block until /feedback fulfils this question_id with an
         'answer' envelope. Raises ``TimeoutError`` on timeout — the
-        runtime catches it and aborts the run with status=failed."""
+        runtime catches it and aborts the run with status=failed.
+
+        Early-arrival handling: drain ``early_answers[question_id]``
+        first; if /feedback landed before registration (fast external
+        responder racing emit), the envelope is already waiting."""
+        early = self.early_answers.pop(question_id, None)
+        if early is not None:
+            return early.message or ""
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self.pending_questions[question_id] = fut
@@ -550,14 +577,22 @@ class AgentTaskHandle:
         which is safe from the request handler coroutine."""
         # Match-and-resolve approvals/answers immediately so the agent's
         # await wakes up without going through the inbox drain cycle.
+        # Buffer early arrivals (envelope landed before the agent's
+        # wait_for_* registered its Future) — wait_for_* drains the
+        # buffer at registration time. Otherwise the envelope is lost
+        # and the agent blocks for the full tool timeout.
         if fb.type in ("approve", "deny") and fb.approval_id:
             fut = self.pending_approvals.get(fb.approval_id)
             if fut is not None and not fut.done():
                 fut.set_result(fb)
+            else:
+                self.early_approvals[fb.approval_id] = fb
         elif fb.type == "answer" and fb.question_id:
             fut = self.pending_questions.get(fb.question_id)
             if fut is not None and not fut.done():
                 fut.set_result(fb)
+            else:
+                self.early_answers[fb.question_id] = fb
 
         # Always also push on the inbox — interrupt / message types
         # consumed there, and approval/answer types still recorded
