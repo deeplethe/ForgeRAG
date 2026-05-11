@@ -393,7 +393,27 @@ class AppState:
         # ``sandbox = None`` and the chat route picks up the
         # fallback automatically — the deployment can run without
         # Docker; the Workspace UX is just degraded.
+        #
+        # Future: this layer is sandbox-agnostic. Swapping Docker for
+        # microVM (Firecracker / gVisor / Kata) only requires a new
+        # backend class with the same SandboxManager surface — the
+        # AgentTaskHandle layer above does not know the sandbox kind.
         self.sandbox = self._try_init_sandbox()
+
+        # ── Long-task / HITL: active agent run registry ──
+        # In-memory map of run_id → AgentTaskHandle for currently-active
+        # agent runs (status in {running, approval_wait, ask_human_wait,
+        # paused}). Populated by the /send route, drained by close() on
+        # terminal state. The /stream route uses this to find the live
+        # event source for a conversation; /feedback uses it to deliver
+        # approval/answer/interrupt to the right run.
+        #
+        # NOT persistent — backend restart wipes this; the lifespan
+        # reconcile pass scans agent_runs for orphans and marks them
+        # crashed. Type is forward-imported as Any so this file doesn't
+        # depend on api.agent.task_handle (avoids a circular import
+        # path when the runtime imports state).
+        self.active_runs: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     def _try_init_sandbox(self):

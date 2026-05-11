@@ -1,0 +1,585 @@
+"""
+AgentTaskHandle — in-memory companion to ``agent_runs`` + ``agent_events``.
+
+Owns the event-stream pub/sub for one agent run. Decouples agent execution
+from any specific SSE connection: the agent emits events through this
+handle, subscribers (current SSE clients) consume from it. When a client
+disconnects the agent doesn't notice; when a new client reconnects with
+``since=N`` it replays events with seq>N then tails live ones.
+
+Hot path (per event):
+
+    agent.emit(type, payload)          (~µs, non-blocking)
+      → seq assigned (monotonic)
+      → buffer.append(...)             (deque, soft-trim at buffer_size)
+      → for q in subscribers: q.put_nowait(event)  (drop on full)
+      → db_queue.put(event)            (background writer drains)
+      → if force_flush: await persist before return
+
+Background DB writer batches every ~100ms / 50 events to ``agent_events``,
+then bumps ``agent_runs.last_event_seq`` to the max seq in the batch.
+
+Force-flush is the small but critical detail: emit("approval_request"),
+emit("ask_human"), emit("done"), emit("interrupted") all set
+``force_flush=True``. The handle awaits DB persistence before returning,
+so on backend restart we never lose the event that says "the agent is
+waiting for X". Other events (token / thought / tool_start / ...) batch
+normally — losing a few high-frequency status events is acceptable in
+exchange for not blocking the agent loop on every emit.
+
+Sandbox-agnostic: this layer doesn't know about Docker, Firecracker,
+or any specific sandbox. The runtime (Inc 3) plugs into ``handle.emit``
+regardless of where the agent actually executes.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections import deque
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+
+# Events that MUST be persisted before emit() returns. Losing any of these
+# in a crash would strand the run: a client reconnecting wouldn't know
+# the agent is paused waiting for input, or that it ended.
+_CRITICAL_EVENT_TYPES = frozenset(
+    {
+        "approval_request",
+        "ask_human",
+        "sub_agent_start",
+        "sub_agent_done",
+        "interrupted",
+        "error",
+        "done",
+    }
+)
+
+# How long to wait when joining a subscriber's queue that's near full
+# before dropping the event for that subscriber. Other subscribers are
+# unaffected; the slow consumer's stream just has gaps (which it can
+# detect via seq jumps and reconnect to backfill via DB).
+_SUBSCRIBER_PUT_TIMEOUT_S = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Feedback envelopes (the user_inbox payloads — Inc 4 implements consumers)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FeedbackEnvelope:
+    """One user→agent message. Pushed into ``handle.user_inbox`` by the
+    /feedback route. Agent loop drains it at checkpoints.
+
+    Four types:
+      - 'interrupt'   stop the run cleanly at next checkpoint
+      - 'approve'     unblock a PreToolUse approval (with approval_id)
+      - 'deny'        same but reject (carries optional explanation)
+      - 'answer'      unblock an ask_human call (with question_id)
+      - 'message'     redirect mid-run (inserted as new user msg)
+    """
+
+    type: str
+    approval_id: str | None = None
+    question_id: str | None = None
+    message: str | None = None
+    modified_input: dict | None = None
+    received_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handle
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AgentTaskHandle:
+    """In-memory companion to one ``agent_runs`` row.
+
+    Construct it, ``await start()`` to spawn the background DB writer,
+    pass it into the agent runtime so the runtime can call ``emit(...)``,
+    expose it through ``state.active_runs[run_id]`` so SSE subscribers
+    can find it. When the run reaches a terminal state call
+    ``await close()`` to flush + cancel the writer.
+
+    Threading model: all attribute reads/writes happen on the asyncio
+    event loop. The handle is NOT thread-safe; if a synchronous worker
+    needs to emit, it must dispatch via ``loop.call_soon_threadsafe``.
+    """
+
+    run_id: str
+    conversation_id: str
+    user_id: str | None
+    store: Any  # persistence.store.Store — typed as Any to avoid circular
+
+    # Sub-agent tree (Inc 5 actually populates this)
+    parent_run_id: str | None = None
+    depth: int = 0
+    children: list[str] = field(default_factory=list)
+
+    # Lifecycle
+    status: str = "running"  # running / approval_wait / ask_human_wait / done / failed / interrupted
+    started_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    # Event stream (monotonic per run)
+    event_seq: int = 0
+    buffer_size: int = 2000  # soft cap for in-memory ring; falls through to DB
+    event_buffer: deque = field(default_factory=deque)
+    subscribers: set[asyncio.Queue] = field(default_factory=set)
+
+    # Background DB writer
+    batch_size: int = 50
+    batch_interval_s: float = 0.1
+    _db_queue: asyncio.Queue | None = None
+    _writer_task: asyncio.Task | None = None
+
+    # HITL channels (consumers wired in Inc 4)
+    user_inbox: asyncio.Queue | None = None
+    pending_approvals: dict[str, asyncio.Future] = field(default_factory=dict)
+    pending_questions: dict[str, asyncio.Future] = field(default_factory=dict)
+
+    # Token accounting (display in M units on the wire)
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    token_budget_total: int | None = None
+
+    # The asyncio.Task running the agent itself (set by runtime in Inc 3)
+    agent_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Spawn the background DB writer. Idempotent."""
+        if self._writer_task is not None:
+            return
+        self._db_queue = asyncio.Queue()
+        self.user_inbox = asyncio.Queue()
+        self._writer_task = asyncio.create_task(
+            self._writer_loop(), name=f"agent-writer-{self.run_id}"
+        )
+
+    async def close(self, *, final_status: str | None = None) -> None:
+        """Flush pending events to DB, cancel writer task, mark run terminal
+        in DB. Safe to call multiple times.
+
+        ``final_status`` patches ``status`` if provided — runtime sets this
+        to "done" / "failed" / "interrupted" before close. None = no change.
+        """
+        if final_status is not None:
+            self.status = final_status
+
+        # Drain pending writes synchronously before cancelling the writer.
+        # The writer's CancelledError handler also drains, but doing it
+        # here ensures completed_at is committed too.
+        if self._db_queue is not None:
+            await self._drain_and_flush()
+
+        if self._writer_task is not None and not self._writer_task.done():
+            self._writer_task.cancel()
+            try:
+                await self._writer_task
+            except (asyncio.CancelledError, BaseException):
+                pass
+            self._writer_task = None
+
+        # Final DB update with completion timestamp + status. Wrapped in
+        # try/except so a store hiccup doesn't crash the close path.
+        try:
+            self.store.update_agent_run(
+                self.run_id,
+                {
+                    "status": self.status,
+                    "completed_at": datetime.now(timezone.utc),
+                    "total_input_tokens": self.total_input_tokens,
+                    "total_output_tokens": self.total_output_tokens,
+                    "last_event_seq": self.event_seq - 1
+                    if self.event_seq > 0
+                    else 0,
+                },
+            )
+        except Exception:
+            log.exception("close: final agent_run update failed run=%s", self.run_id)
+
+        # Cancel any pending HITL futures so awaiting coroutines fail fast.
+        for fut in list(self.pending_approvals.values()):
+            if not fut.done():
+                fut.cancel()
+        self.pending_approvals.clear()
+        for fut in list(self.pending_questions.values()):
+            if not fut.done():
+                fut.cancel()
+        self.pending_questions.clear()
+
+        # Wake any subscribers blocked on get() so their generators exit.
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait({"type": "done", "seq": -1, "synthetic": True})
+            except asyncio.QueueFull:
+                pass
+        self.subscribers.clear()
+
+    # ------------------------------------------------------------------
+    # Emit
+    # ------------------------------------------------------------------
+
+    async def emit(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        force_flush: bool | None = None,
+    ) -> dict:
+        """Emit one event to all consumers + persist to DB.
+
+        Returns the assembled event dict (caller may want the seq for
+        approval_id correlation etc.).
+
+        ``force_flush=None`` (default) routes through the critical-event
+        set: known-critical types persist synchronously, everything else
+        batches. Pass ``True`` / ``False`` to override per-call.
+        """
+        seq = self.event_seq
+        self.event_seq += 1
+        event = {
+            "seq": seq,
+            "type": event_type,
+            "run_id": self.run_id,
+            "conversation_id": self.conversation_id,
+            "depth": self.depth,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "payload": payload or {},
+        }
+
+        # 1. In-memory ring buffer.
+        self.event_buffer.append(event)
+        # Soft-trim when over buffer_size — drop oldest. Subscribers that
+        # have not consumed up to that point will need to fall through to
+        # DB on reconnect (acceptable; DB has everything).
+        while len(self.event_buffer) > self.buffer_size:
+            self.event_buffer.popleft()
+
+        # 2. Push to live subscribers (non-blocking; slow ones get gaps).
+        if self.subscribers:
+            for q in list(self.subscribers):
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull:
+                    # Slow consumer — drop this event for them only.
+                    # On reconnect they'll see the gap via seq and pull
+                    # missing events from DB.
+                    log.debug(
+                        "subscriber queue full, dropping event for one consumer "
+                        "(run=%s seq=%d)",
+                        self.run_id,
+                        seq,
+                    )
+
+        # 3. Persist.
+        should_force = (
+            force_flush if force_flush is not None
+            else event_type in _CRITICAL_EVENT_TYPES
+        )
+        db_row = {
+            "run_id": self.run_id,
+            "seq": seq,
+            "event_type": event_type,
+            "payload_json": event["payload"],
+        }
+        if should_force:
+            # Synchronous write — blocks until DB has it.
+            await self._persist_one(db_row)
+        else:
+            assert self._db_queue is not None, "handle.start() not called"
+            self._db_queue.put_nowait(db_row)
+
+        return event
+
+    # ------------------------------------------------------------------
+    # Subscribe (reconnect-capable)
+    # ------------------------------------------------------------------
+
+    async def subscribe(
+        self, since_seq: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield events with seq>since. Replays buffer/DB first, then
+        tails live events until the run reaches a terminal state.
+
+        Reconnect protocol — caller (the /stream SSE route) is supposed
+        to track the highest seq seen and pass it as ``since_seq`` on
+        the next connection. Server fills the gap from the in-memory
+        buffer (fast path) or DB (slow path) then tails live.
+        """
+        # ── Phase 1: replay missed events ─────────────────────────────
+        replayed_max = since_seq
+        oldest_in_buffer = (
+            self.event_buffer[0]["seq"] if self.event_buffer else self.event_seq
+        )
+
+        if since_seq + 1 >= oldest_in_buffer:
+            # Buffer covers the gap — replay from memory.
+            for ev in list(self.event_buffer):
+                if ev["seq"] > since_seq:
+                    yield ev
+                    replayed_max = max(replayed_max, ev["seq"])
+        else:
+            # Buffer too old — fall through to DB, then catch up with buffer.
+            try:
+                rows = self.store.list_agent_events_since(
+                    self.run_id, since_seq=since_seq
+                )
+            except Exception:
+                log.exception(
+                    "subscribe: DB replay failed run=%s since=%d",
+                    self.run_id,
+                    since_seq,
+                )
+                rows = []
+            for r in rows:
+                ev = {
+                    "seq": r["seq"],
+                    "type": r["event_type"],
+                    "run_id": self.run_id,
+                    "conversation_id": self.conversation_id,
+                    "depth": self.depth,
+                    "ts": r["created_at"].isoformat()
+                    if hasattr(r["created_at"], "isoformat")
+                    else str(r["created_at"]),
+                    "payload": r["payload_json"] or {},
+                }
+                yield ev
+                replayed_max = max(replayed_max, ev["seq"])
+            # Catch-up: events between DB high-water and current buffer.
+            for ev in list(self.event_buffer):
+                if ev["seq"] > replayed_max:
+                    yield ev
+                    replayed_max = max(replayed_max, ev["seq"])
+
+        # ── Phase 2: tail live (if run still active) ──────────────────
+        if self.status in {"done", "failed", "interrupted"}:
+            return  # nothing more will come
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self.subscribers.add(q)
+        try:
+            while True:
+                ev = await q.get()
+                if ev.get("synthetic"):
+                    # close() broadcast a fake terminal — exit cleanly.
+                    return
+                if ev["seq"] <= replayed_max:
+                    # Race: subscriber added between buffer replay and
+                    # the emit that put this event in our queue. Skip
+                    # the dup, replayed_max ensures monotonicity.
+                    continue
+                yield ev
+                replayed_max = ev["seq"]
+                if ev["type"] in {"done", "interrupted", "error"}:
+                    return
+        finally:
+            self.subscribers.discard(q)
+
+    # ------------------------------------------------------------------
+    # HITL waiters (Inc 4 wires the runtime side; the primitives live here)
+    # ------------------------------------------------------------------
+
+    async def wait_for_approval(
+        self, approval_id: str, *, timeout_s: float = 600.0
+    ) -> FeedbackEnvelope:
+        """Block until /feedback fulfils this approval_id, or timeout.
+
+        Timeout = synthesise a 'deny' envelope with message='timeout'
+        so the agent can continue (the SDK's PreToolUse hook expects
+        a definite allow/deny, not an exception)."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self.pending_approvals[approval_id] = fut
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return FeedbackEnvelope(
+                type="deny", approval_id=approval_id, message="timeout"
+            )
+        finally:
+            self.pending_approvals.pop(approval_id, None)
+
+    async def wait_for_answer(
+        self, question_id: str, *, timeout_s: float = 24 * 3600
+    ) -> str:
+        """Block until /feedback fulfils this question_id with an
+        'answer' envelope. Raises ``TimeoutError`` on timeout — the
+        runtime catches it and aborts the run with status=failed."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self.pending_questions[question_id] = fut
+        try:
+            env = await asyncio.wait_for(fut, timeout=timeout_s)
+            return env.message or ""
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"ask_human {question_id} timed out after {timeout_s}s"
+            )
+        finally:
+            self.pending_questions.pop(question_id, None)
+
+    def submit_feedback(self, fb: FeedbackEnvelope) -> None:
+        """Called by /feedback route. Resolves any matching pending
+        approval / question future + enqueues the envelope on user_inbox
+        so the agent loop can pick up interrupt/redirect at its next
+        checkpoint.
+
+        Synchronous: it only puts on asyncio queues + sets futures,
+        which is safe from the request handler coroutine."""
+        # Match-and-resolve approvals/answers immediately so the agent's
+        # await wakes up without going through the inbox drain cycle.
+        if fb.type in ("approve", "deny") and fb.approval_id:
+            fut = self.pending_approvals.get(fb.approval_id)
+            if fut is not None and not fut.done():
+                fut.set_result(fb)
+        elif fb.type == "answer" and fb.question_id:
+            fut = self.pending_questions.get(fb.question_id)
+            if fut is not None and not fut.done():
+                fut.set_result(fb)
+
+        # Always also push on the inbox — interrupt / message types
+        # consumed there, and approval/answer types still recorded
+        # for the agent loop's audit if it cares.
+        if self.user_inbox is not None:
+            try:
+                self.user_inbox.put_nowait(fb)
+            except asyncio.QueueFull:
+                log.warning(
+                    "user_inbox full, dropping feedback run=%s type=%s",
+                    self.run_id,
+                    fb.type,
+                )
+
+    # ------------------------------------------------------------------
+    # Budget tracking (Inc 5 calls these from usage events)
+    # ------------------------------------------------------------------
+
+    def add_usage(self, input_tokens: int, output_tokens: int) -> None:
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+
+    def is_over_budget(self) -> bool:
+        if self.token_budget_total is None:
+            return False
+        return (self.total_input_tokens + self.total_output_tokens) >= self.token_budget_total
+
+    # ------------------------------------------------------------------
+    # DB writer (background coroutine)
+    # ------------------------------------------------------------------
+
+    async def _writer_loop(self) -> None:
+        """Batch DB writes: every 100ms OR 50 events, whichever first.
+
+        Cancellation drains the queue once more before exiting so close()
+        never loses already-emitted batched events.
+        """
+        assert self._db_queue is not None
+        batch: list[dict] = []
+        try:
+            while True:
+                try:
+                    first = await asyncio.wait_for(
+                        self._db_queue.get(), timeout=self.batch_interval_s
+                    )
+                    batch.append(first)
+                    # Drain queue up to batch_size
+                    while len(batch) < self.batch_size:
+                        try:
+                            batch.append(self._db_queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    await self._flush_batch(batch)
+                    batch.clear()
+                except asyncio.TimeoutError:
+                    # No new events in the interval — flush what we have.
+                    if batch:
+                        await self._flush_batch(batch)
+                        batch.clear()
+        except asyncio.CancelledError:
+            # Final drain on shutdown.
+            while True:
+                try:
+                    batch.append(self._db_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if batch:
+                try:
+                    await self._flush_batch(batch)
+                except Exception:
+                    log.exception(
+                        "writer_loop: final drain flush failed run=%s",
+                        self.run_id,
+                    )
+            raise
+
+    async def _drain_and_flush(self) -> None:
+        """Sync helper called by close() before cancelling the writer.
+        Pulls everything queued + persists in one shot."""
+        assert self._db_queue is not None
+        batch: list[dict] = []
+        while True:
+            try:
+                batch.append(self._db_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        if batch:
+            await self._flush_batch(batch)
+
+    async def _flush_batch(self, batch: list[dict]) -> None:
+        """Bulk-insert a batch + bump last_event_seq on the run row.
+        Both DB calls happen in a thread executor since the store is
+        sync (SQLAlchemy session); offloading keeps the event loop free.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None, self.store.bulk_append_agent_events, batch
+            )
+            max_seq = max(r["seq"] for r in batch)
+            await loop.run_in_executor(
+                None,
+                self.store.update_agent_run,
+                self.run_id,
+                {"last_event_seq": max_seq},
+            )
+        except Exception:
+            log.exception(
+                "writer_loop: batch flush failed run=%s batch=%d (events lost from DB but still in buffer)",
+                self.run_id,
+                len(batch),
+            )
+
+    async def _persist_one(self, row: dict) -> None:
+        """Synchronous DB write for force_flush. Used for critical events
+        where we MUST be sure the event is durable before returning."""
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, self.store.append_agent_event, row)
+            await loop.run_in_executor(
+                None,
+                self.store.update_agent_run,
+                self.run_id,
+                {"last_event_seq": row["seq"]},
+            )
+        except Exception:
+            log.exception(
+                "persist_one: critical event write failed run=%s seq=%d type=%s",
+                self.run_id,
+                row["seq"],
+                row["event_type"],
+            )

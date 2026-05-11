@@ -111,6 +111,58 @@ def _run_startup_probes(state: AppState) -> None:
         log.warning("trash auto-purge on startup failed: %s", e)
 
 
+def _reconcile_orphaned_runs(state: AppState) -> None:
+    """Mark any agent_runs left in active states (running / approval_wait /
+    ask_human_wait / paused / pending) as crashed.
+
+    A run is "orphaned" if it was active when the previous backend
+    process died: the AgentTaskHandle (in-memory) is gone but the DB
+    row still says running. We don't checkpoint enough state to
+    resume (deliberate MVP scope), so the contract is: orphaned runs
+    are terminal-failed; the client sees a synthetic ``interrupted``
+    event on reconnect and can retry.
+
+    The synthetic event is appended at ``max(seq)+1`` so reconnect
+    replay covers it. ``last_event_seq`` is bumped to match.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        orphans = state.store.list_orphaned_agent_runs()
+    except Exception:
+        log.exception("list_orphaned_agent_runs failed")
+        return
+
+    if not orphans:
+        return
+
+    log.info("reconcile: found %d orphaned agent_run(s) — marking crashed", len(orphans))
+    for o in orphans:
+        run_id = o["run_id"]
+        try:
+            high = state.store.get_agent_event_high_water_mark(run_id)
+            next_seq = (high or 0) + 1
+            state.store.append_agent_event(
+                {
+                    "run_id": run_id,
+                    "seq": next_seq,
+                    "event_type": "interrupted",
+                    "payload_json": {"by_user": False, "reason": "backend_restart"},
+                }
+            )
+            state.store.update_agent_run(
+                run_id,
+                {
+                    "status": "interrupted",
+                    "error_message": "backend restarted while run was active",
+                    "completed_at": datetime.now(timezone.utc),
+                    "last_event_seq": next_seq,
+                },
+            )
+        except Exception:
+            log.exception("reconcile: failed to mark run=%s crashed", run_id)
+
+
 def create_app(
     cfg: AppConfig | None = None,
     *,
@@ -163,9 +215,38 @@ def create_app(
         # of waiting for the first user query. Health registry records the
         # result so the Architecture UI can light up red dots immediately.
         _run_startup_probes(built)
+
+        # Long-task / HITL: reconcile any agent runs that were active when
+        # the previous backend process died. They can't be resumed
+        # (in-memory handle is gone, and we deliberately don't checkpoint
+        # state-machine snapshots in MVP), so mark them crashed and emit
+        # a synthetic interrupted event so reconnecting clients see a
+        # clean terminal state instead of a frozen "running" forever.
+        try:
+            _reconcile_orphaned_runs(built)
+        except Exception:
+            log.exception("orphaned agent_runs reconcile failed")
+
         try:
             yield
         finally:
+            # Cancel any still-active in-memory runs before shutting down
+            # downstream services. Each handle.close() awaits a final DB
+            # flush so the events buffered at the moment of shutdown
+            # still land in agent_events.
+            import asyncio as _asyncio
+
+            handles = list(getattr(built, "active_runs", {}).values())
+            if handles:
+                log.info("shutdown: closing %d active agent run(s)", len(handles))
+                for h in handles:
+                    try:
+                        await h.close(final_status="interrupted")
+                    except BaseException:
+                        log.exception(
+                            "shutdown: handle.close failed run=%s",
+                            getattr(h, "run_id", "?"),
+                        )
             built.shutdown()
 
     app = FastAPI(
