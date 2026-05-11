@@ -876,11 +876,57 @@ class AgentRun(Base):
     + ``last_checkpoint_at`` are enough to resume after a FastAPI
     worker restart (per the Phase-2 sandbox design — no Temporal /
     Restate dependency).
+
+    Long-task / HITL extension (20260512):
+        ``parent_run_id`` + ``depth`` model the sub-agent tree.
+        ``last_event_seq`` is the high-water mark of events written
+        to ``agent_events`` for this run — read it on reconnect to
+        decide whether the client's ``since`` cursor is already
+        caught up. ``token_budget_total`` caps total (input+output)
+        token spend; agent emits a budget_warning event near the
+        cap and an ask_human / fail at the cap.
     """
 
     __tablename__ = "agent_runs"
 
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # ── Sub-agent tree (long-task extension) ──────────────────────
+    # ``parent_run_id`` is NULL for top-level runs (depth=0). A run
+    # spawned by another agent's Task tool gets the spawner's run_id
+    # as its parent. ``depth`` is bounded at 2 (so max 3 levels:
+    # main → sub → sub-sub) to prevent runaway spawning. The check
+    # lives in subagent_runtime.spawn(), not in a DB constraint, so
+    # admin can manually create deeper runs for debugging if needed.
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    depth: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # ── Event-stream high-water mark (long-task extension) ────────
+    # Bumped by agent_events writer on every flush. Cheap read for
+    # the /stream endpoint to short-circuit "no new events since N".
+    last_event_seq: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    # ── Token budget (long-task extension) ────────────────────────
+    # Total (input+output) ceiling. NULL = inherit from
+    # cfg.agent.default_token_budget. Display in UI as "X.XM tokens"
+    # (millions). Distinct from ``total_input_tokens`` /
+    # ``total_output_tokens`` below which track actual spend.
+    token_budget_total: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    # ── Escalation reason (long-task extension) ───────────────────
+    # Set when the agent calls ``ask_human`` and the run enters
+    # ``ask_human_wait`` status. Cleared when the user answers.
+    # Useful for the Tasks list UI to label paused runs with a
+    # "waiting for: <reason>" hint without parsing the latest
+    # event payload.
+    escalation_reason: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
     # Legacy binding to a Project — kept so historical rows keep
     # their lineage but **deprecated** by ``cwd_path`` below as of
     # the folder-as-cwd refactor (20260518). Made nullable in that
@@ -987,6 +1033,70 @@ class AgentRunStep(Base):
 
     __table_args__ = (
         Index("ix_agent_run_steps_run_step", "run_id", "step_index"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent events (long-task event-stream persistence)
+# ---------------------------------------------------------------------------
+#
+# Every event the agent emits during a run (phase / thought / tool_start /
+# tool_end / citation / approval_request / ask_human / sub_agent_start /
+# usage / done / ...) lands here, keyed by a per-run monotonic ``seq``.
+#
+# Why a dedicated table (rather than packing events into agent_runs.metadata):
+#   - Reconnect protocol: ``GET /conversations/{id}/stream?since=N`` replays
+#     events with seq>N before tailing live ones. Needs an indexed seq lookup.
+#   - Disconnect-survival: agent keeps running even if every client is gone;
+#     events queue up in the buffer + DB so the next reconnect gets them all.
+#   - Audit: long-running tasks (hours) accumulate hundreds of events;
+#     packing them into a JSON column on agent_runs would balloon that row.
+#
+# Hot path: agent emits → ring buffer (in-memory) → batched DB writer
+# (every 100ms or 50 events). Critical state transitions
+# (approval_request / ask_human / done / interrupted) force-flush before
+# the agent goes into a wait state — so on restart we never lose the
+# event that says "agent is waiting for X".
+#
+# No archival in MVP (we asked, user said no). Table grows linearly with
+# usage; revisit if a deployment crosses ~10M rows.
+
+
+class AgentEvent(Base):
+    """One event in an AgentRun's stream.
+
+    Ordering: ``(run_id, seq)`` is the unique read key. ``seq`` is
+    assigned by ``AgentTaskHandle`` in-memory (monotonic per run);
+    DB writes happen via a batched background writer, which is why
+    we have a unique index instead of an autoincrement-as-order
+    guarantee (DB inserts may interleave runs).
+
+    ``payload_json`` shape varies by ``event_type`` — schema lives
+    in code (api/agent/events.py once it lands) rather than the DB
+    so we can iterate on event shapes without migrations. The wire
+    format mirrors what /stream sends to the SSE client one-to-one.
+    """
+
+    __tablename__ = "agent_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer)
+    # phase | thought | token | assistant_message | tool_start | tool_end |
+    # citation | approval_request | ask_human | sub_agent_start |
+    # sub_agent_done | usage | budget_warning | interrupted | error | done
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        # Unique key for reconnect replay: "events with seq>N" needs an
+        # ordered index, and seq must be unique within run.
+        Index("ix_agent_events_run_seq", "run_id", "seq", unique=True),
     )
 
 

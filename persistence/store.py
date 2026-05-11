@@ -28,6 +28,8 @@ from config import RelationalConfig
 
 from .engine import make_engine
 from .models import (
+    AgentEvent,
+    AgentRun,
     Attachment,
     Base,
     ChunkRow,
@@ -1099,6 +1101,173 @@ class Store:
                 s.delete(row)
 
     # =======================================================================
+    # Agent runs + events (long-task / HITL)
+    # =======================================================================
+    #
+    # AgentRun is the durable workflow row; AgentEvent is its event stream.
+    # Together they back the disconnect-survival + reconnect replay protocol
+    # behind /conversations/{id}/stream. See ``api/agent/task_handle.py``
+    # for the in-memory companion (event bus + subscribers + force-flush
+    # before critical waits).
+
+    def create_agent_run(self, row: dict) -> None:
+        """Insert a new AgentRun row. Caller mints ``run_id`` (ulid).
+
+        ``row`` shape (only required keys; everything else nullable):
+            {
+              "run_id":          str,
+              "conversation_id": str | None,
+              "user_id":         str | None,
+              "status":          "pending" | "running" | ...,
+              "parent_run_id":   str | None,  # NULL for top-level
+              "depth":           int,         # 0 for top-level
+              "token_budget_total": int | None,
+              ...
+            }
+        """
+        with self._session() as s:
+            s.add(AgentRun(**row))
+
+    def get_agent_run(self, run_id: str) -> dict | None:
+        with self._session() as s:
+            row = s.get(AgentRun, run_id)
+            return _agent_run_to_dict(row) if row else None
+
+    def update_agent_run(self, run_id: str, fields: dict) -> None:
+        """Patch arbitrary columns on an AgentRun. Used by the
+        TaskHandle to bump ``status`` / ``last_event_seq`` /
+        ``total_input_tokens`` / ``escalation_reason`` etc. Unknown
+        keys are ignored so callers don't need to filter against
+        the SQLA column set."""
+        with self._session() as s:
+            row = s.get(AgentRun, run_id)
+            if row is None:
+                return
+            for k, v in fields.items():
+                if hasattr(row, k):
+                    setattr(row, k, v)
+
+    def list_agent_runs_by_conversation(
+        self, conversation_id: str, *, limit: int = 50
+    ) -> list[dict]:
+        """Newest-first list of runs for a conv. Used by the chat
+        UI to find the active run on reconnect (status='running' or
+        wait variants), and by the Tasks tab to render history."""
+        with self._session() as s:
+            rows = (
+                s.execute(
+                    select(AgentRun)
+                    .where(AgentRun.conversation_id == conversation_id)
+                    .order_by(AgentRun.started_at.desc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [_agent_run_to_dict(r) for r in rows]
+
+    def find_active_agent_run(self, conversation_id: str) -> dict | None:
+        """Most-recent non-terminal run for a conv, or None if all
+        are done/failed/interrupted. ``WAIT`` statuses count as
+        active — the run is paused waiting for HITL input."""
+        active_states = (
+            "pending",
+            "running",
+            "approval_wait",
+            "ask_human_wait",
+            "paused",
+        )
+        with self._session() as s:
+            row = s.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.conversation_id == conversation_id,
+                    AgentRun.status.in_(active_states),
+                )
+                .order_by(AgentRun.started_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            return _agent_run_to_dict(row) if row else None
+
+    def list_orphaned_agent_runs(self) -> list[dict]:
+        """Runs in active states with no in-memory handle — i.e. they
+        were running when the backend died. Called from the lifespan
+        reconcile pass on startup; caller marks them as crashed."""
+        active_states = ("pending", "running", "approval_wait", "ask_human_wait", "paused")
+        with self._session() as s:
+            rows = (
+                s.execute(
+                    select(AgentRun).where(AgentRun.status.in_(active_states))
+                )
+                .scalars()
+                .all()
+            )
+            return [_agent_run_to_dict(r) for r in rows]
+
+    # ----- AgentEvent -----
+
+    def append_agent_event(self, row: dict) -> None:
+        """Insert one event. Hot path uses ``bulk_append_agent_events``
+        instead; this single-row variant is for force-flush (critical
+        state transitions) where we want to ensure persistence before
+        the agent goes into a wait state."""
+        with self._session() as s:
+            s.add(AgentEvent(**row))
+
+    def bulk_append_agent_events(self, rows: list[dict]) -> int:
+        """Batch insert for the hot path. Caller (the TaskHandle's
+        background writer) accumulates ~50 events or 100ms and calls
+        this. Returns the count written. Empty input = no-op (so the
+        writer's flush loop can be unconditional)."""
+        if not rows:
+            return 0
+        with self._session() as s:
+            s.execute(insert(AgentEvent), rows)
+            return len(rows)
+
+    def list_agent_events_since(
+        self, run_id: str, *, since_seq: int = 0, limit: int = 10_000
+    ) -> list[dict]:
+        """Reconnect replay: events for this run with seq>since,
+        ordered ascending by seq. ``limit`` caps response size — a
+        client that's way behind gets the first N and then has to
+        pull the rest via subsequent calls.
+
+        The in-memory ring buffer in TaskHandle is the fast path
+        for active runs; this DB query is for (a) reconnecting after
+        the run has long since finished, (b) reconnecting to a run
+        whose buffer evicted the events the client is asking for."""
+        with self._session() as s:
+            rows = (
+                s.execute(
+                    select(AgentEvent)
+                    .where(
+                        AgentEvent.run_id == run_id,
+                        AgentEvent.seq > since_seq,
+                    )
+                    .order_by(AgentEvent.seq.asc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return [_agent_event_to_dict(r) for r in rows]
+
+    def get_agent_event_high_water_mark(self, run_id: str) -> int:
+        """Largest seq persisted for this run, or 0 if no events.
+        Used by the TaskHandle on init when adopting an existing
+        run_id (rare — mostly for tests + restart recovery)."""
+        from sqlalchemy import func as sa_func
+
+        with self._session() as s:
+            v = s.execute(
+                select(sa_func.max(AgentEvent.seq)).where(
+                    AgentEvent.run_id == run_id
+                )
+            ).scalar()
+            return int(v or 0)
+
+    # =======================================================================
     # Documents - extended
     # =======================================================================
 
@@ -1487,6 +1656,43 @@ def _file_to_dict(row: File) -> dict:
         "user_id": row.user_id,
         "uploaded_at": row.uploaded_at,
         "metadata_json": row.metadata_json or {},
+    }
+
+
+def _agent_run_to_dict(row: AgentRun) -> dict:
+    return {
+        "run_id": row.run_id,
+        "project_id": row.project_id,
+        "cwd_path": row.cwd_path,
+        "conversation_id": row.conversation_id,
+        "user_id": row.user_id,
+        "parent_run_id": row.parent_run_id,
+        "depth": row.depth,
+        "plan_json": row.plan_json or {},
+        "status": row.status,
+        "step_index": row.step_index,
+        "last_event_seq": row.last_event_seq,
+        "token_budget_total": row.token_budget_total,
+        "escalation_reason": row.escalation_reason,
+        "last_checkpoint_at": row.last_checkpoint_at,
+        "total_input_tokens": row.total_input_tokens,
+        "total_output_tokens": row.total_output_tokens,
+        "total_cost_usd": row.total_cost_usd,
+        "started_at": row.started_at,
+        "completed_at": row.completed_at,
+        "error_message": row.error_message,
+        "metadata_json": row.metadata_json or {},
+    }
+
+
+def _agent_event_to_dict(row: AgentEvent) -> dict:
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "seq": row.seq,
+        "event_type": row.event_type,
+        "payload_json": row.payload_json or {},
+        "created_at": row.created_at,
     }
 
 
