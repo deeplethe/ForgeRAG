@@ -61,6 +61,11 @@ def health(state: AppState = Depends(get_state)) -> HealthResponse:
             # context-window ring + label the active model.
             "generator_model": gen_model,
             "generator_context_window": gen_context_window,
+            # Web-search providers the deployment has configured.
+            # Empty list = no web tools available to the agent.
+            "web_search_providers": sorted(
+                getattr(state, "web_search_providers", {}).keys()
+            ),
         },
     )
 

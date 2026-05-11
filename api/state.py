@@ -309,10 +309,19 @@ class AppState:
             log.warning("reranker init failed: %s — rerank tool will return error", e)
             self.reranker = None
 
-        # Web search provider + cache — opt-in. When the deployment
-        # didn't fill in API keys (single-user dev, most cases), the
-        # provider is None and the agent's ``web_search`` tool returns
-        # a clean DispatchError telling the LLM to skip web.
+        # Web search providers + cache — opt-in, multi-provider.
+        # ``web_search_providers`` is a dict keyed by provider name
+        # (``tavily`` / ``brave``); empty when no provider is
+        # configured. Each one is attempted independently so a
+        # deployment with both tavily AND brave keys gets BOTH
+        # providers usable in parallel — the agent picks one per
+        # call (or compares via separate MCP tool entries).
+        #
+        # ``web_search_provider`` stays as a back-compat alias
+        # pointing at the default-named entry (or any one if the
+        # default isn't configured). Callers that haven't been
+        # updated for multi-provider still see a single provider.
+        self.web_search_providers: dict[str, Any] = {}
         self.web_search_provider = None
         self.web_search_cache = None
         try:
@@ -323,15 +332,42 @@ class AppState:
 
             ws_cfg = getattr(cfg, "web_search", None)
             if ws_cfg is not None and getattr(ws_cfg, "enabled", False):
-                self.web_search_provider = make_web_search_provider(ws_cfg)
-                self.web_search_cache = WebSearchCache(
-                    max_entries=getattr(ws_cfg, "cache_size", 256),
-                    ttl_seconds=getattr(ws_cfg, "cache_ttl_seconds", 300),
+                # Try to build every provider that has a config section
+                # populated. Per-provider failures (missing key /
+                # section) get logged but don't disable the others.
+                candidates: list[str] = []
+                if getattr(ws_cfg, "tavily", None) is not None:
+                    candidates.append("tavily")
+                if getattr(ws_cfg, "brave", None) is not None:
+                    candidates.append("brave")
+                for name in candidates:
+                    try:
+                        self.web_search_providers[name] = (
+                            make_web_search_provider(ws_cfg, provider=name)
+                        )
+                    except Exception as e:
+                        log.info(
+                            "web_search: %s provider not configured (%s); skipping",
+                            name, e,
+                        )
+                # Back-compat single-provider alias: default if present,
+                # else any one. ``None`` keeps the existing "not
+                # configured" branch in single-provider callers.
+                default_name = getattr(ws_cfg, "default_provider", "tavily")
+                self.web_search_provider = (
+                    self.web_search_providers.get(default_name)
+                    or next(iter(self.web_search_providers.values()), None)
                 )
-                log.info(
-                    "web_search provider initialized: %s",
-                    self.web_search_provider.name,
-                )
+                if self.web_search_providers:
+                    self.web_search_cache = WebSearchCache(
+                        max_entries=getattr(ws_cfg, "cache_size", 256),
+                        ttl_seconds=getattr(ws_cfg, "cache_ttl_seconds", 300),
+                    )
+                    log.info(
+                        "web_search providers initialized: %s (default=%s)",
+                        list(self.web_search_providers.keys()),
+                        getattr(self.web_search_provider, "name", None),
+                    )
         except Exception as e:
             log.warning("web_search init failed: %s", e)
 
