@@ -983,6 +983,33 @@ async function send(text) {
 
       const t = evt.type
       if (t === 'agent.turn_start') {
+        // Anchor any narration that streamed during the PREVIOUS turn
+        // (and never got moved by a tool.call_start, because the prior
+        // turn ended in text) into the trailing phase entry as a
+        // thought. Without this, the next turn's text deltas glue
+        // onto streamText with no separator and the running answer
+        // body shows "sentence.Next sentence" — the same run-together
+        // the user flagged when the persisted trace was missing
+        // inter-turn breaks. Acts as the live-stream mirror of the
+        // backend's _trace_from_handle_events flush-on-phase logic.
+        if (streamText.value) {
+          const last = lastEntry('phase', 'thought')
+          if (last && last.status === 'running') {
+            last.kind = 'thought'
+            last.text = streamText.value
+            last.status = 'done'
+          } else {
+            streamTrace.value.push({
+              kind: 'thought',
+              phase: turnsCompleted === 0 ? 'planning' : 'reviewing',
+              text: streamText.value,
+              t0: Date.now(),
+              elapsedSec: 0,
+              status: 'done',
+            })
+          }
+          streamText.value = ''
+        }
         // 3-way phase choice: forced synthesis (budget hit) → composing;
         // first turn → planning; otherwise → reviewing.
         const phase = evt.synthesis_only
@@ -1042,6 +1069,27 @@ async function send(text) {
             streamText.value = ''
           }
           last.status = 'done'
+        } else if (streamText.value) {
+          // Trailing phase was ALREADY closed by a previous
+          // tool.call_start in the same turn (the agent fired multiple
+          // tools and emitted narration between each). The buffered
+          // streamText is the inter-tool narration about to introduce
+          // THIS tool; surface it as a standalone thought just before
+          // the chip so AgentMessageBody renders the text-then-chip
+          // alternation. Without this, every tool after the first in
+          // a multi-tool turn loses its preceding narration into a
+          // never-flushed streamText that the final answer body then
+          // swallows whole (round-9 Task ui_test3: "Step 2: ...I just
+          // wrote..." run together).
+          streamTrace.value.push({
+            kind: 'thought',
+            phase: turnsCompleted === 0 ? 'planning' : 'reviewing',
+            text: streamText.value,
+            t0: Date.now(),
+            elapsedSec: 0,
+            status: 'done',
+          })
+          streamText.value = ''
         }
         // Legacy short headline — kept as a fallback for the chip's
         // ``head-detail`` line on tool families that ToolChip doesn't

@@ -1178,23 +1178,80 @@ async def _run_agent_in_background(
 def _trace_from_handle_events(handle: AgentTaskHandle) -> list[dict] | None:
     """Convert handle.event_buffer into the trace shape Chat.vue's
     streamTrace reducer expects, so a conv reload renders the same
-    inline tool chips the user saw live.
+    inline tool chips + inter-tool narration the user saw live.
 
     Schema mirrors what the legacy ``_TraceAccumulator`` produced:
       [{kind: 'phase' | 'thought' | 'tool', ...}, ...]
-    """
+
+    Round-9 fix: previously this skipped ``token`` events entirely and
+    only emitted the tool chips, so the assistant's narration BETWEEN
+    tool calls ("Stage 1 complete. Now Stage 2 — read the file...")
+    vanished on reload. We now accumulate consecutive ``token`` deltas
+    into a text buffer and flush them as ``thought`` entries at the
+    next structural boundary (tool_start / phase) — matching what
+    Chat.vue rendered live. The FINAL text block at the end of the
+    run remains in ``Message.content`` (the assistant body), not in
+    the trace — the trace is the in-between commentary."""
     if not handle.event_buffer:
         return None
     out: list[dict] = []
-    open_tool_calls: dict[str, dict] = {}  # call_id → tool entry being built
-    for ev in handle.event_buffer:
+    open_tool_calls: dict[str, dict] = {}
+    answer_buf: list[str] = []
+
+    def _flush_answer_as_thought() -> None:
+        if not answer_buf:
+            return
+        text = "".join(answer_buf).strip()
+        answer_buf.clear()
+        if not text:
+            return
+        out.append({"kind": "thought", "text": text})
+
+    last_event_type: str | None = None
+    # Find the index of the LAST tool_end in the event buffer. Any
+    # token deltas after this point are the agent's wrap-up answer
+    # body, which lives in ``Message.content`` — NOT in the trace, or
+    # the body would render twice on reload.
+    last_tool_end_idx = -1
+    for i, ev in enumerate(handle.event_buffer):
+        if ev["type"] == "tool_end":
+            last_tool_end_idx = i
+
+    for i, ev in enumerate(handle.event_buffer):
         t = ev["type"]
         p = ev.get("payload") or {}
+        # After the last tool_end, stop buffering tokens — those are
+        # the final answer body and belong in ``content``.
+        if t == "token" and i > last_tool_end_idx >= 0:
+            continue
         if t == "phase":
+            # Phase events mark turn boundaries; flush any intra-turn
+            # buffered narration as a standalone thought so the next
+            # turn's text doesn't run into the previous one's.
+            _flush_answer_as_thought()
             out.append({"kind": "phase", "phase": p.get("phase", "")})
         elif t == "thought":
-            out.append({"kind": "thought", "text": p.get("text", "")})
+            # Explicit thinking-block deltas. Concatenate into a
+            # single thought entry if consecutive, otherwise append.
+            text = p.get("text", "")
+            if not text:
+                continue
+            if out and out[-1].get("kind") == "thought" and last_event_type == "thought":
+                out[-1]["text"] = (out[-1].get("text") or "") + text
+            else:
+                out.append({"kind": "thought", "text": text})
+        elif t == "token":
+            # Per-token answer text. Buffer until a structural event
+            # arrives. The agent emits ``token`` between every tool
+            # call as it narrates what it's about to do next — those
+            # become the "thought" entries that anchor the chips.
+            delta = p.get("delta", "")
+            if delta:
+                answer_buf.append(delta)
         elif t == "tool_start":
+            # Inter-tool narration belongs WITH the chip about to fire:
+            # flush the buffer as a thought right before the tool entry.
+            _flush_answer_as_thought()
             entry = {
                 "kind": "tool",
                 "id": p.get("call_id", ""),
@@ -1211,8 +1268,14 @@ def _trace_from_handle_events(handle: AgentTaskHandle) -> list[dict] | None:
                 entry["output"] = p.get("output")
                 entry["is_error"] = p.get("is_error")
                 entry["result_summary"] = p.get("result_summary")
-        # Skip token/usage/citation/done — not part of the trace shape;
-        # they're rendered separately (answer body / context ring / chips).
+        # Skip usage / citation / done / _keepalive / approval_request /
+        # ask_human / sub_agent_* — those have their own renderers in
+        # Chat.vue and aren't part of the chronological trace.
+        last_event_type = t
+
+    # NOTE: Any text left in ``answer_buf`` at end-of-run is the FINAL
+    # assistant body — it's stored in ``Message.content`` separately
+    # and shouldn't be duplicated into the trace.
     return out or None
 
 
